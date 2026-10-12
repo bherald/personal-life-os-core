@@ -4,13 +4,15 @@ namespace App\Http\Controllers\Api;
 
 use App\Engine\MCPRouter;
 use App\Engine\OllamaToolCaller;
-use App\Services\AIService;
 use App\Http\Controllers\Controller;
+use App\Services\AIService;
+use App\Services\MCPToolResultValidatorService;
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
+use Exception;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * MCP Controller
@@ -21,20 +23,20 @@ use Exception;
 class MCPController extends Controller
 {
     private MCPRouter $mcpRouter;
+
     private OllamaToolCaller $toolCaller;
+
     private AIService $aiService;
 
     public function __construct(AIService $aiService)
     {
-        $this->mcpRouter = new MCPRouter();
-        $this->toolCaller = new OllamaToolCaller();
+        $this->mcpRouter = new MCPRouter;
+        $this->toolCaller = new OllamaToolCaller;
         $this->aiService = $aiService;
     }
 
     /**
      * Get MCP tool calling status
-     *
-     * @return JsonResponse
      */
     public function status(): JsonResponse
     {
@@ -43,8 +45,6 @@ class MCPController extends Controller
 
     /**
      * Get available tools catalog
-     *
-     * @return JsonResponse
      */
     public function tools(): JsonResponse
     {
@@ -59,13 +59,11 @@ class MCPController extends Controller
 
     /**
      * Get status of all MCP servers
-     *
-     * @return JsonResponse
      */
     public function servers(): JsonResponse
     {
         // Recreate router to get fresh config (in case it was updated)
-        $this->mcpRouter = new MCPRouter();
+        $this->mcpRouter = new MCPRouter;
 
         return response()->json($this->mcpRouter->getAllServersStatus());
     }
@@ -73,9 +71,6 @@ class MCPController extends Controller
     /**
      * Call a tool via Ollama with native tool calling
      * E01 Phase 3: Uses AIService for resilient tool calling
-     *
-     * @param Request $request
-     * @return JsonResponse
      */
     public function call(Request $request): JsonResponse
     {
@@ -117,9 +112,6 @@ class MCPController extends Controller
 
     /**
      * Call a specific MCP tool directly
-     *
-     * @param Request $request
-     * @return JsonResponse
      */
     public function callDirect(Request $request): JsonResponse
     {
@@ -140,10 +132,17 @@ class MCPController extends Controller
 
             $duration = round((microtime(true) - $start) * 1000);
 
-            $this->recordDirectToolCall($validated['server'], $validated['tool'], true, (int) $duration);
+            // A completed dispatch can still contain an explicit tool failure.
+            $outcome = (new MCPToolResultValidatorService)->outcome($result, mcpEnvelope: true);
+            $toolSuccess = ! $outcome['failed'];
+            $failure = $toolSuccess ? null : 'Tool reported failure';
+            $this->recordDirectToolCall($validated['server'], $validated['tool'], $toolSuccess, (int) $duration, $failure);
 
             return response()->json([
-                'success' => true,
+                'success' => $toolSuccess,
+                'dispatch_success' => true,
+                'tool_success' => $toolSuccess,
+                'outcome' => $outcome,
                 'response' => $result,
                 'duration_ms' => $duration,
             ]);
@@ -153,15 +152,53 @@ class MCPController extends Controller
 
             return response()->json([
                 'success' => false,
+                'dispatch_success' => false,
+                'tool_success' => null,
                 'error' => $e->getMessage(),
             ], 500);
         }
     }
 
+    /** A distinct route prevents older servers from silently ignoring CLI choices. */
+    public function callDirectScoped(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'server' => 'required|string',
+            'tool' => 'required|string',
+            'params' => 'array',
+            'execution_scope' => 'required|array',
+        ]);
+        try {
+            CliWorkflowExecutionScope::validate($validated['execution_scope']);
+        } catch (\RuntimeException $error) {
+            return response()->json(['success' => false, 'error' => $error->getMessage()], 422);
+        }
+
+        $compute = [];
+        $codex = [];
+        $response = (new CliWorkflowExecutionScope)->run($validated['execution_scope'],
+            fn () => $this->callDirect($request),
+            function (array $result) use (&$compute): void {
+                $compute[] = $result;
+            },
+            function (array $result) use (&$codex): void {
+                $codex[] = $result;
+            });
+        $body = $response->getData(true);
+        $body['execution_scope_schema'] = CliWorkflowExecutionScope::SCHEMA;
+        if ($compute !== []) {
+            $body['compute_executions'] = $compute;
+        }
+        if ($codex !== []) {
+            $body['codex_executions'] = $codex;
+        }
+        $response->setData($body);
+
+        return $response;
+    }
+
     /**
      * Clear tool catalog cache
-     *
-     * @return JsonResponse
      */
     public function clearCache(): JsonResponse
     {
@@ -175,11 +212,6 @@ class MCPController extends Controller
 
     /**
      * Test a specific tool
-     *
-     * @param Request $request
-     * @param string $server
-     * @param string $tool
-     * @return JsonResponse
      */
     public function testTool(Request $request, string $server, string $tool): JsonResponse
     {
@@ -213,8 +245,6 @@ class MCPController extends Controller
 
     /**
      * Get MCP configuration
-     *
-     * @return JsonResponse
      */
     public function getConfig(): JsonResponse
     {
@@ -229,10 +259,6 @@ class MCPController extends Controller
 
     /**
      * Update server enabled status
-     *
-     * @param Request $request
-     * @param string $server
-     * @return JsonResponse
      */
     public function updateServer(Request $request, string $server): JsonResponse
     {
@@ -250,7 +276,7 @@ class MCPController extends Controller
             // Strategy: Find 'server_name' => [ and then find the first 'enabled' => value after it
             $serverPattern = "/'$server'\s*=>\s*\[/";
 
-            if (!preg_match($serverPattern, $configContent, $matches, PREG_OFFSET_CAPTURE)) {
+            if (! preg_match($serverPattern, $configContent, $matches, PREG_OFFSET_CAPTURE)) {
                 return response()->json([
                     'success' => false,
                     'error' => "Server '{$server}' not found in configuration",
@@ -263,7 +289,7 @@ class MCPController extends Controller
             $enabledPattern = "/('enabled'\s*=>\s*)(true|false)(\s*,)/";
             $searchFrom = substr($configContent, $serverStart);
 
-            if (!preg_match($enabledPattern, $searchFrom, $enabledMatch, PREG_OFFSET_CAPTURE)) {
+            if (! preg_match($enabledPattern, $searchFrom, $enabledMatch, PREG_OFFSET_CAPTURE)) {
                 return response()->json([
                     'success' => false,
                     'error' => "Could not find 'enabled' field for server '{$server}'",
@@ -296,21 +322,21 @@ class MCPController extends Controller
             }
 
             // Recreate MCPRouter to reload config
-            $this->mcpRouter = new MCPRouter();
+            $this->mcpRouter = new MCPRouter;
 
             // Clear cache to refresh tool catalog
             $this->mcpRouter->clearCache();
 
             return response()->json([
                 'success' => true,
-                'message' => "Server '{$server}' " . ($validated['enabled'] ? 'enabled' : 'disabled') . ' (persistent)',
+                'message' => "Server '{$server}' ".($validated['enabled'] ? 'enabled' : 'disabled').' (persistent)',
                 'server' => $server,
                 'enabled' => $validated['enabled'],
             ]);
         } catch (Exception $e) {
             return response()->json([
                 'success' => false,
-                'error' => 'Failed to update server configuration: ' . $e->getMessage(),
+                'error' => 'Failed to update server configuration: '.$e->getMessage(),
             ], 500);
         }
     }
@@ -325,7 +351,7 @@ class MCPController extends Controller
         foreach ($tools as $tool) {
             $server = $tool['server'] ?? 'unknown';
 
-            if (!isset($grouped[$server])) {
+            if (! isset($grouped[$server])) {
                 $grouped[$server] = [
                     'count' => 0,
                     'tools' => [],
@@ -351,7 +377,7 @@ class MCPController extends Controller
         $days = (int) $request->query('days', 7);
         $days = min(max($days, 1), 90);
 
-        $topTools = DB::select("
+        $topTools = DB::select('
             SELECT tool_name,
                    COUNT(*) as call_count,
                    SUM(success) as success_count,
@@ -364,7 +390,7 @@ class MCPController extends Controller
             GROUP BY tool_name
             ORDER BY call_count DESC
             LIMIT 30
-        ", [$days]);
+        ', [$days]);
 
         $byServer = DB::select("
             SELECT COALESCE(mcp_server, 'internal') as server,
@@ -390,7 +416,7 @@ class MCPController extends Controller
             LIMIT 20
         ", [$days]);
 
-        $dailyTrend = DB::select("
+        $dailyTrend = DB::select('
             SELECT DATE(created_at) as date,
                    COUNT(*) as call_count,
                    SUM(success) as success_count,
@@ -400,25 +426,25 @@ class MCPController extends Controller
             WHERE created_at >= NOW() - INTERVAL ? DAY
             GROUP BY DATE(created_at)
             ORDER BY date DESC
-        ", [$days]);
+        ', [$days]);
 
-        $recentErrors = DB::select("
+        $recentErrors = DB::select('
             SELECT tool_name, agent_id, error_message, duration_ms, created_at
             FROM mcp_tool_calls
             WHERE success = 0
               AND created_at >= NOW() - INTERVAL ? DAY
             ORDER BY created_at DESC
             LIMIT 20
-        ", [$days]);
+        ', [$days]);
 
-        $totals = DB::selectOne("
+        $totals = DB::selectOne('
             SELECT COUNT(*) as total_calls,
                    SUM(success) as total_success,
                    ROUND(AVG(duration_ms)) as avg_duration_ms,
                    ROUND(100.0 * SUM(success) / GREATEST(COUNT(*), 1), 1) as overall_success_rate
             FROM mcp_tool_calls
             WHERE created_at >= NOW() - INTERVAL ? DAY
-        ", [$days]);
+        ', [$days]);
 
         return response()->json([
             'success' => true,
@@ -455,7 +481,7 @@ class MCPController extends Controller
                 $error ? substr($error, 0, 65535) : null,
             ]);
         } catch (\Throwable $e) {
-            Log::debug("MCPController: Failed to record tool call analytics", ['error' => $e->getMessage()]);
+            Log::debug('MCPController: Failed to record tool call analytics', ['error' => $e->getMessage()]);
         }
     }
 }

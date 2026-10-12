@@ -851,7 +851,7 @@ class SemanticChunkerService
                 . "Return a JSON array of objects with keys: proposition (string), subject (string), predicate (string), object (string).\n"
                 . "Return ONLY the JSON array, no other text.";
 
-            $result = $this->aiService->generateText($prompt, [
+            $result = $this->aiService->process($prompt, [
                 'max_tokens' => 1000,
                 'model_role' => 'fast',
             ]);

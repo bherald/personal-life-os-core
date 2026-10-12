@@ -2,12 +2,17 @@
 
 namespace App\Services\Review;
 
+use App\Services\FileRegistryImageSourceAuditService;
+use App\Services\Files\ScanDateLegacyMetadataAuditService;
 use App\Services\Genealogy\GenealogyReviewPacketApplyPreviewService;
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use App\Services\Genealogy\GenealogyReviewPacketOutcomeService;
 use App\Services\Genealogy\GenealogyReviewPacketSourceLabelService;
 use App\Services\Genealogy\GenealogyTypedRemediationMaterializationService;
 use App\Services\Genealogy\PersonService;
+use App\Services\Ops\AiModelUpdateReviewPresentationService;
+use App\Services\ReviewTypeRegistryService;
+use App\Services\ScanDateLegacyAuditPolicyService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -128,6 +133,8 @@ class ReviewContextEnrichmentService
 
     private readonly ReviewEvidenceAssetCandidateService $evidenceAssetCandidates;
 
+    private readonly ReviewMediaReferenceResolverService $mediaReferenceResolver;
+
     public function __construct(
         private readonly PersonService $personService,
         ?GenealogyReviewPacketApplyPreviewService $reviewPacketApplyPreview = null,
@@ -135,12 +142,14 @@ class ReviewContextEnrichmentService
         ?GenealogyReviewPacketOutcomeService $reviewPacketOutcome = null,
         ?GenealogyTypedRemediationMaterializationService $typedRemediationMaterialization = null,
         ?ReviewEvidenceAssetCandidateService $evidenceAssetCandidates = null,
+        ?ReviewMediaReferenceResolverService $mediaReferenceResolver = null,
     ) {
         $this->reviewPacketApplyPreview = $reviewPacketApplyPreview ?? new GenealogyReviewPacketApplyPreviewService;
         $this->reviewPacketFocus = $reviewPacketFocus ?? new GenealogyReviewPacketFocusService;
         $this->reviewPacketOutcome = $reviewPacketOutcome ?? new GenealogyReviewPacketOutcomeService;
         $this->typedRemediationMaterialization = $typedRemediationMaterialization ?? new GenealogyTypedRemediationMaterializationService;
         $this->evidenceAssetCandidates = $evidenceAssetCandidates ?? new ReviewEvidenceAssetCandidateService;
+        $this->mediaReferenceResolver = $mediaReferenceResolver ?? new ReviewMediaReferenceResolverService;
     }
 
     /**
@@ -160,10 +169,13 @@ class ReviewContextEnrichmentService
             return null;
         }
         [$type, $id] = $parsed;
+        if ($type === 'file_source_recovery') {
+            return $this->genericRegisteredContext($type, $unifiedId);
+        }
 
         $row = $this->loadReviewRow($type, $id);
         if ($row === null) {
-            return null;
+            return $this->genericRegisteredContext($type, $unifiedId);
         }
 
         $details = $this->decodeDetails($row->details ?? null);
@@ -226,6 +238,14 @@ class ReviewContextEnrichmentService
             'evidence_asset_candidates' => $evidenceAssetCandidates,
             'evidence_asset_candidate_count' => count($evidenceAssetCandidates),
         ];
+        $registeredType = app(ReviewTypeRegistryService::class)->getType($type);
+        if (is_array($registeredType)) {
+            $context['item']['ui_schema'] = is_array($registeredType['ui_schema'] ?? null)
+                ? $registeredType['ui_schema']
+                : [];
+            $context['item']['actions'] = $this->safeReviewActions($registeredType['actions'] ?? []);
+            $context['item']['batch_enabled'] = (bool) ($registeredType['batch_enabled'] ?? false);
+        }
         if ($targetRef !== null) {
             $context['item']['target_ref'] = $targetRef;
         }
@@ -245,7 +265,153 @@ class ReviewContextEnrichmentService
             $context = array_merge($context, $this->buildTypedRemediationFindingContext($row, $details));
         }
 
+        if ($type === 'ai_model_update') {
+            $context['ai_model_update'] = app(AiModelUpdateReviewPresentationService::class)->project($details);
+        }
+
         return $context;
+    }
+
+    /** @return array<string, mixed>|null */
+    private function genericRegisteredContext(string $type, string $unifiedId): ?array
+    {
+        $registry = app(ReviewTypeRegistryService::class);
+        $registeredType = $registry->getType($type);
+        if (! is_array($registeredType)) {
+            return null;
+        }
+
+        $result = $type === 'file_source_recovery'
+            ? ['items' => array_filter([$registry->fetchDisplayItemBySourceId($type, explode(':', $unifiedId, 2)[1])])]
+            : $registry->fetchItems($type, 200, 0, null);
+        foreach ((array) ($result['items'] ?? []) as $item) {
+            if (! is_array($item) || ($item['unified_id'] ?? null) !== $unifiedId) {
+                continue;
+            }
+
+            if ($type === 'face') {
+                return app(FaceMatchReviewPresentationService::class)->project($item, $registeredType);
+            }
+
+            if ($type === 'privacy') {
+                return app(PrivacyRequestReviewPresentationService::class)->project($item, $registeredType);
+            }
+
+            $rawDetails = is_array($item['details'] ?? null) ? $item['details'] : [];
+            $details = $this->sanitizeDetailsForBrowser($rawDetails);
+
+            $context = [
+                'item' => [
+                    'unified_id' => $unifiedId,
+                    'review_type' => $type,
+                    'source' => $type,
+                    'category' => is_scalar($item['category'] ?? null) ? (string) $item['category'] : null,
+                    'title' => $this->redactBrowserString((string) ($item['title'] ?? 'Review item')),
+                    'summary' => $this->redactBrowserString((string) ($item['summary'] ?? '')),
+                    'confidence' => is_numeric($item['confidence'] ?? null) ? (float) $item['confidence'] : null,
+                    'priority' => is_numeric($item['priority'] ?? null) ? (int) $item['priority'] : null,
+                    'status' => 'pending',
+                    'agent_id' => $this->redactBrowserString((string) ($item['agent_id'] ?? '')),
+                    'created_at' => $item['created_at'] ?? null,
+                    'expires_at' => $item['expires_at'] ?? null,
+                    'details' => $details,
+                    'ui_schema' => is_array($item['ui_schema'] ?? null) ? $item['ui_schema'] : [],
+                    'actions' => $this->safeReviewActions($item['actions'] ?? []),
+                    'batch_enabled' => (bool) ($item['batch_enabled'] ?? false),
+                ],
+                'generic_review' => [
+                    'schema' => 'plos.generic_review_context.v1',
+                    'detail_available' => true,
+                    'raw_details_included' => false,
+                    'approval_requires_detail_acknowledgement' => true,
+                ],
+            ];
+
+            if ($type === 'file_source_recovery') {
+                $displayEvidence = $rawDetails;
+                if (($rawDetails['schema'] ?? null) === 'plos.image_source_inspection_finding.v1'
+                    && ($rawDetails['inspection_only'] ?? null) === true
+                    && is_array($rawDetails['evidence']['row'] ?? null)) {
+                    $row = $rawDetails['evidence']['row'];
+                    $measured = ($row['successful'] ?? null) === true;
+                    $historicalKnown = is_string($row['registry_sha256'] ?? null)
+                        && preg_match('/\A[a-f0-9]{64}\z/i', $row['registry_sha256']) === 1;
+                    $displayEvidence = array_intersect_key($row, array_flip([
+                        'classification', 'extension', 'content_format', 'format_classification', 'format_evidence',
+                        'header_status', 'decode_status', 'actual_size', 'asset_uuid',
+                    ]));
+                    $displayEvidence['source_sha256'] = $measured ? ($row['observed_sha256'] ?? null) : null;
+                    $displayEvidence['expected_sha256'] = $historicalKnown ? $row['registry_sha256'] : null;
+                    $displayEvidence['observed_at'] = $item['created_at'] ?? null;
+                    $displayEvidence['source_label'] = 'Retained '.(($row['source_kind'] ?? null) === 'media' ? 'tree media' : 'catalog').' inspection';
+                    $displayEvidence['inspection_method'] = 'Local source SHA-256 and header inspection; retained evidence, not a fresh source verification';
+                    $status = is_string($row['status'] ?? null) ? $row['status'] : 'unknown';
+                    $relation = is_string($row['hash_relation'] ?? null) ? $row['hash_relation'] : 'unknown';
+                    $formatReason = ($row['format_classification'] ?? null) === 'non_raster_graphic'
+                        ? ' Content signature identifies unsupported non-raster '.$row['content_format'].' data; this is not a damaged-photo determination.'
+                        : '';
+                    $displayEvidence['reason'] = 'Source status: '.$status.'. Hash relation: '.$relation.'. '
+                        .($measured ? 'Physical SHA measured at inspection. ' : 'Current physical proof unavailable. ')
+                        .($historicalKnown ? 'Earlier catalog SHA retained; a mismatch does not establish corruption. ' : 'Historical source proof unknown. ')
+                        .$formatReason
+                        .(($row['header_status'] ?? null) === 'unavailable_or_unsupported'
+                            ? 'Header dimensions unavailable or unsupported; this is not an image corruption determination.' : 'No image corruption determination.');
+                }
+                $evidence = [];
+                foreach (['filename', 'classification', 'reason', 'observed_at', 'extension', 'content_format',
+                    'format_classification', 'format_evidence', 'header_status', 'decode_status', 'inspection_method', 'source_label'] as $field) {
+                    if (isset($displayEvidence[$field]) && is_scalar($displayEvidence[$field])) {
+                        $evidence[$field] = $this->redactBrowserString(mb_substr((string) $displayEvidence[$field], 0, 2000));
+                    }
+                }
+                foreach (['source_sha256', 'expected_sha256', 'receipt_sha256'] as $field) {
+                    if (is_string($displayEvidence[$field] ?? null) && preg_match('/^[a-f0-9]{64}$/i', $displayEvidence[$field]) === 1) {
+                        $evidence[$field] = strtolower($displayEvidence[$field]);
+                    }
+                }
+                if (is_int($displayEvidence['actual_size'] ?? null) && $displayEvidence['actual_size'] >= 0) {
+                    $evidence['actual_size'] = $displayEvidence['actual_size'];
+                }
+                if (is_string($displayEvidence['asset_uuid'] ?? null) && preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i', $displayEvidence['asset_uuid']) === 1) {
+                    $evidence['asset_uuid'] = strtolower($displayEvidence['asset_uuid']);
+                }
+                $context['file_source_recovery'] = $evidence;
+                $context['source_recheck'] = app(FileRegistryImageSourceAuditService::class)
+                    ->findingRecheckAdmission((int) explode(':', $unifiedId, 2)[1]);
+            }
+
+            if ($type === 'scan_date_legacy_metadata') {
+                $fileRegistryId = isset($rawDetails['file_registry_id']) && is_numeric($rawDetails['file_registry_id'])
+                    ? (int) $rawDetails['file_registry_id']
+                    : null;
+                if ($fileRegistryId !== null) {
+                    try {
+                        $policy = app(ScanDateLegacyAuditPolicyService::class)->required();
+                        $context['legacy_scan_date_metadata'] = app(ScanDateLegacyMetadataAuditService::class)
+                            ->auditFile($fileRegistryId, $policy['exiftool_timeout_seconds']);
+                    } catch (\Throwable $e) {
+                        Log::warning('Review context: legacy scan-date metadata inspection failed', [
+                            'file_registry_id' => $fileRegistryId,
+                            'error_class' => $e::class,
+                        ]);
+                        $context['legacy_scan_date_metadata'] = null;
+                    }
+                }
+            }
+
+            return $context;
+        }
+
+        return null;
+    }
+
+    /** @return list<string> */
+    private function safeReviewActions(mixed $actions): array
+    {
+        return array_values(array_unique(array_filter(
+            is_array($actions) ? $actions : [],
+            static fn (mixed $action): bool => is_string($action) && preg_match('/^[a-z_]+$/', $action) === 1
+        )));
     }
 
     /**
@@ -2412,61 +2578,7 @@ class ReviewContextEnrichmentService
      */
     private function resolveMediaReferences(array $details): array
     {
-        $haystack = $this->mediaReferenceTextCandidates($details);
-        $haystackText = implode(' ', $haystack);
-        $ids = $this->structuredMediaReferenceIds($details);
-
-        if ($haystackText !== ''
-            && preg_match_all('/\b(?:media\s*#?|media_id|genealogy_media_id)\s*[:=#]?\s*(\d{1,9})\b/i', $haystackText, $m)
-        ) {
-            $this->appendMediaReferenceIds($ids, $m[1]);
-        }
-
-        if ($ids === []) {
-            return [];
-        }
-        // Cap to avoid runaway IN-list on a malformed payload.
-        $ids = array_slice($ids, 0, 25);
-
-        try {
-            $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            $rows = DB::select(
-                "SELECT id, title, file_format, mime_type, media_type, nextcloud_path, file_exists
-                 FROM genealogy_media
-                 WHERE id IN ({$placeholders})",
-                $ids
-            );
-        } catch (\Throwable $e) {
-            return [];
-        }
-
-        $outById = [];
-        foreach ($rows as $row) {
-            $path = (string) ($row->nextcloud_path ?? '');
-            $outById[(int) $row->id] = [
-                'id' => (int) $row->id,
-                'title' => trim((string) ($row->title ?? '')) !== ''
-                    ? (string) $row->title
-                    : 'Media item',
-                'file_format' => $row->file_format,
-                'mime_type' => $row->mime_type,
-                'media_type' => $row->media_type,
-                'nextcloud_path' => $path !== '' ? $path : null,
-                'file_exists' => (bool) $row->file_exists,
-                'view_url' => $path !== ''
-                    ? '/api/media/file?path='.rawurlencode($path)
-                    : null,
-            ];
-        }
-
-        $out = [];
-        foreach ($ids as $id) {
-            if (isset($outById[$id])) {
-                $out[] = $outById[$id];
-            }
-        }
-
-        return $out;
+        return $this->mediaReferenceResolver->resolveFromDetails($details);
     }
 
     /**
@@ -3636,6 +3748,7 @@ class ReviewContextEnrichmentService
                     }
                     $matches[] = [
                         'name' => $cand['name'],
+                        'tree_id' => $treeId,
                         'matched_person_id' => (int) $row->id,
                         'matched_person_name' => $personName,
                         'mentioned_in' => $cand['mentioned_in'],

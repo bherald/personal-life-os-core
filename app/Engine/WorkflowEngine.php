@@ -3,9 +3,13 @@
 namespace App\Engine;
 
 use App\Controllers\NotificationController;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Exceptions\NodeTimeoutException;
+use App\Exceptions\WorkflowApprovalRequiredException;
+use App\Exceptions\WorkflowSuspendedException;
 use App\Services\ExecutionState;
 use App\Services\SystemConfigService;
+use App\Services\WorkflowApprovalService;
 use App\Services\WorkflowEventService;
 use App\Services\WorkflowReplayer;
 use Exception;
@@ -43,15 +47,18 @@ class WorkflowEngine
 
     private ?string $currentExecutionId = null;
 
+    private ?string $currentTraceSessionId = null;
+
     /** @var array<string,mixed>|null */
     private ?array $runtimePolicy = null;
 
     public function __construct(
         ?WorkflowEventService $eventService = null,
-        ?WorkflowReplayer $replayer = null
+        ?WorkflowReplayer $replayer = null,
+        ?DatabaseLayer $databaseLayer = null,
     ) {
         $this->nodeLoader = new NodeLoader;
-        $this->databaseLayer = new DatabaseLayer;
+        $this->databaseLayer = $databaseLayer ?? new DatabaseLayer;
         $this->eventService = $eventService ?? new WorkflowEventService;
         $this->replayer = $replayer ?? new WorkflowReplayer($this->eventService);
     }
@@ -66,6 +73,8 @@ class WorkflowEngine
      */
     public function executeWorkflow(string $workflowName, array $initialInput = [], array $options = []): array
     {
+        $requestedTraceSessionId = $this->normalizeTraceSessionId($options['trace_session_id'] ?? null);
+
         // Load workflow configuration
         $workflow = $this->databaseLayer->getWorkflow($workflowName);
 
@@ -78,7 +87,9 @@ class WorkflowEngine
         }
 
         // Check idempotency unless explicitly skipped
-        if (! ($options['skip_idempotency_check'] ?? false) && ! empty($initialInput)) {
+        $hasIdempotencyEvidence = ! empty($initialInput)
+            || ! empty($options['idempotency_key']);
+        if (! ($options['skip_idempotency_check'] ?? false) && $hasIdempotencyEvidence) {
             $idempotencyCheck = $this->databaseLayer->checkIdempotency(
                 $workflow->id,
                 $initialInput,
@@ -101,6 +112,7 @@ class WorkflowEngine
                     'skipped' => true,
                     'reason' => 'duplicate_idempotency_key',
                     'idempotency_key' => $idempotencyCheck['key'],
+                    'trace_session_id' => $requestedTraceSessionId,
                 ];
             }
         }
@@ -117,6 +129,7 @@ class WorkflowEngine
 
         // Generate execution ID for checkpointing
         $this->currentExecutionId = (string) Str::uuid();
+        $this->currentTraceSessionId = $requestedTraceSessionId ?? $this->currentExecutionId;
 
         if (! empty($initialInput)) {
             $this->databaseLayer->logWorkflowRunInputs($runId, $initialInput);
@@ -126,6 +139,7 @@ class WorkflowEngine
             'workflow' => $workflowName,
             'run_id' => $runId,
             'execution_id' => $this->currentExecutionId,
+            'trace_session_id' => $this->currentTraceSessionId,
         ]);
 
         try {
@@ -133,8 +147,8 @@ class WorkflowEngine
             $retryConfig = $this->databaseLayer->getRetryConfig($workflow->id);
 
             // Execute workflow with retry logic
-            $output = $this->executeWithRetry(function () use ($workflow, $runId, $initialInput) {
-                return $this->executeNodes($workflow, $runId, $initialInput);
+            $output = $this->executeWithRetry(function (int $attemptNumber) use ($workflow, $runId, $initialInput) {
+                return $this->executeNodes($workflow, $runId, $initialInput, $attemptNumber);
             }, $retryConfig);
 
             // Mark workflow as completed
@@ -145,25 +159,42 @@ class WorkflowEngine
                 'workflow' => $workflowName,
                 'run_id' => $runId,
                 'execution_id' => $this->currentExecutionId,
+                'trace_session_id' => $this->currentTraceSessionId,
             ]);
 
             return [
                 'success' => true,
                 'run_id' => $runId,
                 'execution_id' => $this->currentExecutionId,
+                'trace_session_id' => $this->currentTraceSessionId,
                 'output' => $output,
             ];
 
-        } catch (\Throwable $e) {
-            // Mark workflow as failed
-            $this->databaseLayer->updateWorkflowRun($runId, 'failed', $e->getMessage());
+        } catch (WorkflowSuspendedException $exception) {
+            $this->databaseLayer->updateWorkflowRun($runId, 'awaiting_approval');
 
-            Log::error('Workflow execution failed', [
+            Log::info('Workflow execution suspended for operator approval', [
                 'workflow' => $workflowName,
                 'run_id' => $runId,
                 'execution_id' => $this->currentExecutionId,
-                'error' => $e->getMessage(),
+                'gate_id' => $exception->gateId,
+                'node_id' => $exception->nodeId,
             ]);
+
+            return $this->suspendedResult($exception);
+        } catch (\Throwable $e) {
+            $this->recordFailurePreservingAdmission($e, function () use ($runId, $workflowName, $e) {
+                // Mark workflow as failed
+                $this->databaseLayer->updateWorkflowRun($runId, 'failed', $e->getMessage());
+
+                Log::error('Workflow execution failed', [
+                    'workflow' => $workflowName,
+                    'run_id' => $runId,
+                    'execution_id' => $this->currentExecutionId,
+                    'trace_session_id' => $this->currentTraceSessionId,
+                    'error' => $e->getMessage(),
+                ]);
+            });
 
             throw $e;
         }
@@ -176,7 +207,7 @@ class WorkflowEngine
      * @param  array  $overrideInput  Optional input to override context
      * @return array Execution result
      */
-    public function resumeWorkflow(string $executionId, array $overrideInput = []): array
+    public function resumeWorkflow(string $executionId, array $overrideInput = [], ?int $existingRunId = null): array
     {
         // Get resume point from replayer
         $resumePoint = $this->replayer->getResumePoint($executionId);
@@ -194,6 +225,7 @@ class WorkflowEngine
         // Rebuild state
         $state = $this->replayer->rebuild($executionId);
         $this->currentExecutionId = $executionId;
+        $this->currentTraceSessionId = $this->traceSessionIdFromEvents($events, $executionId);
 
         // Get context from state, merge with any overrides
         $resumeContext = array_merge($state->getContext(), $overrideInput);
@@ -203,6 +235,7 @@ class WorkflowEngine
             'last_completed' => $resumePoint['last_completed_node'],
             'failed_node' => $resumePoint['failed_node'],
             'completed_nodes' => count($resumePoint['completed_nodes']),
+            'trace_session_id' => $this->currentTraceSessionId,
         ]);
 
         // Find the workflow from the first event's metadata
@@ -218,9 +251,47 @@ class WorkflowEngine
             throw new Exception("Workflow not found: {$workflowName}");
         }
 
-        // Create new run record for the resume
-        $runId = $this->databaseLayer->createWorkflowRun($workflow->id, $resumeContext);
+        $checkpointSequence = (int) ($events[array_key_last($events)]->sequence ?? 0);
+        if ($existingRunId !== null) {
+            $run = $this->databaseLayer->getWorkflowRun($existingRunId);
+            if ($run === null || (int) $run->workflow_id !== (int) $workflow->id) {
+                throw new Exception("Approval resume run does not belong to execution: {$executionId}");
+            }
+            $runId = $existingRunId;
+        } else {
+            $resumeClaimKey = hash('sha256', "workflow-resume:{$executionId}:{$checkpointSequence}");
+            $claim = $this->databaseLayer->claimWorkflowResumeRun($workflow->id, $resumeClaimKey);
+            $runId = (int) $claim['run']->id;
+        }
+        if ($existingRunId === null && ! $claim['claimed']) {
+            Log::info('Skipping duplicate workflow checkpoint resume', [
+                'execution_id' => $executionId,
+                'trace_session_id' => $this->currentTraceSessionId,
+                'checkpoint_sequence' => $checkpointSequence,
+                'run_id' => $runId,
+                'run_status' => $claim['run']->status,
+            ]);
+
+            return [
+                'success' => $claim['run']->status === 'completed',
+                'run_id' => $runId,
+                'execution_id' => $executionId,
+                'trace_session_id' => $this->currentTraceSessionId,
+                'resumed' => false,
+                'skipped' => true,
+                'reason' => 'resume_checkpoint_already_claimed',
+                'status' => $claim['run']->status,
+                'output' => null,
+            ];
+        }
+
+        if ($resumeContext !== []) {
+            $this->databaseLayer->logWorkflowRunInputs($runId, $resumeContext);
+        }
         $this->workflowDefaults = $this->databaseLayer->getWorkflowDefaults($workflow->id);
+        $resumeAttemptNumber = $existingRunId !== null
+            ? $this->attemptNumberFromEvents($events)
+            : 1;
 
         try {
             // Execute nodes, skipping completed ones
@@ -228,7 +299,8 @@ class WorkflowEngine
                 $workflow,
                 $runId,
                 $resumeContext,
-                $state
+                $state,
+                $resumeAttemptNumber
             );
 
             $this->databaseLayer->updateWorkflowRun($runId, 'completed');
@@ -237,27 +309,49 @@ class WorkflowEngine
             Log::info('Resumed workflow execution completed', [
                 'execution_id' => $executionId,
                 'run_id' => $runId,
+                'trace_session_id' => $this->currentTraceSessionId,
             ]);
 
             return [
                 'success' => true,
                 'run_id' => $runId,
                 'execution_id' => $executionId,
+                'trace_session_id' => $this->currentTraceSessionId,
                 'resumed' => true,
                 'output' => $output,
             ];
 
-        } catch (\Throwable $e) {
-            $this->databaseLayer->updateWorkflowRun($runId, 'failed', $e->getMessage());
+        } catch (WorkflowSuspendedException $exception) {
+            $this->databaseLayer->updateWorkflowRun($runId, 'awaiting_approval');
 
-            Log::error('Resumed workflow execution failed', [
+            Log::info('Resumed workflow suspended for operator approval', [
                 'execution_id' => $executionId,
                 'run_id' => $runId,
-                'error' => $e->getMessage(),
+                'gate_id' => $exception->gateId,
+                'node_id' => $exception->nodeId,
             ]);
+
+            return $this->suspendedResult($exception) + ['resumed' => true];
+        } catch (\Throwable $e) {
+            $this->recordFailurePreservingAdmission($e, function () use ($runId, $executionId, $e) {
+                $this->databaseLayer->updateWorkflowRun($runId, 'failed', $e->getMessage());
+
+                Log::error('Resumed workflow execution failed', [
+                    'execution_id' => $executionId,
+                    'run_id' => $runId,
+                    'trace_session_id' => $this->currentTraceSessionId,
+                    'error' => $e->getMessage(),
+                ]);
+            });
 
             throw $e;
         }
+    }
+
+    /** @param array<string,mixed> $overrideInput */
+    public function resumeApprovedWorkflow(string $executionId, int $runId, array $overrideInput = []): array
+    {
+        return $this->resumeWorkflow($executionId, $overrideInput, $runId);
     }
 
     /**
@@ -268,7 +362,12 @@ class WorkflowEngine
         return $this->currentExecutionId;
     }
 
-    private function executeNodes(object $workflow, int $runId, array $input): array
+    public function getCurrentTraceSessionId(): ?string
+    {
+        return $this->currentTraceSessionId;
+    }
+
+    private function executeNodes(object $workflow, int $runId, array $input, int $attemptNumber = 1): array
     {
         $nodes = $this->databaseLayer->getWorkflowNodes($workflow->id);
         $currentInput = $input;
@@ -279,8 +378,20 @@ class WorkflowEngine
 
         foreach ($nodes as $node) {
             try {
-                $currentInput = $this->executeNode($node, $currentInput, $runId, $workflow->id, $workflow->name);
+                $currentInput = $this->executeNode(
+                    $node,
+                    $currentInput,
+                    $runId,
+                    $workflow->id,
+                    $workflow->name,
+                    $attemptNumber
+                );
+            } catch (WorkflowSuspendedException $exception) {
+                throw $exception;
             } catch (\Throwable $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 if ($errorHandling === 'continue') {
                     Log::warning('Node execution failed, continuing to next node', [
                         'node_type' => $node->node_type,
@@ -303,7 +414,8 @@ class WorkflowEngine
         object $workflow,
         int $runId,
         array $input,
-        ExecutionState $state
+        ExecutionState $state,
+        int $attemptNumber = 1
     ): array {
         $nodes = $this->databaseLayer->getWorkflowNodes($workflow->id);
         $currentInput = $input;
@@ -330,8 +442,20 @@ class WorkflowEngine
             }
 
             try {
-                $currentInput = $this->executeNode($node, $currentInput, $runId, $workflow->id, $workflow->name);
+                $currentInput = $this->executeNode(
+                    $node,
+                    $currentInput,
+                    $runId,
+                    $workflow->id,
+                    $workflow->name,
+                    $attemptNumber
+                );
+            } catch (WorkflowSuspendedException $exception) {
+                throw $exception;
             } catch (\Throwable $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 if ($errorHandling === 'continue') {
                     Log::warning('Node execution failed during resume, continuing', [
                         'node_type' => $node->node_type,
@@ -347,12 +471,28 @@ class WorkflowEngine
         return $currentInput;
     }
 
+    /** @param array<int,object> $events */
+    private function attemptNumberFromEvents(array $events): int
+    {
+        $attemptNumber = 1;
+
+        foreach ($events as $event) {
+            $candidate = $event->metadata['attempt_number'] ?? null;
+            if (is_int($candidate) || (is_string($candidate) && ctype_digit($candidate))) {
+                $attemptNumber = max($attemptNumber, min(1000, (int) $candidate));
+            }
+        }
+
+        return $attemptNumber;
+    }
+
     private function executeNode(
         object $node,
         array $input,
         int $runId,
         int $workflowId,
-        ?string $workflowName = null
+        ?string $workflowName = null,
+        int $attemptNumber = 1
     ): array {
         $startTime = microtime(true);
         $nodeId = (string) $node->id;
@@ -370,6 +510,7 @@ class WorkflowEngine
             ?? $this->runtimePolicyInt('default_node_timeout_seconds');
         $finalConfig['timeout_seconds'] = $timeoutSeconds;
         $finalConfig['effective_timeout_seconds'] = $this->peekEffectiveTimeoutSeconds((int) $timeoutSeconds);
+        $finalConfig['workflow_attempt_number'] = max(1, min(1000, $attemptNumber));
 
         // Check "only_if" condition
         if (isset($finalConfig['only_if']) && ! $this->evaluateCondition($finalConfig['only_if'], $input)) {
@@ -386,7 +527,8 @@ class WorkflowEngine
             $runId,
             $node->id,
             $node->node_type,
-            $node->node_order
+            $node->node_order,
+            $attemptNumber
         );
 
         // Log input
@@ -401,13 +543,14 @@ class WorkflowEngine
                 'NodeStarted',
                 $nodeId,
                 ['input' => $this->truncateForEvent($input)],
-                [
+                $this->withTraceMetadata([
                     'workflow_name' => $workflowName,
                     'node_type' => $node->node_type,
                     'node_order' => $node->node_order,
+                    'attempt_number' => $attemptNumber,
                     'run_id' => $runId,
                     'timeout_seconds' => $timeoutSeconds,
-                ]
+                ])
             );
         }
 
@@ -465,10 +608,11 @@ class WorkflowEngine
                     'NodeCompleted',
                     $nodeId,
                     ['output' => $this->truncateForEvent($output)],
-                    [
+                    $this->withTraceMetadata([
                         'duration_ms' => $durationMs,
                         'node_type' => $node->node_type,
-                    ]
+                        'attempt_number' => $attemptNumber,
+                    ])
                 );
             }
 
@@ -480,45 +624,92 @@ class WorkflowEngine
 
             return $output;
 
-        } catch (\Throwable $e) {
+        } catch (WorkflowApprovalRequiredException $exception) {
             $durationMs = (int) ((microtime(true) - $startTime) * 1000);
-            $timedOut = str_contains($e->getMessage(), 'timed out')
-                || str_contains($e->getMessage(), 'Node timeout:')
-                || $e instanceof NodeTimeoutException;
-
-            $this->databaseLayer->updateNodeExecutionWithTimeout(
-                $executionId,
-                $durationMs,
-                $e->getMessage(),
-                $timeoutSeconds,
-                $timedOut
-            );
-
-            // Record NodeFailed event for checkpointing
-            if ($this->currentExecutionId) {
-                $this->eventService->recordEvent(
-                    $this->currentExecutionId,
-                    'NodeFailed',
-                    $nodeId,
-                    [
-                        'error' => $e->getMessage(),
-                        'exception' => get_class($e),
-                        'timed_out' => $timedOut,
-                    ],
-                    [
-                        'duration_ms' => $durationMs,
-                        'node_type' => $node->node_type,
-                        'timeout_seconds' => $timeoutSeconds,
-                    ]
-                );
+            if ($this->currentExecutionId === null) {
+                throw new Exception('Approval nodes require workflow checkpointing.');
             }
 
-            Log::error('Node execution failed', [
-                'node_type' => $node->node_type,
-                'execution_id' => $executionId,
-                'error' => $e->getMessage(),
-                'timed_out' => $timedOut,
-            ]);
+            $this->eventService->recordEvent(
+                $this->currentExecutionId,
+                'SignalReceived',
+                $nodeId,
+                [
+                    'name' => 'workflow_approval',
+                    'data' => ['action' => 'pending'],
+                ],
+                $this->withTraceMetadata([
+                    'run_id' => $runId,
+                    'node_type' => 'Approval',
+                    'attempt_number' => $attemptNumber,
+                ])
+            );
+            $gateId = app(WorkflowApprovalService::class)->requestApproval(
+                $runId,
+                $executionId,
+                [
+                    'schema_version' => 1,
+                    'form' => [
+                        'title' => $exception->title,
+                        'instructions' => $exception->instructions,
+                        'response_fields' => $exception->responseFields,
+                    ],
+                    'resume_input' => $input,
+                ],
+                $exception->timeoutMinutes,
+                $this->currentExecutionId,
+                $nodeId,
+            );
+            $this->databaseLayer->markNodeExecutionAwaitingApproval($executionId, $durationMs);
+
+            throw new WorkflowSuspendedException(
+                $gateId,
+                $runId,
+                $this->currentExecutionId,
+                $nodeId,
+            );
+        } catch (\Throwable $e) {
+            $this->recordFailurePreservingAdmission($e, function () use ($startTime, $executionId, $timeoutSeconds, $nodeId, $node, $attemptNumber, $e) {
+                $durationMs = (int) ((microtime(true) - $startTime) * 1000);
+                $timedOut = str_contains($e->getMessage(), 'timed out')
+                    || str_contains($e->getMessage(), 'Node timeout:')
+                    || $e instanceof NodeTimeoutException;
+
+                $this->databaseLayer->updateNodeExecutionWithTimeout(
+                    $executionId,
+                    $durationMs,
+                    $e->getMessage(),
+                    $timeoutSeconds,
+                    $timedOut
+                );
+
+                // Record NodeFailed event for checkpointing
+                if ($this->currentExecutionId) {
+                    $this->eventService->recordEvent(
+                        $this->currentExecutionId,
+                        'NodeFailed',
+                        $nodeId,
+                        [
+                            'error' => $e->getMessage(),
+                            'exception' => get_class($e),
+                            'timed_out' => $timedOut,
+                        ],
+                        $this->withTraceMetadata([
+                            'duration_ms' => $durationMs,
+                            'node_type' => $node->node_type,
+                            'timeout_seconds' => $timeoutSeconds,
+                            'attempt_number' => $attemptNumber,
+                        ])
+                    );
+                }
+
+                Log::error('Node execution failed', [
+                    'node_type' => $node->node_type,
+                    'execution_id' => $executionId,
+                    'error' => $e->getMessage(),
+                    'timed_out' => $timedOut,
+                ]);
+            });
 
             throw $e;
         }
@@ -755,6 +946,69 @@ class WorkflowEngine
         }, $data);
     }
 
+    /** @param array<string,mixed> $metadata */
+    private function withTraceMetadata(array $metadata): array
+    {
+        if ($this->currentTraceSessionId !== null) {
+            $metadata['trace_session_id'] = $this->currentTraceSessionId;
+        }
+
+        return $metadata;
+    }
+
+    private function normalizeTraceSessionId(mixed $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (! is_string($value)
+            || strlen($value) > 100
+            || preg_match('/\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/', $value) !== 1) {
+            throw new \InvalidArgumentException(
+                'trace_session_id must be 1-100 characters using letters, numbers, dot, underscore, colon, or hyphen.'
+            );
+        }
+
+        return $value;
+    }
+
+    /** @param array<int,object> $events */
+    private function traceSessionIdFromEvents(array $events, string $executionId): string
+    {
+        foreach ($events as $event) {
+            $candidate = $event->metadata['trace_session_id'] ?? null;
+            if (is_string($candidate) && $candidate !== '') {
+                try {
+                    return $this->normalizeTraceSessionId($candidate) ?? $executionId;
+                } catch (\InvalidArgumentException) {
+                    continue;
+                }
+            }
+        }
+
+        return $executionId;
+    }
+
+    /** Failure bookkeeping must not turn a typed stop into an ordinary retryable error. */
+    private function recordFailurePreservingAdmission(\Throwable $failure, callable $record): void
+    {
+        try {
+            $record();
+        } catch (\Throwable $bookkeepingError) {
+            if (! InferenceAdmissionException::isAdmissionFailure($failure)) {
+                throw $bookkeepingError;
+            }
+            try {
+                Log::warning('Admission failure bookkeeping failed; original stop retained', [
+                    'exception_class' => get_class($bookkeepingError),
+                ]);
+            } catch (\Throwable) {
+                // Logging is also bookkeeping; retain the original admission stop.
+            }
+        }
+    }
+
     private function executeWithRetry(callable $execution, ?object $retryConfig): mixed
     {
         $maxAttempts = $retryConfig->max_attempts ?? $this->runtimePolicyInt('fallback_retry_max_attempts');
@@ -771,8 +1025,13 @@ class WorkflowEngine
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
-                return $execution();
+                return $execution($attempt);
+            } catch (WorkflowSuspendedException $exception) {
+                throw $exception;
             } catch (\Throwable $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 if ($attempt === $maxAttempts) {
                     // Notify on final failure
                     $this->notifyFailure($notifyProvider, $e);
@@ -794,8 +1053,32 @@ class WorkflowEngine
         throw new Exception('Retry logic failed unexpectedly');
     }
 
+    /** @return array<string,mixed> */
+    private function suspendedResult(WorkflowSuspendedException $exception): array
+    {
+        return [
+            'success' => true,
+            'run_id' => $exception->runId,
+            'execution_id' => $exception->executionId,
+            'trace_session_id' => $this->currentTraceSessionId,
+            'status' => 'awaiting_approval',
+            'paused' => true,
+            'gate_id' => $exception->gateId,
+            'node_id' => $exception->nodeId,
+            'output' => null,
+        ];
+    }
+
     private function notifyFailure(string $provider, \Throwable $exception): void
     {
+        if ($provider === 'none') {
+            Log::warning('WorkflowEngine: Failure notification disabled by workflow policy', [
+                'error' => $exception->getMessage(),
+            ]);
+
+            return;
+        }
+
         // Rate limit workflow failure alerts to prevent spam during cascading failures
         $alertKey = 'workflow_failure_alert_sent';
         $suppressedKey = 'workflow_failure_alerts_suppressed';
@@ -962,7 +1245,7 @@ class WorkflowEngine
     {
         // Parse condition: variable operator value
         // Supported operators: >, <, >=, <=, ==, !=
-        if (! preg_match('/^\s*(\w+)\s*(>|<|>=|<=|==|!=)\s*(.+?)\s*$/', $condition, $matches)) {
+        if (! preg_match('/^\s*(\w+)\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$/', $condition, $matches)) {
             Log::warning('Invalid condition syntax, treating as false', ['condition' => $condition]);
 
             return false;
@@ -999,7 +1282,6 @@ class WorkflowEngine
             '<=' => $actualValue <= $expectedValue,
             '==' => $actualValue == $expectedValue,
             '!=' => $actualValue != $expectedValue,
-            default => false
         };
 
         Log::debug('Condition evaluated', [

@@ -2,9 +2,11 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * E20: Genealogy Service
@@ -19,6 +21,8 @@ class GenealogyService
     private ?GedcomParserService $parser = null;
 
     private ?GenealogyMediaService $mediaService = null;
+
+    private ?bool $personCoverageHasAgentWorkRotation = null;
 
     public function __construct()
     {
@@ -74,7 +78,7 @@ class GenealogyService
                        p.birth_date AS root_person_birth_date,
                        t.created_at, t.updated_at
                 FROM genealogy_trees t
-                LEFT JOIN genealogy_persons p ON p.id = t.root_person_id
+                LEFT JOIN genealogy_persons p ON p.id = t.root_person_id AND p.tree_id = t.id
                 ORDER BY t.name ASC";
 
         return DB::select($sql);
@@ -397,7 +401,7 @@ class GenealogyService
 
         } catch (Exception $e) {
             $results['errors'][] = $e->getMessage();
-            Log::error('GEDCOM import failed: '.$e->getMessage());
+            Log::error('GEDCOM import failed', ['exception' => $e]);
         }
 
         return $results;
@@ -473,6 +477,7 @@ class GenealogyService
         $sql = 'SELECT s.*, ps.page as citation_page, ps.quality as citation_quality, ps.created_at as linked_at
                 FROM genealogy_sources s
                 INNER JOIN genealogy_person_sources ps ON s.id = ps.source_id
+                INNER JOIN genealogy_persons p ON p.id = ps.person_id AND p.tree_id = s.tree_id
                 WHERE ps.person_id = ?
                 ORDER BY s.title';
 
@@ -500,30 +505,34 @@ class GenealogyService
      */
     public function getSourceRelatedMediaForPerson(int $sourceId, int $personId, ?string $sourceTitle = null): array
     {
+        $treeId = $this->treeIdForRecord('genealogy_persons', $personId);
+        $this->requireRecordInTree('genealogy_sources', $sourceId, $treeId);
+
         // Method 1: Media directly cited for this person+source combination
         $directCitations = DB::select("
-            SELECT DISTINCT m.id, m.title, m.media_type, m.nextcloud_path, m.local_filename, 'direct_citation' as link_type
+            SELECT DISTINCT m.id, m.tree_id, m.title, m.media_type, m.nextcloud_path, m.local_filename, 'direct_citation' as link_type
             FROM genealogy_citations c
             JOIN genealogy_media m ON m.id = c.media_id
-            WHERE c.source_id = ? AND c.person_id = ? AND c.media_id IS NOT NULL
-        ", [$sourceId, $personId]);
+            WHERE c.source_id = ? AND c.person_id = ? AND c.media_id IS NOT NULL AND m.tree_id = ?
+        ", [$sourceId, $personId, $treeId]);
 
         // Method 2: Media linked to source (via any citation) AND linked to this person (via person_media)
         $sharedMedia = DB::select("
-            SELECT DISTINCT m.id, m.title, m.media_type, m.nextcloud_path, m.local_filename, 'source_person_shared' as link_type
+            SELECT DISTINCT m.id, m.tree_id, m.title, m.media_type, m.nextcloud_path, m.local_filename, 'source_person_shared' as link_type
             FROM genealogy_media m
             INNER JOIN genealogy_citations c ON c.media_id = m.id AND c.source_id = ?
             INNER JOIN genealogy_person_media pm ON pm.media_id = m.id AND pm.person_id = ?
-        ", [$sourceId, $personId]);
+            WHERE m.tree_id = ?
+        ", [$sourceId, $personId, $treeId]);
 
         // Method 3: All media linked to this source via citations (for shared docs like census pages)
         // This shows the actual source document even if not in person_media
         $sourceMedia = DB::select("
-            SELECT DISTINCT m.id, m.title, m.media_type, m.nextcloud_path, m.local_filename, 'source_document' as link_type
+            SELECT DISTINCT m.id, m.tree_id, m.title, m.media_type, m.nextcloud_path, m.local_filename, 'source_document' as link_type
             FROM genealogy_citations c
             JOIN genealogy_media m ON m.id = c.media_id
-            WHERE c.source_id = ? AND c.media_id IS NOT NULL
-        ", [$sourceId]);
+            WHERE c.source_id = ? AND c.media_id IS NOT NULL AND m.tree_id = ?
+        ", [$sourceId, $treeId]);
 
         // Merge results, avoiding duplicates (priority: direct > shared > source)
         $mediaById = [];
@@ -543,7 +552,7 @@ class GenealogyService
 
         // Add thumbnail URLs using API route
         foreach ($mediaById as $media) {
-            $media->thumbnail_url = '/api/genealogy/media/'.$media->id.'/thumbnail';
+            $media->thumbnail_url = $this->getPrimaryPhotoUrl((int) $media->id, (int) $media->tree_id);
         }
 
         return array_values($mediaById);
@@ -554,6 +563,8 @@ class GenealogyService
      */
     public function linkPersonSourcePublic(int $personId, int $sourceId, ?string $page = null, ?string $quality = null): void
     {
+        $treeId = $this->treeIdForRecord('genealogy_persons', $personId);
+        $this->requireRecordInTree('genealogy_sources', $sourceId, $treeId);
         $this->linkPersonSource($personId, $sourceId, $page, $quality);
     }
 
@@ -884,7 +895,7 @@ class GenealogyService
         $result['events'] = $this->getPersonEvents($personId);
 
         // Add primary photo URL
-        $result['primary_photo_url'] = $this->getPrimaryPhotoUrl($result['primary_photo_id'] ?? null);
+        $result['primary_photo_url'] = $this->getPrimaryPhotoUrl($result['primary_photo_id'] ?? null, (int) $result['tree_id']);
 
         // Name variants
         $result['name_variants'] = DB::select('
@@ -917,14 +928,14 @@ class GenealogyService
      * @param  int|null  $mediaId  The media ID
      * @return string|null The thumbnail URL or null
      */
-    public function getPrimaryPhotoUrl(?int $mediaId): ?string
+    public function getPrimaryPhotoUrl(?int $mediaId, ?int $treeId = null): ?string
     {
         if (! $mediaId) {
             return null;
         }
 
         // Return the API endpoint for thumbnail - this works whether media is on Nextcloud or local
-        return "/api/genealogy/media/{$mediaId}/thumbnail";
+        return "/api/genealogy/media/{$mediaId}/thumbnail".($treeId ? "?tree_id={$treeId}" : '');
     }
 
     /**
@@ -988,7 +999,7 @@ class GenealogyService
     public function setPersonPrimaryPhoto(int $personId, ?int $mediaId): array
     {
         // Verify person exists
-        $person = DB::selectOne('SELECT id, given_name, surname FROM genealogy_persons WHERE id = ?', [$personId]);
+        $person = DB::selectOne('SELECT id, tree_id, given_name, surname FROM genealogy_persons WHERE id = ?', [$personId]);
         if (! $person) {
             return ['success' => false, 'error' => 'Person not found'];
         }
@@ -998,8 +1009,8 @@ class GenealogyService
             $mediaLink = DB::selectOne(
                 "SELECT pm.id FROM genealogy_person_media pm
                  JOIN genealogy_media m ON m.id = pm.media_id
-                 WHERE pm.person_id = ? AND pm.media_id = ? AND m.media_type = 'photo'",
-                [$personId, $mediaId]
+                 WHERE pm.person_id = ? AND pm.media_id = ? AND m.tree_id = ? AND m.media_type = 'photo'",
+                [$personId, $mediaId, $person->tree_id]
             );
 
             if (! $mediaLink) {
@@ -1057,12 +1068,13 @@ class GenealogyService
                        h.id as husband_db_id, h.given_name as husband_given, h.surname as husband_surname,
                        w.id as wife_db_id, w.given_name as wife_given, w.surname as wife_surname
                 FROM genealogy_families f
-                LEFT JOIN genealogy_persons h ON h.id = f.husband_id
-                LEFT JOIN genealogy_persons w ON w.id = f.wife_id
-                WHERE f.husband_id = ? OR f.wife_id = ?
+                JOIN genealogy_persons p ON p.id = ? AND p.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons h ON h.id = f.husband_id AND h.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons w ON w.id = f.wife_id AND w.tree_id = f.tree_id
+                WHERE f.husband_id = p.id OR f.wife_id = p.id
                 ORDER BY f.marriage_date';
 
-        $families = DB::select($sql, [$personId, $personId]);
+        $families = DB::select($sql, [$personId]);
 
         // Get children for each family
         foreach ($families as &$family) {
@@ -1082,8 +1094,9 @@ class GenealogyService
                        w.id as mother_id, w.given_name as mother_given, w.surname as mother_surname
                 FROM genealogy_children c
                 JOIN genealogy_families f ON f.id = c.family_id
-                LEFT JOIN genealogy_persons h ON h.id = f.husband_id
-                LEFT JOIN genealogy_persons w ON w.id = f.wife_id
+                JOIN genealogy_persons p ON p.id = c.person_id AND p.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons h ON h.id = f.husband_id AND h.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons w ON w.id = f.wife_id AND w.tree_id = f.tree_id
                 WHERE c.person_id = ?';
 
         return DB::selectOne($sql, [$personId]);
@@ -1096,7 +1109,10 @@ class GenealogyService
     {
         // First get the family where this person is a child
         $childLink = DB::selectOne(
-            'SELECT family_id FROM genealogy_children WHERE person_id = ?',
+            'SELECT c.family_id FROM genealogy_children c
+             JOIN genealogy_persons p ON p.id = c.person_id
+             JOIN genealogy_families f ON f.id = c.family_id AND f.tree_id = p.tree_id
+             WHERE c.person_id = ?',
             [$personId]
         );
 
@@ -1108,7 +1124,8 @@ class GenealogyService
         $sql = 'SELECT p.id, p.given_name, p.surname, p.sex, p.birth_date, p.death_date,
                        c.birth_order
                 FROM genealogy_children c
-                JOIN genealogy_persons p ON p.id = c.person_id
+                JOIN genealogy_families f ON f.id = c.family_id
+                JOIN genealogy_persons p ON p.id = c.person_id AND p.tree_id = f.tree_id
                 WHERE c.family_id = ? AND p.id != ?
                 ORDER BY c.birth_order, p.birth_date, p.id';
 
@@ -1123,7 +1140,8 @@ class GenealogyService
         $sql = 'SELECT p.id, p.given_name, p.surname, p.sex, p.birth_date, p.death_date,
                        c.birth_order, c.father_relationship, c.mother_relationship
                 FROM genealogy_children c
-                JOIN genealogy_persons p ON p.id = c.person_id
+                JOIN genealogy_families f ON f.id = c.family_id
+                JOIN genealogy_persons p ON p.id = c.person_id AND p.tree_id = f.tree_id
                 WHERE c.family_id = ?
                 ORDER BY c.birth_order, p.birth_date';
 
@@ -1139,6 +1157,7 @@ class GenealogyService
                        pm.face_region_w, pm.face_region_h, pm.face_confirmed, pm.notes as link_notes
                 FROM genealogy_person_media pm
                 JOIN genealogy_media m ON m.id = pm.media_id
+                JOIN genealogy_persons p ON p.id = pm.person_id AND p.tree_id = m.tree_id
                 WHERE pm.person_id = ? AND m.file_exists = 1
                 ORDER BY pm.is_primary DESC, m.media_date';
 
@@ -1152,7 +1171,8 @@ class GenealogyService
     {
         $sql = 'SELECT r.*, s.title as source_title
                 FROM genealogy_residences r
-                LEFT JOIN genealogy_sources s ON s.id = r.source_id
+                JOIN genealogy_persons p ON p.id = r.person_id
+                LEFT JOIN genealogy_sources s ON s.id = r.source_id AND s.tree_id = p.tree_id
                 WHERE r.person_id = ?
                 ORDER BY r.residence_date';
 
@@ -1164,9 +1184,10 @@ class GenealogyService
      */
     public function getResidence(int $id): ?object
     {
-        $sql = 'SELECT r.*, s.title as source_title
+        $sql = 'SELECT r.*, p.tree_id as person_tree_id, s.title as source_title
                 FROM genealogy_residences r
-                LEFT JOIN genealogy_sources s ON s.id = r.source_id
+                JOIN genealogy_persons p ON p.id = r.person_id
+                LEFT JOIN genealogy_sources s ON s.id = r.source_id AND s.tree_id = p.tree_id
                 WHERE r.id = ?';
         $result = DB::select($sql, [$id]);
 
@@ -1178,6 +1199,10 @@ class GenealogyService
      */
     public function createResidence(int $personId, array $data): object
     {
+        if (! empty($data['source_id'])) {
+            $this->requireRecordInTree('genealogy_sources', (int) $data['source_id'], $this->treeIdForRecord('genealogy_persons', $personId));
+        }
+
         $sql = 'INSERT INTO genealogy_residences (person_id, residence_date, place, latitude, longitude, source_id, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, NOW())';
         DB::insert($sql, [
@@ -1202,6 +1227,9 @@ class GenealogyService
         $residence = $this->getResidence($id);
         if (! $residence) {
             return null;
+        }
+        if (! empty($data['source_id'])) {
+            $this->requireRecordInTree('genealogy_sources', (int) $data['source_id'], (int) $residence->person_tree_id);
         }
 
         $sql = 'UPDATE genealogy_residences SET
@@ -1236,7 +1264,8 @@ class GenealogyService
     {
         $sql = 'SELECT e.*, s.title as source_title
                 FROM genealogy_events e
-                LEFT JOIN genealogy_sources s ON s.id = e.source_id
+                JOIN genealogy_persons p ON p.id = e.person_id
+                LEFT JOIN genealogy_sources s ON s.id = e.source_id AND s.tree_id = p.tree_id
                 WHERE e.person_id = ?
                 ORDER BY e.event_date';
 
@@ -1286,10 +1315,10 @@ class GenealogyService
      */
     public function getEvent(int $eventId): ?object
     {
-        $sql = 'SELECT e.*, s.title as source_title, p.given_name, p.surname
+        $sql = 'SELECT e.*, p.tree_id as person_tree_id, s.title as source_title, p.given_name, p.surname
                 FROM genealogy_events e
-                LEFT JOIN genealogy_sources s ON s.id = e.source_id
-                LEFT JOIN genealogy_persons p ON p.id = e.person_id
+                JOIN genealogy_persons p ON p.id = e.person_id
+                LEFT JOIN genealogy_sources s ON s.id = e.source_id AND s.tree_id = p.tree_id
                 WHERE e.id = ?';
 
         return DB::selectOne($sql, [$eventId]);
@@ -1300,6 +1329,10 @@ class GenealogyService
      */
     public function createEvent(int $personId, array $data): int
     {
+        if (! empty($data['source_id'])) {
+            $this->requireRecordInTree('genealogy_sources', (int) $data['source_id'], $this->treeIdForRecord('genealogy_persons', $personId));
+        }
+
         $sql = 'INSERT INTO genealogy_events (
                     person_id, event_type, event_date, event_place,
                     latitude, longitude, description, source_id, created_at
@@ -1324,6 +1357,14 @@ class GenealogyService
      */
     public function updateEvent(int $eventId, array $data): bool
     {
+        if (! empty($data['source_id'])) {
+            $event = $this->getEvent($eventId);
+            if (! $event) {
+                return false;
+            }
+            $this->requireRecordInTree('genealogy_sources', (int) $data['source_id'], (int) $event->person_tree_id);
+        }
+
         $allowedFields = [
             'event_type', 'event_date', 'event_place',
             'latitude', 'longitude', 'description', 'source_id',
@@ -1401,7 +1442,8 @@ class GenealogyService
     {
         $sql = 'SELECT e.*, s.title as source_title
                 FROM genealogy_family_events e
-                LEFT JOIN genealogy_sources s ON s.id = e.source_id
+                JOIN genealogy_families f ON f.id = e.family_id
+                LEFT JOIN genealogy_sources s ON s.id = e.source_id AND s.tree_id = f.tree_id
                 WHERE e.family_id = ?
                 ORDER BY e.event_date';
 
@@ -1413,15 +1455,15 @@ class GenealogyService
      */
     public function getFamilyEvent(int $eventId): ?object
     {
-        $sql = 'SELECT e.*, s.title as source_title,
+        $sql = 'SELECT e.*, f.tree_id as family_tree_id, s.title as source_title,
                        f.id as family_id,
                        h.given_name as husband_given, h.surname as husband_surname,
                        w.given_name as wife_given, w.surname as wife_surname
                 FROM genealogy_family_events e
-                LEFT JOIN genealogy_sources s ON s.id = e.source_id
-                LEFT JOIN genealogy_families f ON f.id = e.family_id
-                LEFT JOIN genealogy_persons h ON h.id = f.husband_id
-                LEFT JOIN genealogy_persons w ON w.id = f.wife_id
+                JOIN genealogy_families f ON f.id = e.family_id
+                LEFT JOIN genealogy_sources s ON s.id = e.source_id AND s.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons h ON h.id = f.husband_id AND h.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons w ON w.id = f.wife_id AND w.tree_id = f.tree_id
                 WHERE e.id = ?';
 
         return DB::selectOne($sql, [$eventId]);
@@ -1432,6 +1474,10 @@ class GenealogyService
      */
     public function createFamilyEvent(int $familyId, array $data): int
     {
+        if (! empty($data['source_id'])) {
+            $this->requireRecordInTree('genealogy_sources', (int) $data['source_id'], $this->treeIdForRecord('genealogy_families', $familyId));
+        }
+
         $sql = 'INSERT INTO genealogy_family_events (
                     family_id, event_type, event_date, event_place,
                     latitude, longitude, description, source_id, created_at
@@ -1456,6 +1502,14 @@ class GenealogyService
      */
     public function updateFamilyEvent(int $eventId, array $data): bool
     {
+        if (! empty($data['source_id'])) {
+            $event = $this->getFamilyEvent($eventId);
+            if (! $event) {
+                return false;
+            }
+            $this->requireRecordInTree('genealogy_sources', (int) $data['source_id'], (int) $event->family_tree_id);
+        }
+
         $allowedFields = [
             'event_type', 'event_date', 'event_place',
             'latitude', 'longitude', 'description', 'source_id',
@@ -1733,7 +1787,8 @@ class GenealogyService
     {
         $sql = 'SELECT c.*, s.title as source_title, s.author as source_author
                 FROM genealogy_citations c
-                JOIN genealogy_sources s ON c.source_id = s.id
+                JOIN genealogy_persons p ON p.id = c.person_id
+                JOIN genealogy_sources s ON c.source_id = s.id AND s.tree_id = p.tree_id
                 WHERE c.person_id = ?
                 ORDER BY c.fact_type, c.created_at';
 
@@ -1747,7 +1802,8 @@ class GenealogyService
     {
         $sql = 'SELECT c.*, s.title as source_title, s.author as source_author
                 FROM genealogy_citations c
-                JOIN genealogy_sources s ON c.source_id = s.id
+                JOIN genealogy_families f ON f.id = c.family_id
+                JOIN genealogy_sources s ON c.source_id = s.id AND s.tree_id = f.tree_id
                 WHERE c.family_id = ?
                 ORDER BY c.fact_type, c.created_at';
 
@@ -1765,7 +1821,7 @@ class GenealogyService
 
         $sql = "SELECT c.*,
                        p.given_name, p.surname,
-                       m.id as m_id, m.title as media_title, m.media_type, m.nextcloud_path, m.local_filename,
+                       m.id as m_id, m.tree_id as media_tree_id, m.title as media_title, m.media_type, m.nextcloud_path, m.local_filename,
                        CASE
                            WHEN c.person_id IS NOT NULL THEN 'person'
                            WHEN c.family_id IS NOT NULL THEN 'family'
@@ -1773,9 +1829,14 @@ class GenealogyService
                            ELSE 'unknown'
                        END as entity_type
                 FROM genealogy_citations c
-                LEFT JOIN genealogy_persons p ON c.person_id = p.id
-                LEFT JOIN genealogy_media m ON c.media_id = m.id
+                JOIN genealogy_sources s ON s.id = c.source_id
+                LEFT JOIN genealogy_persons p ON c.person_id = p.id AND p.tree_id = s.tree_id
+                LEFT JOIN genealogy_families f ON c.family_id = f.id AND f.tree_id = s.tree_id
+                LEFT JOIN genealogy_media m ON c.media_id = m.id AND m.tree_id = s.tree_id
                 WHERE c.source_id = ?
+                  AND (c.person_id IS NULL OR p.id IS NOT NULL)
+                  AND (c.family_id IS NULL OR f.id IS NOT NULL)
+                  AND (c.media_id IS NULL OR m.id IS NOT NULL)
                 ORDER BY c.fact_type, c.created_at";
 
         $citations = DB::select($sql, [$sourceId]);
@@ -1789,7 +1850,7 @@ class GenealogyService
                     'title' => $citation->media_title,
                     'media_type' => $citation->media_type,
                     'nextcloud_path' => $citation->nextcloud_path,
-                    'thumbnail_url' => '/api/genealogy/media/'.$citation->media_id.'/thumbnail',
+                    'thumbnail_url' => $this->getPrimaryPhotoUrl((int) $citation->media_id, (int) $citation->media_tree_id),
                 ];
             } else {
                 $citation->media = null;
@@ -1826,6 +1887,9 @@ class GenealogyService
      */
     public function createCitation(array $data): int
     {
+        $treeId = $this->treeIdForRecord('genealogy_sources', (int) $data['source_id']);
+        $this->requireCitationTargetsInTree($data, $treeId);
+
         $sql = 'INSERT INTO genealogy_citations (source_id, person_id, family_id, media_id, fact_type, page, quality, text)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)';
 
@@ -1848,6 +1912,14 @@ class GenealogyService
      */
     public function updateCitation(int $citationId, array $data): bool
     {
+        $existing = $this->getCitation($citationId);
+        if (! $existing) {
+            return false;
+        }
+        $treeId = $this->treeIdForRecord('genealogy_sources', (int) $existing->source_id);
+        $this->requireRecordInTree('genealogy_sources', (int) $data['source_id'], $treeId);
+        $this->requireCitationTargetsInTree($data, $treeId);
+
         $sql = 'UPDATE genealogy_citations
                 SET source_id = ?,
                     person_id = ?,
@@ -2245,7 +2317,7 @@ class GenealogyService
 
         // Add primary_photo_url to each result
         foreach ($results as &$person) {
-            $person->primary_photo_url = $this->getPrimaryPhotoUrl($person->primary_photo_id);
+            $person->primary_photo_url = $this->getPrimaryPhotoUrl($person->primary_photo_id, $treeId);
         }
 
         return $results;
@@ -2266,7 +2338,7 @@ class GenealogyService
 
         // Add primary_photo_url to each result
         foreach ($results as &$person) {
-            $person->primary_photo_url = $this->getPrimaryPhotoUrl($person->primary_photo_id);
+            $person->primary_photo_url = $this->getPrimaryPhotoUrl($person->primary_photo_id, $treeId);
         }
 
         return $results;
@@ -2499,8 +2571,8 @@ class GenealogyService
                        h.id as husband_id, h.given_name as husband_given, h.surname as husband_surname,
                        w.id as wife_id, w.given_name as wife_given, w.surname as wife_surname
                 FROM genealogy_families f
-                LEFT JOIN genealogy_persons h ON h.id = f.husband_id
-                LEFT JOIN genealogy_persons w ON w.id = f.wife_id
+                LEFT JOIN genealogy_persons h ON h.id = f.husband_id AND h.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons w ON w.id = f.wife_id AND w.tree_id = f.tree_id
                 WHERE f.tree_id = ?
                 ORDER BY COALESCE(f.marriage_date, '9999')";
 
@@ -2518,8 +2590,8 @@ class GenealogyService
                        w.id as wife_id, w.given_name as wife_given, w.surname as wife_surname,
                        w.birth_date as wife_birth, w.death_date as wife_death
                 FROM genealogy_families f
-                LEFT JOIN genealogy_persons h ON h.id = f.husband_id
-                LEFT JOIN genealogy_persons w ON w.id = f.wife_id
+                LEFT JOIN genealogy_persons h ON h.id = f.husband_id AND h.tree_id = f.tree_id
+                LEFT JOIN genealogy_persons w ON w.id = f.wife_id AND w.tree_id = f.tree_id
                 WHERE f.id = ?';
 
         $family = DB::selectOne($sql, [$familyId]);
@@ -2534,14 +2606,48 @@ class GenealogyService
         return $result;
     }
 
-    /**
-     * Create a new family
-     */
-    /**
-     * Validate family data for business rule compliance
-     *
-     * @throws \InvalidArgumentException if validation fails
-     */
+    /** Resolve the owning tree before linking genealogy records. */
+    private function treeIdForRecord(string $table, int $id): int
+    {
+        $allowed = ['genealogy_persons', 'genealogy_families', 'genealogy_sources', 'genealogy_media'];
+        if (! in_array($table, $allowed, true)) {
+            throw new \InvalidArgumentException('Unsupported genealogy entity');
+        }
+
+        $row = DB::selectOne("SELECT tree_id FROM {$table} WHERE id = ?", [$id]);
+        if (! $row) {
+            throw new \InvalidArgumentException('Genealogy entity not found');
+        }
+
+        return (int) $row->tree_id;
+    }
+
+    private function requireRecordInTree(string $table, int $id, int $treeId): void
+    {
+        if ($this->treeIdForRecord($table, $id) !== $treeId) {
+            throw new \InvalidArgumentException('Genealogy entities must belong to the same tree');
+        }
+    }
+
+    private function requireFamilyMembersInTree(array $data, int $treeId): void
+    {
+        foreach (['husband_id', 'wife_id'] as $key) {
+            if (! empty($data[$key])) {
+                $this->requireRecordInTree('genealogy_persons', (int) $data[$key], $treeId);
+            }
+        }
+    }
+
+    private function requireCitationTargetsInTree(array $data, int $treeId): void
+    {
+        foreach (['person_id' => 'genealogy_persons', 'family_id' => 'genealogy_families', 'media_id' => 'genealogy_media'] as $key => $table) {
+            if (! empty($data[$key])) {
+                $this->requireRecordInTree($table, (int) $data[$key], $treeId);
+            }
+        }
+    }
+
+    /** Validate family data for business rule compliance. */
     private function validateFamilyData(array $data, ?int $familyId = null): void
     {
         $errors = [];
@@ -2633,6 +2739,8 @@ class GenealogyService
             throw new \InvalidArgumentException('Family not found');
         }
 
+        $this->requireRecordInTree('genealogy_persons', $personId, (int) $family['tree_id']);
+
         // Rule: Child cannot be their own parent
         $husbandId = isset($family['husband_id']) ? (int) $family['husband_id'] : null;
         $wifeId = isset($family['wife_id']) ? (int) $family['wife_id'] : null;
@@ -2689,6 +2797,7 @@ class GenealogyService
 
     public function createFamily(int $treeId, array $data): int
     {
+        $this->requireFamilyMembersInTree($data, $treeId);
         // Validate business rules
         $this->validateFamilyData($data);
 
@@ -2730,6 +2839,7 @@ class GenealogyService
         // Merge with existing family data for validation
         $existingFamily = $this->getFamily($familyId);
         if ($existingFamily) {
+            $this->requireFamilyMembersInTree($data, (int) $existingFamily['tree_id']);
             $validationData = array_merge([
                 'husband_id' => $existingFamily['husband_id'] ?? null,
                 'wife_id' => $existingFamily['wife_id'] ?? null,
@@ -3200,6 +3310,9 @@ class GenealogyService
      */
     public function linkPersonToMedia(int $personId, int $mediaId, array $options = []): bool
     {
+        $treeId = $this->treeIdForRecord('genealogy_persons', $personId);
+        $this->requireRecordInTree('genealogy_media', $mediaId, $treeId);
+
         // Check if link exists
         $existing = DB::selectOne(
             'SELECT id FROM genealogy_person_media WHERE person_id = ? AND media_id = ?',
@@ -3293,6 +3406,9 @@ class GenealogyService
      */
     public function linkFamilyToMedia(int $familyId, int $mediaId): bool
     {
+        $treeId = $this->treeIdForRecord('genealogy_families', $familyId);
+        $this->requireRecordInTree('genealogy_media', $mediaId, $treeId);
+
         // Check if link exists
         $existing = DB::selectOne(
             'SELECT id FROM genealogy_family_media WHERE family_id = ? AND media_id = ?',
@@ -3439,11 +3555,15 @@ class GenealogyService
      */
     public function getRecentAdditions(int $treeId, int $limit = 10): array
     {
-        $sql = "SELECT id, 'person' as type, CONCAT(given_name, ' ', surname) as name, created_at
+        $sql = "SELECT id, 'person' as type,
+                       COALESCE(NULLIF(TRIM(CONCAT_WS(' ', given_name, surname)), ''), 'Unnamed person') as name,
+                       created_at
                 FROM genealogy_persons
                 WHERE tree_id = ?
                 UNION ALL
-                SELECT id, 'media' as type, title as name, created_at
+                SELECT id, 'media' as type,
+                       COALESCE(NULLIF(TRIM(title), ''), NULLIF(TRIM(local_filename), ''), 'Untitled media') as name,
+                       created_at
                 FROM genealogy_media
                 WHERE tree_id = ?
                 ORDER BY created_at DESC
@@ -3488,7 +3608,7 @@ class GenealogyService
         $generations = max(1, min(20, $generations));
 
         // Get the starting person
-        $startPerson = $this->getPersonForTreeVisualization($personId);
+        $startPerson = $this->getPersonForTreeVisualization($personId, $treeId);
         if (! $startPerson) {
             return ['persons' => [], 'families' => [], 'metadata' => ['has_more_ancestors' => [], 'has_more_descendants' => []]];
         }
@@ -3549,7 +3669,7 @@ class GenealogyService
 
         // If we've hit generation limit, check if there are more ancestors and mark them
         if ($generations <= 0) {
-            $familyAsChildId = $this->getParentFamilyIdForTreeVisualization($personId);
+            $familyAsChildId = $this->getParentFamilyIdForTreeVisualization($personId, $treeId);
             if ($familyAsChildId !== null) {
                 $hasMore[] = $personId;
             }
@@ -3560,7 +3680,7 @@ class GenealogyService
         $visited['person_'.$personId] = true;
 
         // Get person data
-        $person = $this->getPersonForTreeVisualization($personId);
+        $person = $this->getPersonForTreeVisualization($personId, $treeId);
         if (! $person) {
             return;
         }
@@ -3568,11 +3688,11 @@ class GenealogyService
         $persons[$personId] = $this->formatPersonForTree($person);
 
         // Get family as child (parents)
-        $familyId = $this->getParentFamilyIdForTreeVisualization($personId);
+        $familyId = $this->getParentFamilyIdForTreeVisualization($personId, $treeId);
         if ($familyId !== null) {
 
             if (! isset($families[$familyId])) {
-                $family = $this->getFamilyForTreeVisualization($familyId);
+                $family = $this->getFamilyForTreeVisualization($familyId, $treeId);
                 if ($family) {
                     $families[$familyId] = $this->formatFamilyForTree($family);
 
@@ -3627,9 +3747,9 @@ class GenealogyService
 
         // If we've hit generation limit, check if there are more descendants and mark them
         if ($generations <= 0) {
-            $familyIds = $this->getSpouseFamilyIdsForTreeVisualization($personId);
+            $familyIds = $this->getSpouseFamilyIdsForTreeVisualization($personId, $treeId);
             foreach ($familyIds as $familyId) {
-                $family = $this->getFamilyForTreeVisualization($familyId);
+                $family = $this->getFamilyForTreeVisualization($familyId, $treeId);
                 if ($family && ! empty($family['children'])) {
                     $hasMore[] = $personId;
                     break;
@@ -3642,7 +3762,7 @@ class GenealogyService
         $visited['desc_'.$personId] = true;
 
         // Get person data
-        $person = $this->getPersonForTreeVisualization($personId);
+        $person = $this->getPersonForTreeVisualization($personId, $treeId);
         if (! $person) {
             return;
         }
@@ -3652,12 +3772,12 @@ class GenealogyService
         }
 
         // Get families as spouse
-        $familyIds = $this->getSpouseFamilyIdsForTreeVisualization($personId);
+        $familyIds = $this->getSpouseFamilyIdsForTreeVisualization($personId, $treeId);
 
         foreach ($familyIds as $familyId) {
 
             if (! isset($families[$familyId])) {
-                $family = $this->getFamilyForTreeVisualization($familyId);
+                $family = $this->getFamilyForTreeVisualization($familyId, $treeId);
                 if ($family) {
                     $families[$familyId] = $this->formatFamilyForTree($family);
 
@@ -3666,7 +3786,7 @@ class GenealogyService
                     $wifeId = $family['wife_id'] ?? null;
                     $spouseId = $husbandId == $personId ? $wifeId : $husbandId;
                     if ($spouseId && ! isset($persons[$spouseId])) {
-                        $spouse = $this->getPersonForTreeVisualization($spouseId);
+                        $spouse = $this->getPersonForTreeVisualization($spouseId, $treeId);
                         if ($spouse) {
                             $persons[$spouseId] = $this->formatPersonForTree($spouse);
                         }
@@ -3708,24 +3828,24 @@ class GenealogyService
     private function collectSiblingsAndInLaws(int $personId, array &$persons, array &$families, array &$visited, int $treeId): void
     {
         // 1. Siblings: find person's parent family, add all children as persons
-        $familyAsChildId = $this->getParentFamilyIdForTreeVisualization($personId);
+        $familyAsChildId = $this->getParentFamilyIdForTreeVisualization($personId, $treeId);
         if ($familyAsChildId !== null) {
-            $family = $this->getFamilyForTreeVisualization($familyAsChildId);
+            $family = $this->getFamilyForTreeVisualization($familyAsChildId, $treeId);
             if ($family && ! empty($family['children'])) {
                 foreach ($family['children'] as $child) {
                     $childId = is_object($child) ? $child->id : $child['id'];
                     if (! isset($persons[$childId])) {
-                        $sibling = $this->getPersonForTreeVisualization($childId);
+                        $sibling = $this->getPersonForTreeVisualization($childId, $treeId);
                         if ($sibling) {
                             $persons[$childId] = $this->formatPersonForTree($sibling);
                             $persons[$childId]['family_as_child'] = $familyAsChildId;
 
                             // Also get sibling's spouse families so Topola can draw them
                             $sibFamIds = [];
-                            foreach ($this->getSpouseFamilyIdsForTreeVisualization($childId) as $sibFamId) {
+                            foreach ($this->getSpouseFamilyIdsForTreeVisualization($childId, $treeId) as $sibFamId) {
                                 $sibFamIds[] = $sibFamId;
                                 if (! isset($families[$sibFamId])) {
-                                    $sibFam = $this->getFamilyForTreeVisualization($sibFamId);
+                                    $sibFam = $this->getFamilyForTreeVisualization($sibFamId, $treeId);
                                     if ($sibFam) {
                                         $families[$sibFamId] = $this->formatFamilyForTree($sibFam);
                                         // Add sibling's spouse as person
@@ -3733,7 +3853,7 @@ class GenealogyService
                                         $wId = $sibFam['wife_id'] ?? null;
                                         $sibSpouseId = $hId == $childId ? $wId : $hId;
                                         if ($sibSpouseId && ! isset($persons[$sibSpouseId])) {
-                                            $sp = $this->getPersonForTreeVisualization($sibSpouseId);
+                                            $sp = $this->getPersonForTreeVisualization($sibSpouseId, $treeId);
                                             if ($sp) {
                                                 $persons[$sibSpouseId] = $this->formatPersonForTree($sp);
                                             }
@@ -3751,8 +3871,8 @@ class GenealogyService
         }
 
         // 2. In-law parents: for each spouse, add their parent family
-        foreach ($this->getSpouseFamilyIdsForTreeVisualization($personId) as $familyId) {
-            $family = $this->getFamilyForTreeVisualization($familyId);
+        foreach ($this->getSpouseFamilyIdsForTreeVisualization($personId, $treeId) as $familyId) {
+            $family = $this->getFamilyForTreeVisualization($familyId, $treeId);
             if (! $family) {
                 continue;
             }
@@ -3765,17 +3885,17 @@ class GenealogyService
             }
 
             // Get spouse's parent family
-            $spFamId = $this->getParentFamilyIdForTreeVisualization($spouseId);
+            $spFamId = $this->getParentFamilyIdForTreeVisualization($spouseId, $treeId);
             if ($spFamId !== null) {
                 if (! isset($families[$spFamId])) {
-                    $spFam = $this->getFamilyForTreeVisualization($spFamId);
+                    $spFam = $this->getFamilyForTreeVisualization($spFamId, $treeId);
                     if ($spFam) {
                         $families[$spFamId] = $this->formatFamilyForTree($spFam);
                         // Add in-law parents as persons
                         foreach (['husband_id', 'wife_id'] as $key) {
                             $inLawId = $spFam[$key] ?? null;
                             if ($inLawId && ! isset($persons[$inLawId])) {
-                                $inLaw = $this->getPersonForTreeVisualization($inLawId);
+                                $inLaw = $this->getPersonForTreeVisualization($inLawId, $treeId);
                                 if ($inLaw) {
                                     $persons[$inLawId] = $this->formatPersonForTree($inLaw);
                                 }
@@ -3802,6 +3922,7 @@ class GenealogyService
             'given_name' => $person['given_name'] ?? '',
             'surname' => $person['surname'] ?? '',
             'sex' => $person['sex'] ?? 'U',
+            'living' => isset($person['living']) ? (bool) $person['living'] : null,
             'birth_date' => $person['birth_date'] ?? null,
             'birth_place' => $person['birth_place'] ?? null,
             'death_date' => $person['death_date'] ?? null,
@@ -3812,56 +3933,74 @@ class GenealogyService
         ];
     }
 
-    private function getPersonForTreeVisualization(int $personId): ?array
+    private function getPersonForTreeVisualization(int $personId, int $treeId): ?array
     {
         $person = DB::selectOne('
-            SELECT id, gedcom_id, given_name, surname, sex, birth_date, birth_place, death_date, death_place, primary_photo_id
-            FROM genealogy_persons
-            WHERE id = ?
-        ', [$personId]);
+            SELECT p.id, p.gedcom_id, p.given_name, p.surname, p.sex, p.birth_date,
+                   p.birth_place, p.death_date, p.death_place, p.living, m.id AS primary_photo_id
+            FROM genealogy_persons p
+            LEFT JOIN genealogy_media m ON m.id = p.primary_photo_id AND m.tree_id = p.tree_id
+            WHERE p.id = ? AND p.tree_id = ?
+        ', [$personId, $treeId]);
 
         if (! $person) {
             return null;
         }
 
         $result = (array) $person;
-        $result['primary_photo_url'] = $this->getPrimaryPhotoUrl($result['primary_photo_id'] ?? null);
+        $result['primary_photo_url'] = $this->getPrimaryPhotoUrl($result['primary_photo_id'] ?? null, $treeId);
 
         return $result;
     }
 
-    private function getFamilyForTreeVisualization(int $familyId): ?array
+    private function getFamilyForTreeVisualization(int $familyId, int $treeId): ?array
     {
         $family = DB::selectOne('
-            SELECT id, gedcom_id, husband_id, wife_id, marriage_date, marriage_place
-            FROM genealogy_families
-            WHERE id = ?
-        ', [$familyId]);
+            SELECT f.id, f.gedcom_id, h.id AS husband_id, w.id AS wife_id,
+                   f.marriage_date, f.marriage_place
+            FROM genealogy_families f
+            LEFT JOIN genealogy_persons h ON h.id = f.husband_id AND h.tree_id = f.tree_id
+            LEFT JOIN genealogy_persons w ON w.id = f.wife_id AND w.tree_id = f.tree_id
+            WHERE f.id = ? AND f.tree_id = ?
+        ', [$familyId, $treeId]);
 
         if (! $family) {
             return null;
         }
 
         $result = (array) $family;
-        $result['children'] = $this->getFamilyChildren($familyId);
+        $result['children'] = DB::select('
+            SELECT p.id, p.given_name, p.surname, p.sex, p.birth_date, p.death_date,
+                   c.birth_order, c.father_relationship, c.mother_relationship
+            FROM genealogy_children c
+            JOIN genealogy_persons p ON p.id = c.person_id AND p.tree_id = ?
+            WHERE c.family_id = ?
+            ORDER BY c.birth_order, p.birth_date
+        ', [$treeId, $familyId]);
 
         return $result;
     }
 
-    private function getParentFamilyIdForTreeVisualization(int $personId): ?int
+    private function getParentFamilyIdForTreeVisualization(int $personId, int $treeId): ?int
     {
-        $row = DB::selectOne('SELECT family_id FROM genealogy_children WHERE person_id = ? LIMIT 1', [$personId]);
+        $row = DB::selectOne('
+            SELECT c.family_id
+            FROM genealogy_children c
+            JOIN genealogy_families f ON f.id = c.family_id AND f.tree_id = ?
+            WHERE c.person_id = ?
+            LIMIT 1
+        ', [$treeId, $personId]);
 
         return $row ? (int) $row->family_id : null;
     }
 
-    private function getSpouseFamilyIdsForTreeVisualization(int $personId): array
+    private function getSpouseFamilyIdsForTreeVisualization(int $personId, int $treeId): array
     {
         return array_map(
             static fn ($row) => (int) $row->id,
             DB::select(
-                'SELECT id FROM genealogy_families WHERE husband_id = ? OR wife_id = ? ORDER BY COALESCE(marriage_date, "9999")',
-                [$personId, $personId]
+                'SELECT id FROM genealogy_families WHERE tree_id = ? AND (husband_id = ? OR wife_id = ?) ORDER BY COALESCE(marriage_date, "9999")',
+                [$treeId, $personId, $personId]
             )
         );
     }
@@ -4816,6 +4955,11 @@ class GenealogyService
      */
     public function calculateRelationship(int $personId1, int $personId2, int $treeId): array
     {
+        $this->requireRecordInTree('genealogy_persons', $personId1, $treeId);
+        if ($personId1 !== $personId2) {
+            $this->requireRecordInTree('genealogy_persons', $personId2, $treeId);
+        }
+
         if ($personId1 === $personId2) {
             return [
                 'relationship' => 'Self',
@@ -6654,6 +6798,26 @@ class GenealogyService
      */
     public function createResearchHint(array $data): ?int
     {
+        $sourceInfo = $data['source_info'] ?? null;
+        if (is_string($sourceInfo)) {
+            $sourceInfo = json_decode($sourceInfo, true) ?? $sourceInfo;
+        }
+        $existing = DB::table('genealogy_research_hints')
+            ->where('tree_id', $data['tree_id'])
+            ->where('person_id', $data['person_id'] ?? null)
+            ->where('hint_type', $data['hint_type'])
+            ->where('title', $data['title'])
+            ->get(['description', 'source_info']);
+        foreach ($existing as $hint) {
+            $existingSource = is_string($hint->source_info)
+                ? (json_decode($hint->source_info, true) ?? $hint->source_info)
+                : $hint->source_info;
+            if (trim((string) $hint->description) === trim((string) ($data['description'] ?? ''))
+                && $existingSource == $sourceInfo) {
+                return null;
+            }
+        }
+
         DB::insert("
             INSERT INTO genealogy_research_hints
             (tree_id, person_id, hint_type, title, description, confidence, source_info, status, created_at, updated_at)
@@ -6674,13 +6838,17 @@ class GenealogyService
     /**
      * Update research hint status
      */
-    public function updateResearchHintStatus(int $hintId, string $status, ?int $userId = null): bool
+    public function updateResearchHintStatus(int $hintId, string $status, ?int $userId = null, ?string $notes = null): bool
     {
-        return DB::update('
-            UPDATE genealogy_research_hints
-            SET status = ?, reviewed_at = NOW(), reviewed_by = ?, updated_at = NOW()
-            WHERE id = ?
-        ', [$status, $userId, $hintId]) > 0;
+        $timestamp = now();
+        $values = ['status' => $status, 'reviewed_at' => $timestamp, 'reviewed_by' => $userId, 'updated_at' => $timestamp];
+        // Omitted notes retain the prior review; an explicit empty string clears
+        // them. Store the supplied text intact, including whitespace and Unicode.
+        if ($notes !== null) {
+            $values['review_notes'] = $notes;
+        }
+
+        return DB::table('genealogy_research_hints')->where('id', $hintId)->update($values) > 0;
     }
 
     /**
@@ -6884,10 +7052,18 @@ class GenealogyService
      */
     public function createResearchTask(array $data): ?int
     {
+        $executionScope = CliWorkflowExecutionScope::current();
+        // Runtime metadata is captured by the server, never accepted from task
+        // parameters or tool-supplied confirmation fields.
+        $scopeColumn = $executionScope === null ? '' : ', cli_execution_scope';
+        $scopeValue = $executionScope === null ? '' : ', ?';
         // Derive tree_id from person if not supplied (agent tool registry doesn't pass tree_id)
         if (empty($data['tree_id']) && ! empty($data['person_id'])) {
             $p = DB::selectOne('SELECT tree_id FROM genealogy_persons WHERE id = ?', [(int) $data['person_id']]);
             $data['tree_id'] = $p ? $p->tree_id : null;
+        }
+        if (! empty($data['person_id'])) {
+            $this->requireRecordInTree('genealogy_persons', (int) $data['person_id'], (int) ($data['tree_id'] ?? 0));
         }
 
         // Validate task_type against enum — LLM may send arbitrary values
@@ -6905,9 +7081,9 @@ class GenealogyService
              research_question, selection_reason, scope_reason,
              related_people_used, sources_checked, evidence_summary,
              conflicts_found, outcome_state, outcome_reason,
-             parameters, created_by, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-        ", [
+             parameters, created_by, created_at, updated_at{$scopeColumn})
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(){$scopeValue})
+        ", array_merge([
             $data['tree_id'],
             $data['person_id'] ?? null,
             $data['queue_item_id'] ?? null,
@@ -6924,7 +7100,7 @@ class GenealogyService
             $data['outcome_reason'] ?? null,
             isset($data['parameters']) ? json_encode($data['parameters']) : null,
             $createdBy,
-        ]);
+        ], $executionScope === null ? [] : [json_encode($executionScope, JSON_THROW_ON_ERROR)]));
 
         return (int) DB::getPdo()->lastInsertId();
     }
@@ -6937,7 +7113,7 @@ class GenealogyService
         $sql = '
             SELECT t.*, p.given_name, p.surname
             FROM genealogy_research_tasks t
-            LEFT JOIN genealogy_persons p ON t.person_id = p.id
+            LEFT JOIN genealogy_persons p ON t.person_id = p.id AND p.tree_id = t.tree_id
             WHERE t.tree_id = ?
         ';
         $params = [$treeId];
@@ -6948,13 +7124,22 @@ class GenealogyService
         }
 
         $sql .= " ORDER BY
+            CASE t.status
+                WHEN 'processing' THEN 1
+                WHEN 'queued' THEN 2
+                WHEN 'failed' THEN 3
+                WHEN 'completed' THEN 4
+                WHEN 'cancelled' THEN 5
+                ELSE 6
+            END,
             CASE t.priority
                 WHEN 'urgent' THEN 1
                 WHEN 'high' THEN 2
                 WHEN 'medium' THEN 3
                 ELSE 4
             END,
-            t.created_at DESC
+            COALESCE(t.started_at, t.updated_at, t.created_at) DESC,
+            t.id DESC
             LIMIT ?";
         $params[] = $limit;
 
@@ -6972,18 +7157,47 @@ class GenealogyService
     }
 
     /**
+     * Return full-tree lifecycle counts independently of the bounded task page.
+     *
+     * @return array{total:int,queued:int,processing:int,failed:int,completed:int,cancelled:int}
+     */
+    public function getResearchTaskStatusCounts(int $treeId): array
+    {
+        $counts = DB::selectOne(<<<'SQL'
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+                   SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing,
+                   SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                   SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                   SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled
+            FROM genealogy_research_tasks
+            WHERE tree_id = ?
+        SQL, [$treeId]);
+
+        return [
+            'total' => (int) ($counts->total ?? 0),
+            'queued' => (int) ($counts->queued ?? 0),
+            'processing' => (int) ($counts->processing ?? 0),
+            'failed' => (int) ($counts->failed ?? 0),
+            'completed' => (int) ($counts->completed ?? 0),
+            'cancelled' => (int) ($counts->cancelled ?? 0),
+        ];
+    }
+
+    /**
      * Get stale processing research tasks from the live genealogy queue contract.
      */
     public function getStaleProcessingResearchTasks(?int $treeId = null, int $staleMinutes = 180): array
     {
+        $cutoff = now()->subMinutes(max(1, $staleMinutes))->toDateTimeString();
         $sql = '
             SELECT t.*, p.given_name, p.surname
             FROM genealogy_research_tasks t
-            LEFT JOIN genealogy_persons p ON t.person_id = p.id
+            LEFT JOIN genealogy_persons p ON t.person_id = p.id AND p.tree_id = t.tree_id
             WHERE t.status = \'processing\'
-              AND COALESCE(t.started_at, t.updated_at, t.created_at) < DATE_SUB(NOW(), INTERVAL ? MINUTE)
+              AND COALESCE(t.started_at, t.updated_at, t.created_at) < ?
         ';
-        $params = [max(1, $staleMinutes)];
+        $params = [$cutoff];
 
         if ($treeId !== null) {
             $sql .= ' AND t.tree_id = ?';
@@ -6998,82 +7212,29 @@ class GenealogyService
     }
 
     /**
-     * Cancel superseded stale processing tasks and requeue unsuperseded ones.
+     * Report stale processing tasks without reclaiming work from an unknown owner.
+     * Age alone cannot prove that the worker is dead, so every candidate stays held.
      */
     public function cleanupStaleProcessingResearchTasks(?int $treeId = null, int $staleMinutes = 180): array
     {
         $staleTasks = $this->getStaleProcessingResearchTasks($treeId, $staleMinutes);
-        $cancelled = [];
-        $requeued = [];
-        $queueResets = [];
-
-        foreach ($staleTasks as $task) {
-            $newerTask = $this->findNewerResearchTaskForCleanup($task);
-
-            if ($newerTask) {
-                $reason = "Superseded by newer research task #{$newerTask->id} during stale-task cleanup.";
-                $affected = DB::update('
-                    UPDATE genealogy_research_tasks
-                    SET status = \'cancelled\',
-                        completed_at = NOW(),
-                        outcome_state = ?,
-                        outcome_reason = ?,
-                        error_message = ?,
-                        updated_at = NOW()
-                    WHERE id = ? AND status = \'processing\'
-                ', ['cancelled', $reason, $reason, $task->id]);
-
-                if ($affected > 0) {
-                    $cancelled[] = [
-                        'id' => (int) $task->id,
-                        'superseded_by' => (int) $newerTask->id,
-                    ];
-                }
-
-                continue;
-            }
-
-            $affected = DB::update('
-                UPDATE genealogy_research_tasks
-                SET status = \'queued\',
-                    started_at = NULL,
-                    completed_at = NULL,
-                    results = NULL,
-                    error_message = NULL,
-                    outcome_state = NULL,
-                    outcome_reason = NULL,
-                    updated_at = NOW()
-                WHERE id = ? AND status = \'processing\'
-            ', [$task->id]);
-
-            if ($affected <= 0) {
-                continue;
-            }
-
-            $requeued[] = (int) $task->id;
-
-            if ($this->resetResearchQueueAfterStaleTask($task)) {
-                $queueResets[] = (int) $task->queue_item_id;
-            }
-        }
 
         Log::info('GenealogyService: stale live research task cleanup complete', [
             'tree_id' => $treeId,
             'stale_minutes' => $staleMinutes,
             'stale_count' => count($staleTasks),
-            'cancelled_count' => count($cancelled),
-            'requeued_count' => count($requeued),
-            'queue_reset_count' => count($queueResets),
+            'held_count' => count($staleTasks),
         ]);
 
         return [
             'stale_count' => count($staleTasks),
-            'cancelled_count' => count($cancelled),
-            'requeued_count' => count($requeued),
-            'queue_reset_count' => count($queueResets),
-            'cancelled_tasks' => $cancelled,
-            'requeued_task_ids' => $requeued,
-            'queue_reset_ids' => $queueResets,
+            'held_count' => count($staleTasks),
+            'cancelled_count' => 0,
+            'requeued_count' => 0,
+            'queue_reset_count' => 0,
+            'cancelled_tasks' => [],
+            'requeued_task_ids' => [],
+            'queue_reset_ids' => [],
         ];
     }
 
@@ -7082,6 +7243,15 @@ class GenealogyService
      */
     public function updateResearchTask(int $taskId, array $updates): bool
     {
+        $shouldMarkWorked = isset($updates['status']) && in_array($updates['status'], ['completed', 'failed'], true);
+        $taskIdentity = $shouldMarkWorked
+            ? DB::selectOne('
+                SELECT tree_id, person_id
+                FROM genealogy_research_tasks
+                WHERE id = ?
+                LIMIT 1
+            ', [$taskId])
+            : null;
         $sets = ['updated_at = NOW()'];
         $params = [];
 
@@ -7153,11 +7323,38 @@ class GenealogyService
 
         $params[] = $taskId;
 
-        return DB::update('
+        $updated = DB::update('
             UPDATE genealogy_research_tasks
             SET '.implode(', ', $sets).'
             WHERE id = ?
         ', $params) > 0;
+
+        if ($updated && $taskIdentity && $taskIdentity->person_id !== null) {
+            $this->markPersonAgentWorked((int) $taskIdentity->tree_id, (int) $taskIdentity->person_id);
+        }
+
+        return $updated;
+    }
+
+    public function markPersonAgentWorked(int $treeId, int $personId): bool
+    {
+        try {
+            return DB::update('
+                UPDATE genealogy_person_coverage
+                SET agent_last_worked_at = NOW(),
+                    coverage_updated_at = NOW(),
+                    updated_at = NOW()
+                WHERE tree_id = ? AND person_id = ?
+            ', [$treeId, $personId]) > 0;
+        } catch (\Throwable $e) {
+            Log::debug('GenealogyService: could not mark person agent work timestamp', [
+                'tree_id' => $treeId,
+                'person_id' => $personId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     private function hydrateResearchTaskRow(object $task): object
@@ -7169,67 +7366,6 @@ class GenealogyService
         $task->person_name = trim(($task->given_name ?? '').' '.($task->surname ?? ''));
 
         return $task;
-    }
-
-    private function findNewerResearchTaskForCleanup(object $task): ?object
-    {
-        $queueItemId = $task->queue_item_id ?? null;
-        $personId = $task->person_id ?? null;
-
-        if ($queueItemId === null && $personId === null) {
-            return null;
-        }
-
-        return DB::selectOne('
-            SELECT id, queue_item_id, person_id, status
-            FROM genealogy_research_tasks
-            WHERE id > ?
-              AND id <> ?
-              AND tree_id = ?
-              AND status <> \'cancelled\'
-              AND (
-                    (? IS NOT NULL AND queue_item_id = ?)
-                 OR (? IS NULL AND ? IS NOT NULL AND person_id = ?)
-              )
-            ORDER BY id DESC
-            LIMIT 1
-        ', [
-            $task->id,
-            $task->id,
-            $task->tree_id,
-            $queueItemId,
-            $queueItemId,
-            $queueItemId,
-            $personId,
-            $personId,
-        ]);
-    }
-
-    private function resetResearchQueueAfterStaleTask(object $task): bool
-    {
-        if (empty($task->queue_item_id)) {
-            return false;
-        }
-
-        $noteSuffix = " [auto-reset after stale task #{$task->id} requeue]";
-
-        return DB::update('
-            UPDATE genealogy_research_queue
-            SET status = \'pending\',
-                started_at = NULL,
-                completed_at = NULL,
-                session_id = NULL,
-                findings_count = 0,
-                review_items_count = 0,
-                last_task_id = NULL,
-                last_outcome_state = NULL,
-                last_outcome_reason = NULL,
-                notes = CONCAT(COALESCE(notes, \'\'), ?),
-                updated_at = NOW()
-            WHERE id = ?
-              AND status = \'in_progress\'
-              AND (last_task_id IS NULL OR last_task_id = ?)
-        ', [$noteSuffix, $task->queue_item_id, $task->id]) > 0;
     }
 
     /**
@@ -7399,18 +7535,10 @@ class GenealogyService
         foreach ($persons as $person) {
             $hints = $this->analyzePersonForHints($person->id);
             foreach ($hints as $hint) {
-                // Don't create duplicates
-                $existing = DB::selectOne("
-                    SELECT id FROM genealogy_research_hints
-                    WHERE tree_id = ? AND person_id = ? AND hint_type = ? AND status = 'pending'
-                ", [$hint['tree_id'], $hint['person_id'], $hint['hint_type']]);
-
-                if (! $existing) {
-                    $hintId = $this->createResearchHint($hint);
-                    if ($hintId) {
-                        $hint['id'] = $hintId;
-                        $allHints[] = $hint;
-                    }
+                $hintId = $this->createResearchHint($hint);
+                if ($hintId) {
+                    $hint['id'] = $hintId;
+                    $allHints[] = $hint;
                 }
             }
         }
@@ -7598,7 +7726,7 @@ class GenealogyService
         $sql = '
             SELECT r.*, p.given_name, p.surname
             FROM genealogy_external_records r
-            LEFT JOIN genealogy_persons p ON r.person_id = p.id
+            LEFT JOIN genealogy_persons p ON r.person_id = p.id AND p.tree_id = r.tree_id
             WHERE r.tree_id = ?
         ';
         $params = [$treeId];
@@ -7631,21 +7759,30 @@ class GenealogyService
      */
     public function saveExternalRecord(array $data): ?int
     {
+        $treeId = (int) ($data['tree_id'] ?? 0);
+        if ($treeId < 1) {
+            throw new \InvalidArgumentException('A positive genealogy tree_id is required');
+        }
+        if (isset($data['person_id'])) {
+            $this->requireRecordInTree('genealogy_persons', (int) $data['person_id'], $treeId);
+        }
+
         // Check if already exists
         $existing = DB::selectOne('
-            SELECT id FROM genealogy_external_records
-            WHERE service_type = ? AND external_id = ?
-        ', [$data['service_type'], $data['external_id']]);
+            SELECT id, tree_id FROM genealogy_external_records
+            WHERE tree_id = ? AND service_type = ? AND external_id = ?
+        ', [$treeId, $data['service_type'], $data['external_id']]);
 
         if ($existing) {
             DB::update('
                 UPDATE genealogy_external_records
                 SET record_data = ?, match_confidence = ?, updated_at = NOW()
-                WHERE id = ?
+                WHERE id = ? AND tree_id = ?
             ', [
                 json_encode($data['record_data']),
                 $data['match_confidence'] ?? 0.50,
                 $existing->id,
+                $treeId,
             ]);
 
             return $existing->id;
@@ -9229,14 +9366,15 @@ class GenealogyService
     /**
      * Get priority-ranked persons for the agent to research next.
      *
-     * Returns persons from genealogy_person_coverage ordered by priority_score DESC,
-     * with tier, exhaustion, staleness, data gaps, and hint counts. The agent uses
-     * this to select research targets instead of picking from unranked list_persons.
+     * Returns persons from genealogy_person_coverage ordered by agent work
+     * rotation first, then priority_score DESC, with tier, exhaustion, staleness,
+     * data gaps, hint counts, and the last time a Genea agent worked the person.
      *
      * Filters out exhausted persons (exhaustion >= 0.90 AND searched in last 30 days)
      * and persons whose pending hints are all deferred, unless explicitly requested.
-     * Optionally filters out people with recent completed queue/task work so assess
-     * can still return a full batch of eligible people after the SQL LIMIT.
+     * Optionally filters out people with recent agent work using
+     * genealogy_person_coverage.agent_last_worked_at so assess can still return a
+     * full batch of eligible people after the SQL LIMIT.
      *
      * @param  int  $limit  Max persons to return (default 20)
      * @param  int|null  $tier  Filter to specific bloodline tier (1-4), null = all tiers
@@ -9252,9 +9390,11 @@ class GenealogyService
         bool $includeExhausted = false,
         ?string $recentWorkCutoff = null,
         ?float $minDataGapScore = null,
-        ?int $minPendingHints = null
+        ?int $minPendingHints = null,
+        ?float $maxDataGapOnlyExhaustionScore = null
     ): array {
         // Main query: join coverage with persons for name/dates context
+        $hasAgentWorkRotation = $this->personCoverageHasAgentWorkRotation();
         $params = [$treeId];
         $tierFilter = '';
         if ($tier !== null) {
@@ -9270,33 +9410,40 @@ class GenealogyService
 
         $recentWorkFilter = '';
         if (is_string($recentWorkCutoff) && trim($recentWorkCutoff) !== '') {
-            $recentWorkFilter = "
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM genealogy_research_queue q_recent
-                  WHERE q_recent.tree_id = c.tree_id
-                    AND q_recent.person_id = c.person_id
-                    AND q_recent.status = 'completed'
-                    AND q_recent.completed_at >= ?
-              )
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM genealogy_research_tasks t_recent
-                  WHERE t_recent.tree_id = c.tree_id
-                    AND t_recent.person_id = c.person_id
-                    AND t_recent.status = 'completed'
-                    AND t_recent.completed_at >= ?
-              )";
-            $params[] = trim($recentWorkCutoff);
-            $params[] = trim($recentWorkCutoff);
+            if ($hasAgentWorkRotation) {
+                $recentWorkFilter = '
+                  AND (c.agent_last_worked_at IS NULL OR c.agent_last_worked_at < ?)';
+                $params[] = trim($recentWorkCutoff);
+            } else {
+                $recentWorkFilter = '
+                  AND NOT EXISTS (
+                      SELECT 1 FROM genealogy_research_queue rq
+                      WHERE rq.tree_id = c.tree_id
+                        AND rq.person_id = c.person_id
+                        AND rq.completed_at >= ?
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM genealogy_research_tasks rt
+                      WHERE rt.tree_id = c.tree_id
+                        AND rt.person_id = c.person_id
+                        AND rt.completed_at >= ?
+                  )';
+                $params[] = trim($recentWorkCutoff);
+                $params[] = trim($recentWorkCutoff);
+            }
         }
 
         $fallbackQualityFilter = '';
         $qualityClauses = [];
         $qualityParams = [];
         if ($minDataGapScore !== null) {
-            $qualityClauses[] = 'c.data_gap_score >= ?';
+            $dataGapClause = 'c.data_gap_score >= ?';
             $qualityParams[] = max(0.0, min(1.0, $minDataGapScore));
+            if ($maxDataGapOnlyExhaustionScore !== null) {
+                $dataGapClause = '('.$dataGapClause.' AND c.research_exhaustion_score <= ?)';
+                $qualityParams[] = max(0.0, min(1.0, $maxDataGapOnlyExhaustionScore));
+            }
+            $qualityClauses[] = $dataGapClause;
         }
         if ($minPendingHints !== null) {
             $qualityClauses[] = 'c.pending_hint_count >= ?';
@@ -9306,6 +9453,17 @@ class GenealogyService
             $fallbackQualityFilter = 'AND ('.implode(' OR ', $qualityClauses).')';
             array_push($params, ...$qualityParams);
         }
+
+        $agentLastWorkedSelect = $hasAgentWorkRotation
+            ? 'c.agent_last_worked_at'
+            : 'NULL AS agent_last_worked_at';
+        $priorityOrderSql = $hasAgentWorkRotation
+            ? 'CASE WHEN c.agent_last_worked_at IS NULL THEN 0 ELSE 1 END ASC,
+                c.agent_last_worked_at ASC,
+                c.priority_score DESC,
+                c.priority_rank ASC'
+            : 'c.priority_score DESC,
+                c.priority_rank ASC';
 
         $params[] = $limit;
 
@@ -9327,6 +9485,7 @@ class GenealogyService
                 c.research_exhaustion_score,
                 c.pending_hint_count,
                 c.last_searched_at,
+                {$agentLastWorkedSelect},
                 c.search_count_30d,
                 c.negative_count_30d,
                 c.coverage_updated_at
@@ -9337,7 +9496,8 @@ class GenealogyService
               {$exhaustionFilter}
               {$recentWorkFilter}
               {$fallbackQualityFilter}
-            ORDER BY c.priority_score DESC, c.priority_rank ASC
+            ORDER BY
+                {$priorityOrderSql}
             LIMIT ?
         ", $params);
 
@@ -9397,6 +9557,7 @@ class GenealogyService
                 'hint_statuses' => $hints,
                 'all_hints_deferred' => $allDeferred,
                 'last_searched_at' => $p->last_searched_at,
+                'agent_last_worked_at' => $p->agent_last_worked_at,
                 'searches_30d' => (int) $p->search_count_30d,
                 'negative_searches_30d' => (int) $p->negative_count_30d,
             ];
@@ -9413,8 +9574,25 @@ class GenealogyService
                 'recent_work_cutoff' => $recentWorkCutoff,
                 'min_data_gap_score' => $minDataGapScore,
                 'min_pending_hints' => $minPendingHints,
+                'max_data_gap_only_exhaustion_score' => $maxDataGapOnlyExhaustionScore,
+                'agent_work_rotation' => $hasAgentWorkRotation,
                 'limit' => $limit,
             ],
         ];
+    }
+
+    private function personCoverageHasAgentWorkRotation(): bool
+    {
+        if ($this->personCoverageHasAgentWorkRotation !== null) {
+            return $this->personCoverageHasAgentWorkRotation;
+        }
+
+        try {
+            $this->personCoverageHasAgentWorkRotation = Schema::hasColumn('genealogy_person_coverage', 'agent_last_worked_at');
+        } catch (\Throwable) {
+            $this->personCoverageHasAgentWorkRotation = false;
+        }
+
+        return $this->personCoverageHasAgentWorkRotation;
     }
 }

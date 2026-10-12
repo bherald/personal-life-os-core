@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Genealogy\GenealogyService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Throwable;
@@ -186,6 +187,8 @@ class GenealogyQueueEvidenceCompleteCommand extends Command
                     if ($updated !== 1) {
                         throw new \RuntimeException('queue_completion_update_failed');
                     }
+
+                    app(GenealogyService::class)->markPersonAgentWorked($treeId, $personId);
 
                     return ['task_id' => $taskId, 'queue_rows_updated' => $updated];
                 });

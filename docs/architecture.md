@@ -1,408 +1,141 @@
 # PLOS Architecture
 
-## Purpose
+PLOS is a Laravel application with a Vue interface, scheduled work, guarded
+agents/tools, retrieval services and optional local or external AI providers.
+This map describes source boundaries. It does not report a particular
+installation, model qualification, performance result or deployed topology.
+
+## Execution and review
+
+```mermaid
+flowchart TD
+    UI[Vue interface and operator review] --> HTTP[Laravel routes and controllers]
+    CLI[Artisan and offline CLI] --> Policy[Configured scope and policy]
+    HTTP --> Policy
+    Schedule[Scheduled jobs and queues] --> Policy
+    Policy --> Workflow[Agent and workflow execution]
+    Workflow --> Tools[Registered tools and MCP contracts]
+    Workflow --> AI[Provider and model routing]
+    Workflow --> Retrieval[Source identity and retrieval]
+    Tools --> Receipts[Action receipts and retained evidence]
+    AI --> Receipts
+    Retrieval --> Receipts
+    Receipts --> UI
+```
+
+Authorization belongs to the application and operator workflow. A model may
+propose an action; its arguments or commentary cannot grant target access,
+select an arbitrary execution environment, change a route or close a review.
+A completed request, saved result, verified receipt and approved domain change
+are separate states.
+
+The authoritative AI pipeline inventory is
+`php artisan codex:offline-pipeline-tools --json`, implemented by
+[OfflineAiPipelineInventoryService](../app/Services/OfflineAiPipelineInventoryService.php).
+Use that surface to discover registered functions and their admission policy;
+source-file presence alone does not mean a capability is enabled or qualified.
+
+## Source map
+
+| Boundary | Source entry point | Responsibility |
+| --- | --- | --- |
+| HTTP application | [Routes](../routes), [controllers](../app/Http/Controllers) | Authentication, validation and domain endpoints |
+| Scheduled work | [Console commands](../app/Console/Commands), [jobs](../app/Jobs) | Task admission, queue execution and retained task state |
+| Workflows | [Workflow services](../app/Services), [nodes](../app/Nodes) | Application-owned execution and domain transitions |
+| Registered tools | [MCP TypeScript source](../mcp-server/src), [PLOS MCP source](../mcp-servers/plos/src) | Published tool contracts, routing and structured results |
+| AI providers | [AIService](../app/Services/AIService.php) | Configured provider/model calls and response handling |
+| Configuration | [SystemConfigService](../app/Services/SystemConfigService.php), [config](../config) | Table/config-owned runtime decisions |
+| Guardrails | [AgentGuardrailService](../app/Services/AgentGuardrailService.php) | Action enforcement before execution |
+| Guardrail visibility | [GuardrailMonitorService](../app/Services/Ops/GuardrailMonitorService.php) | Read-only, content-minimized policy/outcome projection |
+| Retrieval | [RAGService](../app/Services/RAGService.php), [OfflineRerankService](../app/Services/OfflineRerankService.php) | Stable source identity, bounded retrieval and compatible embedding spaces |
+| Offline workspace scope | [OfflineWorkspaceContextService](../app/Services/OfflineWorkspaceContextService.php) | Canonical project-root guidance and local workspace context |
+| CLI protocol | [CodexProtocolService](../app/Services/UnifiedCli/CodexProtocolService.php) | CLI event/protocol handling within the existing execution framework |
+| Optional model-host control | [Coordinator](../app/Services/ModelHostControllerCoordinatorService.php), [client](../app/Services/ModelHostControllerClient.php) | Configured target admission and bounded controller requests |
+
+## Contracts that matter
+
+### Tool execution and custody
+
+Registered schemas and the captured execution scope constrain each action.
+Keep the original action identity across submission, completion, cancellation,
+status and reconciliation. An uncertain result retains custody; reconnecting
+or inspecting status must not silently replay work. Cancellation intent is
+separate from verified worker termination.
+
+Tool and MCP results must preserve their structured evidence. Catalog discovery
+and transport admission are separate from permission to invoke a tool. Browser
+or network integrations require explicit origin/transport limits; a generic
+shell, endpoint or model-generated hostname is not an authorization boundary.
+
+### Provider identity and routing
+
+Provider rows, model capabilities and application-owned policy select allowed
+routes. External credentials remain outside source releases. Local runtime
+code, model weights, converted artifacts and service images have separate
+terms; see [model/runtime license map](model-runtime-license-map.md).
+
+The optional controller boundary separates a requested model role from the
+worker's admitted lifecycle action. Effective authority is the intersection
+of application policy and worker policy. A health/status read does not grant
+activation, target replacement, fallback or a routing change. Installation and
+a passing local check do not establish operational readiness.
+
+### Retrieval and source integrity
+
+Retain stable source/document identity when indexing and reading evidence.
+Source updates and derived indexes are distinct records; changing source
+content must invalidate affected derived artifacts rather than silently reuse
+them. Duplicate cleanup requires source-specific proof and dependency custody.
+
+Embedding comparisons require matching artifact identity and dimensions for
+the query and every candidate. Incomplete or mixed embedding spaces must not
+contribute provisional scores. Bounded source reads preserve their continuation
+identity and original text.
+
+### Original requests and private content
+
+Preserve the original operator request and source evidence. Any derived
+context, summary or diagnostic remains distinguishable from that original.
+Prompt/context policy is explicit; a documentation example must not enable
+compression, precompaction or wider sharing by implication.
+
+Logs and diagnostics should expose the bounded facts needed to understand a
+run while avoiding credentials, private queries, prompts, generated source
+text, raw media, vectors and tool arguments. Policy visibility is read-only
+and must not revive deleted rules or alter enforcement order.
 
-This document maps the current PLOS runtime as implemented today.
+### Domain review
 
-It is architecture documentation for the existing system, not a target-state rewrite. The goal is to make the main execution paths, service boundaries, and coupling points explicit enough to support safer refactors and runtime hardening.
+Genealogy operations select a configured tree and keep source evidence,
+uncertainty and preview/write boundaries. Face/photo identity decisions remain
+operator-owned. Media edits preserve originals and require reviewed write plans.
+Public publication and third-party account writes retain their own exact
+approval boundaries.
 
-## Top-Level Runtime Surfaces
+## Build and release boundaries
 
-PLOS currently operates through seven major runtime surfaces:
+TypeScript under `mcp-server/src` is authoritative source; generated output is
+not a substitute for its source or an implicit release asset. Dependencies
+remain managed by their package manifests and locks. The public source release
+excludes private runtime evidence, credentials, deployed bindings, model caches,
+customer content and private Git history.
 
-1. Scheduled execution
-2. Agent execution
-3. Tool execution
-4. MCP routing
-5. Provider routing / LLM execution
-6. Review and approval
-7. Compaction / decompose / context shrinkage
+Use the public export, content/provenance checks and smoke instructions in
+[public release readiness](public-release-readiness.md). See
+[research provenance](research-provenance.md), [third-party notices](../THIRD_PARTY.md)
+and [security/privacy](security-privacy.md) for the corresponding boundaries.
+A passed source audit is one prerequisite; it is not deployed-system proof.
 
-These surfaces are functional today, but they are not yet documented as a single coherent runtime.
+## Source and review repair boundaries
 
-## Core Entry Points
+YouTube processing retains immutable original text through formatting, validates proposed key points and binds replacement writes to exact stored source and durable custody. Full-document RAG context and complete generation options participate in cache identity; a retained answer is not new execution authority.
 
-### Scheduler
+Review-type actionability and explicit operator ownership govern approval. Notification acknowledgement does not approve a finding. Typed execution holds propagate through distributed jobs and independent cleanup; unknown effects retain their original custody instead of entering ordinary automatic retries. Synthetic fixtures exercise these boundaries without invoking models or real connectors.
 
-Primary scheduler command:
+### Provider preference and maintenance boundaries
 
-- [SchedulerRunCommand.php](../app/Console/Commands/SchedulerRunCommand.php)
-
-Primary runtime service:
-
-- [ScheduledJobService.php](../app/Services/ScheduledJobService.php)
-
-Execution flow:
-
-1. `SchedulerRunCommand::runJob()` decides whether the job runs in background or synchronously.
-2. For synchronous runs, it installs a hard `pcntl_alarm()` wall-clock timeout and builds an adaptive timeout-extender closure.
-3. It then delegates to `ScheduledJobService::runJobNow()`.
-4. `ScheduledJobService::runJobNow()` loads the job, creates or reuses the run record, dispatches by `job_type`, and records completion.
-
-Supported scheduled job types:
-
-- `command`
-- `workflow`
-- `job_class`
-- `agent_task`
-
-Current architectural observation:
-
-- `ScheduledJobService` is not just scheduling. It is the central runtime adapter between cron/job metadata and multiple execution systems.
-- It also owns operational recovery behavior such as zombie cleanup, stalled-process detection, worker PID tracking, and some domain-specific recovery logic.
-
-## Scheduled Agent Path
-
-Primary files:
-
-- [ScheduledJobService.php](../app/Services/ScheduledJobService.php)
-- [AgentLoopService.php](../app/Services/AgentLoopService.php)
-
-Execution path:
-
-1. `ScheduledJobService::runJobNow()` sees `job_type = agent_task`.
-2. It calls `ScheduledJobService::runAgentTask()`.
-3. `runAgentTask()` parses the job `notes` JSON into runtime parameters.
-4. It builds the task, options, timeout settings, and context.
-5. It delegates to `AgentLoopService::execute()`.
-6. It converts the resulting agent response into scheduled-job output and status.
-
-Important current behavior:
-
-- scheduled-agent jobs can pass adaptive timeout extension through to the agent loop
-- post-run indexing/memory capture is opt-in for cron-driven agents to avoid wedging the scheduler
-- some jobs have custom routing logic inside `runAgentTask()` rather than being handled purely by skill definitions
-
-Current architectural observation:
-
-- scheduled agents are not a separate subsystem; they are an overlay on top of the same `AgentLoopService` used elsewhere
-- `ScheduledJobService::runAgentTask()` contains domain-specific routing, which increases coupling between scheduling and domain behavior
-
-## Agent Runtime
-
-Primary file:
-
-- [AgentLoopService.php](../app/Services/AgentLoopService.php)
-
-Main entrypoint:
-
-- `AgentLoopService::execute()`
-
-Execution stages:
-
-1. speculative-execution check
-2. nesting-depth enforcement
-3. safety-card warning
-4. session lock acquisition
-5. session creation/load via session service
-6. skill load via `SkillLoaderService`
-7. monitoring pre-screen short-circuit for some agents
-8. tool load via `AgentToolRegistryService`
-9. system prompt construction
-10. memory retrieval
-11. message/context build
-12. execution via:
-   - agentic loop
-   - hybrid workflow
-   - per-person hybrid workflow
-
-Key runtime dependencies:
-
-- [SkillLoaderService.php](../app/Services/SkillLoaderService.php)
-- [AgentToolRegistryService.php](../app/Services/AgentToolRegistryService.php)
-- `AgentSessionService`
-- `AgentGuardrailService`
-- `AIService`
-
-Current architectural observation:
-
-- `AgentLoopService` is the effective runtime kernel for PLOS agents
-- it currently owns too many concerns at once:
-  - loop control
-  - skill interpretation
-  - prompt construction
-  - memory injection
-  - timeout extension
-  - review queue submission
-  - notification behavior
-  - some policy logic
-
-This is the highest-leverage boundary to clarify in future work.
-
-## Skill Loading
-
-Primary file:
-
-- [SkillLoaderService.php](../app/Services/SkillLoaderService.php)
-
-How skills work today:
-
-- skills live under `resources/agents/skills/{skill}/SKILL.md` by default
-- `SkillLoaderService::getSkillIndex()` builds a compact catalog
-- `SkillLoaderService::loadSkill()` loads full frontmatter + markdown body on demand
-- skill frontmatter controls:
-  - tools
-  - permissions
-  - workflow mode
-  - iteration mode
-  - model role
-  - timeout ceilings
-
-Current architectural observation:
-
-- the skill system is the configuration boundary for agents
-- timeout ceilings and tool availability already flow from skill definitions into runtime behavior
-- this is the right place for agent capability declaration, but not the only place where behavior is currently decided
-
-## Tool Runtime
-
-Primary file:
-
-- [AgentToolRegistryService.php](../app/Services/AgentToolRegistryService.php)
-
-Main runtime responsibilities:
-
-- load tool configuration
-- validate required parameters
-- enforce guardrails
-- request confirmation when needed
-- route execution
-- serialize results for the LLM
-- record tool-call analytics
-
-Execution modes:
-
-1. blocked tool rejection
-2. guardrail validation
-3. confirmation-pending path
-4. composite-tool path via `ToolCompositionService`
-5. MCP tool path via `MCPRouter`
-6. direct PHP service/method invocation path
-
-Current architectural observation:
-
-- the tool registry is a real dispatch layer, not just metadata lookup
-- it is the narrowest operational choke point for tool governance, analytics, and runtime policy
-- that makes it a strong long-term boundary for capability-based runtime rules
-
-## MCP Runtime
-
-Primary file:
-
-- [MCPRouter.php](../app/Engine/MCPRouter.php)
-
-How MCP works today:
-
-- `MCPRouter` loads server definitions from `config('mcp.servers')`
-- it supports:
-  - external MCP servers via stdio/JSON-RPC
-  - internal service-backed MCP tools
-- `AgentToolRegistryService` routes registered MCP-backed tools into `MCPRouter::callTool()`
-- other services also call `MCPRouter` directly for web research, Thunderbird, Graphlit, Puppeteer, and other integrations
-
-Current architectural observation:
-
-- MCP is not only an agent tool surface; it is also used directly by multiple application services
-- there are two overlapping integration styles today:
-  - agent tool -> registry -> MCP router
-  - service -> MCP router directly
-
-That is flexible, but it means MCP behavior is not fully normalized through one runtime path.
-
-## Provider / LLM Runtime
-
-Primary file:
-
-- [AIService.php](../app/Services/AIService.php)
-
-Provider routing behavior today:
-
-- `AIService::process()` is the central inference entrypoint
-- it handles:
-  - model auto-selection
-  - factual-mode adjustments
-  - semantic cache
-  - in-flight deduplication
-  - Claude-preferred routing
-  - Ollama-first routing
-  - cascade escalation
-  - external-provider fallback chain
-  - rate-limit behavior
-  - auto-decompose for large prompts
-
-Concrete provider slice:
-
-- `AIService::tryClaudeCLI()` handles slot acquisition, model fallback within Claude CLI, retries, and rate-limit-aware fallback behavior
-
-Current architectural observation:
-
-- `AIService` is both provider router and high-level policy engine
-- it already contains important runtime intelligence:
-  - decompose
-  - cache
-  - dedup
-  - fallback logic
-  - cascade escalation
-- that makes it one of the most important runtime services in PLOS, not just a thin provider adapter
-
-## Review and Approval Runtime
-
-Primary backend file:
-
-- [AgentLoopService.php](../app/Services/AgentLoopService.php)
-
-Primary API/controller files:
-
-- [ResearchHubController.php](../app/Http/Controllers/Api/ResearchHubController.php)
-- [routes/api.php](../routes/api.php)
-
-Backend flow:
-
-1. an agent calls `submitForReview()` or tool logic produces a review submission
-2. `AgentLoopService::submitForReview()`:
-   - applies auto-approve rules
-   - applies low-confidence rejection rules
-   - deduplicates
-   - inserts into `agent_review_queue`
-   - triggers audit and optional notifications
-3. pending items are exposed via the research hub
-4. `resolveReview()` updates status and optionally dispatches approval handlers
-5. approval handlers are resolved dynamically through `review_type_registry`
-
-HTTP surface:
-
-- `/api/research-hub/items`
-- `/api/research-hub/approve/{unifiedId}`
-- `/api/research-hub/reject/{unifiedId}`
-- `/api/research-hub/quick-approve/{unifiedId}`
-- `/api/research-hub/quick-reject/{unifiedId}`
-- remediation/action endpoints also live under `/api/research-hub/...`
-
-Current architectural observation:
-
-- review is not a separate bounded context yet
-- the queue, auto-approval rules, notification rules, and approval dispatch still live largely inside `AgentLoopService`
-- the API side is more modular than the submission side
-
-## Compaction / Decompose Runtime
-
-Primary file:
-
-- [AIService.php](../app/Services/AIService.php)
-
-Supporting files:
-
-- [RecursiveCallService.php](../app/Services/RecursiveCallService.php)
-- [ContextualCompressionService.php](../app/Services/ContextualCompressionService.php)
-
-Current main path:
-
-- `AIService::process()` checks large-prompt size before normal provider execution
-- `AIService::tryAutoDecompose()`:
-  - checks recursion master switch and service config
-  - splits prompt into instruction + content chunks
-  - processes chunks as sub-calls with a fast model role
-  - synthesizes the results with a quality model role
-  - records the recursion/decompose call
-
-Current architectural observation:
-
-- compaction today is primarily LLM-mediated decomposition, not deterministic pre-compaction
-- the runtime already has a real context-shrinkage subsystem, but it is centered in `AIService`
-- there is still room for deterministic, reversible pre-compaction before escalation
-
-## API-Facing Runtime Surfaces
-
-Primary API route file:
-
-- [api.php](../routes/api.php)
-
-Important runtime-facing HTTP surfaces include:
-
-- workflows
-- executions
-- AI status
-- RAG search and graph
-- MCP status/tool calls
-- orchestrator
-- chat
-- email
-- Joplin
-- research hub
-
-Current architectural observation:
-
-- PLOS exposes many runtime surfaces directly via HTTP
-- some of these are pure controllers over services, but some are effectively operational entrypoints into the runtime
-- documentation should distinguish user/product APIs from operator/runtime APIs
-
-## Major Coupling Points
-
-These are the strongest current coupling zones:
-
-### 1. Scheduler <-> Domain Logic
-
-- `ScheduledJobService` contains generic scheduling behavior plus domain-specific special cases
-
-### 2. Agent Runtime <-> Review Runtime
-
-- `AgentLoopService` owns both execution and significant portions of review submission/approval logic
-
-### 3. Tool Runtime <-> MCP Runtime
-
-- MCP tools can be reached through both the tool registry and direct service calls
-
-### 4. Provider Runtime <-> Compaction Runtime
-
-- `AIService` handles both provider routing and large-prompt decomposition
-
-### 5. Naming Heuristics <-> Runtime Policy
-
-- some important runtime decisions still rely on naming conventions instead of stable typed/capability signals
-
-## Current Boundary Map
-
-Best current practical boundary model:
-
-- scheduler/runtime job control:
-  - [SchedulerRunCommand.php](../app/Console/Commands/SchedulerRunCommand.php)
-  - [ScheduledJobService.php](../app/Services/ScheduledJobService.php)
-- agent execution kernel:
-  - [AgentLoopService.php](../app/Services/AgentLoopService.php)
-- skill configuration:
-  - [SkillLoaderService.php](../app/Services/SkillLoaderService.php)
-- tool dispatch/governance:
-  - [AgentToolRegistryService.php](../app/Services/AgentToolRegistryService.php)
-- MCP dispatch:
-  - [MCPRouter.php](../app/Engine/MCPRouter.php)
-- provider routing and auto-decompose:
-  - [AIService.php](../app/Services/AIService.php)
-- review/API aggregation:
-  - [ResearchHubController.php](../app/Http/Controllers/Api/ResearchHubController.php)
-  - `ReviewTypeRegistryService`
-
-## What This Architecture Implies
-
-The current PLOS runtime is already powerful enough to support:
-
-- scheduled agents
-- long-running hybrid agents
-- guardrailed tool execution
-- MCP-backed capabilities
-- multi-provider routing
-- human review and approval
-- context shrinkage through RLM auto-decompose
-
-But it also implies the next hardening priorities:
-
-1. document runtime ownership clearly
-2. reduce name-based policy decisions
-3. separate agent execution from review/notification concerns more cleanly
-4. normalize MCP usage patterns
-5. add deterministic pre-compaction ahead of provider escalation
-
-## Recommended Next Document
-
-Write `docs/plos-runtime-inventory.md`.
-
-This architecture note explains how the runtime flows. The inventory note should enumerate what concrete agents, jobs, services, MCP tools, and compaction paths currently exist inside that architecture.
+Preferred Codex execution reuses the ordinary fallback provider's configured
+privacy/profile/role admission before calling its connector. Local-only requests
+are held, malformed active profiles retain the existing local hold, and a
+required provider must match the selected fallback. The public MCP inventory
+excludes the cancelled privileged maintenance adapter and its host helper.

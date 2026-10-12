@@ -102,6 +102,7 @@
                 <th>Run ID</th>
                 <th>Workflow</th>
                 <th>Status</th>
+                <th>Attempts</th>
                 <th>Duration</th>
                 <th>Started At</th>
                 <th>Actions</th>
@@ -119,6 +120,11 @@
                 <td>
                   <span class="ops-status" :class="getStatusClass(execution.status)">
                     {{ execution.status }}
+                  </span>
+                </td>
+                <td>
+                  <span class="ops-attempt-count" :class="{ retried: Number(execution.attempt_count) > 1 }">
+                    {{ formatAttemptCount(execution.attempt_count) }}
                   </span>
                 </td>
                 <td>{{ formatDuration(execution) }}</td>
@@ -159,6 +165,9 @@
           <div class="ops-modal-title-section">
             <h3 class="ops-modal-title">Execution #{{ currentExecution?.run?.id }}</h3>
             <span class="text-xs opacity-70">{{ currentExecution?.run?.workflow_name }}</span>
+            <span v-if="executionRedaction?.enforced" class="ops-redaction-status">
+              Display redaction active<span v-if="executionRedaction.redacted_fields"> / {{ executionRedaction.redacted_fields }} hidden</span>
+            </span>
           </div>
           <button @click="closeDetailsModal" class="ops-btn ops-btn-red">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -190,6 +199,17 @@
                 <div class="ops-stat-value lilac">{{ formatDuration(currentExecution.run) }}</div>
                 <div class="ops-stat-label">Duration</div>
               </div>
+              <div v-if="currentExecution.retry?.retried" class="ops-stat-block">
+                <div class="ops-stat-value orange">{{ currentExecution.retry.attempt_count }}</div>
+                <div class="ops-stat-label">
+                  Attempts<span v-if="currentExecution.retry.recovered"> / recovered</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="currentExecution.run.error_message" class="ops-node-error mb-4">
+              <div class="ops-label">Workflow Error</div>
+              <pre class="ops-error-pre">{{ currentExecution.run.error_message }}</pre>
             </div>
 
             <!-- Run Inputs -->
@@ -220,79 +240,96 @@
               </div>
             </div>
 
-            <!-- Node Executions -->
+            <!-- Workflow Attempts -->
             <div v-if="currentExecution.node_executions?.length" class="ops-panel-v2 blue">
               <div class="ops-panel-v2-header">
-                <span class="ops-panel-v2-title">Node Executions</span>
-                <span class="ops-badge ops-badge-blue">{{ currentExecution.node_executions.length }}</span>
+                <span class="ops-panel-v2-title">Workflow Attempts</span>
+                <span class="ops-badge ops-badge-blue">{{ currentExecution.retry?.attempt_count || 1 }}</span>
               </div>
-              <div class="ops-panel-v2-body space-y-3">
-                <div
-                  v-for="node in currentExecution.node_executions"
-                  :key="node.id"
-                  class="ops-node-execution"
-                >
-                  <!-- Node Header -->
-                  <div
-                    class="ops-node-header"
-                    @click="toggleNodeDetails(node.id)"
-                  >
-                    <div class="ops-node-info">
-                      <span class="ops-node-order">#{{ node.node_order }}</span>
-                      <span class="ops-node-name">{{ node.node_name }}</span>
-                      <span class="ops-node-type">({{ node.node_type }})</span>
-                      <span class="ops-status" :class="getStatusClass(node.status)">
-                        {{ node.status }}
+              <div class="ops-panel-v2-body p-0">
+                <section v-for="attempt in attemptGroups" :key="attempt.attempt_number" class="ops-attempt-group">
+                  <div class="ops-attempt-header">
+                    <div>
+                      <strong>Attempt {{ attempt.attempt_number }}</strong>
+                      <span class="ops-attempt-summary">
+                        {{ attempt.node_count }} nodes / {{ formatMilliseconds(attempt.duration_ms) }}
                       </span>
                     </div>
-                    <svg
-                      class="w-5 h-5 transition-transform"
-                      :class="{ 'rotate-180': expandedNodes.has(node.id) }"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
+                    <span class="ops-status" :class="getStatusClass(attempt.status)">{{ attempt.status }}</span>
+                  </div>
+
+                  <div class="ops-attempt-nodes">
+                    <div
+                      v-for="node in attempt.nodes"
+                      :key="node.id"
+                      class="ops-node-execution"
                     >
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-                    </svg>
+                      <div class="ops-node-header" @click="toggleNodeDetails(node.id)">
+                        <div class="ops-node-info">
+                          <span class="ops-node-order">Step {{ node.node_order }}</span>
+                          <span class="ops-node-name">{{ node.node_type }}</span>
+                          <span class="ops-status" :class="getStatusClass(node.state)">{{ node.state }}</span>
+                          <span v-if="node.timed_out" class="ops-timeout-label">Timed out</span>
+                        </div>
+                        <svg
+                          class="w-5 h-5 transition-transform"
+                          :class="{ 'rotate-180': expandedNodes.has(node.id) }"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                      </div>
+
+                      <div v-if="expandedNodes.has(node.id)" class="ops-node-details">
+                        <div class="ops-node-meta">
+                          <div>
+                            <span class="ops-label">Executed:</span>
+                            <span class="text-peach">{{ formatDate(node.executed_at) }}</span>
+                          </div>
+                          <div>
+                            <span class="ops-label">Duration:</span>
+                            <span class="text-peach">{{ formatMilliseconds(node.duration_ms) }}</span>
+                          </div>
+                          <div>
+                            <span class="ops-label">Timeout:</span>
+                            <span class="text-peach">{{ node.timeout_seconds ? `${node.timeout_seconds}s` : 'N/A' }}</span>
+                          </div>
+                        </div>
+
+                        <div v-if="node.inputs?.length" class="mt-3">
+                          <div class="ops-label mb-2">Inputs</div>
+                          <div class="space-y-2">
+                            <JsonViewer
+                              v-for="input in node.inputs"
+                              :key="input.id"
+                              :data="input.value"
+                              :label="input.key"
+                            />
+                          </div>
+                        </div>
+
+                        <div v-if="node.outputs?.length" class="mt-3">
+                          <div class="ops-label mb-2">Outputs</div>
+                          <div class="space-y-2">
+                            <JsonViewer
+                              v-for="output in node.outputs"
+                              :key="output.id"
+                              :data="output.value"
+                              :label="output.key"
+                            />
+                          </div>
+                        </div>
+
+                        <div v-if="node.error_message" class="ops-node-error">
+                          <div class="ops-label">Error</div>
+                          <pre class="ops-error-pre">{{ node.error_message }}</pre>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-
-                  <!-- Node Details (Expandable) -->
-                  <div v-if="expandedNodes.has(node.id)" class="ops-node-details">
-                    <div class="ops-node-meta">
-                      <div>
-                        <span class="ops-label">Started:</span>
-                        <span class="text-peach">{{ formatDate(node.started_at) }}</span>
-                      </div>
-                      <div>
-                        <span class="ops-label">Completed:</span>
-                        <span class="text-peach">{{ node.completed_at ? formatDate(node.completed_at) : 'N/A' }}</span>
-                      </div>
-                      <div>
-                        <span class="ops-label">Duration:</span>
-                        <span class="text-peach">{{ formatDuration(node) }}</span>
-                      </div>
-                    </div>
-
-                    <!-- Node Outputs -->
-                    <div v-if="node.outputs?.length" class="mt-3">
-                      <div class="ops-label mb-2">Outputs</div>
-                      <div class="space-y-2">
-                        <JsonViewer
-                          v-for="output in node.outputs"
-                          :key="output.id"
-                          :data="output.value"
-                          :label="output.key"
-                        />
-                      </div>
-                    </div>
-
-                    <!-- Error Message -->
-                    <div v-if="node.error_message" class="ops-node-error">
-                      <div class="ops-label">Error</div>
-                      <pre class="ops-error-pre">{{ node.error_message }}</pre>
-                    </div>
-                  </div>
-                </div>
+                </section>
               </div>
             </div>
           </div>
@@ -352,6 +389,26 @@ const filters = ref({
 
 const executions = computed(() => executionsStore.executions);
 const currentExecution = computed(() => executionsStore.currentExecution);
+const executionRedaction = computed(() => executionsStore.executionRedaction);
+const attemptGroups = computed(() => {
+  const nodes = currentExecution.value?.node_executions || [];
+  const summaries = currentExecution.value?.retry?.attempts || [];
+
+  if (!summaries.length && nodes.length) {
+    return [{
+      attempt_number: 1,
+      node_count: nodes.length,
+      duration_ms: nodes.reduce((total, node) => total + Number(node.duration_ms || 0), 0),
+      status: currentExecution.value?.run?.status === 'completed' ? 'success' : currentExecution.value?.run?.status,
+      nodes,
+    }];
+  }
+
+  return summaries.map((attempt) => ({
+    ...attempt,
+    nodes: nodes.filter((node) => Number(node.attempt_number || 1) === Number(attempt.attempt_number)),
+  }));
+});
 const stats = computed(() => executionsStore.stats);
 const loading = computed(() => executionsStore.loading);
 const error = computed(() => executionsStore.error);
@@ -385,6 +442,7 @@ const viewDetails = async (id) => {
 const closeDetailsModal = () => {
   showDetailsModal.value = false;
   executionsStore.currentExecution = null;
+  executionsStore.executionRedaction = null;
   expandedNodes.value.clear();
 };
 
@@ -418,12 +476,25 @@ const getStatusClass = (status) => {
   const classes = {
     running: 'ops-status-warning',
     completed: 'ops-status-ok',
+    success: 'ops-status-ok',
+    skipped: 'ops-status-ok',
     failed: 'ops-status-alert',
+    awaiting_approval: 'ops-status-warning',
+    pending: 'ops-status-warning',
   };
   return classes[status] || '';
 };
 
 const formatDate = (dateString) => formatDateTz(dateString);
+const formatAttemptCount = (value) => {
+  const count = Math.max(1, Number(value) || 1);
+  return `${count} ${count === 1 ? 'attempt' : 'attempts'}`;
+};
+const formatMilliseconds = (value) => {
+  const milliseconds = Math.max(0, Number(value) || 0);
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10000 ? 1 : 0)}s`;
+};
 const formatDuration = (execution) => {
   if (!execution.started_at) return 'N/A';
   return formatDurationTz(execution.started_at, execution.completed_at);
@@ -434,7 +505,7 @@ const formatDuration = (execution) => {
 /* Stats Row */
 .ops-stats-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 1rem;
   margin-bottom: 1.5rem;
 }
@@ -471,7 +542,7 @@ const formatDuration = (execution) => {
 }
 
 .ops-label {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.6875rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -480,18 +551,18 @@ const formatDuration = (execution) => {
 .ops-select,
 .ops-input {
   background-color: var(--color-bg-primary);
-  border: 2px solid var(--ops-plum);
+  border: 2px solid var(--color-accent);
   border-radius: 0 12px 12px 0;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   padding: 0.5rem 0.75rem;
-  font-family: 'Antonio', sans-serif;
+  font-family: inherit;
   font-size: 0.8125rem;
 }
 
 .ops-select:focus,
 .ops-input:focus {
   outline: none;
-  border-color: var(--ops-lilac);
+  border-color: var(--color-accent);
 }
 
 /* Loading & Empty States */
@@ -505,7 +576,7 @@ const formatDuration = (execution) => {
 
 .ops-loading-text {
   margin-top: 1.5rem;
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.875rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -525,13 +596,13 @@ const formatDuration = (execution) => {
 .ops-empty-title {
   font-size: 1.25rem;
   font-weight: 700;
-  color: var(--ops-peach);
-  text-transform: uppercase;
+  color: var(--color-text-primary);
+  text-transform: none;
   margin-bottom: 0.5rem;
 }
 
 .ops-empty-text {
-  color: var(--ops-violet);
+  color: var(--color-accent);
   font-size: 0.875rem;
 }
 
@@ -541,8 +612,8 @@ const formatDuration = (execution) => {
 /* Node Execution Styles */
 .ops-node-execution {
   background-color: var(--color-bg-tertiary);
-  border-radius: 0 15px 15px 0;
-  border-left: 4px solid var(--ops-plum);
+  border-radius: 0 6px 6px 0;
+  border-left: 4px solid var(--color-accent);
   overflow: hidden;
 }
 
@@ -567,25 +638,57 @@ const formatDuration = (execution) => {
 }
 
 .ops-node-order {
-  color: var(--ops-violet);
+  color: var(--color-accent);
   font-size: 0.75rem;
 }
 
 .ops-node-name {
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-weight: 600;
   font-size: 0.875rem;
 }
 
-.ops-node-type {
-  color: var(--ops-violet);
+.ops-attempt-count {
+  color: var(--color-accent);
   font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.ops-attempt-count.retried,
+.ops-timeout-label {
+  color: var(--ops-warning);
+}
+
+.ops-attempt-group + .ops-attempt-group {
+  border-top: 1px solid var(--color-accent);
+}
+
+.ops-attempt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+}
+
+.ops-attempt-summary {
+  margin-left: 0.75rem;
+  color: var(--color-accent);
+  font-size: 0.75rem;
+}
+
+.ops-attempt-nodes {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.75rem;
 }
 
 .ops-node-details {
   padding: 1rem;
   background-color: var(--color-bg-secondary);
-  border-top: 1px solid var(--ops-plum);
+  border-top: 1px solid var(--color-accent);
 }
 
 .ops-node-meta {
@@ -604,13 +707,13 @@ const formatDuration = (execution) => {
 .ops-node-error {
   margin-top: 1rem;
   padding: 0.75rem;
-  background-color: rgba(204, 0, 0, 0.1);
+  background-color: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
   border-left: 3px solid var(--ops-red-alert);
-  border-radius: 0 10px 10px 0;
+  border-radius: 0 6px 6px 0;
 }
 
 .ops-error-pre {
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-size: 0.75rem;
   white-space: pre-wrap;
   margin: 0.5rem 0 0;
@@ -620,7 +723,7 @@ const formatDuration = (execution) => {
 .ops-modal-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.85);
+  background-color: var(--color-bg-tertiary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -630,8 +733,8 @@ const formatDuration = (execution) => {
 
 .ops-modal {
   background-color: var(--color-bg-primary);
-  border: 2px solid var(--ops-plum);
-  border-radius: 0 25px 25px 0;
+  border: 2px solid var(--color-accent);
+  border-radius: 0 8px 8px 0;
   max-width: 900px;
   width: 100%;
   max-height: 90vh;
@@ -654,7 +757,7 @@ const formatDuration = (execution) => {
   z-index: 10;
 }
 
-.bg-orange { background-color: var(--ops-orange); }
+.bg-orange { background-color: var(--ops-warning); }
 
 .ops-modal-title-section {
   display: flex;
@@ -664,10 +767,18 @@ const formatDuration = (execution) => {
 .ops-modal-title {
   font-size: 1.25rem;
   font-weight: 700;
-  color: var(--ops-black);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  color: var(--color-text-primary);
+  text-transform: none;
+  letter-spacing: normal;
   margin: 0;
+}
+
+.ops-redaction-status {
+  margin-top: 0.25rem;
+  color: var(--color-text-primary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.25;
 }
 
 .ops-modal-body {
@@ -678,7 +789,7 @@ const formatDuration = (execution) => {
 
 .ops-modal-footer {
   padding: 1rem 1.5rem;
-  border-top: 1px solid var(--ops-plum);
+  border-top: 1px solid var(--color-accent);
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
@@ -687,8 +798,8 @@ const formatDuration = (execution) => {
 /* Utilities */
 .cursor-pointer { cursor: pointer; }
 .font-bold { font-weight: 700; }
-.text-peach { color: var(--ops-peach); }
-.text-lilac { color: var(--ops-lilac); }
+.text-peach { color: var(--color-text-primary); }
+.text-lilac { color: var(--color-accent); }
 .text-xs { font-size: 0.75rem; }
 .text-sm { font-size: 0.875rem; }
 .ml-2 { margin-left: 0.5rem; }

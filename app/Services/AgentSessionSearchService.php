@@ -118,6 +118,21 @@ class AgentSessionSearchService
             return [];
         }
 
+        if (Schema::hasTable('agent_session_messages')) {
+            $durableResults = $this->searchDurableSessionMessages(
+                $patterns,
+                $terms,
+                $cutoff,
+                $limit,
+                $contextChars,
+                $agentId,
+                $sessionId
+            );
+            if ($durableResults !== []) {
+                return $durableResults;
+            }
+        }
+
         $query = DB::table('agent_sessions as s')
             ->select('s.id', 's.session_id', 's.agent_name', 's.messages', 's.status', 's.created_at', 's.updated_at', 's.last_activity_at')
             ->whereRaw('(s.last_activity_at >= ? OR s.updated_at >= ? OR s.created_at >= ?)', [$cutoff, $cutoff, $cutoff])
@@ -155,6 +170,49 @@ class AgentSessionSearchService
                     'session_status' => $row->status ?? null,
                 ]);
             }
+        }
+
+        return $results;
+    }
+
+    private function searchDurableSessionMessages(array $patterns, array $terms, string $cutoff, int $limit, int $contextChars, ?string $agentId, ?string $sessionId): array
+    {
+        $query = DB::table('agent_session_messages as m')
+            ->join('agent_sessions as s', 's.id', '=', 'm.agent_session_id')
+            ->select('m.id', 'm.ordinal', 'm.role', 'm.content', 'm.occurred_at', 's.session_id', 's.agent_name', 's.status')
+            ->where('m.occurred_at', '>=', $cutoff)
+            ->orderByDesc('m.occurred_at')
+            ->orderByDesc('m.id')
+            ->limit($limit * 3);
+
+        $this->applyOptionalAgentFilter($query, 's.agent_name', $agentId);
+        $this->applyOptionalSessionFilter($query, 's.session_id', $sessionId);
+        $this->applyLikeSearch($query, ['m.content'], $patterns);
+
+        $results = [];
+        foreach ($query->get() as $row) {
+            if (! $this->containsAnyTerm((string) $row->content, $terms)) {
+                continue;
+            }
+
+            $this->appendResult(
+                $results,
+                'session_messages',
+                $row->id,
+                $row->session_id,
+                $row->agent_name,
+                (string) $row->occurred_at,
+                "history.{$row->ordinal}.content:{$row->role}",
+                (string) $row->content,
+                $terms,
+                $contextChars,
+                [
+                    'message_role' => $row->role,
+                    'message_ordinal' => (int) $row->ordinal,
+                    'session_status' => $row->status ?? null,
+                    'durable_history' => true,
+                ]
+            );
         }
 
         return $results;

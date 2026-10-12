@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\SensitiveTextTelemetry;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -25,27 +26,12 @@ use Illuminate\Support\Facades\Log;
  */
 class GroundingVerifierService
 {
-    /** Max atomic claims to extract per response */
-    public const MAX_CLAIMS = 6;
+    private const MODEL_RESPONSE_TELEMETRY_SCOPE = 'rag-grounding-verifier-model-response';
 
-    /** Max source documents used per NLI check */
-    public const MAX_DOCS_FOR_NLI = 3;
-
-    /** Max chars per document excerpt in the NLI prompt */
-    public const MAX_DOC_CHARS = 700;
-
-    /** Grounding score at or above which verdict = 'grounded' */
-    public const THRESHOLD_GROUNDED = 0.75;
-
-    /** Grounding score at or above which verdict = 'partially_grounded' */
-    public const THRESHOLD_PARTIAL = 0.40;
-
-    private AIService $ai;
-
-    public function __construct(AIService $ai)
-    {
-        $this->ai = $ai;
-    }
+    public function __construct(
+        private readonly AIService $ai,
+        private readonly GroundingVerifierRuntimePolicyService $runtimePolicy,
+    ) {}
 
     // =========================================================================
     // Main entry point
@@ -54,7 +40,7 @@ class GroundingVerifierService
     /**
      * Verify that the response claims are grounded in the retrieved documents.
      *
-     * @param  string $response   The LLM-generated answer to verify
+     * @param  string  $response  The LLM-generated answer to verify
      * @param  array  $documents  RAGService full_documents array (stdClass objects with ->content)
      * @return array{
      *   claims: array,
@@ -63,19 +49,24 @@ class GroundingVerifierService
      *   contradicted_claims: string[],
      *   verdict: string,
      *   claim_count: int,
-     *   doc_count: int
+     *   doc_count: int,
+     *   policy_source: string,
+     *   effective_policy: array<string,mixed>
      * }
      */
     public function verify(string $response, array $documents): array
     {
+        $policy = $this->runtimePolicy->required();
+        $metadata = $this->policyMetadata($policy);
         $empty = [
-            'claims'              => [],
-            'grounding_score'     => 0.0,
-            'ungrounded_claims'   => [],
+            'claims' => [],
+            'grounding_score' => 0.0,
+            'ungrounded_claims' => [],
             'contradicted_claims' => [],
-            'verdict'             => 'ungrounded',
-            'claim_count'         => 0,
-            'doc_count'           => count($documents),
+            'verdict' => 'ungrounded',
+            'claim_count' => 0,
+            'doc_count' => count($documents),
+            ...$metadata,
         ];
 
         if (empty(trim($response)) || empty($documents)) {
@@ -83,20 +74,20 @@ class GroundingVerifierService
         }
 
         // Step 1: extract atomic claims
-        $claims = $this->extractClaims($response);
+        $claims = $this->extractClaimsWithPolicy($response, $policy);
         if (empty($claims)) {
             return array_merge($empty, ['verdict' => 'no_claims']);
         }
 
         // Step 2: NLI each claim against top source docs
-        $topDocs       = array_slice($documents, 0, self::MAX_DOCS_FOR_NLI);
-        $results       = [];
+        $topDocs = array_slice($documents, 0, $policy['max_source_documents']);
+        $results = [];
         $entailedCount = 0;
-        $ungrounded    = [];
-        $contradicted  = [];
+        $ungrounded = [];
+        $contradicted = [];
 
         foreach ($claims as $claim) {
-            $nli = $this->checkGrounding($claim, $topDocs);
+            $nli = $this->checkGroundingWithPolicy($claim, $topDocs, $policy);
 
             if ($nli['label'] === 'entailed') {
                 $entailedCount++;
@@ -107,9 +98,9 @@ class GroundingVerifierService
             }
 
             $results[] = [
-                'claim'           => $claim,
-                'label'           => $nli['label'],
-                'score'           => $nli['score'],
+                'claim' => $claim,
+                'label' => $nli['label'],
+                'score' => $nli['score'],
                 'evidence_doc_id' => $nli['evidence_doc_id'] ?? null,
             ];
         }
@@ -118,25 +109,26 @@ class GroundingVerifierService
             ? round($entailedCount / count($claims), 3)
             : 0.0;
 
-        $verdict = $this->determineVerdict($groundingScore);
+        $verdict = $this->determineVerdictWithPolicy($groundingScore, $policy);
 
         Log::info('GroundingVerifierService: verification complete', [
-            'claim_count'     => count($claims),
-            'entailed'        => $entailedCount,
-            'ungrounded'      => count($ungrounded),
-            'contradicted'    => count($contradicted),
+            'claim_count' => count($claims),
+            'entailed' => $entailedCount,
+            'ungrounded' => count($ungrounded),
+            'contradicted' => count($contradicted),
             'grounding_score' => $groundingScore,
-            'verdict'         => $verdict,
+            'verdict' => $verdict,
         ]);
 
         return [
-            'claims'              => $results,
-            'grounding_score'     => $groundingScore,
-            'ungrounded_claims'   => $ungrounded,
+            'claims' => $results,
+            'grounding_score' => $groundingScore,
+            'ungrounded_claims' => $ungrounded,
             'contradicted_claims' => $contradicted,
-            'verdict'             => $verdict,
-            'claim_count'         => count($claims),
-            'doc_count'           => count($documents),
+            'verdict' => $verdict,
+            'claim_count' => count($claims),
+            'doc_count' => count($documents),
+            ...$metadata,
         ];
     }
 
@@ -145,32 +137,42 @@ class GroundingVerifierService
     // =========================================================================
 
     /**
-     * Extract up to MAX_CLAIMS atomic factual claims from the response.
+     * Extract up to the table-owned maximum atomic factual claims from the response.
      * Returns a flat array of claim strings.
      */
     public function extractClaims(string $response): array
     {
-        $truncated = mb_substr($response, 0, 2000);
+        return $this->extractClaimsWithPolicy($response, $this->runtimePolicy->required());
+    }
 
-        $prompt = "Extract up to " . self::MAX_CLAIMS . " specific, verifiable factual claims "
-            . "from the following text. Ignore opinions, hedges, and general statements.\n\n"
-            . "Output ONLY a JSON array of claim strings — no explanation, no numbering.\n"
-            . "Example: [\"The census was conducted in 1880.\", \"John Smith lived in Ohio.\"]\n\n"
-            . "TEXT:\n{$truncated}";
+    /**
+     * @param  array<string,mixed>  $policy
+     * @return string[]
+     */
+    private function extractClaimsWithPolicy(string $response, array $policy): array
+    {
+        $truncated = mb_substr($response, 0, $policy['response_max_chars']);
+
+        $prompt = "Extract up to {$policy['max_claims']} specific, verifiable factual claims "
+            ."from the following text. Ignore opinions, hedges, and general statements.\n\n"
+            ."Output ONLY a JSON array of claim strings — no explanation, no numbering.\n"
+            ."Example: [\"The census was conducted in 1880.\", \"John Smith lived in Ohio.\"]\n\n"
+            ."TEXT:\n{$truncated}";
 
         $result = $this->ai->process($prompt, [
-            'max_tokens'     => 400,
-            'temperature'    => 0.1,
-            'expect_json'    => true,
-            'task_type'      => 'grounding_claim_extraction',
-            'model_role'     => 'fast',
+            'max_tokens' => $policy['claim_extractor']['max_tokens'],
+            'temperature' => $policy['claim_extractor']['temperature'],
+            'expect_json' => true,
+            'task_type' => 'grounding_claim_extraction',
+            'model_role' => $policy['claim_extractor']['model_role'],
             'suppress_alert' => true,
         ]);
 
-        if (!($result['success'] ?? false)) {
+        if (! ($result['success'] ?? false)) {
             Log::warning('GroundingVerifierService: claim extraction failed', [
-                'error' => $result['error'] ?? 'unknown',
+                'model_error_logged' => false,
             ]);
+
             return [];
         }
 
@@ -184,16 +186,17 @@ class GroundingVerifierService
         }
 
         $claims = json_decode($raw, true);
-        if (!is_array($claims)) {
+        if (! is_array($claims)) {
             Log::warning('GroundingVerifierService: claim JSON parse failed', [
-                'raw' => substr($raw, 0, 200),
+                ...SensitiveTextTelemetry::content($raw, self::MODEL_RESPONSE_TELEMETRY_SCOPE, 'model_response'),
             ]);
+
             return [];
         }
 
         return array_values(array_filter(
-            array_slice($claims, 0, self::MAX_CLAIMS),
-            fn($c) => is_string($c) && mb_strlen(trim($c)) >= 10
+            array_slice($claims, 0, $policy['max_claims']),
+            fn ($c) => is_string($c) && mb_strlen(trim($c)) >= $policy['minimum_claim_chars']
         ));
     }
 
@@ -205,11 +208,20 @@ class GroundingVerifierService
      * Check whether a single claim is entailed, neutral, or contradicted
      * by the provided source documents.
      *
-     * @param  string   $claim
-     * @param  object[] $documents  stdClass objects with ->id and ->content
+     * @param  object[]  $documents  stdClass objects with ->id and ->content
      * @return array{label: string, score: float, evidence_doc_id: int|null}
      */
     public function checkGrounding(string $claim, array $documents): array
+    {
+        return $this->checkGroundingWithPolicy($claim, $documents, $this->runtimePolicy->required());
+    }
+
+    /**
+     * @param  object[]  $documents
+     * @param  array<string,mixed>  $policy
+     * @return array{label: string, score: float, evidence_doc_id: int|null}
+     */
+    private function checkGroundingWithPolicy(string $claim, array $documents, array $policy): array
     {
         if (empty($documents)) {
             return ['label' => 'neutral', 'score' => 0.0, 'evidence_doc_id' => null];
@@ -217,33 +229,35 @@ class GroundingVerifierService
 
         // Build evidence block from top docs
         $evidenceParts = [];
-        foreach (array_slice($documents, 0, self::MAX_DOCS_FOR_NLI) as $idx => $doc) {
-            $snippet        = mb_substr($doc->content ?? '', 0, self::MAX_DOC_CHARS);
-            $title          = $doc->title ?? "Document " . ($idx + 1);
+        $documents = array_slice($documents, 0, $policy['max_source_documents']);
+        foreach ($documents as $idx => $doc) {
+            $snippet = mb_substr($doc->content ?? '', 0, $policy['document_max_chars']);
+            $title = $doc->title ?? 'Document '.($idx + 1);
             $evidenceParts[] = "[Doc {$idx}] {$title}\n{$snippet}";
         }
         $evidence = implode("\n\n", $evidenceParts);
 
         $prompt = "Classify the relationship between the CLAIM and the SOURCES.\n\n"
-            . "CLAIM: \"{$claim}\"\n\n"
-            . "SOURCES:\n{$evidence}\n\n"
-            . "Classification rules:\n"
-            . "- entailed: at least one source directly confirms or strongly supports the claim\n"
-            . "- contradicted: at least one source directly denies the claim\n"
-            . "- neutral: no source confirms or denies the claim\n\n"
-            . "Output ONLY valid JSON (no markdown):\n"
-            . "{\"label\": \"entailed|contradicted|neutral\", \"score\": 0.0-1.0, \"doc_index\": 0-2_or_null}";
+            ."CLAIM: \"{$claim}\"\n\n"
+            ."SOURCES:\n{$evidence}\n\n"
+            ."Classification rules:\n"
+            ."- entailed: at least one source directly confirms or strongly supports the claim\n"
+            ."- contradicted: at least one source directly denies the claim\n"
+            ."- neutral: no source confirms or denies the claim\n\n"
+            ."Output ONLY valid JSON (no markdown):\n"
+            .'{"label": "entailed|contradicted|neutral", "score": 0.0-1.0, "doc_index": 0-'
+            .($policy['max_source_documents'] - 1).'_or_null}';
 
         $result = $this->ai->process($prompt, [
-            'max_tokens'     => 120,
-            'temperature'    => 0.0,
-            'expect_json'    => true,
-            'task_type'      => 'grounding_nli_check',
-            'model_role'     => 'fast',
+            'max_tokens' => $policy['nli']['max_tokens'],
+            'temperature' => $policy['nli']['temperature'],
+            'expect_json' => true,
+            'task_type' => 'grounding_nli_check',
+            'model_role' => $policy['nli']['model_role'],
             'suppress_alert' => true,
         ]);
 
-        if (!($result['success'] ?? false)) {
+        if (! ($result['success'] ?? false)) {
             return ['label' => 'neutral', 'score' => 0.0, 'evidence_doc_id' => null];
         }
 
@@ -255,24 +269,26 @@ class GroundingVerifierService
         }
 
         $parsed = json_decode($raw, true);
-        if (!is_array($parsed)) {
+        if (! is_array($parsed)) {
             return ['label' => 'neutral', 'score' => 0.0, 'evidence_doc_id' => null];
         }
 
         $label = $parsed['label'] ?? 'neutral';
-        if (!in_array($label, ['entailed', 'contradicted', 'neutral'], true)) {
+        if (! in_array($label, ['entailed', 'contradicted', 'neutral'], true)) {
             $label = 'neutral';
         }
 
         // Map doc_index back to real document ID
-        $docIndex     = isset($parsed['doc_index']) && is_int($parsed['doc_index']) ? $parsed['doc_index'] : null;
+        $docIndex = isset($parsed['doc_index']) && is_int($parsed['doc_index']) ? $parsed['doc_index'] : null;
         $evidenceDocId = ($docIndex !== null && isset($documents[$docIndex]))
             ? ($documents[$docIndex]->id ?? null)
             : null;
 
         return [
-            'label'           => $label,
-            'score'           => (float) ($parsed['score'] ?? 0.5),
+            'label' => $label,
+            'score' => is_numeric($parsed['score'] ?? null)
+                ? max(0.0, min(1.0, (float) $parsed['score']))
+                : $policy['neutral_score'],
             'evidence_doc_id' => $evidenceDocId,
         ];
     }
@@ -286,14 +302,32 @@ class GroundingVerifierService
      */
     public function determineVerdict(float $groundingScore): string
     {
-        if ($groundingScore >= self::THRESHOLD_GROUNDED) {
+        return $this->determineVerdictWithPolicy($groundingScore, $this->runtimePolicy->required());
+    }
+
+    /** @param array<string,mixed> $policy */
+    private function determineVerdictWithPolicy(float $groundingScore, array $policy): string
+    {
+        if ($groundingScore >= $policy['grounded_threshold']) {
             return 'grounded';
         }
 
-        if ($groundingScore >= self::THRESHOLD_PARTIAL) {
+        if ($groundingScore >= $policy['partial_threshold']) {
             return 'partially_grounded';
         }
 
         return 'ungrounded';
+    }
+
+    /**
+     * @param  array<string,mixed>  $policy
+     * @return array{policy_source:string,effective_policy:array<string,mixed>}
+     */
+    private function policyMetadata(array $policy): array
+    {
+        return [
+            'policy_source' => 'system_configs.'.GroundingVerifierRuntimePolicyService::CONFIG_KEY,
+            'effective_policy' => $policy,
+        ];
     }
 }

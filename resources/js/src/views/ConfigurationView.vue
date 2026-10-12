@@ -25,7 +25,7 @@
     <!-- Alert Messages -->
     <div v-if="alert.show" :class="alertClasses" class="mb-6 p-4 rounded-lg">
       <div class="flex items-start">
-        <div class="flex-shrink-0">
+        <div class="shrink-0">
           <svg v-if="alert.type === 'success'" class="h-5 w-5 text-green-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
           </svg>
@@ -37,7 +37,7 @@
           <p class="text-sm font-medium">{{ alert.message }}</p>
         </div>
         <div class="ml-auto pl-3">
-          <button @click="alert.show = false" class="inline-flex rounded-md p-1.5 focus:outline-none focus:ring-2 focus:ring-offset-2">
+          <button @click="alert.show = false" class="inline-flex rounded-md p-1.5 focus:outline-hidden focus:ring-2 focus:ring-offset-2">
             <span class="sr-only">Dismiss</span>
             <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
               <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
@@ -69,6 +69,7 @@
             :config="config"
             v-model="config.value"
             @update:modelValue="markAsChanged(config)"
+            @clear-secret="setSecretClear(config, $event)"
           />
         </div>
       </div>
@@ -86,6 +87,7 @@
             :config="config"
             v-model="config.value"
             @update:modelValue="markAsChanged(config)"
+            @clear-secret="setSecretClear(config, $event)"
           />
         </div>
       </div>
@@ -103,6 +105,7 @@
             :config="config"
             v-model="config.value"
             @update:modelValue="markAsChanged(config)"
+            @clear-secret="setSecretClear(config, $event)"
           />
         </div>
       </div>
@@ -120,6 +123,7 @@
             :config="config"
             v-model="config.value"
             @update:modelValue="markAsChanged(config)"
+            @clear-secret="setSecretClear(config, $event)"
           />
         </div>
       </div>
@@ -137,6 +141,7 @@
             :config="config"
             v-model="config.value"
             @update:modelValue="markAsChanged(config)"
+            @clear-secret="setSecretClear(config, $event)"
           />
         </div>
       </div>
@@ -154,6 +159,7 @@
             :config="config"
             v-model="config.value"
             @update:modelValue="markAsChanged(config)"
+            @clear-secret="setSecretClear(config, $event)"
           />
         </div>
       </div>
@@ -171,6 +177,7 @@
             :config="config"
             v-model="config.value"
             @update:modelValue="markAsChanged(config)"
+            @clear-secret="setSecretClear(config, $event)"
           />
         </div>
       </div>
@@ -272,7 +279,8 @@ async function saveChanges() {
         if (config) {
           configsToUpdate.push({
             id: config.id,
-            value: config.value
+            value: config.value,
+            clear_secret: config.clear_secret === true
           });
         }
       }
@@ -295,6 +303,17 @@ async function saveChanges() {
 }
 
 function markAsChanged(config) {
+  if (config.is_secret && config.value) {
+    config.clear_secret = false;
+  }
+  changedConfigs.add(config.id);
+}
+
+function setSecretClear(config, clear) {
+  config.clear_secret = clear;
+  if (clear) {
+    config.value = null;
+  }
   changedConfigs.add(config.id);
 }
 

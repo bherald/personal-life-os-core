@@ -39,6 +39,8 @@ return [
         'url' => env('NEXTCLOUD_URL'),
         'username' => env('NEXTCLOUD_USERNAME'),
         'password' => env('NEXTCLOUD_PASSWORD'),
+        'fileid_proof_timeout_seconds' => 15,
+        'fileid_proof_max_response_bytes' => 65536,
         'data_path' => env('NEXTCLOUD_DATA_PATH'),  // Direct filesystem access; blank disables filesystem-first reads
         'joplin_path' => env('NEXTCLOUD_JOPLIN_PATH', '/Joplin-data'),
         'library_root' => env('NEXTCLOUD_LIBRARY_ROOT', env('NEXTCLOUD_WINDOWS_BASE', '/Library')),
@@ -93,18 +95,37 @@ return [
     'image_sidecar' => [
         'url' => env('PLOS_IMAGE_SIDECAR_URL'),
         'token' => env('PLOS_IMAGE_SIDECAR_TOKEN'),
+        'token_file' => env('PLOS_IMAGE_SIDECAR_TOKEN_FILE'),
         'timeout' => env('PLOS_IMAGE_SIDECAR_TIMEOUT', 240),
+    ],
+
+    // File paths are safe to cache; secret contents remain outside the cached
+    // configuration and are read only when a provider requests its env key.
+    'runtime_secret_files' => [
+        'PLOS_COLIBRI_API_KEY' => env('PLOS_COLIBRI_API_KEY_FILE'),
+        'PLOS_KIMI_K3_API_KEY' => env('PLOS_KIMI_K3_API_KEY_FILE'),
+        'TYPESAFE_API_KEY' => env('TYPESAFE_API_KEY_FILE'),
+    ],
+
+    'reranker_sidecar' => [
+        'url' => env('PLOS_RERANKER_URL', 'http://127.0.0.1:9230'),
+        'python' => env('PLOS_RERANKER_PYTHON'),
+        'cache' => env('PLOS_RERANKER_CACHE'),
+        'model' => env('PLOS_RERANKER_MODEL', 'Qwen/Qwen3-Reranker-0.6B'),
+        'revision' => env('PLOS_RERANKER_REVISION', 'e61197ed45024b0ed8a2d74b80b4d909f1255473'),
+        'device' => env('PLOS_RERANKER_DEVICE', 'cpu'),
+    ],
+
+    'tts' => [
+        'provider' => env('PLOS_TTS_PROVIDER', 'auto'),
+        'command' => env('PLOS_TTS_COMMAND'),
+        'voice' => env('PLOS_TTS_VOICE', ''),
+        'model' => env('PLOS_TTS_MODEL', ''),
+        'timeout' => env('PLOS_TTS_TIMEOUT', 120),
     ],
 
     'faces' => [
         'photoprism_export_path' => env('PLOS_FACE_PHOTOPRISM_EXPORT_PATH'),
-    ],
-
-    'anthropic' => [
-        'api_key' => env('ANTHROPIC_API_KEY'),
-        'model' => env('CLAUDE_MODEL', 'claude-3-5-sonnet-20241022'),
-        'cli_path' => env('CLAUDE_CLI_PATH', 'claude'),
-        'cli_oauth_token' => env('CLAUDE_CODE_OAUTH_TOKEN'),
     ],
 
     /*
@@ -123,13 +144,6 @@ return [
         'archive_profile_path' => env('THUNDERBIRD_ARCHIVE_PROFILE_PATH', '/Email/Thunderbird'),
     ],
 
-    'claude' => [
-        // Claude Agent SDK HTTP Proxy for MCP tool access
-        // Provides fallback when Ollama is unavailable
-        'agent_proxy_url' => env('CLAUDE_AGENT_PROXY_URL', 'http://127.0.0.1:8770'),
-        'agent_proxy_timeout' => env('CLAUDE_AGENT_PROXY_TIMEOUT', 120),
-    ],
-
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),
@@ -139,6 +153,8 @@ return [
         'default_mode' => env('AI_DEFAULT_MODE', 'auto'),
         'use_dynamic_pool' => env('AI_USE_DYNAMIC_POOL', true),
         'cache_enabled' => env('AI_CACHE_ENABLED', true),
+        'cache_identity_max_bytes' => 1048576,
+        'cache_identity_max_depth' => 32,
         'cache_similarity' => env('AI_CACHE_SIMILARITY', 0.85),
         'cache_ttl' => env('AI_CACHE_TTL', 86400),
         'semantic_cache' => env('AI_SEMANTIC_CACHE', true),
@@ -163,10 +179,33 @@ return [
     'whisper' => [
         'path' => env('WHISPER_PATH'),  // Auto-detect if null
         'model' => env('WHISPER_MODEL', 'base'),
+        'model_dir' => env('WHISPER_MODEL_DIR'),
+        'device' => env('WHISPER_DEVICE', 'auto'),  // auto, cpu, or cuda
         'language' => env('WHISPER_LANGUAGE', ''),  // Empty = auto-detect
-        'timeout' => env('WHISPER_TIMEOUT', 300),  // 5 min default
-        'gpu_lock_ttl' => env('WHISPER_GPU_LOCK_TTL', 900),  // 15 min max lock
-        'youtube_download_timeout' => env('WHISPER_YOUTUBE_DOWNLOAD_TIMEOUT', 120),
+        'timeout' => env('WHISPER_TIMEOUT', 300),  // Duration-aware floor
+        'timeout_per_audio_second' => env('WHISPER_TIMEOUT_PER_AUDIO_SECOND', 10),
+        'timeout_cap' => env('WHISPER_TIMEOUT_CAP', 43200),
+        // Never shorten the historical duration baseline; heavier models only add bounded headroom.
+        'timeout_model_factors' => [
+            'tiny' => 1.0,
+            'tiny.en' => 1.0,
+            'base' => 1.0,
+            'base.en' => 1.0,
+            'small' => 1.0,
+            'small.en' => 1.0,
+            'medium' => 2.0,
+            'medium.en' => 2.0,
+            'large' => 4.0,
+            'large-v1' => 4.0,
+            'large-v2' => 4.0,
+            'large-v3' => 4.0,
+            'large-v3-turbo' => 2.0,
+        ],
+        'preparation_timeout' => env('WHISPER_PREPARATION_TIMEOUT', 120),
+        'preparation_timeout_per_media_second' => env('WHISPER_PREPARATION_TIMEOUT_PER_MEDIA_SECOND', 0.5),
+        'preparation_timeout_cap' => env('WHISPER_PREPARATION_TIMEOUT_CAP', 21600),
+        'duration_probe_timeout' => env('WHISPER_DURATION_PROBE_TIMEOUT', 10),
+        'gpu_lock_ttl' => env('WHISPER_GPU_LOCK_TTL', 900),  // Minimum; duration-aware runs extend it
     ],
 
     'newsapi' => [
@@ -196,8 +235,9 @@ return [
     |--------------------------------------------------------------------------
     |
     | Local SearXNG instance for privacy-respecting federated search.
-    | Install: pip install searxng in /opt/searxng/venv
-    | Systemd service: searxng.service
+    | Install: pinned source + isolated Python environment + Granian.
+    | Setup: docs/reviews/searxng-upgrade-2026-09-12.md
+    | Systemd: searxng.service (dev user service; production system service).
     |
     */
     'searxng' => [

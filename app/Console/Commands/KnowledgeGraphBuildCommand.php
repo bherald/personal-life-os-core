@@ -2,7 +2,9 @@
 
 namespace App\Console\Commands;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\HyperGraphService;
+use App\Services\KnowledgeGraphControllerBatchLeaseService;
 use App\Services\KnowledgeGraphService;
 use Exception;
 use Illuminate\Console\Command;
@@ -33,7 +35,7 @@ class KnowledgeGraphBuildCommand extends Command
         {--order=newest : Processing order: newest, oldest, or stale-first}
         {--budget-minutes= : Override the runtime budget in minutes for a manual catch-up run}
         {--prefer-external : Skip Ollama, use external APIs first}
-        {--instance=primary : Pin Ollama route: primary local, secondary local, or any}
+        {--instance=primary : Pin Ollama route: primary local, secondary local, managed-secondary controller lease, or any}
         {--model-role=fast : Model role to resolve: fast, standard, quality}
         {--with-hyperedges : GR-11: Also extract N-ary hyperedges for each document}';
 
@@ -76,8 +78,8 @@ class KnowledgeGraphBuildCommand extends Command
         $preferExternal = $this->option('prefer-external');
         $withHyperedges = $this->option('with-hyperedges');
         $instance = strtolower((string) ($this->option('instance') ?: 'primary'));
-        if (! in_array($instance, ['primary', 'secondary', 'any'], true)) {
-            $this->error("Invalid --instance value '{$instance}'. Expected one of: primary, secondary, any.");
+        if (! in_array($instance, ['primary', 'secondary', 'managed-secondary', 'any'], true)) {
+            $this->error("Invalid --instance value '{$instance}'. Expected one of: primary, secondary, managed-secondary, any.");
 
             return Command::FAILURE;
         }
@@ -188,11 +190,27 @@ class KnowledgeGraphBuildCommand extends Command
 
             $startTime = microtime(true);
 
-            foreach ($documents as $i => $doc) {
+            $processDocument = function (object $doc, int $i, bool $managedModelHost = false) use (
+                $startedAt,
+                $deadlineSeconds,
+                $kgService,
+                $hyperService,
+                $maxChars,
+                $minConfidence,
+                $preferExternal,
+                $instance,
+                $modelRole,
+                $withHyperedges,
+                $sleepMs,
+                $documents,
+                $bar,
+                &$stats,
+            ): bool {
                 if ($this->shouldStopBeforeDocument($startedAt, $deadlineSeconds, $i)) {
                     $this->newLine();
                     $this->warn("Stopped early to stay within runtime budget ({$deadlineSeconds}s)");
-                    break;
+
+                    return false;
                 }
 
                 try {
@@ -214,8 +232,9 @@ class KnowledgeGraphBuildCommand extends Command
                         'prefer_external' => $preferExternal,
                         'skip_recursive' => true,
                         'scheduled_batch' => true,
-                        'preferred_instance' => $instance,
+                        'preferred_instance' => $managedModelHost ? 'secondary' : $instance,
                         'model_role_override' => $modelRole,
+                        'managed_model_host' => $managedModelHost,
                     ]);
 
                     if ($result['success']) {
@@ -239,7 +258,7 @@ class KnowledgeGraphBuildCommand extends Command
                             try {
                                 $hyper = $hyperService->buildFromDocument($content, $doc->id);
                                 $stats['hyperedges_stored'] += $hyper['stored'];
-                            } catch (\Exception $e) {
+                            } catch (Exception $e) {
                                 // Non-fatal — binary KG already stored
                             }
                         }
@@ -248,6 +267,9 @@ class KnowledgeGraphBuildCommand extends Command
                         $stats['failed']++;
                     }
                 } catch (Exception $e) {
+                    if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                        throw $e;
+                    }
                     // Do NOT stamp kg_extracted_at on exception — allow retry next run
                     $stats['failed']++;
                     $this->newLine();
@@ -262,6 +284,59 @@ class KnowledgeGraphBuildCommand extends Command
                 // Rate limiting sleep (skip on last doc)
                 if ($sleepMs > 0 && $i < count($documents) - 1) {
                     usleep($sleepMs * 1000);
+                }
+
+                return true;
+            };
+
+            $controllerFailure = false;
+            if ($instance === 'managed-secondary') {
+                /** @var KnowledgeGraphControllerBatchLeaseService $batchLease */
+                $batchLease = app(KnowledgeGraphControllerBatchLeaseService::class);
+                foreach (array_chunk(array_values($documents), 3) as $batchNumber => $batch) {
+                    $baseIndex = $batchNumber * 3;
+                    if ($this->shouldStopBeforeDocument($startedAt, $deadlineSeconds, $baseIndex)) {
+                        $this->newLine();
+                        $this->warn("Stopped early to stay within runtime budget ({$deadlineSeconds}s)");
+                        break;
+                    }
+
+                    $attempted = 0;
+                    try {
+                        $receipt = $batchLease->run(count($batch), function (int $offset) use (
+                            $batch,
+                            $baseIndex,
+                            $processDocument,
+                            &$attempted,
+                        ): void {
+                            $attempted++;
+                            $processDocument($batch[$offset], $baseIndex + $offset, true);
+                        });
+                        $this->newLine();
+                        $this->info(sprintf(
+                            '[MHC_BATCH_LEASE:green target=ollama_qwen3_8b_87 size=%d cleanup=released]',
+                            count($receipt['results'] ?? [])
+                        ));
+                    } catch (\Throwable $exception) {
+                        if (InferenceAdmissionException::isAdmissionFailure($exception)) {
+                            throw $exception;
+                        }
+                        $controllerFailure = true;
+                        $unattempted = max(0, count($batch) - $attempted);
+                        $stats['failed'] += $unattempted;
+                        for ($offset = $attempted; $offset < count($batch); $offset++) {
+                            $bar->advance();
+                        }
+                        $this->newLine();
+                        $this->error('Managed .87 batch lease failed: '.substr($exception->getMessage(), 0, 200));
+                        break;
+                    }
+                }
+            } else {
+                foreach ($documents as $i => $doc) {
+                    if (! $processDocument($doc, $i)) {
+                        break;
+                    }
                 }
             }
 
@@ -302,7 +377,7 @@ class KnowledgeGraphBuildCommand extends Command
 
             $this->info(sprintf('[ITEMS_PROCESSED:%d]', $stats['success']));
 
-            return Command::SUCCESS;
+            return $controllerFailure ? Command::FAILURE : Command::SUCCESS;
         } finally {
             optional($lock)->release();
         }

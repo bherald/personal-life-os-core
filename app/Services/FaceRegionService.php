@@ -42,10 +42,13 @@ class FaceRegionService
      * @param  string  $imagePath  Path to image file
      * @return array Array of face regions with name, x, y, w, h
      */
-    public function readFaceRegions(string $imagePath): array
+    public function readFaceRegions(string $imagePath, bool $includeUnidentified = false, bool $throwOnFailure = false): array
     {
         if (! file_exists($imagePath)) {
             Log::warning('FaceRegionService: File not found', ['path' => $imagePath]);
+            if ($throwOnFailure) {
+                throw new \RuntimeException('Face metadata source is unavailable');
+            }
 
             return [];
         }
@@ -53,6 +56,9 @@ class FaceRegionService
         $exiftoolPath = $this->findExiftoolPath();
         if (! $exiftoolPath) {
             Log::warning('FaceRegionService: ExifTool not found');
+            if ($throwOnFailure) {
+                throw new \RuntimeException('Face metadata reader is unavailable');
+            }
 
             return [];
         }
@@ -72,7 +78,10 @@ class FaceRegionService
                 if (! empty($output)) {
                     $data = json_decode($output, true);
                     if ($data && isset($data[0])) {
-                        $regions = $this->parseRegions($data[0]);
+                        if ($throwOnFailure && (! is_array($data[0]) || isset($data[0]['Error']) || isset($data[0]['Warning']))) {
+                            throw new \RuntimeException('Face metadata reader reported invalid source evidence');
+                        }
+                        $regions = $this->parseRegions($data[0], $includeUnidentified);
                         if (! empty($regions)) {
                             return $regions;
                         }
@@ -93,27 +102,45 @@ class FaceRegionService
                     'path' => $imagePath,
                     'error' => $result->errorOutput(),
                 ]);
+                if ($throwOnFailure) {
+                    throw new \RuntimeException('Face metadata read failed');
+                }
 
                 return [];
             }
 
             $output = $result->output();
             if (empty($output)) {
+                if ($throwOnFailure) {
+                    throw new \RuntimeException('Face metadata reader returned no result');
+                }
+
                 return [];
             }
 
             $data = json_decode($output, true);
             if (! $data || ! isset($data[0])) {
+                if ($throwOnFailure) {
+                    throw new \RuntimeException('Face metadata reader returned an invalid result');
+                }
+
                 return [];
             }
 
-            return $this->parseFlatRegions($data[0]);
+            if ($throwOnFailure && (! is_array($data[0]) || isset($data[0]['Error']) || isset($data[0]['Warning']))) {
+                throw new \RuntimeException('Face metadata reader reported invalid source evidence');
+            }
+
+            return $this->parseFlatRegions($data[0], $includeUnidentified);
 
         } catch (\Exception $e) {
             Log::error('FaceRegionService: Read failed', [
                 'path' => $imagePath,
                 'error' => $e->getMessage(),
             ]);
+            if ($throwOnFailure) {
+                throw $e;
+            }
 
             return [];
         }
@@ -197,26 +224,26 @@ class FaceRegionService
             file_put_contents($jsonFile, json_encode([$regionsStruct], JSON_PRETTY_PRINT));
 
             // Write regions using ExifTool
-            $result = Process::timeout(60)->run([
-                $exiftoolPath,
+            $result = app(ExifWritebackService::class)->writeVerifiedMetadata($imagePath, [
                 '-overwrite_original',
                 '-XMP-mwg-rs:Regions<='.$jsonFile,
-                $imagePath,
             ]);
 
             @unlink($jsonFile);
 
-            if ($result->successful()) {
+            if ($result['success']) {
                 Log::info('FaceRegionService: Wrote face regions', [
                     'path' => $imagePath,
                     'count' => count($regionList),
                 ]);
 
                 return true;
-            } else {
+            } elseif (empty($result['source_replaced']) && str_starts_with($result['error'] ?? '', 'Metadata preparation failed:')) {
                 // Alternative approach: write each field separately
                 return $this->writeRegionsFallback($imagePath, $regions, $dimensions, $exiftoolPath);
             }
+
+            return false;
 
         } catch (\Exception $e) {
             Log::error('FaceRegionService: Write failed', [
@@ -234,18 +261,10 @@ class FaceRegionService
     protected function writeRegionsFallback(string $imagePath, array $regions, array $dimensions, string $exiftoolPath): bool
     {
         try {
-            // First, clear existing regions
-            Process::timeout(30)->run([
-                $exiftoolPath,
+            // Clear and replace only on the isolated, verified temp source.
+            $args = [
                 '-overwrite_original',
                 '-XMP-mwg-rs:all=',
-                $imagePath,
-            ]);
-
-            // Build ExifTool arguments for MWG-rs
-            $args = [
-                $exiftoolPath,
-                '-overwrite_original',
                 '-XMP-mwg-rs:RegionAppliedToDimensionsW='.$dimensions['width'],
                 '-XMP-mwg-rs:RegionAppliedToDimensionsH='.$dimensions['height'],
                 '-XMP-mwg-rs:RegionAppliedToDimensionsUnit=pixel',
@@ -268,11 +287,9 @@ class FaceRegionService
                 $args[] = sprintf('-XMP-mwg-rs:RegionType[%d]=%s', $idx, $region['type'] ?? 'Face');
             }
 
-            $args[] = $imagePath;
+            $result = app(ExifWritebackService::class)->writeVerifiedMetadata($imagePath, $args);
 
-            $result = Process::timeout(60)->run($args);
-
-            if ($result->successful()) {
+            if ($result['success']) {
                 Log::info('FaceRegionService: Wrote face regions (fallback method)', [
                     'path' => $imagePath,
                     'count' => count($regions),
@@ -283,7 +300,7 @@ class FaceRegionService
 
             Log::warning('FaceRegionService: Fallback write also failed', [
                 'path' => $imagePath,
-                'error' => $result->errorOutput(),
+                'error' => $result['error'] ?? 'Verified metadata write failed',
             ]);
 
             return false;
@@ -315,6 +332,177 @@ class FaceRegionService
 
         // Write all regions back
         return $this->writeFaceRegions($imagePath, $existingRegions);
+    }
+
+    /** Read the exact structured metadata used by an explicit operator repair. */
+    public function readFaceMetadataEvidence(string $imagePath, ?string $expectedSourceHash = null): array
+    {
+        $path = realpath($imagePath);
+        $exiftool = $this->findExiftoolPath();
+        if (! $path || ! is_file($path) || ! $exiftool) {
+            throw new \RuntimeException('Face metadata source or reader is unavailable');
+        }
+        $sourceHash = hash_file('sha256', $path);
+        if (! is_string($sourceHash)) {
+            throw new \RuntimeException('Face metadata source bytes are unavailable');
+        }
+        if ($expectedSourceHash !== null && (! preg_match('/^[a-f0-9]{64}$/D', $expectedSourceHash)
+            || ! hash_equals($expectedSourceHash, $sourceHash))) {
+            throw new \RuntimeException('Face metadata source changed');
+        }
+        $read = Process::timeout(30)->run([$exiftool, '-json', '-struct', '-XMP-mwg-rs:RegionInfo', $path]);
+        $records = $read->successful() ? json_decode($read->output(), true, flags: JSON_THROW_ON_ERROR) : null;
+        if (! is_array($records) || count($records) !== 1 || ! is_array($records[0] ?? null)
+            || ($records[0]['SourceFile'] ?? null) !== $path || isset($records[0]['Error']) || isset($records[0]['Warning'])) {
+            throw new \RuntimeException('Face metadata evidence could not be read');
+        }
+        $info = array_key_exists('RegionInfo', $records[0]) ? $records[0]['RegionInfo'] : ($records[0]['Regions'] ?? []);
+        if (! is_array($info) || ! is_array($info['RegionList'] ?? []) || ! array_is_list($info['RegionList'] ?? [])) {
+            throw new \RuntimeException('Face metadata region structure is ambiguous');
+        }
+        foreach ($info['RegionList'] ?? [] as $region) {
+            if (! is_array($region)) {
+                throw new \RuntimeException('Face metadata region structure is ambiguous');
+            }
+        }
+        $dimensions = $this->decodedImageDimensions($path);
+        if (! hash_equals($sourceHash, hash_file('sha256', $path))) {
+            throw new \RuntimeException('Face metadata source changed during inspection');
+        }
+
+        return ['source_path' => $path, 'source_sha256' => $sourceHash, 'source_dimensions' => $dimensions,
+            'region_info_sha256' => $this->faceMetadataDigest($info),
+            'region_info' => $info];
+    }
+
+    /** Stable structural digest; the accompanying source SHA binds the original bytes. */
+    public function faceMetadataDigest(array $info): string
+    {
+        $sort = function (mixed $value) use (&$sort): mixed {
+            if (is_array($value)) {
+                ksort($value);
+
+                return array_map($sort, $value);
+            }
+
+            return $value;
+        };
+
+        return hash('sha256', json_encode($sort($info), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * Merge individually confirmed MWG regions while preserving the raw metadata.
+     * Read failures are distinct from a successful read with no regions.
+     */
+    public function mergeConfirmedFaceRegions(string $imagePath, array $confirmedRegions): bool
+    {
+        if (! $this->metadataWritebackEnabled() || ! is_file($imagePath) || $confirmedRegions === []) {
+            return false;
+        }
+        $exiftoolPath = $this->findExiftoolPath();
+        if (! $exiftoolPath) {
+            return false;
+        }
+
+        $jsonFile = null;
+        try {
+            $read = Process::timeout(30)->run([
+                $exiftoolPath, '-json', '-struct', '-XMP-mwg-rs:RegionInfo', $imagePath,
+            ]);
+            if (! $read->successful()) {
+                return false;
+            }
+            $data = json_decode($read->output(), true, flags: JSON_THROW_ON_ERROR);
+            if (! is_array($data) || ! isset($data[0]) || ! is_array($data[0])
+                || ($data[0]['SourceFile'] ?? null) !== $imagePath
+                || isset($data[0]['Error']) || isset($data[0]['Warning'])) {
+                return false;
+            }
+            $regionInfo = array_key_exists('RegionInfo', $data[0]) ? $data[0]['RegionInfo'] : ($data[0]['Regions'] ?? []);
+            if (! is_array($regionInfo)) {
+                return false;
+            }
+            $regions = array_key_exists('RegionList', $regionInfo) ? $regionInfo['RegionList'] : [];
+            if (! is_array($regions) || ! array_is_list($regions)) {
+                return false;
+            }
+            foreach ($regions as $region) {
+                if (! is_array($region)) {
+                    return false;
+                }
+            }
+
+            $dimensions = $this->decodedImageDimensions($imagePath);
+            if ($dimensions === null || (($regions !== [] || array_key_exists('AppliedToDimensions', $regionInfo))
+                && $this->appliedDimensionsHoldReason($regionInfo['AppliedToDimensions'] ?? null, $dimensions) !== null)) {
+                return false;
+            }
+
+            $tolerance = max(0.0, (float) config('genealogy.face_region_match_tolerance'));
+            foreach ($confirmedRegions as $confirmed) {
+                if (! is_string($confirmed['name'] ?? null) || trim($confirmed['name']) === '') {
+                    return false;
+                }
+                foreach (['x', 'y', 'w', 'h'] as $axis) {
+                    if (! is_numeric($confirmed[$axis] ?? null)
+                        || (float) $confirmed[$axis] < 0 || (float) $confirmed[$axis] > 1) {
+                        return false;
+                    }
+                }
+                $matched = false;
+                foreach ($regions as &$region) {
+                    if (($region['Type'] ?? 'Face') !== 'Face' || ($region['Area']['Unit'] ?? '') !== 'normalized') {
+                        continue;
+                    }
+                    $sameRegion = true;
+                    foreach (['x' => 'X', 'y' => 'Y', 'w' => 'W', 'h' => 'H'] as $axis => $tag) {
+                        if (! is_numeric($region['Area'][$tag] ?? null)
+                            || abs((float) $region['Area'][$tag] - (float) $confirmed[$axis]) > $tolerance) {
+                            $sameRegion = false;
+                            break;
+                        }
+                    }
+                    if ($sameRegion) {
+                        $region['Name'] = $confirmed['name'];
+                        $matched = true;
+                        break;
+                    }
+                }
+                unset($region);
+                if (! $matched) {
+                    $regions[] = [
+                        'Area' => ['X' => $confirmed['x'], 'Y' => $confirmed['y'], 'W' => $confirmed['w'], 'H' => $confirmed['h'], 'Unit' => 'normalized'],
+                        'Name' => $confirmed['name'], 'Type' => 'Face',
+                    ];
+                }
+            }
+
+            if (! isset($regionInfo['AppliedToDimensions'])) {
+                $regionInfo['AppliedToDimensions'] = ['W' => $dimensions['width'], 'H' => $dimensions['height'], 'Unit' => 'pixel'];
+            }
+            $regionInfo['RegionList'] = $regions;
+            $jsonFile = tempnam(sys_get_temp_dir(), 'face_region_merge_');
+            if ($jsonFile === false || file_put_contents($jsonFile, json_encode([
+                ['SourceFile' => '*', 'XMP-mwg-rs:RegionInfo' => $regionInfo],
+            ], JSON_THROW_ON_ERROR)) === false) {
+                return false;
+            }
+
+            // The common writer preserves a durable preimage and proves unchanged
+            // pixels/display geometry before advancing existing source receipts.
+            return app(ExifWritebackService::class)->writeVerifiedMetadata($imagePath, [
+                '-overwrite_original', '-preserve', '-struct', '-json='.$jsonFile,
+            ])['success'];
+        } catch (\Throwable $e) {
+            Log::warning('FaceRegionService: Confirmed region merge failed', ['error' => $e->getMessage()]);
+
+            return false;
+        } finally {
+            if (is_string($jsonFile)) {
+                @unlink($jsonFile);
+            }
+        }
     }
 
     /**
@@ -399,14 +587,12 @@ class FaceRegionService
         }
 
         try {
-            $result = Process::timeout(30)->run([
-                $exiftoolPath,
+            $result = app(ExifWritebackService::class)->writeVerifiedMetadata($imagePath, [
                 '-overwrite_original',
                 '-XMP-mwg-rs:all=',
-                $imagePath,
             ]);
 
-            return $result->successful();
+            return $result['success'];
 
         } catch (\Exception $e) {
             Log::error('FaceRegionService: Clear failed', [
@@ -460,7 +646,7 @@ class FaceRegionService
      * Parse flat array format regions (ExifTool flat-array representation)
      * Handles data like: RegionAreaX: [0.45, 0.36], RegionName: ["Name1", "Name2"]
      */
-    protected function parseFlatRegions(array $data): array
+    protected function parseFlatRegions(array $data, bool $includeUnidentified = false): array
     {
         $regions = [];
 
@@ -471,6 +657,7 @@ class FaceRegionService
         $widths = $data['RegionAreaW'] ?? $data['XMP:RegionAreaW'] ?? [];
         $heights = $data['RegionAreaH'] ?? $data['XMP:RegionAreaH'] ?? [];
         $types = $data['RegionType'] ?? $data['XMP:RegionType'] ?? [];
+        $units = $data['RegionAreaUnit'] ?? $data['XMP:RegionAreaUnit'] ?? [];
 
         // Ensure arrays
         if (! is_array($names)) {
@@ -492,13 +679,17 @@ class FaceRegionService
             $types = [$types];
         }
 
-        $count = count($names);
+        if (! is_array($units)) {
+            $units = [$units];
+        }
+
+        $count = $includeUnidentified ? max(count($names), count($xCoords), count($yCoords), count($widths), count($heights)) : count($names);
 
         for ($i = 0; $i < $count; $i++) {
             $name = $names[$i] ?? null;
 
             // Skip unnamed or "Unknown" regions
-            if (empty($name) || $name === 'Unknown') {
+            if (! $includeUnidentified && (empty($name) || $name === 'Unknown')) {
                 continue;
             }
 
@@ -510,6 +701,18 @@ class FaceRegionService
                 'w' => $this->normalizeCoordinate($widths[$i] ?? null),
                 'h' => $this->normalizeCoordinate($heights[$i] ?? null),
             ];
+            if ($includeUnidentified) {
+                $regions[array_key_last($regions)]['unit'] = $units[$i] ?? null;
+                $regions[array_key_last($regions)]['raw_area'] = [
+                    'X' => $xCoords[$i] ?? null, 'Y' => $yCoords[$i] ?? null,
+                    'W' => $widths[$i] ?? null, 'H' => $heights[$i] ?? null, 'Unit' => $units[$i] ?? null,
+                ];
+                $regions[array_key_last($regions)]['applied_to_dimensions'] = [
+                    'W' => $data['RegionAppliedToDimensionsW'] ?? $data['XMP:RegionAppliedToDimensionsW'] ?? null,
+                    'H' => $data['RegionAppliedToDimensionsH'] ?? $data['XMP:RegionAppliedToDimensionsH'] ?? null,
+                    'Unit' => $data['RegionAppliedToDimensionsUnit'] ?? $data['XMP:RegionAppliedToDimensionsUnit'] ?? null,
+                ];
+            }
         }
 
         return $regions;
@@ -518,7 +721,7 @@ class FaceRegionService
     /**
      * Parse regions from ExifTool output
      */
-    protected function parseRegions(array $data): array
+    protected function parseRegions(array $data, bool $includeUnidentified = false): array
     {
         $regions = [];
 
@@ -563,8 +766,14 @@ class FaceRegionService
                 $parsed['h'] = $this->normalizeCoordinate($area['H'] ?? $area['h'] ?? $area['Height'] ?? null);
             }
 
-            // Only add if we have a name
-            if ($parsed['name']) {
+            if ($includeUnidentified) {
+                $parsed['unit'] = $area['Unit'] ?? $area['unit'] ?? null;
+                $parsed['raw_area'] = $area;
+                $parsed['applied_to_dimensions'] = $regionData['AppliedToDimensions'] ?? null;
+            }
+
+            // Named-only callers retain their existing projection; imports may retain unidentified evidence.
+            if ($parsed['name'] || $includeUnidentified) {
                 $regions[] = $parsed;
             }
         }
@@ -596,6 +805,66 @@ class FaceRegionService
         return null;
     }
 
+    /** Verify the declared MWG pixel basis without interpreting legacy coordinates. */
+    public function appliedDimensionsHoldReason(mixed $applied, ?array $dimensions): ?string
+    {
+        if (! is_array($applied)) {
+            return 'applied_dimensions_missing';
+        }
+        if (($applied['Unit'] ?? null) !== 'pixel') {
+            return 'applied_dimensions_unit_unproven';
+        }
+        foreach (['W', 'H'] as $axis) {
+            if (! is_numeric($applied[$axis] ?? null) || ! is_finite((float) $applied[$axis]) || (float) $applied[$axis] <= 0) {
+                return 'applied_dimensions_invalid';
+            }
+        }
+        if ($dimensions === null) {
+            return 'source_dimensions_unproven';
+        }
+        if ((float) $applied['W'] !== (float) $dimensions['width'] || (float) $applied['H'] !== (float) $dimensions['height']) {
+            return 'applied_dimensions_mismatch';
+        }
+
+        return null;
+    }
+
+    /** Decode the encoded source dimensions; never auto-orient or repair metadata. */
+    public function decodedImageDimensions(string $imagePath): ?array
+    {
+        $size = @getimagesize($imagePath);
+        $bytes = @filesize($imagePath);
+        if (! $size || $size[0] <= 0 || $size[1] <= 0 || ! is_int($bytes)
+            || $bytes > (int) config('metadata_writeback.max_verification_bytes', 67108864)
+            || (int) config('metadata_writeback.max_verification_pixels', 16000000) < $size[0] * $size[1]
+            || ! function_exists('imagecreatefromstring')) {
+            return null;
+        }
+        $memoryLimit = ini_get('memory_limit');
+        if ($memoryLimit !== '-1') {
+            $scale = match (strtolower(substr($memoryLimit, -1))) {
+                'g' => 1073741824, 'm' => 1048576, 'k' => 1024, default => 1
+            };
+            if ((int) $memoryLimit * $scale - memory_get_usage(true) < $size[0] * $size[1] * 8 + $bytes * 2) {
+                return null;
+            }
+        }
+        $content = @file_get_contents($imagePath);
+        $decoded = is_string($content) ? @imagecreatefromstring($content) : false;
+        if (! $decoded) {
+            return null;
+        }
+        try {
+            if (imagesx($decoded) !== $size[0] || imagesy($decoded) !== $size[1]) {
+                return null;
+            }
+
+            return ['width' => $size[0], 'height' => $size[1]];
+        } finally {
+            imagedestroy($decoded);
+        }
+    }
+
     /**
      * Get image dimensions
      */
@@ -603,7 +872,7 @@ class FaceRegionService
     {
         // Try PHP getimagesize first
         $size = @getimagesize($imagePath);
-        if ($size && isset($size[0], $size[1])) {
+        if ($size && isset($size[0], $size[1]) && $size[0] > 0 && $size[1] > 0) {
             return ['width' => $size[0], 'height' => $size[1]];
         }
 
@@ -621,7 +890,10 @@ class FaceRegionService
 
                 if ($result->successful()) {
                     $data = json_decode($result->output(), true);
-                    if ($data && isset($data[0]['ImageWidth'], $data[0]['ImageHeight'])) {
+                    if ($data && isset($data[0]['ImageWidth'], $data[0]['ImageHeight'])
+                        && is_numeric($data[0]['ImageWidth']) && is_numeric($data[0]['ImageHeight'])
+                        && is_finite((float) $data[0]['ImageWidth']) && is_finite((float) $data[0]['ImageHeight'])
+                        && (int) $data[0]['ImageWidth'] > 0 && (int) $data[0]['ImageHeight'] > 0) {
                         return [
                             'width' => (int) $data[0]['ImageWidth'],
                             'height' => (int) $data[0]['ImageHeight'],

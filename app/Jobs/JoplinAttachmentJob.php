@@ -2,8 +2,11 @@
 
 namespace App\Jobs;
 
+use App\Services\AIService;
 use App\Services\JoplinAttachmentService;
+use App\Services\RagEmbeddingProvenanceService;
 use App\Services\SystemConfigService;
+use App\Support\PgVector;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -16,7 +19,7 @@ use Throwable;
  * JoplinAttachmentJob
  *
  * Horizon queue job for processing Joplin attachments
- * Uses v2 extraction pipeline: pdftotext → Tesseract → Claude → (Ollama fallback)
+ * Uses the v2 local extraction and vision pipeline.
  *
  * Queue: 'long-running' (isolated from regular background work)
  * Timeout: 30 minutes per attachment (OCR/PDF extraction can be expensive)
@@ -189,16 +192,47 @@ class JoplinAttachmentJob implements ShouldBeUnique, ShouldQueue
             $newContent = $currentContent."\n".$markdown;
         }
 
+        if (! is_string($newContent) || trim($newContent) === '') {
+            throw new \RuntimeException('Attachment merge produced empty parent-note content.');
+        }
+
+        // Generate the replacement vector before changing the searchable row.
+        // A provider failure therefore leaves the prior content/vector pair intact.
+        $embeddingResult = app(AIService::class)->generateEmbedding($newContent, [
+            'allow_cpu_fallback' => false,
+        ]);
+        if (! ($embeddingResult['success'] ?? false)) {
+            throw new \RuntimeException('Failed to re-embed the parent note after attachment processing.');
+        }
+
+        $embedding = is_array($embeddingResult['embedding'] ?? null)
+            ? $embeddingResult['embedding']
+            : [];
+        if ($embedding === []) {
+            throw new \RuntimeException('Parent-note re-embedding returned no vector.');
+        }
+
+        $inputHash = hash('sha256', $newContent);
+        $provenance = app(RagEmbeddingProvenanceService::class)->attach(
+            null,
+            $embeddingResult,
+            $inputHash
+        );
+
         // Update RAG document
         $updateSql = 'UPDATE rag_documents
                       SET content = ?,
+                          embedding = ?::vector,
                           content_hash = ?,
+                          metadata = COALESCE(metadata, \'{}\'::jsonb) || ?::jsonb,
                           updated_at = NOW()
                       WHERE id = ?';
 
         DB::connection('pgsql_rag')->update($updateSql, [
             $newContent,
+            PgVector::literal($embedding),
             md5($newContent),
+            json_encode($provenance, JSON_THROW_ON_ERROR),
             $note->id,
         ]);
 

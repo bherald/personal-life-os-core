@@ -63,6 +63,11 @@ class FaceCandidateDecisionService
             ];
         }
 
+        $evidence = app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($face);
+        if (! ($evidence['success'] ?? false)) {
+            return ['success' => false, 'status' => 409, 'error' => $evidence['reason'], 'review_required' => true];
+        }
+
         if ($face->genealogy_person_id !== null) {
             return [
                 'success' => false,
@@ -112,6 +117,9 @@ class FaceCandidateDecisionService
         $queue = $this->findQueueRow($fileRegistryFaceId, $mediaId, (string) $face->person_name);
         $queueMediaId = $mediaId ?? ($queue?->media_id !== null ? (int) $queue->media_id : null);
         $details = $this->decodeDetails($queue?->match_details ?? null);
+        $details['source_sha256'] = $evidence['source_sha256'];
+        $details['face_region_convention'] = 'normalized_top_left';
+        $details['source_path'] = $evidence['source_path'];
         $decision = $this->decisionPayload($action, $fileRegistryFaceId, $tree['id'], $candidatePersonId, $input, $userId);
         $details = $this->appendDecision($details, $decision);
 
@@ -131,6 +139,16 @@ class FaceCandidateDecisionService
                 'status' => 500,
                 'error' => 'candidate_decision_encode_failed',
             ];
+        }
+
+        $current = $this->loadFace($fileRegistryFaceId);
+        $currentEvidence = $current ? app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($current) : ['success' => false];
+        if (! ($currentEvidence['success'] ?? false) || $current->genealogy_person_id !== null
+            || ($current->person_name ?? null) !== $face->person_name
+            || ($currentEvidence['source_sha256'] ?? null) !== $evidence['source_sha256']
+            || ($currentEvidence['source_path'] ?? null) !== $evidence['source_path']
+            || ($currentEvidence['region'] ?? null) !== $evidence['region']) {
+            return ['success' => false, 'status' => 409, 'error' => 'face_evidence_changed', 'review_required' => true];
         }
 
         if ($queue !== null) {
@@ -220,7 +238,7 @@ class FaceCandidateDecisionService
                 'frf.region_y',
                 'frf.region_w',
                 'frf.region_h',
-                'frf.hidden',
+                'frf.hidden', 'frf.source_current', 'frf.superseded_at', 'frf.source_sha256', 'frf.face_region_convention', 'fr.status AS file_status',
                 'fr.current_path',
                 'fr.original_path'
             )

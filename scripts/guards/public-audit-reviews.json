@@ -1,0 +1,301 @@
+{
+  "version": 1,
+  "reviews": [
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "app/Services/OfflineAiPipelineInventoryService.php",
+      "file_sha256": "d6c41a2d876d5fd9e540bc62d980652cfb57c4fa0224a8f049e651dcb689d6c3",
+      "line": 228,
+      "line_sha256": "e25fb293f03d4dd65d831e3fdd092d072554b28a07feb9418fcf4361a3955aaf",
+      "reason": "Inventory descriptor states an explicit clear action; it contains no credential value.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T23:51:03.735919+00:00"
+    },
+    {
+      "rule": "Private keys, certificates, or encrypted key material",
+      "path": "app/Services/UnifiedCli/CliTlsPolicy.php",
+      "file_sha256": "b639a43c868f15ed786ad45cc3dc5cd2c1286936fd20b5c70c7d1bde94cacf38",
+      "line": 84,
+      "line_sha256": "596f72efd194e80c288c7f2c104b8df2f52e3c8f114681af5c455e993b119b70",
+      "reason": "Certificate boundary validation expression; no certificate or private key is embedded.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:54:08+00:00"
+    },
+    {
+      "rule": "Private keys, certificates, or encrypted key material",
+      "path": "app/Services/UnifiedCli/CliTlsPolicy.php",
+      "file_sha256": "b639a43c868f15ed786ad45cc3dc5cd2c1286936fd20b5c70c7d1bde94cacf38",
+      "line": 87,
+      "line_sha256": "4215436cd155d8b1774a4399063ef13ece8cf806a9fa526110611b0cb09be4de",
+      "reason": "Certificate boundary validation expression; no certificate or private key is embedded.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:54:08+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "app/Services/AgentSkillAuditService.php",
+      "file_sha256": "769a5b82864fb476383910b42c29b1e6fbd9102cc66b6e598aeb86dfce072e08",
+      "line": 64,
+      "line_sha256": "3280256c0fd84cfa5c8b93b4106607d3905d99ea6b758630436f4c8995da85d4",
+      "reason": "Generic sensitive-file detection expressions; no personal path or identity is embedded.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:54:08+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "app/Services/AgentSkillAuditService.php",
+      "file_sha256": "769a5b82864fb476383910b42c29b1e6fbd9102cc66b6e598aeb86dfce072e08",
+      "line": 91,
+      "line_sha256": "8d355d12583fed63cbae7b587d6480a0d36ec402f0dc20e82031f0c77f813eac",
+      "reason": "Generic sensitive-file detection expressions; no personal path or identity is embedded.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:54:08+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "scripts/guards/tests/test_public_audit_filter.py",
+      "file_sha256": "c7231c1809c7bb82370fc6cdd5b4ee00ce948a2a54ddf4fb6bab1f2bcbc0d5c8",
+      "line": 29,
+      "line_sha256": "cc3d445e20fd9dc62bb9d0d7701513dd75c1db58aba2a4d61940cbd92cd0a669",
+      "reason": "Synthetic descriptor used to verify byte-bound review behavior; contains no credential value.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:54:08+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "config/mcp.php",
+      "file_sha256": "4e4717c7aef9ddbaaa63e3ce92ca8fd82ad925590bf8765d5140d594fbb8437d",
+      "line": 67,
+      "line_sha256": "87b01b6c356b85fc93fe65f7478983bbea47cd64a9b072e948aa8732d6ecf15a",
+      "reason": "Connection risk labels describe private surfaces; neither label is a credential value.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "config/mcp.php",
+      "file_sha256": "4e4717c7aef9ddbaaa63e3ce92ca8fd82ad925590bf8765d5140d594fbb8437d",
+      "line": 87,
+      "line_sha256": "4b974cafe61d69cc1461e8d10019692b2d3292f03ac3381aecd433cdfee54a0b",
+      "reason": "Connection risk labels describe private surfaces; neither label is a credential value.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "config/system_configuration.php",
+      "file_sha256": "e3a8e40d625e18279c4a6c3938f93e3fb77000a305c712e3d3a3b0ba3d6df116",
+      "line": 4,
+      "line_sha256": "5cb0ab796551e7391cadf60824563752c5174beb3d790b73349319f8e004cf53",
+      "reason": "Explicit display redaction sentinel; contains no usable secret.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "resources/js/src/views/ConfigurationView.vue",
+      "file_sha256": "17a1adf2fa6979bc038116b5d6bf961cd26c4a2b9ac163af2cccc957f7389be4",
+      "line": 72,
+      "line_sha256": "dc5c90c0af09e245a2f1b4cf56e449c69b021ce2217bd20d041f96a821943a06",
+      "reason": "Vue clear-secret event handler invokes the explicit configuration clearing action; contains no credential.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "resources/js/src/views/ConfigurationView.vue",
+      "file_sha256": "17a1adf2fa6979bc038116b5d6bf961cd26c4a2b9ac163af2cccc957f7389be4",
+      "line": 90,
+      "line_sha256": "dc5c90c0af09e245a2f1b4cf56e449c69b021ce2217bd20d041f96a821943a06",
+      "reason": "Vue clear-secret event handler invokes the explicit configuration clearing action; contains no credential.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "resources/js/src/views/ConfigurationView.vue",
+      "file_sha256": "17a1adf2fa6979bc038116b5d6bf961cd26c4a2b9ac163af2cccc957f7389be4",
+      "line": 108,
+      "line_sha256": "dc5c90c0af09e245a2f1b4cf56e449c69b021ce2217bd20d041f96a821943a06",
+      "reason": "Vue clear-secret event handler invokes the explicit configuration clearing action; contains no credential.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "resources/js/src/views/ConfigurationView.vue",
+      "file_sha256": "17a1adf2fa6979bc038116b5d6bf961cd26c4a2b9ac163af2cccc957f7389be4",
+      "line": 126,
+      "line_sha256": "dc5c90c0af09e245a2f1b4cf56e449c69b021ce2217bd20d041f96a821943a06",
+      "reason": "Vue clear-secret event handler invokes the explicit configuration clearing action; contains no credential.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "resources/js/src/views/ConfigurationView.vue",
+      "file_sha256": "17a1adf2fa6979bc038116b5d6bf961cd26c4a2b9ac163af2cccc957f7389be4",
+      "line": 144,
+      "line_sha256": "dc5c90c0af09e245a2f1b4cf56e449c69b021ce2217bd20d041f96a821943a06",
+      "reason": "Vue clear-secret event handler invokes the explicit configuration clearing action; contains no credential.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "resources/js/src/views/ConfigurationView.vue",
+      "file_sha256": "17a1adf2fa6979bc038116b5d6bf961cd26c4a2b9ac163af2cccc957f7389be4",
+      "line": 162,
+      "line_sha256": "dc5c90c0af09e245a2f1b4cf56e449c69b021ce2217bd20d041f96a821943a06",
+      "reason": "Vue clear-secret event handler invokes the explicit configuration clearing action; contains no credential.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "resources/js/src/views/ConfigurationView.vue",
+      "file_sha256": "17a1adf2fa6979bc038116b5d6bf961cd26c4a2b9ac163af2cccc957f7389be4",
+      "line": 180,
+      "line_sha256": "dc5c90c0af09e245a2f1b4cf56e449c69b021ce2217bd20d041f96a821943a06",
+      "reason": "Vue clear-secret event handler invokes the explicit configuration clearing action; contains no credential.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "scripts/browser-server/playwright-server.cjs",
+      "file_sha256": "754b4fa51eb1a4336e9a0a007936d043905ea156dc2b81c1f114697622d223e0",
+      "line": 52,
+      "line_sha256": "bc0029a19e4b8b87bddc431ef4de528367b398e6ed867f746f1e9433c79d3cbd",
+      "reason": "Token is returned by the required runtime authentication function; no credential is embedded.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "scripts/browser-server/puppeteer-server.cjs",
+      "file_sha256": "d1e59e29912e05f48e2e12cf0f25a870a8d7f6c575768258931e8390c31420b6",
+      "line": 57,
+      "line_sha256": "bc0029a19e4b8b87bddc431ef4de528367b398e6ed867f746f1e9433c79d3cbd",
+      "reason": "Token is returned by the required runtime authentication function; no credential is embedded.",
+      "reviewer": "public-audit-preparation",
+      "reviewed_at": "2026-10-12T17:55:17+00:00"
+    },
+    {
+      "rule": "Real secret assignments with non-placeholder values",
+      "path": "tests/Unit/Logging/SensitiveLogContextProcessorTest.php",
+      "file_sha256": "d69decd0f24e4d67e435e3250bbb93681db38243cfc57156cf22a518db05977c",
+      "line": 42,
+      "line_sha256": "0ce639209168fc5c8853e8d4b892e667bb6a91f1014211c7406ea895466d59f8",
+      "reason": "Synthetic reserved .test webhook URL used to verify nested object redaction; no real endpoint or secret.",
+      "reviewer": "public-release-preparation",
+      "reviewed_at": "2026-10-12T18:06:20.229643+00:00"
+    },
+    {
+      "rule": "Private keys, certificates, or encrypted key material",
+      "path": "tests/Unit/Services/TypeSafeJevDecisionServiceTest.php",
+      "file_sha256": "dca797eab152681777d3fe3d315a40fbf7706e2390c8e6ad40e75685e6651539",
+      "line": 346,
+      "line_sha256": "3ea769e418150c1a78c3254168b9d27a51daf91d1a35e1b348dc7965f8b5ae87",
+      "reason": "Synthetic private-key boundary marker used to verify disclosure rejection; no private-key bytes, certificate, or key body are present.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T18:59:15.180847+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "docs/research-provenance.md",
+      "file_sha256": "38ab80f29539f7899e842087bfdc718552988c44e2a308aa092ce0ee3a39cd4d",
+      "line": 437,
+      "line_sha256": "cc226645c30c96216a416c1a3731c8922b9258d15a8da132448c6dabd188dbbe",
+      "reason": "Required attribution URL for the existing public Colibri upstream/fork. No private host, credential, installation receipt or personal record.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "docs/research-provenance.md",
+      "file_sha256": "38ab80f29539f7899e842087bfdc718552988c44e2a308aa092ce0ee3a39cd4d",
+      "line": 438,
+      "line_sha256": "f67b5c4eefbb947d6f91aa6234705efd1992d94f60988fd6da964613317b71ed",
+      "reason": "Required attribution URL for the existing public Colibri upstream/fork. No private host, credential, installation receipt or personal record.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "docs/research-provenance.md",
+      "file_sha256": "38ab80f29539f7899e842087bfdc718552988c44e2a308aa092ce0ee3a39cd4d",
+      "line": 439,
+      "line_sha256": "fac44dba22444625c7bad26b753a2e18c6837404ba759339f29bb6f119704814",
+      "reason": "Required attribution URL for the existing public Colibri upstream/fork. No private host, credential, installation receipt or personal record.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "docs/research-provenance.md",
+      "file_sha256": "38ab80f29539f7899e842087bfdc718552988c44e2a308aa092ce0ee3a39cd4d",
+      "line": 440,
+      "line_sha256": "b3b41fd1b6011901a46f2e8491a1b2ec94bc19dd040f7eecca364b039a41bb6c",
+      "reason": "Required attribution URL for the existing public Colibri upstream/fork. No private host, credential, installation receipt or personal record.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "docs/research-provenance.md",
+      "file_sha256": "38ab80f29539f7899e842087bfdc718552988c44e2a308aa092ce0ee3a39cd4d",
+      "line": 444,
+      "line_sha256": "3112dc0d25b3b68bda8b775a9a61804d7b384ff35920e2082f0f7d4bbaa82885",
+      "reason": "Required attribution URL for the existing public Colibri upstream/fork. No private host, credential, installation receipt or personal record.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "docs/research-provenance.md",
+      "file_sha256": "38ab80f29539f7899e842087bfdc718552988c44e2a308aa092ce0ee3a39cd4d",
+      "line": 448,
+      "line_sha256": "d12dbda32ca8e495960e8d8ba9cc6ddef32bc8a1d5194980ce79a0e8ec7d5358",
+      "reason": "Required attribution URL for the existing public Colibri upstream/fork. No private host, credential, installation receipt or personal record.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Files containing private paths, LAN hosts, usernames, or machine-specific values",
+      "path": "docs/research-provenance.md",
+      "file_sha256": "38ab80f29539f7899e842087bfdc718552988c44e2a308aa092ce0ee3a39cd4d",
+      "reason": "Reviewed generic upstream attribution document; operator-name matches are existing public source URLs only. Private runtime/topology/benchmark receipts removed.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Private paths, hosts, users, and compute labels",
+      "path": "docs/model-runtime-license-map.md",
+      "file_sha256": "7aa27116f3fe3d36c95d80990ec229ae7c9659bed756b198915e1f9229a81a51",
+      "line": 25,
+      "line_sha256": "7233a29823e04689256a9000898f441a62206f55935428f3f02d8e5215f99afa",
+      "reason": "Required attribution URL for the existing public Colibri upstream/fork. No private host, credential, installation receipt or personal record.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Files containing private paths, LAN hosts, usernames, or machine-specific values",
+      "path": "docs/model-runtime-license-map.md",
+      "file_sha256": "7aa27116f3fe3d36c95d80990ec229ae7c9659bed756b198915e1f9229a81a51",
+      "reason": "Reviewed generic upstream attribution document; operator-name matches are existing public source URLs only. Private runtime/topology/benchmark receipts removed.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T19:13:10.543171+00:00"
+    },
+    {
+      "rule": "Public-bound source containing private genealogy/person literals",
+      "path": "tests/Feature/Quality/PublicExportPackagingTest.php",
+      "file_sha256": "39ef7aeee301991a7ef9e0e140b71362be5d581613a84195524a8dc24c038c1f",
+      "line": 1460,
+      "line_sha256": "e0011188da6f9d9d9d88ecd04c0fbeeddf3a31cfa14a6ef3770c99ef2a0a5e8a",
+      "reason": "Exact known public article-author byline match in a regression check. No private genealogy/person record or operator-account default; all other privacy checks remain active.",
+      "reviewer": "public-preparation-root",
+      "reviewed_at": "2026-10-12T20:02:05.750962+00:00"
+    }
+  ]
+}

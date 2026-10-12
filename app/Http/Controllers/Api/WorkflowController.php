@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Engine\DatabaseLayer;
+use App\Engine\WorkflowEngine;
 use App\Services\ScheduledJobService;
 use App\Services\WorkflowTemplateService;
 use App\Services\WorkflowApprovalService;
@@ -322,7 +323,7 @@ class WorkflowController extends Controller
 
             // Delete associated scheduled job
             if ($workflow) {
-                $this->scheduledJobService->deleteWorkflowSchedule($id, $workflow->name);
+                $this->scheduledJobService->deleteWorkflowSchedule($workflow->name);
             }
 
             return response()->json(['success' => true]);
@@ -338,6 +339,7 @@ class WorkflowController extends Controller
     {
         $request->validate([
             'input' => 'nullable|array',
+            'trace_session_id' => ['nullable', 'string', 'max:100', 'regex:/\A[A-Za-z0-9][A-Za-z0-9._:-]*\z/'],
         ]);
 
         // Get workflow using raw SQL
@@ -355,7 +357,9 @@ class WorkflowController extends Controller
         try {
             $input = $request->input('input', []);
 
-            \App\Jobs\ExecuteWorkflow::dispatch($workflow->name, $workflow->id, $input);
+            $traceSessionId = $request->input('trace_session_id');
+
+            \App\Jobs\ExecuteWorkflow::dispatch($workflow->name, $workflow->id, $input, $traceSessionId);
 
             return response()->json([
                 'success' => true,
@@ -364,6 +368,7 @@ class WorkflowController extends Controller
                     'message' => 'Workflow queued for execution',
                     'workflow_id' => $workflow->id,
                     'input_keys' => array_keys($input),
+                    'trace_session_id' => $traceSessionId,
                 ]
             ], 202);
         } catch (Exception $e) {
@@ -789,6 +794,7 @@ class WorkflowController extends Controller
     {
         try {
             $service = app(WorkflowApprovalService::class);
+            $service->checkExpired();
             $pending = $service->getPendingApprovals();
 
             return response()->json(['success' => true, 'data' => $pending]);
@@ -798,6 +804,79 @@ class WorkflowController extends Controller
                 'error' => ['code' => 'FETCH_FAILED', 'message' => $e->getMessage()]
             ], 500);
         }
+    }
+
+    public function decideApproval(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'gate_id' => ['required', 'integer', 'min:1'],
+            'action' => ['required', 'string', 'in:approve,reject'],
+            'inputs' => ['nullable', 'array', 'max:10'],
+            'notes' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        try {
+            $user = $request->user();
+            $actor = $user?->email ?? $user?->name ?? 'operator';
+            $service = app(WorkflowApprovalService::class);
+            $decision = $service->decide(
+                (int) $validated['gate_id'],
+                $validated['action'],
+                $validated['inputs'] ?? [],
+                $actor,
+                $validated['notes'] ?? null,
+            );
+
+            if (! $decision['changed']) {
+                return response()->json([
+                    'success' => false,
+                    'error' => [
+                        'code' => 'GATE_ALREADY_RESOLVED',
+                        'message' => "Approval gate is already {$decision['status']}.",
+                    ],
+                    'data' => $this->publicApprovalDecision($decision),
+                ], 409);
+            }
+
+            $resume = null;
+            if ($decision['status'] === 'approved' && is_string($decision['execution_id'])) {
+                $resume = app(WorkflowEngine::class)->resumeApprovedWorkflow(
+                    $decision['execution_id'],
+                    (int) $decision['run_id'],
+                    array_merge($decision['resume_input'], $decision['approval_output']),
+                );
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $this->publicApprovalDecision($decision) + ['resume' => $resume],
+            ]);
+        } catch (\InvalidArgumentException $exception) {
+            return response()->json([
+                'success' => false,
+                'error' => ['code' => 'INVALID_APPROVAL_DECISION', 'message' => $exception->getMessage()],
+            ], 422);
+        } catch (Exception $exception) {
+            return response()->json([
+                'success' => false,
+                'error' => [
+                    'code' => 'APPROVAL_RESUME_FAILED',
+                    'message' => $exception->getMessage(),
+                    'decision_saved' => true,
+                ],
+            ], 500);
+        }
+    }
+
+    /** @param array<string,mixed> $decision */
+    private function publicApprovalDecision(array $decision): array
+    {
+        return [
+            'gate_id' => (int) $decision['gate_id'],
+            'run_id' => (int) $decision['run_id'],
+            'status' => $decision['status'],
+            'changed' => (bool) $decision['changed'],
+        ];
     }
 
     // =========================================================================

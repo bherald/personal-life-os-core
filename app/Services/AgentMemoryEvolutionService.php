@@ -13,10 +13,11 @@ use Illuminate\Support\Facades\Log;
  * past summaries and creates bidirectional links between them.
  *
  * Link types (determined by similarity threshold):
- *   related      — similarity 0.40–0.75 — same topic/domain
- *   extends      — similarity 0.75–0.88 — builds on/refines a prior experience
- *   evolved_from — similarity > 0.88    — supersedes a prior experience;
- *                                         old summary is archived
+ *   related — lower similarity — same topic/domain
+ *   extends — higher similarity — builds on/refines a prior experience
+ *
+ * Similarity alone never proves that one episode supersedes another. Historical
+ * evolved_from links remain readable, but new automatic links are additive.
  *
  * Links enable 1-hop memory traversal during recall: when a matching memory is
  * found, its linked memories are also surfaced, providing richer context.
@@ -30,9 +31,6 @@ class AgentMemoryEvolutionService
 
     /** Similarity above which a link is 'extends' rather than 'related' */
     private const EXTENDS_THRESHOLD = 0.75;
-
-    /** Similarity above which a link is 'evolved_from' (old memory archived) */
-    private const EVOLVED_FROM_THRESHOLD = 0.88;
 
     /** Max past summaries to scan per distillation */
     private const SCAN_LIMIT = 10;
@@ -80,6 +78,9 @@ class AgentMemoryEvolutionService
             }
 
             $embeddingStr = $embeddingRow->embedding;
+            $linkMinSimilarity = (float) config('agent_memory.evolution.link_min_similarity', self::LINK_MIN_SIMILARITY);
+            $scanLimit = max(1, (int) config('agent_memory.evolution.scan_limit', self::SCAN_LIMIT));
+            $maxLinks = max(1, (int) config('agent_memory.evolution.max_links_per_distill', self::MAX_LINKS_PER_DISTILL));
 
             // Find the most similar past summaries via pgvector — IDs + similarities
             $pgRows = DB::connection('pgsql_rag')->select("
@@ -96,9 +97,9 @@ class AgentMemoryEvolutionService
                 $agentId,
                 $summaryId,
                 $embeddingStr,
-                self::LINK_MIN_SIMILARITY,
+                $linkMinSimilarity,
                 $embeddingStr,
-                self::SCAN_LIMIT,
+                $scanLimit,
             ]);
 
             if (empty($pgRows)) {
@@ -125,7 +126,7 @@ class AgentMemoryEvolutionService
             $linksCreated = 0;
 
             foreach ($candidates as $candidate) {
-                if ($linksCreated >= self::MAX_LINKS_PER_DISTILL) {
+                if ($linksCreated >= $maxLinks) {
                     break;
                 }
 
@@ -153,19 +154,6 @@ class AgentMemoryEvolutionService
                         (agent_id, source_type, source_id, target_type, target_id, link_type, strength, created_at)
                     VALUES (?, 'episodic', ?, 'episodic', ?, ?, ?, NOW())
                 ", [$agentId, $targetId, $summaryId, $linkType, $strength]);
-
-                // evolved_from: archive the superseded summary
-                if ($linkType === 'evolved_from') {
-                    DB::update("
-                        UPDATE agent_episode_summaries SET is_archived = 1 WHERE id = ?
-                    ", [$targetId]);
-                    Log::info('AgentMemoryEvolution: Summary evolved and archived', [
-                        'agent_id'    => $agentId,
-                        'new_summary' => $summaryId,
-                        'archived'    => $targetId,
-                        'similarity'  => $similarity,
-                    ]);
-                }
 
                 $linksCreated++;
             }
@@ -203,6 +191,7 @@ class AgentMemoryEvolutionService
     public function getLinkedContext(int $summaryId): array
     {
         try {
+            $limit = max(1, (int) config('agent_memory.evolution.max_linked_context', self::MAX_LINKED_CONTEXT));
             $linked = DB::select("
                 SELECT s.summary,
                        s.outcome,
@@ -217,7 +206,7 @@ class AgentMemoryEvolutionService
                   AND s.is_archived  = 0
                 ORDER BY l.strength DESC
                 LIMIT ?
-            ", [$summaryId, self::MAX_LINKED_CONTEXT]);
+            ", [$summaryId, $limit]);
 
             return array_map(fn($row) => [
                 'summary'   => $row->summary,
@@ -271,10 +260,8 @@ class AgentMemoryEvolutionService
 
     private function determineLinkType(float $similarity): string
     {
-        if ($similarity >= self::EVOLVED_FROM_THRESHOLD) {
-            return 'evolved_from';
-        }
-        if ($similarity >= self::EXTENDS_THRESHOLD) {
+        $extendsThreshold = (float) config('agent_memory.evolution.extends_threshold', self::EXTENDS_THRESHOLD);
+        if ($similarity >= $extendsThreshold) {
             return 'extends';
         }
         return 'related';

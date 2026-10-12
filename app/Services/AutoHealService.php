@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
 
 /**
  * INF-10b: Auto-Heal Engine
@@ -16,7 +17,7 @@ use Illuminate\Support\Facades\Log;
  * Detection → Registry Lookup → Cooldown Check → Execute → Log
  *
  * Only `read` risk level actions are auto-executed. `write` and `destructive`
- * are left for Review Hub (INF-10c/d) or Claude Code escalation.
+ * are left for Review Hub or an operator-owned maintenance session.
  */
 class AutoHealService
 {
@@ -45,6 +46,7 @@ class AutoHealService
             'healed' => [],
             'skipped' => [],
             'failed' => [],
+            'held' => [],
         ];
 
         $detectors = $this->getDetectors();
@@ -52,25 +54,28 @@ class AutoHealService
         foreach ($detectors as $findingType => $detector) {
             try {
                 $detected = $detector();
-                if (!$detected) {
+                if (! $detected) {
                     continue;
                 }
 
                 $results['detected'][] = $findingType;
 
                 $action = $this->registry->getActionForFinding($findingType);
-                if (!$action) {
+                if (! $action) {
                     $results['skipped'][] = ['type' => $findingType, 'reason' => 'No remediation registered'];
+
                     continue;
                 }
 
                 if ($action['risk_level'] !== 'read') {
                     $results['skipped'][] = ['type' => $findingType, 'reason' => "Risk level '{$action['risk_level']}' not auto-healable"];
+
                     continue;
                 }
 
                 if ($this->registry->isInCooldown($action)) {
                     $results['skipped'][] = ['type' => $findingType, 'reason' => 'In cooldown'];
+
                     continue;
                 }
 
@@ -79,6 +84,8 @@ class AutoHealService
                 if ($execResult['success']) {
                     $results['healed'][] = ['type' => $findingType, 'action' => $action['description'], 'detail' => $execResult['detail'] ?? ''];
                     $this->registry->recordExecution($action['id'], true);
+                } elseif (($execResult['held'] ?? false) === true) {
+                    $results['held'][] = ['type' => $findingType, 'reason_code' => $execResult['error']];
                 } else {
                     $results['failed'][] = ['type' => $findingType, 'error' => $execResult['error']];
                     $this->registry->recordExecution($action['id'], false);
@@ -93,7 +100,7 @@ class AutoHealService
             }
         }
 
-        if (!empty($results['healed']) || !empty($results['failed'])) {
+        if (! empty($results['healed']) || ! empty($results['failed'])) {
             Log::info('AutoHeal: Cycle complete', [
                 'detected' => count($results['detected']),
                 'healed' => count($results['healed']),
@@ -130,7 +137,7 @@ class AutoHealService
             $command = $action['action_target'];
             $params = $action['action_params'] ?? [];
 
-            if (!in_array($command, self::ALLOWED_ARTISAN_COMMANDS, true)) {
+            if (! in_array($command, self::ALLOWED_ARTISAN_COMMANDS, true)) {
                 return ['success' => false, 'error' => "Artisan command not allowed for auto-heal: {$command}"];
             }
 
@@ -152,23 +159,29 @@ class AutoHealService
                 return ['success' => false, 'error' => 'Action requires escalation — not auto-executable'];
             }
 
-            if (!str_contains($target, '::')) {
+            if (! str_contains($target, '::')) {
                 return ['success' => false, 'error' => "Invalid service method target: {$target}"];
             }
 
             [$class, $method] = explode('::', $target, 2);
 
-            if (!class_exists($class)) {
+            if (! class_exists($class)) {
                 return ['success' => false, 'error' => "Service class not found: {$class}"];
             }
 
             $service = app($class);
 
-            if (!method_exists($service, $method)) {
+            if (! method_exists($service, $method)) {
                 return ['success' => false, 'error' => "Method not found: {$class}::{$method}"];
             }
 
             $result = $service->$method();
+            if ($class === ScheduledJobService::class && $method === 'fixStuckJobs' && $result === 0) {
+                return ['success' => false, 'held' => true, 'error' => 'scheduled_job_work_end_unproven'];
+            }
+            if ($class === self::class && in_array($method, ['clearStaleLocks', 'resetAllCircuits'], true) && ($result['success'] ?? false) !== true) {
+                return ['success' => false, 'held' => true, 'error' => $result['reason_code']];
+            }
 
             $detail = is_array($result) ? json_encode($result) : (string) $result;
 
@@ -196,40 +209,24 @@ class AutoHealService
     // Remediation methods (called by service_method action_target)
     // =========================================================================
 
-    /**
-     * Reset all open LLM circuit breakers to closed.
-     */
+    /** Circuit recovery belongs to normal provider admission, not an unconditional reset. */
     public function resetAllCircuits(): array
     {
-        try {
-            $affected = DB::update("
-                UPDATE llm_instances
-                SET consecutive_failures = 0,
-                    circuit_state = 'closed',
-                    circuit_retry_at = NULL
-                WHERE is_active = 1 AND (circuit_state != 'closed' OR consecutive_failures > 0)
-            ");
-
-            return ['reset' => $affected, 'message' => "{$affected} circuit(s) reset"];
-        } catch (\Throwable $e) {
-            return ['error' => $e->getMessage()];
-        }
+        return ['success' => false, 'reason_code' => 'circuit_recovery_proof_required', 'reset' => 0];
     }
 
-    /**
-     * Clear stale GPU/processing locks from Redis.
-     */
+    /** Observe GPU holds; age and job absence never prove physical work ended. */
     public function clearStaleLocks(): array
     {
-        $cleared = [];
+        $held = [];
         foreach (['ollama_busy_lock', 'whisper_gpu_lock'] as $key) {
             if (Cache::has($key)) {
-                Cache::forget($key);
-                $cleared[] = $key;
+                $held[] = $key;
             }
         }
 
-        return ['cleared' => $cleared, 'count' => count($cleared)];
+        return ['success' => $held === [], 'reason_code' => $held === [] ? null : 'lock_work_end_unproven',
+            'cleared' => [], 'count' => 0, 'held' => $held];
     }
 
     /**
@@ -238,20 +235,20 @@ class AutoHealService
     public function recoverHorizonService(): array
     {
         try {
-            $enabled = trim(\Illuminate\Support\Facades\Process::timeout(5)->run([
+            $enabled = trim(Process::timeout(5)->run([
                 'systemctl',
                 'is-enabled',
                 'laravel-horizon.service',
             ])->output());
 
             if (in_array($enabled, ['enabled', 'static'], true)) {
-                $restart = \Illuminate\Support\Facades\Process::timeout(15)->run([
+                $restart = Process::timeout(15)->run([
                     'sudo',
                     'systemctl',
                     'restart',
                     'laravel-horizon.service',
                 ]);
-                $status = trim(\Illuminate\Support\Facades\Process::timeout(5)->run([
+                $status = trim(Process::timeout(5)->run([
                     'systemctl',
                     'is-active',
                     'laravel-horizon.service',
@@ -290,10 +287,10 @@ class AutoHealService
     public function getDetectors(): array
     {
         return [
-            'circuit_breaker_open' => fn() => $this->detectOpenCircuits(),
-            'stalled_job' => fn() => $this->detectStalledJobs(),
-            'stuck_lock' => fn() => $this->detectStuckLocks(),
-            'horizon_down' => fn() => $this->detectHorizonDown(),
+            'circuit_breaker_open' => fn () => $this->detectOpenCircuits(),
+            'stalled_job' => fn () => $this->detectStalledJobs(),
+            'stuck_lock' => fn () => $this->detectStuckLocks(),
+            'horizon_down' => fn () => $this->detectHorizonDown(),
         ];
     }
 
@@ -308,7 +305,8 @@ class AutoHealService
                 WHERE is_active = 1 AND circuit_state = 'open'
                 LIMIT 1
             ");
-            return !empty($open);
+
+            return ! empty($open);
         } catch (\Throwable $e) {
             return false;
         }
@@ -331,38 +329,22 @@ class AutoHealService
             // Filter out jobs with active adaptive timeout extensions
             $stalled = array_filter($stalled, function ($s) {
                 $deadline = Cache::get("scheduler:job:{$s->id}:deadline");
-                return !($deadline && $deadline > time());
+
+                return ! ($deadline && $deadline > time());
             });
-            return !empty($stalled);
+
+            return ! empty($stalled);
         } catch (\Throwable $e) {
             return false;
         }
     }
 
-    /**
-     * Detect stale GPU/processing locks (older than their configured TTL).
-     */
+    /** A retained lock is an observation, not evidence authorizing stale-lock remediation. */
     public function detectStuckLocks(): bool
     {
-        // Check if locks exist beyond reasonable TTL
-        $ollamaTtl = config('lock_ttls.ollama_busy_lock', 300); // 5 min default
-        $whisperTtl = config('lock_ttls.whisper_gpu_lock', 900); // 15 min default
-
-        foreach (['ollama_busy_lock' => $ollamaTtl, 'whisper_gpu_lock' => $whisperTtl] as $key => $ttl) {
+        foreach (['ollama_busy_lock', 'whisper_gpu_lock'] as $key) {
             if (Cache::has($key)) {
-                // Lock exists — check if it's been held too long
-                // We can't tell exact age from Cache, so check if the associated
-                // process is still alive via scheduled_jobs
-                $running = DB::select("
-                    SELECT id FROM scheduled_jobs
-                    WHERE last_run_status = 'running'
-                      AND (command LIKE '%whisper%' OR command LIKE '%ollama%' OR command LIKE '%faces%')
-                    LIMIT 1
-                ");
-                if (empty($running)) {
-                    // Lock exists but no running job — it's stuck
-                    return true;
-                }
+                Log::notice('AutoHeal: GPU custody retained', ['lock' => $key, 'reason_code' => 'lock_work_end_unproven']);
             }
         }
 
@@ -375,10 +357,11 @@ class AutoHealService
     public function detectHorizonDown(): bool
     {
         try {
-            $result = \Illuminate\Support\Facades\Process::path(base_path())
+            $result = Process::path(base_path())
                 ->timeout(10)
                 ->run([PHP_BINARY, 'artisan', 'horizon:status']);
-            $output = trim($result->output() . "\n" . $result->errorOutput());
+            $output = trim($result->output()."\n".$result->errorOutput());
+
             return str_contains(strtolower($output), 'not running') || str_contains(strtolower($output), 'inactive');
         } catch (\Throwable $e) {
             return false;

@@ -3,6 +3,7 @@
 namespace Tests\Feature\Console;
 
 use App\Services\Ops\McpHealthReportService;
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Mockery;
@@ -263,6 +264,11 @@ class OpsMcpHealthCommandTest extends TestCase
 
     public function test_compact_payload_includes_offline_policy_profile_admission_summary(): void
     {
+        $settings = Mockery::mock(SystemConfigService::class);
+        $settings->shouldReceive('get')->with('routing.internet_access', Mockery::any())->andReturn('enabled');
+        $settings->shouldReceive('get')->with('routing.offline_mode', Mockery::any())->andReturn('disabled');
+        $settings->shouldReceive('get')->with('routing.active_profile', Mockery::any())->andReturn('default');
+        $this->app->instance(SystemConfigService::class, $settings);
         config()->set('mcp.servers', [
             'policy-local' => [
                 'enabled' => true,
@@ -318,7 +324,7 @@ class OpsMcpHealthCommandTest extends TestCase
         $this->assertSame(0, $policy['enabled_servers_denied_default']);
         $this->assertSame(0, $policy['enabled_servers_with_no_non_default_profile']);
         $this->assertSame(4, $policy['enabled_denial_reason_counts']['trust_boundary_denied']);
-        $this->assertSame(1, $policy['enabled_denial_reason_counts']['hybrid_profile_denied']);
+        $this->assertSame(2, $policy['enabled_denial_reason_counts']['hybrid_profile_denied']);
 
         $servers = collect($service->collect('node '.$this->fixtureEntry)['servers'])->keyBy('name');
         $this->assertSame(['default', 'hybrid_review'], $servers['policy-internet']['policy']['allowed_profiles']);

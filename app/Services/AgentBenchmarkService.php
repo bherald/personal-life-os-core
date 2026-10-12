@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Services\Ops\AgentTrajectoryAssessmentService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -10,8 +11,9 @@ use Illuminate\Support\Str;
  * Agent Benchmark Service
  *
  * Measures agentic vs hybrid vs deterministic workflow modes running identical tasks.
- * Produces quantitative data (tokens, latency, iterations, tool coverage) and
- * qualitative scores (accuracy, completeness, relevance) for mode selection decisions.
+ * Produces quantitative data (tokens, latency, iterations, tool coverage),
+ * advisory qualitative scores, and deterministic trajectory assessments. Only
+ * formally verified assessments are eligible to influence mode selection.
  *
  * Design: runs each test task through all 3 modes using the same agent/model,
  * stores results in agent_benchmarks table for cross-mode comparison.
@@ -19,13 +21,19 @@ use Illuminate\Support\Str;
 class AgentBenchmarkService
 {
     private ?AgentLoopService $agentLoop = null;
+
     private ?SkillLoaderService $skillLoader = null;
+
+    public function __construct(
+        private readonly AgentTrajectoryAssessmentService $trajectoryAssessment
+    ) {}
 
     private function getAgentLoop(): AgentLoopService
     {
         if ($this->agentLoop === null) {
             $this->agentLoop = app(AgentLoopService::class);
         }
+
         return $this->agentLoop;
     }
 
@@ -34,6 +42,7 @@ class AgentBenchmarkService
         if ($this->skillLoader === null) {
             $this->skillLoader = app(SkillLoaderService::class);
         }
+
         return $this->skillLoader;
     }
 
@@ -69,12 +78,12 @@ class AgentBenchmarkService
     /**
      * Run a single benchmark: one task × one mode.
      *
-     * @param string $agentId Agent to benchmark
-     * @param string $taskKey Test task identifier
-     * @param string $taskDescription Task prompt
-     * @param string $mode Workflow mode to test
-     * @param string $runId Groups all modes for comparison
-     * @param array $options Extra options (model override, etc.)
+     * @param  string  $agentId  Agent to benchmark
+     * @param  string  $taskKey  Test task identifier
+     * @param  string  $taskDescription  Task prompt
+     * @param  string  $mode  Workflow mode to test
+     * @param  string  $runId  Groups all modes for comparison
+     * @param  array  $options  Extra options (model override, etc.)
      * @return array Benchmark result
      */
     public function runSingle(
@@ -85,7 +94,7 @@ class AgentBenchmarkService
         string $runId,
         array $options = []
     ): array {
-        Log::info("AgentBenchmark: Starting", [
+        Log::info('AgentBenchmark: Starting', [
             'agent_id' => $agentId,
             'task_key' => $taskKey,
             'mode' => $mode,
@@ -100,7 +109,7 @@ class AgentBenchmarkService
             'max_iterations' => $options['max_iterations'] ?? 10,
         ];
 
-        if (!empty($options['model'])) {
+        if (! empty($options['model'])) {
             $execOptions['model'] = $options['model'];
         }
 
@@ -108,12 +117,22 @@ class AgentBenchmarkService
 
         // Extract tool names from tool_calls
         $toolNames = [];
-        if (!empty($result['tool_calls'])) {
+        if (! empty($result['tool_calls'])) {
             foreach ($result['tool_calls'] as $tc) {
                 $name = $tc['tool'] ?? $tc[0] ?? 'unknown';
                 $toolNames[] = $name;
             }
         }
+
+        $assessment = $this->trajectoryAssessment->assess([
+            'execution_success' => (bool) ($result['success'] ?? false),
+            'task_success' => (bool) ($result['success'] ?? false),
+            'terminal_state' => $result['terminal_state'] ?? null,
+            'tool_calls' => $result['tool_calls'] ?? [],
+            'iterations' => $result['iterations'] ?? 0,
+            'max_iterations' => $execOptions['max_iterations'],
+            'require_tool_execution' => in_array($mode, ['agentic', 'hybrid'], true),
+        ]);
 
         // Store benchmark result
         $benchmarkData = [
@@ -135,15 +154,18 @@ class AgentBenchmarkService
                 'session_id' => $result['session_id'] ?? null,
                 'unique_tools' => count(array_unique($toolNames)),
             ]),
+            'trajectory_assessment' => $assessment,
+            'promotion_eligible' => (bool) $assessment['promotion_eligible'],
         ];
 
-        DB::insert("
+        DB::insert('
             INSERT INTO agent_benchmarks
                 (run_id, agent_id, task_key, task_description, workflow_mode,
                  tokens_used, duration_ms, iterations, tool_calls_count, tool_calls_detail,
-                 model, response_summary, success, error_message, metadata, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-        ", [
+                 model, response_summary, success, error_message, metadata,
+                 trajectory_assessment, promotion_eligible, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        ', [
             $benchmarkData['run_id'],
             $benchmarkData['agent_id'],
             $benchmarkData['task_key'],
@@ -159,9 +181,11 @@ class AgentBenchmarkService
             $benchmarkData['success'] ? 1 : 0,
             $benchmarkData['error_message'],
             $benchmarkData['metadata'],
+            json_encode($benchmarkData['trajectory_assessment'], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            $benchmarkData['promotion_eligible'] ? 1 : 0,
         ]);
 
-        Log::info("AgentBenchmark: Completed", [
+        Log::info('AgentBenchmark: Completed', [
             'agent_id' => $agentId,
             'task_key' => $taskKey,
             'mode' => $mode,
@@ -177,13 +201,13 @@ class AgentBenchmarkService
     /**
      * Run full benchmark suite: N tasks × 3 modes for an agent.
      *
-     * @param string $agentId Agent to benchmark
-     * @param array $options Extra options
+     * @param  string  $agentId  Agent to benchmark
+     * @param  array  $options  Extra options
      * @return array Summary with all results
      */
     public function runSuite(string $agentId, array $options = []): array
     {
-        $runId = 'bench_' . Str::random(12);
+        $runId = 'bench_'.Str::random(12);
         $tasks = $this->getTestTasks($agentId);
         $modes = ['agentic', 'hybrid', 'deterministic'];
         $results = [];
@@ -197,7 +221,7 @@ class AgentBenchmarkService
                     );
                     $results[] = $result;
                 } catch (\Throwable $e) {
-                    Log::error("AgentBenchmark: Run failed", [
+                    Log::error('AgentBenchmark: Run failed', [
                         'agent_id' => $agentId,
                         'task_key' => $taskKey,
                         'mode' => $mode,
@@ -225,8 +249,8 @@ class AgentBenchmarkService
     /**
      * Analyze benchmark results for a run or agent.
      *
-     * @param string|null $runId Specific run ID (null = latest)
-     * @param string|null $agentId Filter by agent
+     * @param  string|null  $runId  Specific run ID (null = latest)
+     * @param  string|null  $agentId  Filter by agent
      * @return array Analysis with per-mode aggregates
      */
     public function analyze(?string $runId = null, ?string $agentId = null): array
@@ -243,7 +267,7 @@ class AgentBenchmarkService
             $params[] = $agentId;
         }
 
-        $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
+        $whereClause = ! empty($where) ? 'WHERE '.implode(' AND ', $where) : '';
 
         // Per-mode aggregates
         $modeStats = DB::select("
@@ -261,7 +285,8 @@ class AgentBenchmarkService
                 MAX(duration_ms) as max_duration_ms,
                 AVG(accuracy_score) as avg_accuracy,
                 AVG(completeness_score) as avg_completeness,
-                AVG(relevance_score) as avg_relevance
+                AVG(relevance_score) as avg_relevance,
+                SUM(promotion_eligible) as promotion_eligible_runs
             FROM agent_benchmarks
             {$whereClause}
             GROUP BY workflow_mode
@@ -281,7 +306,9 @@ class AgentBenchmarkService
                 accuracy_score,
                 completeness_score,
                 relevance_score,
-                model
+                model,
+                trajectory_assessment,
+                promotion_eligible
             FROM agent_benchmarks
             {$whereClause}
             ORDER BY task_key, workflow_mode
@@ -290,6 +317,8 @@ class AgentBenchmarkService
         // Build comparison matrix
         $comparison = [];
         foreach ($taskStats as $row) {
+            $row->trajectory_assessment = $this->decodeJsonObject($row->trajectory_assessment ?? null);
+            $row->promotion_eligible = (bool) $row->promotion_eligible;
             $comparison[$row->task_key][$row->workflow_mode] = $row;
         }
 
@@ -307,16 +336,16 @@ class AgentBenchmarkService
      * Reads response_summary for each unscored benchmark and asks LLM to rate
      * accuracy (1-5), completeness (1-5), relevance (1-5).
      *
-     * @param string $runId Run to score
+     * @param  string  $runId  Run to score
      * @return int Number of benchmarks scored
      */
     public function autoScore(string $runId): int
     {
-        $unscored = DB::select("
+        $unscored = DB::select('
             SELECT id, task_key, task_description, workflow_mode, response_summary
             FROM agent_benchmarks
             WHERE run_id = ? AND accuracy_score IS NULL AND success = 1
-        ", [$runId]);
+        ', [$runId]);
 
         if (empty($unscored)) {
             return 0;
@@ -328,14 +357,14 @@ class AgentBenchmarkService
         foreach ($unscored as $bench) {
             try {
                 $prompt = "Rate this agent response on 3 dimensions (1=poor, 5=excellent).\n\n"
-                    . "TASK: {$bench->task_description}\n\n"
-                    . "MODE: {$bench->workflow_mode}\n\n"
-                    . "RESPONSE:\n{$bench->response_summary}\n\n"
-                    . "Rate as JSON: {\"accuracy\": N, \"completeness\": N, \"relevance\": N}\n"
-                    . "accuracy = factual correctness, specific data cited\n"
-                    . "completeness = covers all aspects of the task\n"
-                    . "relevance = stays on topic, actionable recommendations\n"
-                    . "Respond ONLY with the JSON object.";
+                    ."TASK: {$bench->task_description}\n\n"
+                    ."MODE: {$bench->workflow_mode}\n\n"
+                    ."RESPONSE:\n{$bench->response_summary}\n\n"
+                    ."Rate as JSON: {\"accuracy\": N, \"completeness\": N, \"relevance\": N}\n"
+                    ."accuracy = factual correctness, specific data cited\n"
+                    ."completeness = covers all aspects of the task\n"
+                    ."relevance = stays on topic, actionable recommendations\n"
+                    .'Respond ONLY with the JSON object.';
 
                 $response = $aiService->process($prompt, [
                     'temperature' => 0.1,
@@ -352,11 +381,11 @@ class AgentBenchmarkService
                         $completeness = max(1, min(5, (int) $scores['completeness']));
                         $relevance = max(1, min(5, (int) $scores['relevance']));
 
-                        DB::update("
+                        DB::update('
                             UPDATE agent_benchmarks
                             SET accuracy_score = ?, completeness_score = ?, relevance_score = ?
                             WHERE id = ?
-                        ", [$accuracy, $completeness, $relevance, $bench->id]);
+                        ', [$accuracy, $completeness, $relevance, $bench->id]);
 
                         $scored++;
                     }
@@ -376,7 +405,7 @@ class AgentBenchmarkService
      */
     public function getRuns(int $limit = 20): array
     {
-        return DB::select("
+        return DB::select('
             SELECT
                 run_id,
                 agent_id,
@@ -387,12 +416,13 @@ class AgentBenchmarkService
                 MIN(created_at) as started_at,
                 MAX(created_at) as finished_at,
                 AVG(tokens_used) as avg_tokens,
-                AVG(duration_ms) as avg_duration_ms
+                AVG(duration_ms) as avg_duration_ms,
+                SUM(promotion_eligible) as promotion_eligible_runs
             FROM agent_benchmarks
             GROUP BY run_id, agent_id
             ORDER BY started_at DESC
             LIMIT ?
-        ", [$limit]);
+        ', [$limit]);
     }
 
     /**
@@ -408,7 +438,7 @@ class AgentBenchmarkService
 
         foreach ($skills as $skill) {
             // Must have tool_phases for hybrid mode benchmark
-            if (!empty($skill['tool_phases'])) {
+            if (! empty($skill['tool_phases'])) {
                 $agents[] = [
                     'name' => $skill['name'],
                     'description' => $skill['description'] ?? '',
@@ -420,5 +450,23 @@ class AgentBenchmarkService
         }
 
         return $agents;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function decodeJsonObject(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+
+        if (! is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+
+        return is_array($decoded) ? $decoded : [];
     }
 }

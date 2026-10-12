@@ -3,6 +3,9 @@
 namespace App\Services;
 
 use App\Controllers\NotificationController;
+use App\Services\DataRemoval\BrokerHealthPolicyService;
+use Carbon\Carbon;
+use Cron\CronExpression;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -34,8 +37,6 @@ class OpsMCPService
 
     private const FAILED_JOBS_WARNING_COUNT = 5;
 
-    private const STUCK_WORKFLOW_HOURS = 6;
-
     private const DISK_SPACE_CRITICAL_PERCENT = 90;
 
     private const LOG_FILE_SIZE_WARNING_MB = 50;
@@ -63,8 +64,16 @@ class OpsMCPService
 
     private string $backupPath;
 
-    public function __construct()
-    {
+    private OpsMcpRuntimePolicyService $opsRuntimePolicy;
+
+    private BrokerHealthPolicyService $brokerHealthPolicy;
+
+    public function __construct(
+        ?OpsMcpRuntimePolicyService $opsRuntimePolicy = null,
+        ?BrokerHealthPolicyService $brokerHealthPolicy = null
+    ) {
+        $this->opsRuntimePolicy = $opsRuntimePolicy ?? app(OpsMcpRuntimePolicyService::class);
+        $this->brokerHealthPolicy = $brokerHealthPolicy ?? app(BrokerHealthPolicyService::class);
         $this->storagePath = storage_path();
         $this->logsPath = storage_path('logs');
         $this->backupPath = storage_path('backups');
@@ -705,10 +714,10 @@ class OpsMCPService
             // Must use fresh Redis connection to bypass Laravel's database prefix
             $prefix = config('horizon.prefix', 'laravel_horizon:');
 
-            // Retry up to 3 times with 2-second delay to handle heartbeat timing
+            // Retry through table-owned policy to handle heartbeat timing.
             // Horizon master keys have ~15 second TTL and may briefly expire between heartbeats
-            $maxRetries = 3;
-            $retryDelay = 2; // seconds
+            $maxRetries = $this->opsRuntimePolicy->horizonMasterRetryAttempts();
+            $retryDelay = $this->opsRuntimePolicy->horizonMasterRetryDelaySeconds();
 
             for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                 $redis = new \Redis;
@@ -755,12 +764,14 @@ class OpsMCPService
 
                 // No masters found - if not last attempt, wait and retry
                 if ($attempt < $maxRetries) {
-                    sleep($retryDelay);
+                    if ($retryDelay > 0) {
+                        sleep($retryDelay);
+                    }
                 }
             }
 
             // After all retries, still no masters - also check if Horizon process exists
-            $horizonProcess = trim(Process::timeout(5)->run(['pgrep', '-f', 'artisan horizon$'])->output());
+            $horizonProcess = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['pgrep', '-f', 'artisan horizon$'])->output());
             if (! empty($horizonProcess)) {
                 // Process exists but Redis keys missing - likely starting up
                 return [
@@ -813,38 +824,6 @@ class OpsMCPService
             return [
                 'status' => 'warning',
                 'message' => 'Failed jobs check error: '.$e->getMessage(),
-            ];
-        }
-    }
-
-    private function checkStuckWorkflows(): array
-    {
-        try {
-            $threshold = now()->subHours(config('health_thresholds.system.stuck_workflow_hours', self::STUCK_WORKFLOW_HOURS));
-            $stuck = DB::select("SELECT * FROM workflow_runs WHERE status = 'running' AND started_at < ?", [$threshold]);
-
-            $status = 'healthy';
-            $message = null;
-
-            if (count($stuck) > 0) {
-                $status = 'critical';
-                $names = implode(', ', array_column($stuck, 'workflow_name'));
-                // Use integer hours for consistent issue title matching (auto-resolve)
-                $message = 'Stuck workflows (>'.config('health_thresholds.system.stuck_workflow_hours', self::STUCK_WORKFLOW_HOURS)."hr): {$names}";
-            }
-
-            return [
-                'status' => $status,
-                'stuck_count' => count($stuck),
-                'threshold_hours' => config('health_thresholds.system.stuck_workflow_hours', self::STUCK_WORKFLOW_HOURS),
-                'message' => $message,
-            ];
-        } catch (Exception $e) {
-            Log::debug('OpsMCPService: workflow health check failed', ['error' => $e->getMessage()]);
-
-            return [
-                'status' => 'warning',
-                'message' => 'Workflow health check failed: '.$e->getMessage(),
             ];
         }
     }
@@ -1106,7 +1085,7 @@ class OpsMCPService
         }
 
         // Check Nginx (via systemctl)
-        $nginxStatus = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'nginx'])->output());
+        $nginxStatus = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'nginx'])->output());
         $services['nginx'] = ['status' => $nginxStatus ?: 'unknown'];
         if ($nginxStatus !== 'active') {
             $issues[] = 'Nginx not active';
@@ -1114,7 +1093,7 @@ class OpsMCPService
         }
 
         // Check MySQL (via systemctl)
-        $mysqlStatus = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'mysql'])->output());
+        $mysqlStatus = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'mysql'])->output());
         $services['mysql'] = ['status' => $mysqlStatus ?: 'unknown'];
         if ($mysqlStatus !== 'active') {
             $issues[] = 'MySQL not active';
@@ -1122,10 +1101,10 @@ class OpsMCPService
         }
 
         // Check PostgreSQL (via systemctl)
-        $pgStatus = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'postgresql'])->output());
+        $pgStatus = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'postgresql'])->output());
         if (empty($pgStatus) || $pgStatus === 'unknown') {
             // Try alternative service name
-            $pgStatus = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'postgresql@16-main'])->output());
+            $pgStatus = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'postgresql@16-main'])->output());
         }
         $services['postgresql'] = ['status' => $pgStatus ?: 'unknown'];
         if ($pgStatus !== 'active') {
@@ -1134,7 +1113,7 @@ class OpsMCPService
         }
 
         // Check Redis (via systemctl)
-        $redisStatus = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'redis-server'])->output());
+        $redisStatus = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'redis-server'])->output());
         $services['redis'] = ['status' => $redisStatus ?: 'unknown'];
         if ($redisStatus !== 'active') {
             $issues[] = 'Redis not active';
@@ -1142,7 +1121,7 @@ class OpsMCPService
         }
 
         // Check Apache Tika (via systemctl) - document extraction service
-        $tikaStatus = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'tika'])->output());
+        $tikaStatus = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'tika'])->output());
         $services['tika'] = ['status' => $tikaStatus ?: 'unknown'];
         if ($tikaStatus === 'active') {
             // Also verify HTTP endpoint
@@ -1180,8 +1159,8 @@ class OpsMCPService
         }
 
         // Check Horizon - queue execution depends on it even though scheduler uses cron
-        $horizonProcess = trim(Process::timeout(5)->run(['pgrep', '-f', 'artisan horizon$'])->output());
-        $horizonSystemd = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'laravel-horizon.service'])->output());
+        $horizonProcess = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['pgrep', '-f', 'artisan horizon$'])->output());
+        $horizonSystemd = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'laravel-horizon.service'])->output());
         $horizonRunning = ! empty($horizonProcess) || $horizonSystemd === 'active';
         $services['horizon_service'] = [
             'status' => $horizonRunning ? 'active' : 'inactive',
@@ -1192,50 +1171,13 @@ class OpsMCPService
             $status = ($status === 'critical') ? 'critical' : 'warning';
         }
 
-        // Check PLOS Agent Proxy - detect via process OR systemd
-        $agentProxyProcess = trim(Process::timeout(5)->run(['pgrep', '-f', 'node.*agent-proxy'])->output());
-        $agentProxySystemd = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'plos-agent-proxy'])->output());
-        $agentProxyRunning = ! empty($agentProxyProcess) || $agentProxySystemd === 'active';
-        $services['agent_proxy'] = [
-            'status' => $agentProxyRunning ? 'active' : 'inactive',
-            'detection' => ! empty($agentProxyProcess) ? 'process' : ($agentProxySystemd === 'active' ? 'systemd' : 'none'),
-        ];
-        if ($agentProxyRunning) {
-            // Verify HTTP endpoint
-            try {
-                $ch = curl_init(rtrim(config('services.claude.agent_proxy_url', 'http://127.0.0.1:8770'), '/').'/health');
-                curl_setopt_array($ch, [
-                    CURLOPT_RETURNTRANSFER => true,
-                    CURLOPT_TIMEOUT => 5,
-                    CURLOPT_CONNECTTIMEOUT => 3,
-                ]);
-                $response = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                $error = curl_error($ch);
-                curl_close($ch);
-
-                if ($error) {
-                    Log::debug('OpsMCPService: agent proxy endpoint probe failed', ['error' => $error]);
-                }
-
-                $services['agent_proxy']['endpoint'] = (! $error && $httpCode === 200) ? 'responsive' : 'unresponsive';
-            } catch (Exception $e) {
-                Log::debug('OpsMCPService: agent proxy endpoint check failed', ['error' => $e->getMessage()]);
-                $services['agent_proxy']['endpoint'] = 'error';
-            }
-        } else {
-            // Agent proxy is useful for automation but not critical
-            $issues[] = 'Agent Proxy not running';
-            $status = ($status === 'critical') ? 'critical' : 'warning';
-        }
-
         // Check Thunderbird MCP - detect via process OR systemd
-        $tbMcpProcess = trim(Process::timeout(5)->run([
+        $tbMcpProcess = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run([
             'pgrep',
             '-f',
             'thunderbird.*mcp\\|mcp.*thunderbird\\|node.*thunderbird',
         ])->output());
-        $tbMcpSystemd = trim(Process::timeout(5)->run(['systemctl', 'is-active', 'thunderbird-mcp'])->output());
+        $tbMcpSystemd = trim(Process::timeout($this->opsRuntimePolicy->processProbeTimeoutSeconds())->run(['systemctl', 'is-active', 'thunderbird-mcp'])->output());
         $tbMcpRunning = ! empty($tbMcpProcess) || $tbMcpSystemd === 'active';
         $services['thunderbird_mcp'] = [
             'status' => $tbMcpRunning ? 'active' : 'inactive',
@@ -1445,7 +1387,7 @@ class OpsMCPService
         $openBreakers = [];
 
         try {
-            $redis = \Illuminate\Support\Facades\Redis::connection();
+            $redis = Redis::connection();
             $prefix = config('database.redis.options.prefix', '');
             $keys = $redis->keys('circuit_breaker:*');
 
@@ -1499,7 +1441,7 @@ class OpsMCPService
         $queueStats = [];
 
         try {
-            $redis = \Illuminate\Support\Facades\Redis::connection();
+            $redis = Redis::connection();
             $queues = $this->getActiveQueueNames();
             $totalPending = 0;
             $totalReserved = 0;
@@ -1619,8 +1561,10 @@ class OpsMCPService
             $healthStats = DB::select(
                 'SELECT health_status, COUNT(*) as count
                  FROM data_brokers
-                 WHERE health_status IS NOT NULL
-                 GROUP BY health_status'
+                 WHERE is_active = 1 AND removal_url IS NOT NULL AND removal_url != ?
+                 AND health_status IS NOT NULL
+                 GROUP BY health_status',
+                ['']
             );
 
             $brokenCount = 0;
@@ -1636,22 +1580,23 @@ class OpsMCPService
                 }
             }
 
-            // Check for stale health checks (not checked in 7 days)
+            $freshnessCutoff = now()->subHours($this->brokerHealthPolicy->staleAfterHours());
             $staleChecks = DB::selectOne(
                 'SELECT COUNT(*) as count FROM data_brokers
-                 WHERE removal_url IS NOT NULL
-                 AND (last_health_check IS NULL OR last_health_check < DATE_SUB(NOW(), INTERVAL 7 DAY))'
+                 WHERE is_active = 1 AND removal_url IS NOT NULL AND removal_url != ?
+                 AND (last_health_check IS NULL OR last_health_check < ?)',
+                ['', $freshnessCutoff]
             );
             $staleCount = $staleChecks->count ?? 0;
 
-            // Check pending removal tasks (data_removal_tasks does not exist; use data_subjects)
-            $pendingTasks = 0;
+            // Track protected subjects without misreporting them as pending tasks.
+            $trackedSubjects = 0;
             try {
                 $pending = DB::selectOne(
                     'SELECT COUNT(*) as count FROM data_subjects'
                 );
-                $pendingTasks = $pending->count ?? 0;
-            } catch (\Exception $e) {
+                $trackedSubjects = $pending->count ?? 0;
+            } catch (Exception $e) {
                 // data_subjects table may not exist or have different schema
             }
 
@@ -1673,8 +1618,8 @@ class OpsMCPService
             if ($changedCount > 0) {
                 $observations[] = "{$changedCount} broker opt-out pages changed (may need review)";
             }
-            if ($pendingTasks > 0) {
-                $observations[] = "{$pendingTasks} removal tasks pending";
+            if ($trackedSubjects > 0) {
+                $observations[] = "{$trackedSubjects} data-removal subjects tracked";
             }
 
             return [
@@ -1684,7 +1629,8 @@ class OpsMCPService
                 'degraded_count' => $degradedCount,
                 'changed_count' => $changedCount,
                 'stale_checks' => $staleCount,
-                'pending_tasks' => $pendingTasks,
+                'pending_tasks' => 0,
+                'tracked_subjects' => $trackedSubjects,
                 'observations' => $observations,
             ];
 
@@ -2175,7 +2121,7 @@ class OpsMCPService
                 $results['issues'][] = '❌ YouTube: No refresh token';
             } else {
                 // Check token age (Google testing mode = 7 day expiry)
-                $createdAt = \Carbon\Carbon::parse($token->created_at);
+                $createdAt = Carbon::parse($token->created_at);
                 $tokenAgeDays = (int) $createdAt->diffInDays(now());
                 $daysUntilExpiry = 7 - $tokenAgeDays;
 
@@ -2205,6 +2151,20 @@ class OpsMCPService
         } catch (Exception $e) {
             $results['status'] = $results['status'] === 'critical' ? 'critical' : 'warning';
             $results['issues'][] = '⚠️ YouTube: Token check failed - '.$e->getMessage();
+        }
+
+        // Existing consolidated maintenance reports also warn before private
+        // MCP service credentials expire; this reads metadata, not signing keys.
+        try {
+            $mcp = McpServiceTokenService::healthSummary();
+            $results['tokens']['mcp_service'] = $mcp;
+            if (in_array($mcp['status'], ['warning', 'critical'], true)) {
+                $results['status'] = $results['status'] === 'critical' || $mcp['status'] === 'critical' ? 'critical' : 'warning';
+                $results['issues'][] = 'MCP service tokens: '.$mcp['expiring_soon'].' expire within 14 days, '.$mcp['expired'].' expired, '.$mcp['unknown_expiry'].' have unknown expiry. Review owner-scoped token status and rotate verified bindings.';
+            }
+        } catch (Exception) {
+            $results['status'] = $results['status'] === 'critical' ? 'critical' : 'warning';
+            $results['issues'][] = 'MCP service-token expiry check is unavailable.';
         }
 
         return $results;
@@ -2284,7 +2244,7 @@ class OpsMCPService
                 FROM workflows w
                 JOIN scheduled_jobs sj
                   ON sj.job_type = 'workflow'
-                 AND sj.command = w.name
+                 AND BINARY sj.command = BINARY w.name
                 WHERE w.active = 1
                   AND sj.enabled = 1
                   AND sj.cron_expression IS NOT NULL
@@ -2292,7 +2252,7 @@ class OpsMCPService
 
             foreach ($workflows as $workflow) {
                 try {
-                    $cron = new \Cron\CronExpression($workflow->schedule);
+                    $cron = new CronExpression($workflow->schedule);
                     $previousRunTime = $cron->getPreviousRunDate(now());
 
                     $lastRun = DB::selectOne('SELECT * FROM workflow_runs WHERE workflow_id = ? AND started_at >= ? AND started_at <= ? LIMIT 1', [$workflow->id, $previousRunTime, now()]);
@@ -2426,7 +2386,7 @@ class OpsMCPService
         $id = $params['id'] ?? null;
         $status = $params['status'] ?? null;
         $notes = $params['resolution_notes'] ?? null;
-        $resolvedBy = $params['resolved_by'] ?? 'claude';
+        $resolvedBy = $params['resolved_by'] ?? 'operator';
 
         if (! $id || ! $status) {
             return [
@@ -2657,11 +2617,12 @@ class OpsMCPService
      * Transient issues like DNS timeouts or API failures that self-correct
      * should be auto-resolved if they haven't recurred in the staleness window.
      *
-     * @param  int  $staleHours  Hours without recurrence to consider issue stale (default 6)
+     * @param  int|null  $staleHours  Explicit override for hours without recurrence
      * @return int Number of auto-resolved issues
      */
-    public function autoResolveStaleTransientIssues(int $staleHours = 6): int
+    public function autoResolveStaleTransientIssues(?int $staleHours = null): int
     {
+        $staleHours = max(1, min(720, $staleHours ?? $this->opsRuntimePolicy->transientIssueStaleHours()));
         $staleThreshold = now()->subHours($staleHours);
 
         // Categories that are typically transient and self-correcting
@@ -2708,7 +2669,7 @@ class OpsMCPService
 
             $formatted = [];
             foreach ($displayIssues as $issue) {
-                $lastSeen = \Carbon\Carbon::parse($issue->last_seen_at);
+                $lastSeen = Carbon::parse($issue->last_seen_at);
                 $dayName = $lastSeen->format('D');
                 $dateFormatted = $lastSeen->format('m/d/Y');
 

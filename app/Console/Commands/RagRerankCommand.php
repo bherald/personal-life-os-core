@@ -1,0 +1,150 @@
+<?php
+
+namespace App\Console\Commands;
+
+use App\Services\OfflineRerankService;
+use Illuminate\Console\Command;
+
+class RagRerankCommand extends Command
+{
+    protected $signature = 'rag:rerank
+        {--query= : Query text}
+        {--query-b64= : Query text encoded as base64}
+        {--documents-json= : JSON array of strings or objects with id/title/text/content}
+        {--documents-json-b64= : Base64-encoded JSON document array}
+        {--limit=10 : Number of ranked results to return}
+        {--use-embeddings : Blend lexical ranking with PLOS AIService embeddings}
+        {--no-embeddings : Force lexical-only ranking}
+        {--example : Run a built-in lexical smoke example}
+        {--json : Emit machine-readable JSON}';
+
+    protected $description = 'Rerank arbitrary documents locally with lexical scoring and optional table-routed embeddings';
+
+    public function handle(OfflineRerankService $reranker): int
+    {
+        $input = $this->inputPayload();
+        if ($input['error'] !== null) {
+            return $this->finish([
+                'schema' => 'plos_rag_rerank.v1',
+                'status' => 'invalid_input',
+                'mode' => 'none',
+                'read_only' => true,
+                'error' => $input['error'],
+            ], self::FAILURE);
+        }
+
+        $limit = max(1, min((int) $this->option('limit'), 50));
+        $useEmbeddings = (bool) $this->option('use-embeddings') && ! (bool) $this->option('no-embeddings');
+        $started = microtime(true);
+
+        $result = $reranker->rerank(
+            (string) $input['query'],
+            $input['documents'],
+            [
+                'limit' => $limit,
+                'use_embeddings' => $useEmbeddings,
+            ],
+        );
+
+        $payload = [
+            'schema' => 'plos_rag_rerank.v1',
+            'status' => $result['status'],
+            'mode' => $result['mode'],
+            'read_only' => true,
+            'query_sha256' => hash('sha256', (string) $input['query']),
+            'document_count' => count($input['documents']),
+            'limit' => $limit,
+            'use_embeddings' => $useEmbeddings,
+            'embedding_status' => $result['embedding_status'],
+            'embedding_provider' => $result['embedding_provider'] ?? null,
+            'embedding_model' => $result['embedding_model'] ?? null,
+            'embedding_revision' => $result['embedding_revision'] ?? null,
+            'embedding_dimension' => $result['embedding_dimension'] ?? null,
+            'embedding_identity_sha256' => $result['embedding_identity_sha256'] ?? null,
+            'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+            'results' => $result['results'],
+        ];
+
+        return $this->finish($payload, $result['status'] === 'pass' ? self::SUCCESS : self::FAILURE);
+    }
+
+    /**
+     * @return array{query:string,documents:array<int, mixed>,error:?string}
+     */
+    private function inputPayload(): array
+    {
+        if ((bool) $this->option('example')) {
+            return [
+                'query' => 'offline genealogy media transcription',
+                'documents' => [
+                    ['id' => 'dev', 'title' => 'Developer notes', 'text' => 'Small offline coding model for Laravel maintenance.'],
+                    ['id' => 'media', 'title' => 'Media transcript plan', 'text' => 'Offline genealogy media transcription and local whisper readiness.'],
+                    ['id' => 'weather', 'title' => 'Weather report', 'text' => 'Daily weather summary and notification formatting.'],
+                ],
+                'error' => null,
+            ];
+        }
+
+        $query = trim((string) ($this->option('query') ?: ''));
+        $queryB64 = trim((string) ($this->option('query-b64') ?: ''));
+        if ($queryB64 !== '') {
+            $decoded = base64_decode($queryB64, true);
+            if ($decoded === false) {
+                return ['query' => '', 'documents' => [], 'error' => '--query-b64 is not valid base64.'];
+            }
+            $query = trim($decoded);
+        }
+
+        $json = trim((string) ($this->option('documents-json') ?: ''));
+        $jsonB64 = trim((string) ($this->option('documents-json-b64') ?: ''));
+        if ($jsonB64 !== '') {
+            $decoded = base64_decode($jsonB64, true);
+            if ($decoded === false) {
+                return ['query' => '', 'documents' => [], 'error' => '--documents-json-b64 is not valid base64.'];
+            }
+            $json = $decoded;
+        }
+
+        if ($query === '') {
+            return ['query' => '', 'documents' => [], 'error' => 'A query is required.'];
+        }
+
+        if (trim($json) === '') {
+            return ['query' => '', 'documents' => [], 'error' => 'Documents JSON is required.'];
+        }
+
+        try {
+            $documents = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            return ['query' => '', 'documents' => [], 'error' => 'Documents JSON is invalid: '.$e->getMessage()];
+        }
+
+        if (! is_array($documents) || array_is_list($documents) === false || empty($documents)) {
+            return ['query' => '', 'documents' => [], 'error' => 'Documents JSON must be a non-empty array.'];
+        }
+
+        return ['query' => $query, 'documents' => $documents, 'error' => null];
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function finish(array $payload, int $exit = self::SUCCESS): int
+    {
+        if ($this->option('json')) {
+            $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            return $exit;
+        }
+
+        $this->line(($payload['schema'] ?? 'rag:rerank').': '.($payload['status'] ?? 'unknown'));
+        foreach ($payload['results'] ?? [] as $result) {
+            $this->line(sprintf('%d. %s %.4f', $result['rank'], $result['id'], $result['score']));
+        }
+        if (isset($payload['error'])) {
+            $this->error((string) $payload['error']);
+        }
+
+        return $exit;
+    }
+}

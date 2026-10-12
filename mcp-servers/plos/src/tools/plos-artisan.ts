@@ -8,8 +8,8 @@ import { logger } from '../util/logger.js';
 import { execCommand } from '../util/exec.js';
 import type { ToolContext } from '../util/tool-context.js';
 
-// Whitelisted artisan commands — read-only diagnostics + safe ops
-export const ALLOWLIST_REVISION = '2026-06-20-mcp-capacity-observe';
+// Whitelisted artisan commands — diagnostics, bounded previews, and safe ops
+export const ALLOWLIST_REVISION = 'public-v2.1-neutral-installation';
 
 const ALLOWLIST_REVISION_PATTERN = /ALLOWLIST_REVISION\s*=\s*['"]([^'"]+)['"]/;
 
@@ -21,14 +21,19 @@ export type AllowlistFreshness = {
   mismatched_revision_count: number;
 };
 
-type AllowedCommandMeta = { description: string; timeout: number };
+type AllowedCommandMeta = { description: string; timeout: number; maxBuffer?: number };
 
 type AllowedCommands = Record<string, AllowedCommandMeta>;
+
+export type DynamicAllowedCommand = { command: string; meta: AllowedCommandMeta };
+
+export type DynamicCommandResolver = (command: string, support?: { boundedExecutor: boolean }) => DynamicAllowedCommand | null;
 
 type AllowlistModuleCandidate = {
   ALLOWLIST_REVISION?: unknown;
   ALLOWED_COMMANDS?: unknown;
   COMPACT_SCORECARD_COMMANDS?: unknown;
+  resolveDynamicAllowedCommand?: unknown;
 };
 
 type ResolvedAllowlistPolicy = {
@@ -36,6 +41,7 @@ type ResolvedAllowlistPolicy = {
   revision: string;
   commands: AllowedCommands;
   compactCommands: readonly string[];
+  dynamicCommandResolver: DynamicCommandResolver;
   freshness: AllowlistFreshness;
 };
 
@@ -88,6 +94,7 @@ function allowlistFreshnessLine(freshness: AllowlistFreshness = allowlistFreshne
 export const COMPACT_SCORECARD_COMMANDS = [
   'ops:offline-smoke --json --compact',
   'ops:mcp-health --json --compact',
+  'ops:mcp-tool-contract-audit --json --compact --fail-on-violations',
   'ops:agent-doctor --json --compact --since=24',
   'ops:agent-doctor-history --json --compact --days=7',
   'plos:agent-trace-tail --limit=20 --since=24 --json --compact',
@@ -105,6 +112,8 @@ export const COMPACT_SCORECARD_COMMANDS = [
 ] as const;
 
 export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: number }> = {
+  'files:face-coverage --status --json': { description: 'Read-only aggregate anonymous photo coverage status without detection or identity decisions', timeout: 30_000 },
+  'files:image-audit --status --json': { description: 'Read-only aggregate image audit status without starting a worker or changing sources or identities', timeout: 30_000 },
   'ops:validate-sql':            { description: 'Static SQL validation (pre-deploy)', timeout: 60_000 },
   'ops:validate-sql --explain':  { description: 'EXPLAIN SQL validation (remote/post-deploy)', timeout: 120_000 },
   'ops:smoke-test':              { description: 'Post-deploy smoke test', timeout: 60_000 },
@@ -142,9 +151,27 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'plos:agent-trace-tail --limit=20 --since=24 --json --compact': { description: 'Compact read-only recent agent trace tail counts without events, ids, actor ids, paths, or payload details', timeout: 30_000 },
   'ops:mcp-health --compact': { description: 'Compact observe-only MCP configuration and process health scorecard', timeout: 30_000 },
   'ops:mcp-health --json --compact': { description: 'Compact observe-only MCP configuration and process health JSON', timeout: 30_000 },
+  'ops:mcp-tool-contract-audit --json --compact --fail-on-violations': { description: 'Strict content-free live PLOS MCP tools/list security and baseline-drift audit', timeout: 30_000 },
   'llm:sync-providers --json --compact': { description: 'Compact read-only LLM provider model diff and role/capability review', timeout: 60_000 },
   'llm:sync-providers --json --compact --no-live': { description: 'Compact read-only LLM provider role/capability review without network probes', timeout: 30_000 },
   'codex:exec-smoke --json': { description: 'Dry-run table-backed Codex Exec connector smoke without invoking Codex', timeout: 30_000 },
+  'codex:offline-capabilities --json': { description: 'Read-only offline Codex/PLOS media, pipeline, MCP, and operator-gate capability manifest', timeout: 30_000 },
+  'codex:offline-capabilities --json --probe-sidecars': { description: 'Offline Codex/PLOS capability manifest with configured local/LAN sidecar health probes', timeout: 45_000 },
+  'codex:offline-pipeline-tools --json': { description: 'Read-only ordered PLOS AI pipeline function/tool/option inventory for offline agents', timeout: 30_000 },
+  'codex:offline-pipeline-tools --json --compact': { description: 'Compact ordered PLOS AI pipeline function/tool/option inventory for offline agents', timeout: 30_000 },
+  'codex:offline-sidecar --json --dry-run': { description: 'Read-only offline Codex sidecar coordinator plan with default prompt; use plos_offline_sidecar for custom prompts', timeout: 30_000 },
+  'codex:offline-improvement --json --example': { description: 'Read-only Hermes-inspired offline skill/memory/tool/test improvement proposal example', timeout: 30_000 },
+  'codex:offline-prompt-candidate-eval --json --compact --example --fail-on-ineligible': { description: 'Read-only hashes-only multi-metric prompt candidate evaluation example with disjoint held-out evidence', timeout: 30_000 },
+  'content:ocr-candidate-eval --example --json --compact --fail-on-ineligible': { description: 'Read-only content-free OCR fidelity, exact-fact, page-provenance, hallucination, latency, and VRAM gate example', timeout: 30_000 },
+  'content:stt-candidate-eval --example --json --compact --fail-on-ineligible': { description: 'Read-only content-free heterogeneous ASR WER, CER, language, silence, and real-time-factor gate example', timeout: 30_000 },
+  'audio:tts-candidate-eval --example --json --compact --fail-on-ineligible': { description: 'Read-only content-free TTS intelligibility, naturalness, audio-defect, and real-time-factor gate example', timeout: 30_000 },
+  'content:extraction-provenance-audit --json --compact': { description: 'Compact read-only content-free extraction contract, confidence, page coverage, and review-state audit', timeout: 30_000 },
+  'rag:chunking-provenance-audit --json --compact': { description: 'Compact read-only semantic chunk configuration and output-set provenance audit without chunk content', timeout: 30_000 },
+  'codex:offline-improvement-review --json --compact': { description: 'Read-only summary of saved offline improvement proposals pending review', timeout: 30_000 },
+  'codex:offline-improvement-review --json --compact --stage-review': { description: 'Read-only preview of the review queue item that would lift saved offline improvements to operator attention', timeout: 30_000 },
+  'audio:tts --json --probe': { description: 'Read-only offline audio/TTS capability probe; use plos_audio_tts for custom text or execute mode', timeout: 30_000 },
+  'rag:rerank --json --example --no-embeddings': { description: 'Read-only generic RAG rerank smoke example without live embedding calls; use plos_rerank for custom documents', timeout: 30_000 },
+  'rag:rerank-eval --json --compact --fail-on-regression': { description: 'Read-only content-free RAG ranking plus claim-recall/context-precision regression gate', timeout: 30_000 },
   'bitllm:privacy-gate --eval --json': { description: 'Run the redacted local BitLLM privacy eval pack through table-routed providers', timeout: 120_000 },
   'ops:local-runtime-scorecard --json --compact': { description: 'Compact observe-only local/runtime LLM privacy and readiness scorecard without probes', timeout: 30_000 },
   'ops:scheduled-output-audit --json --compact --fail-on-violations': { description: 'Compact retained scheduled-output key hygiene audit without raw output or job rows', timeout: 30_000 },
@@ -165,6 +192,8 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:runtime-diagnostics --window=24h --focus=all --json --compact': { description: 'Compact read-only 24h runtime recovery diagnostics with explicit focus', timeout: 60_000 },
   'ops:queue-fit-audit --json --compact': { description: 'Compact inferential queue fit audit without job names, row IDs, or reasons', timeout: 30_000 },
   'ops:runtime-policy-leak-audit --json --compact': { description: 'Compact observe-only audit for hardcoded runtime policy candidates', timeout: 120_000 },
+  'ops:runtime-policy-leak-audit --json --findings-limit=40': { description: 'Bounded observe-only runtime policy candidate samples for manual review', timeout: 120_000 },
+  'ops:runtime-policy-leak-audit --json --compact --findings-limit=40': { description: 'Compact observe-only runtime policy audit with bounded omitted-detail counts', timeout: 120_000 },
   'ops:face-telemetry-report --json': { description: 'Face/genealogy telemetry report', timeout: 30_000 },
   'ops:face-telemetry-report --markdown --hours=168': { description: 'Weekly face/genealogy telemetry markdown', timeout: 30_000 },
   'ops:face-telemetry-report --compact': { description: 'Compact face/genealogy telemetry report', timeout: 30_000 },
@@ -176,18 +205,6 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'ops:face-integrity-audit --json --compact --limit=20': { description: 'Compact read-only face integrity audit without samples', timeout: 30_000 },
   'ops:face-named-only-slice --limit=10 --json': { description: 'Read-only named-only face operator slice without writeback', timeout: 30_000 },
   'ops:face-named-only-slice --limit=10 --cluster-scope=mixed --sort=oldest --compact --json': { description: 'Compact read-only named-only mixed-cluster face review slice without writeback', timeout: 30_000 },
-  'ops:face-bridge-alignment-report --tree=4 --json --compact --limit=20': { description: 'Compact read-only face bridge alignment report without row identifiers', timeout: 30_000 },
-  'ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=10 --seed-limit=20 --scan-per-seed=50 --json --compact': { description: 'Compact read-only visual same-person candidate search for a configured FT person without candidate rows or writeback', timeout: 60_000 },
-  'ops:face-person-source-provenance-report --tree=4 --json --compact --limit=10': { description: 'Compact read-only all-person face/photo source provenance report without sample rows or writeback', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=face_export_person_conflict --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for export-person conflicts; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=face_linked_display_mismatch --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for linked display mismatches; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=face_trusted_export_no_source --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for trusted export faces without source backing; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for untrusted export review; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=face_no_export_provenance --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for faces without export provenance; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_confirmed --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for confirmed person-media links without source backing; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_unconfirmed --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for unconfirmed person-media links without source backing; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-plan --tree=4 --status=person_media_source_backed_unconfirmed --limit=25 --json': { description: 'Read-only face/photo repair-plan rows for source-backed unconfirmed person-media links; review packet writeback is not allowed through MCP', timeout: 120_000 },
-  'ops:face-person-source-repair-packet-refill --tree=4 --json --compact --dry-run': { description: 'Dry-run face/photo repair-packet refill planner; scheduled review packet writeback is not allowed through MCP', timeout: 120_000 },
   'ops:audit-privacy-routing --json --compact': { description: 'Compact read-only privacy routing audit without provider or tool lists', timeout: 30_000 },
   'ops:dba-telemetry-report --compact': { description: 'Compact observe-only DBA telemetry report', timeout: 60_000 },
   'ops:dba-telemetry-report --json --compact': { description: 'Compact observe-only DBA telemetry JSON', timeout: 60_000 },
@@ -218,11 +235,8 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:packet-reason-codes --days=30 --json': { description: 'Genealogy review-packet reason-code rollup', timeout: 30_000 },
   'genealogy:packet-reason-codes --compact': { description: 'Compact genealogy review-packet reason-code text rollup', timeout: 30_000 },
   'genealogy:packet-reason-codes --json --compact': { description: 'Compact genealogy review-packet reason-code rollup', timeout: 30_000 },
-  'genealogy:manager --tree=4 --json --compact': { description: 'Compact read-only Genea manager posture and lane-decision report', timeout: 60_000 },
   'genealogy:evidence-sprint-report --json': { description: 'Read-only genealogy evidence sprint readiness report', timeout: 30_000 },
   'genealogy:evidence-sprint-report --json --compact': { description: 'Compact genealogy evidence sprint readiness report', timeout: 30_000 },
-  'genealogy:evidence-sprint-report --json --compact --boundary="FT4 Heintzelman cousin expansion review-first, no face evidence, no canonical writeback"': { description: 'Compact genealogy evidence sprint readiness for FT4 Heintzelman boundary', timeout: 30_000 },
-  'genealogy:evidence-sprint-report --json --compact --boundary="Frederick Renner source-cleanup and identity review, tree 4, person 2687"': { description: 'Compact genealogy evidence sprint readiness for Frederick Renner boundary', timeout: 30_000 },
   'genealogy:evidence-sprint-report --markdown': { description: 'Read-only genealogy evidence sprint readiness markdown', timeout: 30_000 },
   'genealogy:evidence-sprint-report --markdown --compact': { description: 'Compact genealogy evidence sprint readiness markdown', timeout: 30_000 },
   'genealogy:evidence-asset-candidates --compact': { description: 'Compact read-only genealogy review evidence asset candidate report', timeout: 30_000 },
@@ -234,21 +248,16 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'genealogy:evidence-asset-capture-review --json --compact': { description: 'Compact dry-run genealogy evidence asset capture review materialization plan', timeout: 30_000 },
   'genealogy:evidence-asset-capture-executor --json --compact': { description: 'Compact read-only genealogy evidence asset capture executor preflight', timeout: 30_000 },
   'genealogy:media-intake-report --json --compact': { description: 'Compact read-only genealogy media intake gap report JSON', timeout: 30_000 },
-  'genealogy:media-intake-report --tree=4 --json --compact': { description: 'Compact read-only FT4 genealogy media intake gap report JSON', timeout: 30_000 },
   'genealogy:media-intake-report --markdown --compact': { description: 'Compact read-only genealogy media intake gap markdown', timeout: 30_000 },
   'genealogy:media-intake-report --dry-run --json --compact': { description: 'Dry-run compact genealogy media intake report JSON without row queries', timeout: 30_000 },
   'genealogy:media-intake-run --dry-run --json --compact': { description: 'Dry-run compact genealogy media intake wrapper without row queries or subcommands', timeout: 30_000 },
   'genealogy:media-intake-run --dry-run --json --compact --stage --transcribe-dry-run --enrich-dry-run --evidence-assets': { description: 'Dry-run compact genealogy media intake wrapper with all no-write stages planned', timeout: 30_000 },
   'genealogy:enrich-media --status': { description: 'Read-only genealogy media enrichment status with aggregate eligibility blockers', timeout: 30_000 },
   'genealogy:transcribe-media --status': { description: 'Read-only genealogy HTR status with aggregate eligibility blockers', timeout: 30_000 },
-  'genealogy:media-rag-index --tree=4 --stats': { description: 'Read-only FT4 genealogy media RAG indexing status', timeout: 30_000 },
-  'genealogy:media-rag-index --tree=4 --limit=20 --dry-run': { description: 'Dry-run FT4 genealogy media RAG indexing preview', timeout: 30_000 },
-  'genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45': { description: 'Bounded FT4 genealogy media RAG indexing batch', timeout: 60_000 },
   'genealogy:agent-triage --json': { description: 'Read-only genealogy agent re-enablement triage', timeout: 30_000 },
   'genealogy:agent-triage --compact': { description: 'Compact genealogy agent re-enablement triage text', timeout: 30_000 },
   'genealogy:agent-triage --json --compact': { description: 'Compact genealogy agent re-enablement triage', timeout: 30_000 },
   'genealogy:agent-triage --days=30 --json --compact': { description: 'Compact 30-day genealogy agent re-enablement triage', timeout: 30_000 },
-  'genealogy:health-audit --tree=4 --json --aggregate --compact': { description: 'Compact aggregate-only FT4 genealogy health audit JSON', timeout: 60_000 },
   'genealogy:source-registry --validate': { description: 'Read-only genealogy source registry posture validation', timeout: 30_000 },
   'genealogy:source-registry --validate --json --compact': { description: 'Compact read-only genealogy source registry posture validation JSON', timeout: 30_000 },
   'awo:replay --window=7d --json': { description: 'Approval-worthy-output read-only replay', timeout: 30_000 },
@@ -295,6 +304,7 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'graph:quality-metrics --stats':     { description: 'Graph quality metrics', timeout: 15_000 },
   'graph:quality-metrics --stats --json': { description: 'Graph quality metrics JSON stats only', timeout: 30_000 },
   'entity:resolve --stats':     { description: 'Entity resolution stats', timeout: 15_000 },
+  'scheduler:run --job=workflow_youtube_watch_later --sync': { description: 'Operator-authorized single YouTube nightly execution with normal enabled, overlap, custody, controller and delivery gates; never force or retry automatically', timeout: 30_000 },
   'workflow:list':               { description: 'List all workflows', timeout: 15_000 },
   'agent:procedures --stats':   { description: 'Procedural memory stats', timeout: 15_000 },
   'agent:procedures --stats --json --compact': { description: 'Compact read-only procedural memory stats JSON', timeout: 15_000 },
@@ -304,6 +314,124 @@ export const ALLOWED_COMMANDS: Record<string, { description: string; timeout: nu
   'horizon:status':             { description: 'Queue worker status', timeout: 10_000 },
   'schedule:list':              { description: 'List scheduled commands', timeout: 15_000 },
 };
+
+const FACE_PREVIEW_PREFIX = ['files:enrich', '--type=faces', '--face-preview'] as const;
+const FACE_PREVIEW_SELECTOR = /^--(?:media-id|face-review-id)=([1-9]\d*)$/;
+const MAX_FACE_PREVIEW_SELECTORS = 5;
+const FACE_REFERENCE_READINESS_COMMAND = 'files:face-reference-readiness';
+const FACE_REFERENCE_SELECTOR = /^--face-id=([1-9]\d*)$/;
+const MAX_FACE_REFERENCE_SELECTORS = 5;
+const FACE_REFERENCE_MAX_BUFFER = 262144;
+const PHP_INT_MAX = 9_223_372_036_854_775_807n;
+
+function isPositiveInteger(value: string): boolean {
+  if (!/^[1-9]\d*$/.test(value)) {
+    return false;
+  }
+
+  try {
+    return BigInt(value) <= PHP_INT_MAX;
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve only the canonical, explicit, bounded anonymous face-preview command form. */
+export function resolveDynamicAllowedCommand(command: string, support?: { boundedExecutor: boolean }): DynamicAllowedCommand | null {
+  // An old loaded executor calls the refreshed resolver without support and must stay denied.
+  if (command === 'os-tools:review python3 --json' || command === 'os-tools:review prlimit --json') {
+    return support?.boundedExecutor === true ? { command, meta: {
+      description: 'Read bounded complete local OS-tool environment, executable and documentation evidence; no discovered executable execution or approval',
+      timeout: 60_000, maxBuffer: 262144,
+    } } : null;
+  }
+  const tokens = command.split(' ');
+  if (tokens[0] === FACE_REFERENCE_READINESS_COMMAND) {
+    if (support?.boundedExecutor !== true || tokens.join(' ') !== command || tokens.at(-1) !== '--json') {
+      return null;
+    }
+    const selectors = tokens.slice(1, -1);
+    if (selectors.length < 1 || selectors.length > MAX_FACE_REFERENCE_SELECTORS) {
+      return null;
+    }
+    const ids: string[] = [];
+    for (const selector of selectors) {
+      const match = selector.match(FACE_REFERENCE_SELECTOR);
+      if (!match || !isPositiveInteger(match[1]) || BigInt(match[1]) > BigInt(Number.MAX_SAFE_INTEGER)) {
+        return null;
+      }
+      ids.push(match[1]);
+    }
+    if (new Set(ids).size !== ids.length) {
+      return null;
+    }
+
+    return { command, meta: {
+      description: 'Read private benchmark-readiness evidence for 1–5 explicit face IDs; no identity decisions or writes',
+      timeout: 60_000, maxBuffer: FACE_REFERENCE_MAX_BUFFER,
+    } };
+  }
+  if (tokens.length < 6 || FACE_PREVIEW_PREFIX.some((prefix, index) => tokens[index] !== prefix)) {
+    return null;
+  }
+
+  if (tokens.at(-1) !== '--json') {
+    return null;
+  }
+
+  let treeIndex = tokens.length - 2;
+  const hasDryRun = tokens[treeIndex] === '--dry-run';
+  if (hasDryRun) {
+    treeIndex -= 1;
+  }
+
+  const treeMatch = tokens[treeIndex]?.match(/^--tree-id=([1-9]\d*)$/);
+  if (!treeMatch || !isPositiveInteger(treeMatch[1])) {
+    return null;
+  }
+
+  const selectorTokens = tokens.slice(FACE_PREVIEW_PREFIX.length, treeIndex);
+  if (selectorTokens.length < 1 || selectorTokens.length > MAX_FACE_PREVIEW_SELECTORS) {
+    return null;
+  }
+
+  const selectorIds: string[] = [];
+  for (const token of selectorTokens) {
+    const selectorMatch = token.match(FACE_PREVIEW_SELECTOR);
+    if (!selectorMatch || !isPositiveInteger(selectorMatch[1])) {
+      return null;
+    }
+
+    selectorIds.push(selectorMatch[1]);
+  }
+
+  if (new Set(selectorIds).size !== selectorIds.length) {
+    return null;
+  }
+
+  return {
+    command: tokens.join(' '),
+    meta: {
+      description: 'Bounded anonymous face preview for 1–5 explicit media/review IDs; no identity decisions or database writes',
+      timeout: 120_000,
+    },
+  };
+}
+
+export function resolveAllowedCommand(
+  command: string,
+  commands: AllowedCommands = ALLOWED_COMMANDS,
+  dynamicCommandResolver: DynamicCommandResolver = resolveDynamicAllowedCommand,
+): DynamicAllowedCommand | null {
+  const exactMeta = Object.hasOwn(commands, command) ? commands[command] : undefined;
+  if (exactMeta) {
+    return { command, meta: exactMeta };
+  }
+
+  const dynamicMatch = dynamicCommandResolver(command, { boundedExecutor: true });
+
+  return dynamicMatch?.command === command ? dynamicMatch : null;
+}
 
 export const plosArtisanInput = z.object({
   command: z.string().describe(
@@ -319,12 +447,14 @@ export function selectAllowlistPolicy(input: {
   loadedRevision?: string;
   loadedCommands?: AllowedCommands;
   loadedCompactCommands?: readonly string[];
+  loadedDynamicCommandResolver?: DynamicCommandResolver;
   freshness: AllowlistFreshness;
   candidate?: AllowlistModuleCandidate | null;
 }): ResolvedAllowlistPolicy {
   const loadedRevision = input.loadedRevision ?? ALLOWLIST_REVISION;
   const loadedCommands = input.loadedCommands ?? ALLOWED_COMMANDS;
   const loadedCompactCommands = input.loadedCompactCommands ?? COMPACT_SCORECARD_COMMANDS;
+  const loadedDynamicCommandResolver = input.loadedDynamicCommandResolver ?? resolveDynamicAllowedCommand;
   const candidate = input.candidate;
   const candidateRevision = typeof candidate?.ALLOWLIST_REVISION === 'string'
     ? candidate.ALLOWLIST_REVISION
@@ -344,6 +474,9 @@ export function selectAllowlistPolicy(input: {
       compactCommands: isStringArray(candidate.COMPACT_SCORECARD_COMMANDS)
         ? candidate.COMPACT_SCORECARD_COMMANDS
         : loadedCompactCommands,
+      dynamicCommandResolver: typeof candidate.resolveDynamicAllowedCommand === 'function'
+        ? candidate.resolveDynamicAllowedCommand as DynamicCommandResolver
+        : loadedDynamicCommandResolver,
       freshness: input.freshness,
     };
   }
@@ -353,6 +486,7 @@ export function selectAllowlistPolicy(input: {
     revision: loadedRevision,
     commands: loadedCommands,
     compactCommands: loadedCompactCommands,
+    dynamicCommandResolver: loadedDynamicCommandResolver,
     freshness: input.freshness,
   };
 }
@@ -371,7 +505,9 @@ function isAllowedCommands(value: unknown): value is AllowedCommands {
 
     return typeof record.description === 'string'
       && typeof record.timeout === 'number'
-      && Number.isFinite(record.timeout);
+      && Number.isFinite(record.timeout)
+      && (record.maxBuffer === undefined || (typeof record.maxBuffer === 'number'
+        && Number.isSafeInteger(record.maxBuffer) && record.maxBuffer > 0));
   });
 }
 
@@ -412,7 +548,8 @@ async function resolveAllowlistPolicy(): Promise<ResolvedAllowlistPolicy> {
   }
 }
 
-export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext): Promise<string> {
+export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext,
+  executor: typeof execCommand = execCommand): Promise<string> {
   const { command, on_prod } = input;
   const policy = await resolveAllowlistPolicy();
 
@@ -425,7 +562,15 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
       allowlistFreshnessLine(policy.freshness),
       `Allowlist entries: ${Object.keys(policy.commands).length}\n`,
       'Compact scorecard commands (exact forms only):',
+      '\nBounded dynamic command form (canonical order only):',
+      '  php artisan files:enrich --type=faces --face-preview [1–5 unique --media-id=<positive-id> or --face-review-id=<positive-id>] --tree-id=<positive-id> [--dry-run] --json\n',
     ];
+
+    for (const cmd of ['os-tools:review python3 --json', 'os-tools:review prlimit --json']) {
+      if (resolveAllowedCommand(cmd, policy.commands, policy.dynamicCommandResolver)) {
+        lines.push(`  php artisan ${cmd} (bounded read-only evidence)`);
+      }
+    }
 
     for (const cmd of policy.compactCommands) {
       lines.push(`  php artisan ${cmd}`);
@@ -433,6 +578,7 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
 
     lines.push(
       '\nNo reordered flags, wider windows, trace ids, detail output, archive/consolidate, or writeback variants are allowlisted.\n',
+      '  php artisan files:face-reference-readiness [1–5 unique --face-id=<positive-id>] --json (bounded private read-only readiness report)\n',
       'All allowed commands:\n',
     );
 
@@ -444,7 +590,7 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
   }
 
   // Validate against whitelist
-  const match = Object.entries(policy.commands).find(([allowed]) => command === allowed);
+  const match = resolveAllowedCommand(command, policy.commands, policy.dynamicCommandResolver);
   if (!match) {
     const suggestions = Object.keys(policy.commands)
       .filter(k => k.includes(command.split(' ')[0].split(':')[0]))
@@ -458,7 +604,8 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
       + `Use command "list" to see all available commands.`;
   }
 
-  const [allowedCmd, meta] = match;
+  const { command: allowedCmd, meta } = match;
+  const isFaceReferenceReadiness = allowedCmd.startsWith(`${FACE_REFERENCE_READINESS_COMMAND} `);
   const remotePath = CONFIG.paths.remoteRoot;
 
   let shellCmd: string;
@@ -471,14 +618,84 @@ export async function plosArtisan(input: PlosArtisanInput, context?: ToolContext
   logger.info('Artisan command', { command: allowedCmd, on_prod });
 
   try {
-    const { stdout, stderr } = await execCommand(shellCmd, { timeout: meta.timeout, signal: context?.signal });
+    const { stdout, stderr } = await executor(shellCmd, { timeout: meta.timeout, signal: context?.signal,
+      ...(meta.maxBuffer === undefined ? {} : { maxBuffer: meta.maxBuffer }) });
+    if (isFaceReferenceReadiness) {
+      if (meta.maxBuffer !== FACE_REFERENCE_MAX_BUFFER
+        || Buffer.byteLength(stdout, 'utf8') + Buffer.byteLength(stderr, 'utf8') > FACE_REFERENCE_MAX_BUFFER) {
+        return faceReferenceReadinessTransportHold('review_transport_output_limit');
+      }
+      if (stderr !== '' || !validFaceReferenceReadinessReport(allowedCmd, stdout)) {
+        return faceReferenceReadinessTransportHold('review_transport_unavailable');
+      }
+      const env = on_prod ? 'REMOTE' : 'DEV';
+      return `[${env}] php artisan ${allowedCmd}\n\n${stdout.trim()}`;
+    }
+    if (meta.maxBuffer !== undefined && Buffer.byteLength(stdout, 'utf8') + Buffer.byteLength(stderr, 'utf8') > meta.maxBuffer) {
+      return boundedReviewTransportHold('review_transport_output_limit', { stdout, stderr });
+    }
     const output = (stdout + (stderr ? `\n[stderr] ${stderr}` : '')).trim();
     const env = on_prod ? 'REMOTE' : 'DEV';
     return `[${env}] php artisan ${allowedCmd}\n\n${output}`;
   } catch (err: unknown) {
-    const error = err as { stdout?: string; stderr?: string; message?: string; code?: number };
+    const error = err as { stdout?: string; stderr?: string; message?: string; code?: number | string };
+    if (isFaceReferenceReadiness) {
+      return faceReferenceReadinessTransportHold(error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+        ? 'review_transport_output_limit' : 'review_transport_unavailable');
+    }
+    if (meta.maxBuffer !== undefined) {
+      return boundedReviewTransportHold(error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+        ? 'review_transport_output_limit' : 'review_transport_unavailable',
+        { stdout: error.stdout ?? '', stderr: error.stderr ?? '' });
+    }
     const output = error.stdout?.trim() || '';
     const errMsg = error.stderr?.trim() || error.message || 'Unknown error';
     return `[ERROR] php artisan ${allowedCmd}\nExit code: ${error.code}\n\n${output}\n\n${errMsg}`;
   }
+}
+
+function validFaceReferenceReadinessReport(command: string, stdout: string): boolean {
+  const tokens = command.split(' ');
+  const expectedIds = tokens.slice(1, -1).map(token => token.match(FACE_REFERENCE_SELECTOR)?.[1] ?? '');
+  try {
+    const report = JSON.parse(stdout) as {
+      read_only?: unknown;
+      identity_assignments?: unknown;
+      items?: Array<{ face_id?: unknown; holds?: unknown; benchmark_holds?: unknown; benchmark_eligible?: unknown }>;
+    };
+    return report.read_only === true && report.identity_assignments === false
+      && Array.isArray(report.items) && report.items.length === expectedIds.length
+      && report.items.every((item, index) => item.face_id === Number(expectedIds[index])
+        && Array.isArray(item.holds) && item.holds.every(hold => typeof hold === 'string')
+        && Array.isArray(item.benchmark_holds) && item.benchmark_holds.every(hold => typeof hold === 'string')
+        && typeof item.benchmark_eligible === 'boolean'
+        && (!item.benchmark_eligible || (item.holds.length === 0 && item.benchmark_holds.length === 0)));
+  } catch {
+    return false;
+  }
+}
+
+function faceReferenceReadinessTransportHold(
+  reason: 'review_transport_output_limit' | 'review_transport_unavailable',
+): string {
+  return JSON.stringify({ schema: 'plos.face-reference-readiness.transport.v1', success: false,
+    status: 'incomplete', complete: false, read_only: true, identity_assignments: false,
+    items: [], reason_code: reason, raw_failed_report_returned: false });
+}
+
+
+function boundedReviewTransportHold(
+  reason: 'review_transport_output_limit' | 'review_transport_unavailable',
+  observed: { stdout: string; stderr: string },
+): string {
+  return JSON.stringify({ schema: 'plos.os-tools.review-transport-held.v1', success: false,
+    reason_code: reason, review_binding_complete: false, evidence_binding: { complete: false },
+    execution_authorized: false, raw_failed_report_returned: false, raw_failed_report_durably_retained: false,
+    observed_output: { diagnostic_only: true, complete: false,
+      stdout_utf8_bytes: Buffer.byteLength(observed.stdout, 'utf8'),
+      stderr_utf8_bytes: Buffer.byteLength(observed.stderr, 'utf8'),
+      stdout_diagnostic_sha256: createHash('sha256').update(observed.stdout, 'utf8').digest('hex'),
+      stderr_diagnostic_sha256: createHash('sha256').update(observed.stderr, 'utf8').digest('hex'),
+    },
+  });
 }

@@ -1,5 +1,21 @@
 <?php
 
+use App\Services\CodeReviewService;
+use App\Services\Genealogy\GenealogyMCPService;
+use App\Services\JoplinFilesService;
+use App\Services\NextcloudContactsService;
+use App\Services\NextcloudService;
+use App\Services\OpsMCPService;
+use App\Services\RAGService;
+use App\Services\RepoDevMCPService;
+use App\Services\ResearchMCPService;
+use App\Services\SearXNGMCPService;
+use App\Services\TimeService;
+use App\Services\UnifiedCli\CliCodexSkillReader;
+use App\Services\UnifiedCli\CliLemmaPodMcpService;
+use App\Services\WebResearchService;
+use App\Services\WorkflowService;
+
 $filesystemMcpAllowedDirs = array_values(array_filter(
     array_map('trim', explode(',', (string) env('FILESYSTEM_MCP_ALLOWED_DIRS', base_path('storage')))),
     static fn (string $path): bool => $path !== ''
@@ -37,6 +53,98 @@ return [
     'dynamic_discovery_enabled' => env('MCP_DYNAMIC_DISCOVERY_ENABLED', false),
 
     'servers' => [
+        'codex-skills' => [
+            'enabled' => true,
+            'type' => 'internal',
+            'service' => CliCodexSkillReader::class,
+            'env' => [],
+            'tools' => 2,
+            'description' => 'Read installed Codex skill instructions and support text on this host',
+            'trust_boundary' => 'plos_local',
+            'transport' => 'internal_service',
+            'network_required' => 'none',
+            'write_scope' => 'none',
+            'secret_surface_risk' => 'private_files',
+            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
+            'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist'],
+        ],
+        'lemma-pod' => [
+            'enabled' => env('LEMMA_POD_MCP_ENABLED', false),
+            'type' => 'internal',
+            'service' => CliLemmaPodMcpService::class,
+            'env' => [
+                'LEMMA_POD_PILOT_PATH' => env('LEMMA_POD_PILOT_PATH'),
+                'LEMMA_POD_CREDENTIAL_PATH' => env('LEMMA_POD_CREDENTIAL_PATH'),
+            ],
+            'timeout_ms' => env('LEMMA_POD_MCP_TIMEOUT_MS', 30000),
+            'coordination_bindings_path' => env('LEMMA_COORDINATION_BINDINGS_PATH', storage_path('app/private/plos-cli/bindings.json')),
+            'tools' => 16,
+            'description' => 'Existing local Lemma pod MCP with agent-account permissions and exact write approvals',
+            'trust_boundary' => 'plos_local',
+            'transport' => 'internal_service',
+            'network_required' => 'lan_only',
+            'write_scope' => 'lemma_pod',
+            'secret_surface_risk' => 'private_credentials',
+            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
+            'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist'],
+        ],
+        'lemma-local' => [
+            'enabled' => env('LEMMA_LOCAL_MCP_ENABLED', false),
+            'command' => 'node',
+            'args' => [base_path('scripts/lemma-local-mcp.mjs')],
+            // Values stay on the execution host; registry snapshots carry only
+            // local binding references and the portable PLOS entrypoint.
+            'env' => [
+                'LEMMA_LOCAL_CONTROL_ENTRY' => env('LEMMA_LOCAL_CONTROL_ENTRY'),
+                'LEMMA_LOCAL_CONTROL_SHA256' => env('LEMMA_LOCAL_CONTROL_SHA256'),
+                'HOME' => env('HOME'),
+            ],
+            'tools' => 3,
+            'description' => 'Opt-in, fixed-action control of the local rootless Lemma stack',
+            'trust_boundary' => 'local_host',
+            'transport' => 'external_process',
+            // Docker uses a rootless Unix socket; the status adapter tolerates
+            // unavailable loopback HTTP by reporting container health.
+            'network_required' => 'none',
+            'write_scope' => 'local_runtime',
+            'secret_surface_risk' => 'low',
+            'offline_profiles_allowed' => ['offline_dev_assist'],
+            'hybrid_profiles_allowed' => ['hybrid_dev_assist'],
+        ],
+
+        'hister' => [
+            'enabled' => env('HISTER_ENABLED', false),
+            'command' => 'node',
+            'args' => [base_path('scripts/hister-mcp.mjs')],
+            'env' => [],
+            'tools' => 3,
+            'description' => 'Optional authenticated local reference recall; explicitly imported documents only',
+            'trust_boundary' => 'plos_local',
+            'transport' => 'external_process',
+            'network_required' => 'none',
+            'write_scope' => 'none',
+            'secret_surface_risk' => 'low',
+            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
+            'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
+        ],
+
+        'gortex' => [
+            'enabled' => env('GORTEX_ENABLED', false),
+            'command' => 'node',
+            'args' => [base_path('scripts/gortex-mcp.mjs')],
+            'env' => [],
+            'tools' => 6,
+            'description' => 'Optional local source and schema navigation with exact source reads',
+            // The pinned PLOS bridge exposes indexed PLOS symbols only.
+            'trust_boundary' => 'plos_local',
+            'transport' => 'external_process',
+            'network_required' => 'none',
+            'write_scope' => 'none',
+            'secret_surface_risk' => 'low',
+            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
+            'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
+        ],
+
         /*
         |--------------------------------------------------------------------------
         | PLOS Workflow MCP Server
@@ -59,7 +167,7 @@ return [
         'plos' => [
             'enabled' => true,
             'type' => 'internal',  // Use internal Laravel service for performance
-            'service' => \App\Services\WorkflowService::class,
+            'service' => WorkflowService::class,
             'tools' => 9,
             'description' => 'Workflow automation and management tools',
             // 3b P02a trust metadata
@@ -90,7 +198,7 @@ return [
         'code-review' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\CodeReviewService::class,
+            'service' => CodeReviewService::class,
             'tools' => 4,
             'description' => 'AI-assisted code review and analysis',
             'trust_boundary' => 'plos_local',
@@ -111,13 +219,16 @@ return [
         | Keeps file and route inspection/editing inside the Laravel app so
         | the existing offline profile and path policy can govern it.
         |
-        | Tools provided (8):
+        | Tools provided (11):
         | - find_repo_files: Find files by path/name substring
         | - search_repo: Search repository contents
+        | - context_map: Rank task-relevant files and PHP declarations
         | - list_repo_directory: List files in a repo directory
         | - read_repo_file: Read source files with line numbers
-        | - write_repo_file: Write a file inside the repo root
-        | - apply_repo_patch: Apply a unified diff after repo path checks
+        | - write_repo_file: Write a file with recovery and diagnostics
+        | - apply_repo_patch: Apply a unified diff with recovery and diagnostics
+        | - restore_repo_edit: Restore one unchanged-since-edit recovery packet
+        | - summarize_repo_edits: Summarize ordered recovery-backed edits without content
         | - run_verification: Run allowlisted test/static verification commands
         | - list_routes: Show frontend, API, or all Laravel routes
         |
@@ -125,8 +236,8 @@ return [
         'repo-dev' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\RepoDevMCPService::class,
-            'tools' => 8,
+            'service' => RepoDevMCPService::class,
+            'tools' => 11,
             'description' => 'Repository-local development tools for offline dev assist',
             'trust_boundary' => 'plos_local',
             'transport' => 'internal_service',
@@ -146,22 +257,13 @@ return [
         | deterministic extractive compression and optional local Ollama
         | compression for large prompts, diffs, files, and handoff context.
         |
-        | Tools provided (7):
-        | - prompt_token_count: Estimate token/line/word counts
-        | - compress_prompt: Compress pasted prompt/context
-        | - compress_file: Read and compress an allowed repo file
-        | - compress_diff: Compress git diff summaries and hunks
-        | - context_store: Store bulky context in a local cache
-        | - context_retrieve: Retrieve stored context as compressed output
-        | - context_list: List stored context ids without full text
-        |
-        | Disabled by default because the server is source-built and stores local
-        | context blobs. Enable explicitly in trusted dev/operator environments
-        | with PROMPT_COMPRESSOR_MCP_ENABLED=true after running npm install/build.
+        | Operator-disabled because compressed prompts lost material detail.
+        | The source workspace is retained for audit history, but PLOS cannot
+        | register or enable this server through an environment override.
         |
         */
         'prompt-compressor' => [
-            'enabled' => env('PROMPT_COMPRESSOR_MCP_ENABLED', false),
+            'enabled' => false,
             'type' => 'external',
             'command' => env('PROMPT_COMPRESSOR_COMMAND', 'node'),
             'args' => [
@@ -175,8 +277,8 @@ return [
                 'PROMPT_COMPRESSOR_OLLAMA_SECONDARY_HOSTS' => env('PROMPT_COMPRESSOR_OLLAMA_SECONDARY_HOSTS', env('OLLAMA_SECONDARY_URLS', '')),
                 'PROMPT_COMPRESSOR_ALLOW_PROTECTED_READS' => env('PROMPT_COMPRESSOR_ALLOW_PROTECTED_READS', 'false'),
             ],
-            'tools' => 7,
-            'description' => 'Prompt, diff, file, and context compression for token reduction',
+            'tools' => 0,
+            'description' => 'Retired and source-disabled by the lossless AI prompt policy',
             'trust_boundary' => 'plos_local',
             'transport' => 'external_process',
             'network_required' => 'lan_only',
@@ -188,46 +290,45 @@ return [
 
         /*
         |--------------------------------------------------------------------------
-        | Serena MCP Server (External, Optional)
+        | Codebase Memory MCP Server (External, Optional)
         |--------------------------------------------------------------------------
         |
-        | Serena adds IDE-like semantic code navigation and symbol-level edits
-        | via LSP. Keep PLOS's own repo-dev patch/test tools as the final
-        | bounded write and verification path; Serena is available for deeper
-        | code understanding when installed on dev or prod.
+        | Developer-only code graph sidecar for architecture queries, call-path
+        | tracing, indexed code search, impact analysis, and ADR notes. Keep this
+        | disabled by default: the upstream installer can modify agent configs
+        | and the graph cache is an evaluation artifact, not a committed PLOS
+        | source of truth.
         |
-        | Installation:
-        |   uv tool install -p 3.13 serena-agent@latest --prerelease=allow
-        |   serena init
+        | Install/evaluate manually with binary-only or skipped agent config
+        | setup. Enable in trusted dev/operator environments with:
+        |   CODEBASE_MEMORY_MCP_ENABLED=true
+        |
+        | Tools tracked by static policy (14):
+        | - index_repository, list_projects, delete_project, index_status
+        | - search_graph, trace_path, detect_changes, query_graph
+        | - get_graph_schema, get_code_snippet, get_architecture, search_code
+        | - manage_adr, ingest_traces
         |
         */
-        'serena' => [
-            'enabled' => true,
+        'codebase-memory' => [
+            'enabled' => env('CODEBASE_MEMORY_MCP_ENABLED', false),
             'type' => 'external',
-            'command' => env('PLOS_SERENA_COMMAND', 'serena'),
-            'args' => [
-                'start-mcp-server',
-                '--project',
-                env('PLOS_SERENA_PROJECT', base_path()),
-                '--context',
-                env('PLOS_SERENA_CONTEXT', 'ide-assistant'),
-                '--mode',
-                env('PLOS_SERENA_MODE', 'editing'),
-                '--open-web-dashboard',
-                env('PLOS_SERENA_DASHBOARD', 'false'),
-            ],
+            'command' => env('CODEBASE_MEMORY_MCP_COMMAND', 'codebase-memory-mcp'),
+            'args' => [],
             'env' => [
                 'HOME' => env('HOME')
                     ?: (function_exists('posix_getpwuid') && function_exists('posix_geteuid')
                         ? (posix_getpwuid(posix_geteuid())['dir'] ?? base_path())
                         : base_path()),
+                'CBM_CACHE_DIR' => env('CODEBASE_MEMORY_CACHE_DIR', storage_path('app/mcp/codebase-memory')),
+                'CBM_NO_UPDATE_CHECK' => env('CODEBASE_MEMORY_NO_UPDATE_CHECK', 'true'),
             ],
-            'tools' => 18,
-            'description' => 'Serena semantic code navigation and symbol-level editing',
+            'tools' => 14,
+            'description' => 'Developer-only codebase graph MCP sidecar for architecture and call-path queries',
             'trust_boundary' => 'plos_local',
             'transport' => 'external_process',
             'network_required' => 'none',
-            'write_scope' => 'repo_worktree',
+            'write_scope' => 'local_code_graph_cache',
             'secret_surface_risk' => 'medium',
             'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
             'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
@@ -264,7 +365,7 @@ return [
         'ops' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\OpsMCPService::class,
+            'service' => OpsMCPService::class,
             'tools' => 6,
             'description' => 'Infrastructure monitoring and maintenance',
             'trust_boundary' => 'plos_local',
@@ -302,7 +403,7 @@ return [
         |
         | Complements internal nextcloud-calendar for full Nextcloud integration.
         |
-        | Installation: npm install -g nextcloud-mcp-server
+        | Installation: npm install --save-exact nextcloud-mcp-server@1.1.0
         | Version: 1.1.0 (tested and working)
         |
         */
@@ -311,6 +412,7 @@ return [
             'type' => 'external',
             'command' => base_path('node_modules/.bin/nextcloud-mcp-server'),
             'args' => [],
+            'runtime_pin' => ['type' => 'npm_lock', 'package' => 'nextcloud-mcp-server', 'version' => '1.1.0'],
             'env' => [
                 'NEXTCLOUD_URL' => env('NEXTCLOUD_URL'),
                 'NEXTCLOUD_USERNAME' => env('NEXTCLOUD_USERNAME'),
@@ -332,21 +434,22 @@ return [
         | RAG MCP Server (Internal)
         |--------------------------------------------------------------------------
         |
-        | Internal MCP server for RAG semantic search. Provides 3 tools:
+        | Internal MCP server for hierarchical RAG retrieval. Provides 4 tools:
         | - rag_search: Semantic search over indexed documents
         | - rag_index: Index new document with embeddings
         | - rag_similar: Find similar documents
+        | - rag_read: Read exact, resumable document windows by stable ID
         |
         | This exposes the existing RAGService as MCP tools for both
-        | Ollama and Claude Code to access.
+        | Ollama and MCP clients to access.
         |
         */
         'rag' => [
             'enabled' => true,
             'type' => 'internal',  // Uses Laravel service, not external process
-            'service' => \App\Services\RAGService::class,
-            'tools' => 3,
-            'description' => 'RAG semantic search',
+            'service' => RAGService::class,
+            'tools' => 4,
+            'description' => 'Hierarchical RAG search and exact document retrieval',
             'trust_boundary' => 'plos_local',
             'transport' => 'internal_service',
             'network_required' => 'lan_only',
@@ -381,7 +484,7 @@ return [
         'research' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\ResearchMCPService::class,
+            'service' => ResearchMCPService::class,
             'tools' => 2,
             'description' => 'Multi-source news research',
             // Hits NewsAPI.org / Wikipedia / SearXNG / public web — must never be
@@ -411,7 +514,7 @@ return [
         |
         | Used for web scraping (e.g., Ground News bias indicators).
         |
-        | Installation: npm install -g @modelcontextprotocol/server-puppeteer
+        | Installation: npm install --save-exact @modelcontextprotocol/server-puppeteer@2025.5.12
         |
         */
         'puppeteer' => [
@@ -419,16 +522,20 @@ return [
             'type' => 'external',
             'command' => base_path('node_modules/.bin/mcp-server-puppeteer'),
             'args' => [],
+            'runtime_pin' => ['type' => 'npm_lock', 'package' => '@modelcontextprotocol/server-puppeteer', 'version' => '2025.5.12'],
             'env' => [
-                // 2026-04-18: aligned to chrome v131.0.6778.204 — the version
-                // puppeteer 23.11.1 bundles and which both dev and prod have
-                // cached. The prior pin to linux-143.0.7499.146 did not exist
-                // on prod (and was above the version puppeteer 23.x knows).
-                // Override with PLOS_PUPPETEER_CHROME env if a host needs a
-                // different cached version.
+                // Prefer a maintained system Chrome when present. The cached
+                // Puppeteer browser remains a fallback for older hosts and
+                // isolated public installs that have not installed Chrome.
                 'PUPPETEER_EXECUTABLE_PATH' => env(
                     'PLOS_PUPPETEER_CHROME',
-                    env('HOME').'/.cache/puppeteer/chrome/linux-131.0.6778.204/chrome-linux64/chrome'
+                    is_executable('/usr/bin/google-chrome')
+                        ? '/usr/bin/google-chrome'
+                        : (is_executable('/usr/bin/chromium')
+                            ? '/usr/bin/chromium'
+                            : (is_executable('/usr/bin/chromium-browser')
+                                ? '/usr/bin/chromium-browser'
+                                : env('HOME').'/.cache/puppeteer/chrome/linux-131.0.6778.204/chrome-linux64/chrome'))
                 ),
             ],
             'tools' => 7,
@@ -459,7 +566,7 @@ return [
         'nextcloud-calendar' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\NextcloudService::class,
+            'service' => NextcloudService::class,
             'tools' => 2,
             'description' => 'Nextcloud calendar (CalDAV)',
             'trust_boundary' => 'local_lan',
@@ -491,7 +598,7 @@ return [
         'nextcloud-contacts' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\NextcloudContactsService::class,
+            'service' => NextcloudContactsService::class,
             'tools' => 4,
             'description' => 'Nextcloud contacts (CardDAV)',
             'trust_boundary' => 'local_lan',
@@ -531,7 +638,7 @@ return [
         'joplin-files' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\JoplinFilesService::class,
+            'service' => JoplinFilesService::class,
             'tools' => 6,
             'description' => 'Joplin notes (read-only via Nextcloud sync)',
             'trust_boundary' => 'local_lan',
@@ -637,13 +744,14 @@ return [
         | - Context-aware automation decisions
         | - Track entity relationships (contacts, projects, etc.)
         |
-        | Installation: npm install -g @modelcontextprotocol/server-memory
+        | Installation: npm install --save-exact @modelcontextprotocol/server-memory@2025.11.25
         |
         */
         'memory' => [
             'enabled' => true,
             'command' => base_path('node_modules/.bin/mcp-server-memory'),
             'args' => [],
+            'runtime_pin' => ['type' => 'npm_lock', 'package' => '@modelcontextprotocol/server-memory', 'version' => '2025.11.25'],
             'env' => [],
             'tools' => 6,
             'description' => 'Persistent knowledge graph memory',
@@ -673,13 +781,14 @@ return [
         | - Problem decomposition for automation tasks
         | - Reflective reasoning for adaptive workflows
         |
-        | Installation: npm install -g @modelcontextprotocol/server-sequential-thinking
+        | Installation: npm install --save-exact @modelcontextprotocol/server-sequential-thinking@2025.12.18
         |
         */
         'sequential-thinking' => [
             'enabled' => true,
             'command' => base_path('node_modules/.bin/mcp-server-sequential-thinking'),
             'args' => [],
+            'runtime_pin' => ['type' => 'npm_lock', 'package' => '@modelcontextprotocol/server-sequential-thinking', 'version' => '2025.12.18'],
             'env' => [],
             'tools' => 1,
             'description' => 'Multi-step reasoning and problem-solving',
@@ -716,7 +825,7 @@ return [
         'time' => [
             'enabled' => true,
             'type' => 'internal',  // Use internal PHP implementation instead of unreliable uvx
-            'service' => \App\Services\TimeService::class,
+            'service' => TimeService::class,
             'tools' => 2,
             'description' => 'Time and timezone operations',
             'trust_boundary' => 'plos_local',
@@ -755,8 +864,8 @@ return [
         'web-research' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\WebResearchService::class,
-            'tools' => 5,
+            'service' => WebResearchService::class,
+            'tools' => 7,
             'description' => 'AI-driven web research with privacy-respecting search engines',
             // Uses Puppeteer to scrape public search engines — internet class.
             'trust_boundary' => 'internet',
@@ -798,7 +907,7 @@ return [
         'searxng' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\SearXNGMCPService::class,
+            'service' => SearXNGMCPService::class,
             'tools' => 4,
             'description' => 'SearXNG privacy-respecting meta search engine',
             // SearXNG runs on PLOS LAN (port 8888) but federates to public
@@ -893,7 +1002,7 @@ return [
         'genealogy' => [
             'enabled' => true,
             'type' => 'internal',
-            'service' => \App\Services\Genealogy\GenealogyMCPService::class,
+            'service' => GenealogyMCPService::class,
             'tools' => 66,
             'description' => 'Genealogy operations (GEDCOM, search, AI research)',
             'trust_boundary' => 'plos_local',
@@ -931,13 +1040,14 @@ return [
         |
         | Security: Configure allowed directories in .env
         |
-        | Installation: npm install -g @modelcontextprotocol/server-filesystem
+        | Installation: npm install --save-exact @modelcontextprotocol/server-filesystem@2025.12.18
         |
         */
         'filesystem' => [
             'enabled' => true,
             'command' => base_path('node_modules/.bin/mcp-server-filesystem'),
             'args' => $filesystemMcpAllowedDirs,
+            'runtime_pin' => ['type' => 'npm_lock', 'package' => '@modelcontextprotocol/server-filesystem', 'version' => '2025.12.18'],
             'env' => [],
             'tools' => 8,
             'description' => 'Secure local file operations',
@@ -958,10 +1068,11 @@ return [
         | Everything MCP Server (Official Anthropic)
         |--------------------------------------------------------------------------
         |
-        | Multi-purpose testing and utility server with various tools.
-        | Useful for development, testing, and learning MCP capabilities.
+        | Multi-purpose MCP conformance server. Disabled by default because
+        | its current catalog includes environment inspection, mutable session
+        | state, and an open-world URL fetch/compression utility.
         |
-        | Tools provided (~10+):
+        | Tools provided (13 in 2026.7.4):
         | - Various utility and testing tools
         | - Echo, time, math, and other helpers
         |
@@ -971,26 +1082,29 @@ return [
         | - Utility functions for workflows
         | - Development and debugging
         |
-        | Free Tier: Unlimited (all local)
+        | This does not enable AI prompt compression; prompt compression and
+        | precompaction remain unavailable in PLOS.
+        |
         | No API key needed
         |
-        | Installation: npm install -g @modelcontextprotocol/server-everything
+        | Installation: npm install --save-exact @modelcontextprotocol/server-everything@2026.7.4
         |
         */
         'everything' => [
-            'enabled' => true,
-            'command' => 'npx',
-            'args' => ['-y', '@modelcontextprotocol/server-everything'],
+            'enabled' => (bool) env('MCP_EVERYTHING_ENABLED', false),
+            'command' => base_path('node_modules/.bin/mcp-server-everything'),
+            'args' => [],
+            'runtime_pin' => ['type' => 'npm_lock', 'package' => '@modelcontextprotocol/server-everything', 'version' => '2026.7.4'],
             'env' => [],
-            'tools' => 10,
-            'description' => 'Multi-purpose testing and utility tools',
+            'tools' => 13,
+            'description' => 'Operator-enabled MCP conformance and utility fixture',
             'trust_boundary' => 'plos_local',
             'transport' => 'external_process',
-            'network_required' => 'none',
-            'write_scope' => 'none',
-            'secret_surface_risk' => 'low',
-            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
-            'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
+            'network_required' => 'internet_optional',
+            'write_scope' => 'session_state',
+            'secret_surface_risk' => 'high',
+            'offline_profiles_allowed' => [],
+            'hybrid_profiles_allowed' => [],
         ],
 
     ],

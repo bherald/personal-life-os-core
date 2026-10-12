@@ -4,11 +4,14 @@ namespace App\Http\Controllers\Api;
 
 use App\Engine\AIRouter;
 use App\Engine\MCPRouter;
+use App\Http\Controllers\Controller;
 use App\Services\AgentAuditService;
 use App\Services\AIService;
+use App\Services\Ops\AIObservabilityMetricsService;
+use App\Services\Ops\GuardrailMonitorService;
 use App\Services\RAGService;
-use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -18,8 +21,11 @@ use Illuminate\Support\Facades\DB;
 class DashboardController extends Controller
 {
     private AIRouter $aiRouter;
+
     private AIService $aiService;
+
     private RAGService $ragService;
+
     private MCPRouter $mcpRouter;
 
     public function __construct(AIRouter $aiRouter, AIService $aiService, RAGService $ragService, MCPRouter $mcpRouter)
@@ -33,14 +39,14 @@ class DashboardController extends Controller
     public function stats(): JsonResponse
     {
         // Get workflow statistics using raw SQL with parameters
-        $sql = "SELECT COUNT(*) as count FROM workflows";
+        $sql = 'SELECT COUNT(*) as count FROM workflows';
         $totalWorkflows = DB::select($sql)[0]->count ?? 0;
 
-        $sql = "SELECT COUNT(*) as count FROM workflows WHERE active = 1";
+        $sql = 'SELECT COUNT(*) as count FROM workflows WHERE active = 1';
         $activeWorkflows = DB::select($sql)[0]->count ?? 0;
 
         // Get recent runs (last 24 hours)
-        $sql = "SELECT COUNT(*) as count FROM workflow_runs WHERE started_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)";
+        $sql = 'SELECT COUNT(*) as count FROM workflow_runs WHERE started_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)';
         $recentRuns = DB::select($sql)[0]->count ?? 0;
 
         // Get failed runs (last 24 hours)
@@ -50,13 +56,13 @@ class DashboardController extends Controller
         $failedRuns = DB::select($sql)[0]->count ?? 0;
 
         // Get recent workflow runs with details (last 10) - raw SQL with JOIN
-        $sql = "SELECT wr.id, wr.workflow_id, w.name as workflow_name, wr.status,
+        $sql = 'SELECT wr.id, wr.workflow_id, w.name as workflow_name, wr.status,
                        wr.started_at, wr.completed_at, wr.error_message,
                        TIMESTAMPDIFF(SECOND, wr.started_at, wr.completed_at) as duration_seconds
                 FROM workflow_runs wr
                 JOIN workflows w ON wr.workflow_id = w.id
                 ORDER BY wr.started_at DESC
-                LIMIT 10";
+                LIMIT 10';
         $recentWorkflowRuns = DB::select($sql);
 
         // Get AI service status from both router and AIService
@@ -69,7 +75,7 @@ class DashboardController extends Controller
         // Get MCP statistics
         $mcpTools = $this->mcpRouter->getAvailableTools();
         $mcpServers = $this->mcpRouter->getAllServersStatus();
-        $activeServers = array_filter($mcpServers, fn($s) => $s['enabled'] ?? false);
+        $activeServers = array_filter($mcpServers, fn ($s) => $s['enabled'] ?? false);
 
         return response()->json([
             'success' => true,
@@ -83,7 +89,6 @@ class DashboardController extends Controller
                 'recent_runs' => $recentWorkflowRuns,
                 'ai_status' => [
                     'ollama_available' => $aiStatus['ollama']['available'] ?? false,
-                    'claude_available' => $aiStatus['claude']['available'] ?? false,
                     'mode' => $aiStatus['mode'] ?? 'unknown',
                 ],
                 'ai_health' => $aiHealth, // E01 Phase 3: Circuit breaker + provider health stats
@@ -99,7 +104,7 @@ class DashboardController extends Controller
                 'config' => [
                     'timezone' => config('app.timezone'),
                 ],
-            ]
+            ],
         ]);
     }
 
@@ -152,14 +157,14 @@ class DashboardController extends Controller
         ");
         $stuckRuns = $syncStuck->stuck_count ?? 0;
 
-        $syncToday = DB::selectOne("
+        $syncToday = DB::selectOne('
             SELECT
                 COUNT(*) as run_count,
                 COALESCE(SUM(files_registered), 0) as files_registered,
                 COALESCE(SUM(files_scanned), 0) as files_scanned
             FROM file_registry_sync_runs
             WHERE DATE(started_at) = CURDATE()
-        ");
+        ');
 
         $syncRunning = DB::selectOne("
             SELECT COUNT(*) as running_count
@@ -193,7 +198,7 @@ class DashboardController extends Controller
         ");
 
         $failedJobCount = count($failedJobs7d);
-        $failedJobsList = array_map(fn($j) => [
+        $failedJobsList = array_map(fn ($j) => [
             'id' => $j->id,
             'name' => $j->name,
             'failures' => (int) $j->failure_count,
@@ -298,20 +303,22 @@ class DashboardController extends Controller
     }
 
     private float $toolCallFailRate = 0;
+
     private bool $kgQualityAttention = false;
+
     private bool $entityResolutionAttention = false;
 
     private function getToolCallsPanel(): array
     {
         try {
-            $stats = DB::selectOne("
+            $stats = DB::selectOne('
                 SELECT COUNT(*) as total_calls,
                        SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as fail_count,
                        ROUND(AVG(duration_ms)) as avg_duration_ms,
                        COUNT(DISTINCT tool_name) as unique_tools
                 FROM mcp_tool_calls
                 WHERE created_at >= NOW() - INTERVAL 24 HOUR
-            ");
+            ');
 
             $totalCalls = (int) ($stats->total_calls ?? 0);
             $failCount = (int) ($stats->fail_count ?? 0);
@@ -319,14 +326,14 @@ class DashboardController extends Controller
             $uniqueTools = (int) ($stats->unique_tools ?? 0);
             $this->toolCallFailRate = $totalCalls > 0 ? round(100.0 * $failCount / $totalCalls, 1) : 0;
 
-            $topErrors = DB::select("
+            $topErrors = DB::select('
                 SELECT tool_name, COUNT(*) as error_count
                 FROM mcp_tool_calls
                 WHERE success = 0 AND created_at >= NOW() - INTERVAL 24 HOUR
                 GROUP BY tool_name
                 ORDER BY error_count DESC
                 LIMIT 5
-            ");
+            ');
 
             return [
                 'id' => 'tool_calls',
@@ -342,7 +349,7 @@ class DashboardController extends Controller
                     'fail_rate' => $this->toolCallFailRate,
                     'avg_duration_ms' => $avgDuration,
                     'unique_tools' => $uniqueTools,
-                    'top_errors' => array_map(fn($e) => ['tool' => $e->tool_name, 'count' => (int) $e->error_count], $topErrors),
+                    'top_errors' => array_map(fn ($e) => ['tool' => $e->tool_name, 'count' => (int) $e->error_count], $topErrors),
                 ],
             ];
         } catch (\Throwable $e) {
@@ -360,16 +367,16 @@ class DashboardController extends Controller
     private function getKgQualityPanel(): array
     {
         try {
-            $run = DB::connection('pgsql_rag')->selectOne("
+            $run = DB::connection('pgsql_rag')->selectOne('
                 SELECT composite_score, accuracy_score, freshness_score, coverage_score,
                        stale_triple_count, orphan_entity_count, total_triples, total_entities,
                        created_at
                 FROM kg_quality_runs
                 ORDER BY created_at DESC
                 LIMIT 1
-            ");
+            ');
 
-            if (!$run) {
+            if (! $run) {
                 return [
                     'id' => 'kg_quality',
                     'label' => 'KG Quality',
@@ -423,23 +430,23 @@ class DashboardController extends Controller
     private function getEntityResolutionPanel(): array
     {
         try {
-            $totalEntities = DB::connection('pgsql_rag')->selectOne("
+            $totalEntities = DB::connection('pgsql_rag')->selectOne('
                 SELECT COUNT(*) as cnt FROM knowledge_graph_entities
-            ");
-            $embeddedCount = DB::connection('pgsql_rag')->selectOne("
+            ');
+            $embeddedCount = DB::connection('pgsql_rag')->selectOne('
                 SELECT COUNT(*) as cnt FROM knowledge_graph_entity_embeddings
-            ");
+            ');
 
             $total = (int) ($totalEntities->cnt ?? 0);
             $embedded = (int) ($embeddedCount->cnt ?? 0);
             $coverage = $total > 0 ? round(100.0 * $embedded / $total, 1) : 0;
 
-            $lastRun = DB::connection('pgsql_rag')->selectOne("
+            $lastRun = DB::connection('pgsql_rag')->selectOne('
                 SELECT auto_merged, llm_merged, candidates_found, created_at
                 FROM entity_resolution_runs
                 ORDER BY created_at DESC
                 LIMIT 1
-            ");
+            ');
 
             $totals7d = DB::connection('pgsql_rag')->selectOne("
                 SELECT COALESCE(SUM(auto_merged), 0) as merged,
@@ -502,9 +509,14 @@ class DashboardController extends Controller
     /**
      * INF-4: AI Observability Dashboard — provider health, latency, tokens, audit events.
      */
-    public function aiObservability(): JsonResponse
-    {
+    public function aiObservability(
+        Request $request,
+        AIObservabilityMetricsService $requestMetrics,
+        GuardrailMonitorService $guardrailMonitor,
+    ): JsonResponse {
         try {
+            $hours = max(1, min(168, (int) $request->query('hours', 24)));
+
             // 1. Provider health from llm_instances
             $providers = DB::select("
                 SELECT instance_id, instance_name, instance_type, is_active, is_healthy,
@@ -567,13 +579,13 @@ class DashboardController extends Controller
             ");
 
             // 6. Circuit breaker summary
-            $circuitBreakers = DB::select("
+            $circuitBreakers = DB::select('
                 SELECT instance_name, circuit_state, consecutive_failures, circuit_opened_at,
                        last_health_check, success_rate
                 FROM llm_instances
                 WHERE is_active = 1
                 ORDER BY priority ASC
-            ");
+            ');
 
             // 7. Hourly event volume (last 24h)
             $hourlyVolume = DB::select("
@@ -599,11 +611,13 @@ class DashboardController extends Controller
                 'circuit_breakers' => $circuitBreakers,
                 'hourly_volume' => $hourlyVolume,
                 'audit_summary' => $auditSummary,
+                'guardrail_monitor' => $guardrailMonitor->snapshot($hours),
+                'request_metrics' => $requestMetrics->snapshot($hours),
                 'generated_at' => now()->toIso8601String(),
             ]);
         } catch (\Throwable $e) {
             return response()->json([
-                'error' => 'Failed to load AI observability data: ' . $e->getMessage(),
+                'error' => 'Failed to load AI observability data: '.$e->getMessage(),
             ], 500);
         }
     }

@@ -317,12 +317,23 @@ class GedcomExportService
 
         // Media links
         if ($options['include_media']) {
+            $primaryPhotoId = (int) ($person->primary_photo_id ?? 0);
             $mediaLinks = DB::select('
-                SELECT m.id
+                SELECT m.id, m.file_exists
                 FROM genealogy_media m
                 JOIN genealogy_person_media pm ON m.id = pm.media_id
                 WHERE pm.person_id = ?
-            ', [$person->id]);
+                ORDER BY CASE WHEN m.id = ? THEN 0 ELSE 1 END, pm.id
+            ', [$person->id, $primaryPhotoId]);
+
+            // Family Tree Maker writes _PHOTO for its preferred portrait.
+            foreach ($mediaLinks as $media) {
+                if ((int) $media->id === $primaryPhotoId && (int) $media->file_exists === 1) {
+                    $lines[] = '1 _PHOTO @M'.$primaryPhotoId.'@';
+
+                    break;
+                }
+            }
 
             foreach ($mediaLinks as $media) {
                 $lines[] = '1 OBJE @M'.$media->id.'@';

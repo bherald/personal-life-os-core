@@ -7,7 +7,7 @@
         @blur="handleTitleUpdate"
         type="text"
         placeholder="Note title..."
-        class="w-full text-2xl font-bold bg-transparent border-none focus:outline-none focus:ring-0 p-0 text-ops-peach placeholder-ops-plum"
+        class="w-full text-2xl font-bold bg-transparent border-none focus:outline-hidden focus:ring-0 p-0 text-ops-peach placeholder-ops-plum"
       />
       <div class="flex items-center gap-4 mt-2 text-sm text-ops-text-muted">
         <span>{{ formatDate(note?.updated_time) }}</span>
@@ -198,7 +198,7 @@
           ref="editorTextarea"
           v-model="localContent"
           @input="handleContentUpdate"
-          class="flex-1 w-full p-6 resize-none border-none focus:outline-none focus:ring-0 font-mono text-sm bg-black text-ops-text placeholder-ops-plum"
+          class="flex-1 w-full p-6 resize-none border-none focus:outline-hidden focus:ring-0 font-mono text-sm bg-black text-ops-text placeholder-ops-plum"
           placeholder="Start writing..."
         ></textarea>
       </div>
@@ -475,7 +475,7 @@ const formatFileSize = (bytes) => {
 <style scoped>
 /* Ops Console prose styles for markdown preview */
 .ops-prose {
-  color: var(--ops-peach, #ff9966);
+  color: var(--color-text-primary);
 }
 
 .ops-prose :deep(h1),
@@ -484,7 +484,7 @@ const formatFileSize = (bytes) => {
 .ops-prose :deep(h4),
 .ops-prose :deep(h5),
 .ops-prose :deep(h6) {
-  color: var(--ops-orange, #ff9900);
+  color: var(--ops-warning);
   font-weight: 600;
   margin-top: 1.5em;
   margin-bottom: 0.5em;
@@ -500,35 +500,35 @@ const formatFileSize = (bytes) => {
 }
 
 .ops-prose :deep(a) {
-  color: var(--ops-sky, #99ccff);
+  color: var(--color-accent);
   text-decoration: underline;
 }
 
 .ops-prose :deep(a:hover) {
-  color: var(--ops-ice, #aaccff);
+  color: var(--color-accent);
 }
 
 .ops-prose :deep(strong) {
-  color: var(--ops-gold, #ffcc99);
+  color: var(--ops-warning);
   font-weight: 600;
 }
 
 .ops-prose :deep(em) {
-  color: var(--ops-lilac, #cc99cc);
+  color: var(--color-accent);
   font-style: italic;
 }
 
 .ops-prose :deep(code) {
-  background-color: var(--ops-plum, #774477);
-  color: var(--ops-peach, #ff9966);
+  background-color: var(--color-accent);
+  color: white;
   padding: 0.125rem 0.375rem;
   border-radius: 0.25rem;
   font-size: 0.875em;
 }
 
 .ops-prose :deep(pre) {
-  background-color: rgba(119, 68, 119, 0.3);
-  border: 2px solid var(--ops-plum, #774477);
+  background-color: var(--color-bg-tertiary);
+  border: 2px solid var(--color-accent);
   border-radius: 0.5rem;
   padding: 1rem;
   overflow-x: auto;
@@ -538,7 +538,7 @@ const formatFileSize = (bytes) => {
 .ops-prose :deep(pre code) {
   background-color: transparent;
   padding: 0;
-  color: var(--ops-green, #99cc66);
+  color: var(--ops-success);
 }
 
 .ops-prose :deep(ul),
@@ -552,16 +552,16 @@ const formatFileSize = (bytes) => {
 }
 
 .ops-prose :deep(blockquote) {
-  border-left: 4px solid var(--ops-violet, #9977aa);
+  border-left: 4px solid var(--color-accent);
   padding-left: 1rem;
   margin: 1em 0;
-  color: var(--ops-lilac, #cc99cc);
+  color: var(--color-accent);
   font-style: italic;
 }
 
 .ops-prose :deep(hr) {
   border: none;
-  border-top: 2px solid var(--ops-plum, #774477);
+  border-top: 2px solid var(--color-accent);
   margin: 2em 0;
 }
 
@@ -573,19 +573,19 @@ const formatFileSize = (bytes) => {
 
 .ops-prose :deep(th),
 .ops-prose :deep(td) {
-  border: 1px solid var(--ops-plum, #774477);
+  border: 1px solid var(--color-accent);
   padding: 0.5rem;
   text-align: left;
 }
 
 .ops-prose :deep(th) {
-  background-color: var(--ops-plum, #774477);
-  color: var(--ops-peach, #ff9966);
+  background-color: var(--color-accent);
+  color: white;
 }
 
 .ops-prose :deep(img) {
   max-width: 100%;
   border-radius: 0.5rem;
-  border: 2px solid var(--ops-plum, #774477);
+  border: 2px solid var(--color-accent);
 }
 </style>

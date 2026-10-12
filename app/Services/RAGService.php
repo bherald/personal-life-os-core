@@ -2,11 +2,11 @@
 
 namespace App\Services;
 
-use App\Services\DataSanitizer;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Support\PgVector;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * RAG (Retrieval Augmented Generation) Service
@@ -24,34 +24,69 @@ use Exception;
 class RAGService
 {
     private AIService $aiService;
+
+    private RagEmbeddingProvenanceService $embeddingProvenance;
+
+    private RagChunkingProvenanceService $chunkingProvenance;
+
     private ?RerankerService $reranker = null;
+
     private ?HyDEService $hydeService = null;
+
     private ?SemanticChunkerService $semanticChunker = null;
+
     private ?ContextualRetrievalService $contextualRetrieval = null;
+
     private ?RaptorSummarizationService $raptorService = null;
+
     private ?SemDeDupService $dedupService = null;
+
     private ?MMRDiversityService $mmrService = null;
+
     private ?RAGTracingService $tracingService = null;
-    private ?MetadataFilterService $metadataFilterService = null;
-    private ?ContextualCompressionService $compressionService = null;
+
     private ?GraphSearchService $graphSearchService = null;
+
     private ?GraphFusionService $graphFusionService = null;
+
     private ?QueryDecompositionService $decompositionService = null;
+
     private ?SPLADEService $spladeService = null;
+
     private ?HyPEService $hypeService = null;
+
     private ?CRAGService $cragService = null;
+
     private ?TemporalScoringService $temporalService = null;
+
     private ?RelevanceGatingService $relevanceGatingService = null;
+
     private ?ColBERTRerankService $colbertService = null;
+
     private ?IterativeRetrievalService $iterativeService = null;
+
     private ?RAGStrategyService $strategyService = null;
+
     private ?RAGSecurityService $securityService = null;
+
     private ?LazyGraphRAGService $lazyGraphService = null;
+
     private ?LongContextRerankService $longContextService = null;
+
+    private ?ContextPositioningService $contextPositioningService = null;
+
     private ?MultimodalEmbeddingService $multimodalService = null;
-    public function __construct(AIService $aiService)
-    {
+
+    public function __construct(
+        AIService $aiService,
+        ?RagEmbeddingProvenanceService $embeddingProvenance = null,
+        ?RagChunkingProvenanceService $chunkingProvenance = null,
+        ?SemDeDupService $dedupService = null,
+    ) {
         $this->aiService = $aiService;
+        $this->embeddingProvenance = $embeddingProvenance ?? new RagEmbeddingProvenanceService;
+        $this->chunkingProvenance = $chunkingProvenance ?? new RagChunkingProvenanceService;
+        $this->dedupService = $dedupService;
     }
 
     /**
@@ -60,8 +95,9 @@ class RAGService
     private function findRagDocument(int $id): ?object
     {
         $results = DB::connection('pgsql_rag')->select(
-            "SELECT * FROM rag_documents WHERE id = ? LIMIT 1", [$id]
+            'SELECT * FROM rag_documents WHERE id = ? LIMIT 1', [$id]
         );
+
         return $results[0] ?? null;
     }
 
@@ -76,41 +112,28 @@ class RAGService
     private function getDedupService(): SemDeDupService
     {
         if ($this->dedupService === null) {
-            $this->dedupService = new SemDeDupService($this->aiService);
+            $this->dedupService = new SemDeDupService($this->aiService, $this->embeddingProvenance);
         }
+
         return $this->dedupService;
     }
 
     private function getMMRService(): MMRDiversityService
     {
         if ($this->mmrService === null) {
-            $this->mmrService = new MMRDiversityService($this->aiService);
+            $this->mmrService = new MMRDiversityService;
         }
+
         return $this->mmrService;
     }
 
     private function getTracingService(): RAGTracingService
     {
         if ($this->tracingService === null) {
-            $this->tracingService = new RAGTracingService();
+            $this->tracingService = new RAGTracingService;
         }
+
         return $this->tracingService;
-    }
-
-    private function getMetadataFilterService(): MetadataFilterService
-    {
-        if ($this->metadataFilterService === null) {
-            $this->metadataFilterService = new MetadataFilterService($this->aiService);
-        }
-        return $this->metadataFilterService;
-    }
-
-    private function getCompressionService(): ContextualCompressionService
-    {
-        if ($this->compressionService === null) {
-            $this->compressionService = new ContextualCompressionService($this->aiService);
-        }
-        return $this->compressionService;
     }
 
     private function getDecompositionService(): QueryDecompositionService
@@ -118,6 +141,7 @@ class RAGService
         if ($this->decompositionService === null) {
             $this->decompositionService = new QueryDecompositionService($this->aiService);
         }
+
         return $this->decompositionService;
     }
 
@@ -126,6 +150,7 @@ class RAGService
         if ($this->spladeService === null) {
             $this->spladeService = app(SPLADEService::class);
         }
+
         return $this->spladeService;
     }
 
@@ -137,22 +162,25 @@ class RAGService
         if ($this->raptorService === null) {
             $this->raptorService = new RaptorSummarizationService($this->aiService);
         }
+
         return $this->raptorService;
     }
 
     private function getGraphSearchService(): GraphSearchService
     {
         if ($this->graphSearchService === null) {
-            $this->graphSearchService = new GraphSearchService();
+            $this->graphSearchService = new GraphSearchService;
         }
+
         return $this->graphSearchService;
     }
 
     private function getGraphFusionService(): GraphFusionService
     {
         if ($this->graphFusionService === null) {
-            $this->graphFusionService = new GraphFusionService();
+            $this->graphFusionService = new GraphFusionService;
         }
+
         return $this->graphFusionService;
     }
 
@@ -164,6 +192,7 @@ class RAGService
         if ($this->contextualRetrieval === null) {
             $this->contextualRetrieval = new ContextualRetrievalService($this->aiService);
         }
+
         return $this->contextualRetrieval;
     }
 
@@ -175,6 +204,7 @@ class RAGService
         if ($this->reranker === null) {
             $this->reranker = new RerankerService($this->aiService);
         }
+
         return $this->reranker;
     }
 
@@ -186,6 +216,7 @@ class RAGService
         if ($this->hydeService === null) {
             $this->hydeService = new HyDEService($this->aiService);
         }
+
         return $this->hydeService;
     }
 
@@ -195,8 +226,9 @@ class RAGService
     private function getTemporalService(): TemporalScoringService
     {
         if ($this->temporalService === null) {
-            $this->temporalService = new TemporalScoringService();
+            $this->temporalService = new TemporalScoringService;
         }
+
         return $this->temporalService;
     }
 
@@ -206,8 +238,12 @@ class RAGService
     private function getRelevanceGatingService(): RelevanceGatingService
     {
         if ($this->relevanceGatingService === null) {
-            $this->relevanceGatingService = new RelevanceGatingService($this->aiService);
+            $this->relevanceGatingService = new RelevanceGatingService(
+                $this->aiService,
+                app(RelevanceGatingRuntimePolicyService::class),
+            );
         }
+
         return $this->relevanceGatingService;
     }
 
@@ -217,8 +253,9 @@ class RAGService
     private function getSecurityService(): RAGSecurityService
     {
         if ($this->securityService === null) {
-            $this->securityService = new RAGSecurityService();
+            $this->securityService = new RAGSecurityService;
         }
+
         return $this->securityService;
     }
 
@@ -228,8 +265,9 @@ class RAGService
     private function getStrategyService(): RAGStrategyService
     {
         if ($this->strategyService === null) {
-            $this->strategyService = new RAGStrategyService();
+            $this->strategyService = new RAGStrategyService;
         }
+
         return $this->strategyService;
     }
 
@@ -241,6 +279,7 @@ class RAGService
         if ($this->iterativeService === null) {
             $this->iterativeService = new IterativeRetrievalService($this->aiService);
         }
+
         return $this->iterativeService;
     }
 
@@ -252,6 +291,7 @@ class RAGService
         if ($this->colbertService === null) {
             $this->colbertService = new ColBERTRerankService($this->aiService);
         }
+
         return $this->colbertService;
     }
 
@@ -260,15 +300,26 @@ class RAGService
         if ($this->lazyGraphService === null) {
             $this->lazyGraphService = new LazyGraphRAGService($this->aiService);
         }
+
         return $this->lazyGraphService;
     }
 
     private function getLongContextRerankService(): LongContextRerankService
     {
         if ($this->longContextService === null) {
-            $this->longContextService = new LongContextRerankService();
+            $this->longContextService = new LongContextRerankService;
         }
+
         return $this->longContextService;
+    }
+
+    private function getContextPositioningService(): ContextPositioningService
+    {
+        if ($this->contextPositioningService === null) {
+            $this->contextPositioningService = new ContextPositioningService;
+        }
+
+        return $this->contextPositioningService;
     }
 
     private function getMultimodalService(): MultimodalEmbeddingService
@@ -276,6 +327,7 @@ class RAGService
         if ($this->multimodalService === null) {
             $this->multimodalService = new MultimodalEmbeddingService($this->aiService);
         }
+
         return $this->multimodalService;
     }
 
@@ -285,8 +337,9 @@ class RAGService
     private function getCRAGService(): CRAGService
     {
         if ($this->cragService === null) {
-            $this->cragService = new CRAGService($this->aiService, new SearXNGService());
+            $this->cragService = new CRAGService($this->aiService, new SearXNGService);
         }
+
         return $this->cragService;
     }
 
@@ -298,6 +351,7 @@ class RAGService
         if ($this->hypeService === null) {
             $this->hypeService = new HyPEService($this->aiService);
         }
+
         return $this->hypeService;
     }
 
@@ -309,20 +363,22 @@ class RAGService
         if ($this->semanticChunker === null) {
             $this->semanticChunker = new SemanticChunkerService($this->aiService);
         }
+
         return $this->semanticChunker;
     }
 
     /**
      * Index a document for semantic search
      *
-     * @param string $documentType Type of document (joplin_note, joplin_attachment, etc.)
-     * @param string $content Document content for embedding
-     * @param string|null $title Document title
-     * @param array|null $metadata Additional metadata (JSON)
-     * @param string|int|null $sourceId Source identifier
-     * @param string|null $sourceType Source type class
-     * @param string|null $designation Document designation
-     * @param string|null $mediaUrl Nextcloud WebDAV URL for source media (E17/EA1)
+     * @param  string  $documentType  Type of document (joplin_note, joplin_attachment, etc.)
+     * @param  string  $content  Document content for embedding
+     * @param  string|null  $title  Document title
+     * @param  array|null  $metadata  Additional metadata (JSON)
+     * @param  string|int|null  $sourceId  Source identifier
+     * @param  string|null  $sourceType  Source type class
+     * @param  string|null  $designation  Document designation
+     * @param  string|null  $mediaUrl  Nextcloud WebDAV URL for source media (E17/EA1)
+     * @param  array  $options  preserve_content retains valid UTF-8 content/title; skip_dedup avoids substituting a prior document
      */
     public function indexDocument(
         string $documentType,
@@ -333,14 +389,15 @@ class RAGService
         ?string $sourceType = null,
         ?string $designation = null,
         ?string $mediaUrl = null,
-        array $options = []
+        array $options = [],
+        ?callable $publicationGuard = null,
     ): ?object {
-        $traceTiming = !empty($options['trace_timing']);
+        $traceTiming = ! empty($options['trace_timing']);
         $startedAt = microtime(true);
         $stepStartedAt = $startedAt;
 
         $logStep = function (string $step, array $extra = []) use (&$stepStartedAt, $startedAt, $traceTiming, $documentType, $sourceType, $sourceId): void {
-            if (!$traceTiming) {
+            if (! $traceTiming) {
                 return;
             }
 
@@ -358,19 +415,51 @@ class RAGService
 
         try {
             // Validate content is not empty before attempting embedding generation
-            $trimmedContent = trim($content);
-            if (empty($trimmedContent)) {
+            $preserveContent = (bool) ($options['preserve_content'] ?? false);
+            $indexContent = $preserveContent ? $content : trim($content);
+            if (trim($content) === '') {
                 throw new Exception("Cannot index document with empty content (type: {$documentType}, source: {$sourceType}, sourceId: {$sourceId})");
             }
-            $logStep('trim', ['content_chars' => strlen($trimmedContent)]);
+            if ($preserveContent) {
+                foreach ([$indexContent, $title] as $text) {
+                    if ($text !== null && (! mb_check_encoding($text, 'UTF-8') || str_contains($text, "\0"))) {
+                        throw new Exception('Verbatim RAG indexing requires valid UTF-8 text without NUL bytes.');
+                    }
+                }
+            }
+            $logStep('trim', ['content_chars' => strlen($indexContent)]);
+
+            if (! empty($options['source_identity_upsert'])) {
+                if ($sourceType === null || $sourceType === '' || $sourceId === null || $sourceId === '') {
+                    throw new Exception('Source-identity upsert requires source_type and source_id.');
+                }
+
+                return $this->upsertSourceIdentityDocument(
+                    $documentType,
+                    $indexContent,
+                    $title,
+                    $metadata,
+                    $sourceId,
+                    $sourceType,
+                    $designation,
+                    $mediaUrl,
+                    $options,
+                    $logStep,
+                    $publicationGuard,
+                );
+            }
+
+            if ($publicationGuard !== null && empty($options['skip_dedup'])) {
+                throw new Exception('Guarded publication requires source identity or skip_dedup.');
+            }
 
             // Semantic dedup check
             $dedupResult = $this->getDedupService()->checkDuplicate(
-                $trimmedContent, $title, $sourceType, $sourceId, $options
+                $indexContent, $title, $sourceType, $sourceId, $options
             );
-            $contentHash = $dedupResult['content_hash'];
+            $contentHash = $preserveContent ? hash('sha256', $indexContent) : $dedupResult['content_hash'];
             $logStep('dedup', [
-                'skip_dedup' => !empty($options['skip_dedup']),
+                'skip_dedup' => ! empty($options['skip_dedup']),
                 'dedup_action' => $dedupResult['action'] ?? null,
                 'dedup_duplicate' => $dedupResult['is_duplicate'] ?? false,
             ]);
@@ -378,13 +467,28 @@ class RAGService
             if ($dedupResult['is_duplicate']) {
                 $matchedId = $dedupResult['matched_document_id'];
 
+                if ($preserveContent) {
+                    $existing = $this->findRagDocument($matchedId);
+                    if ($existing === null || $existing->content !== $indexContent || $existing->title !== $title
+                        || $existing->document_type !== $documentType) {
+                        throw new Exception('The RAG deduplication match differs from the submitted text or document type. Select skip_dedup to index it verbatim.');
+                    }
+
+                    return $existing;
+                }
+
                 if ($dedupResult['action'] === 'update') {
-                    $this->getDedupService()->updateExisting($matchedId, $trimmedContent, $title, $metadata);
+                    $updated = $this->getDedupService()->updateExisting($matchedId, $indexContent, $title, $metadata);
+                    if (! $updated) {
+                        throw new Exception("RAG document {$matchedId} matched for update but could not be re-embedded.");
+                    }
+
                     return $this->findRagDocument($matchedId);
                 }
 
                 if ($dedupResult['action'] === 'merge') {
                     $this->getDedupService()->mergeMetadata($matchedId, $metadata);
+
                     return $this->findRagDocument($matchedId);
                 }
 
@@ -394,6 +498,7 @@ class RAGService
                     'matched_id' => $matchedId,
                     'similarity' => $dedupResult['similarity'],
                 ]);
+
                 return $this->findRagDocument($matchedId);
             }
 
@@ -403,11 +508,15 @@ class RAGService
                 $embeddingOptions['allow_cpu_fallback'] = (bool) $options['allow_cpu_fallback'];
             }
 
-            $result = $this->aiService->generateEmbedding($trimmedContent, $embeddingOptions);
-            if (!$result['success']) {
-                throw new Exception("Embedding generation failed: " . ($result['error'] ?? 'unknown error'));
+            $result = $this->aiService->generateEmbedding($indexContent, $embeddingOptions);
+            if (! $result['success']) {
+                if (! empty($result['controller_failure']) && is_array($result['controller_failure'])) {
+                    throw new InferenceAdmissionException('Embedding admission held', controllerFailure: $result['controller_failure']);
+                }
+                throw new Exception('Embedding generation failed: '.($result['error'] ?? 'unknown error'));
             }
             $embedding = $result['embedding'];
+            $metadata = $this->embeddingProvenance->attach($metadata, $result, (string) $contentHash);
             $logStep('embedding', [
                 'provider' => $result['provider'] ?? null,
                 'embedding_ms' => $result['duration_ms'] ?? null,
@@ -415,7 +524,7 @@ class RAGService
             ]);
 
             // Auto-set designation from documentType if not provided
-            if (!$designation) {
+            if (! $designation) {
                 $designation = $documentType;
             }
 
@@ -423,30 +532,41 @@ class RAGService
             $embeddingStr = $this->toVectorLiteral($embedding);
             $logStep('vector_literal', ['vector_chars' => strlen($embeddingStr)]);
 
-            // Create document record using raw SQL (sanitize for PostgreSQL UTF-8)
-            $now = now()->toDateTimeString();
-            $result = DB::connection('pgsql_rag')->select(
-                "INSERT INTO rag_documents (document_type, title, content, embedding, metadata, source_id, source_type, designation, media_url, content_hash, dedup_status, dedup_checked_at, created_at, updated_at)
+            $publish = function () use ($documentType, $preserveContent, $title, $indexContent, $embeddingStr, $metadata, $sourceId, $sourceType, $designation, $mediaUrl, $contentHash, $logStep): object {
+                // Create document record using raw SQL (sanitize for PostgreSQL UTF-8)
+                $now = now()->toDateTimeString();
+                $result = DB::connection('pgsql_rag')->select(
+                    "INSERT INTO rag_documents (document_type, title, content, embedding, metadata, source_id, source_type, designation, media_url, content_hash, dedup_status, dedup_checked_at, created_at, updated_at)
                  VALUES (?, ?, ?, ?::vector, ?, ?, ?, ?, ?, ?, 'unique', ?, ?, ?)
                  RETURNING id",
-                [
-                    $documentType,
-                    DataSanitizer::cleanUtf8($title),
-                    DataSanitizer::cleanUtf8($trimmedContent),
-                    $embeddingStr,
-                    $metadata ? json_encode($metadata, JSON_INVALID_UTF8_SUBSTITUTE) : null,
-                    $sourceId,
-                    $sourceType,
-                    $designation,
-                    $mediaUrl,
-                    $contentHash ?? null,
-                    $now,
-                    $now,
-                    $now,
-                ]
-            );
-            $documentId = $result[0]->id;
-            $logStep('insert', ['document_id' => $documentId]);
+                    [
+                        $documentType,
+                        $preserveContent ? $title : DataSanitizer::cleanUtf8($title),
+                        $preserveContent ? $indexContent : DataSanitizer::cleanUtf8($indexContent),
+                        $embeddingStr,
+                        $metadata ? json_encode($metadata, JSON_INVALID_UTF8_SUBSTITUTE) : null,
+                        $sourceId,
+                        $sourceType,
+                        $designation,
+                        $mediaUrl,
+                        $contentHash ?? null,
+                        $now,
+                        $now,
+                        $now,
+                    ]
+                );
+                $documentId = $result[0]->id;
+                $logStep('insert', ['document_id' => $documentId]);
+
+                return $this->findRagDocument($documentId) ?? throw new Exception('Published RAG document unavailable.');
+            };
+            $document = $publicationGuard !== null ? $publicationGuard($publish) : $publish();
+            if ($preserveContent && ($document->content !== $indexContent || $document->title !== $title
+                || $document->content_hash !== $contentHash || $document->document_type !== $documentType
+                || (string) $document->source_id !== (string) $sourceId || $document->source_type !== $sourceType)) {
+                throw new Exception('Verbatim RAG publication read-back differs from the exact source.');
+            }
+            $documentId = $document->id;
 
             Log::info('RAG document indexed', [
                 'id' => $documentId,
@@ -456,14 +576,13 @@ class RAGService
 
             // GR-12: Incremental graph maintenance — extract KG at index time
             if ($options['extract_kg'] ?? false) {
-                $this->extractKGForDocument($documentId, $trimmedContent, $contentHash);
+                $this->extractKGForDocument($documentId, $indexContent, $contentHash);
             }
 
-            $document = $this->findRagDocument($documentId);
             $logStep('fetch');
 
             return $document;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('RAG indexing failed', [
                 'error' => $e->getMessage(),
                 'type' => $documentType,
@@ -473,6 +592,131 @@ class RAGService
             ]);
             throw $e;
         }
+    }
+
+    private function upsertSourceIdentityDocument(
+        string $documentType,
+        string $content,
+        ?string $title,
+        ?array $metadata,
+        string|int $sourceId,
+        string $sourceType,
+        ?string $designation,
+        ?string $mediaUrl,
+        array $options,
+        callable $logStep,
+        ?callable $publicationGuard = null,
+    ): object {
+        $connection = DB::connection('pgsql_rag');
+        $lockIdentity = implode("\x1f", [$documentType, $sourceType, (string) $sourceId]);
+        $locked = false;
+
+        try {
+            $connection->selectOne(
+                'SELECT pg_advisory_lock(hashtextextended(?, 0)) AS locked',
+                [$lockIdentity],
+            );
+            $locked = true;
+
+            $existingId = $this->findSourceIdentityDocumentId(
+                $connection,
+                $documentType,
+                $sourceType,
+                $sourceId,
+            );
+            if ($existingId !== null) {
+                if ($options['preserve_content'] ?? false) {
+                    $updated = $this->getDedupService()->updateExisting($existingId, $content, $title, $metadata,
+                        invalidateDerived: true, publicationGuard: $publicationGuard, preserveContent: true);
+                } else {
+                    $updated = $publicationGuard === null
+                        ? $this->getDedupService()->updateExisting($existingId, $content, $title, $metadata, invalidateDerived: true)
+                        : $this->getDedupService()->updateExisting($existingId, $content, $title, $metadata, invalidateDerived: true, publicationGuard: $publicationGuard);
+                }
+                if (! $updated) {
+                    throw new Exception("RAG source document {$existingId} could not be updated idempotently.");
+                }
+
+                $document = $this->findRagDocument($existingId);
+                if ($document === null) {
+                    throw new Exception("RAG source document {$existingId} disappeared after update.");
+                }
+                if (($options['preserve_content'] ?? false) && ($document->content !== $content || ($title !== null && $document->title !== $title)
+                    || $document->content_hash !== hash('sha256', $content) || $document->document_type !== $documentType
+                    || (string) $document->source_id !== (string) $sourceId || $document->source_type !== $sourceType)) {
+                    throw new Exception('Verbatim RAG source-identity read-back differs from the exact source.');
+                }
+
+                $logStep('source_identity_update', ['document_id' => $existingId]);
+
+                return $document;
+            }
+
+            if (($metadata['domain'] ?? null) === 'youtube' && is_string($metadata['video_id'] ?? null)) {
+                $legacy = $connection->selectOne(
+                    'SELECT id FROM rag_documents
+                     WHERE document_type = ? AND source_id IN (?, ?)
+                       AND (source_type IS DISTINCT FROM ? OR source_id IS DISTINCT FROM ?)
+                     LIMIT 1',
+                    [$documentType, (string) $sourceId, $metadata['video_id'], $sourceType, (string) $sourceId],
+                );
+                if ($legacy !== null) {
+                    throw new Exception('Legacy YouTube source identity requires review before a new projection.');
+                }
+            }
+
+            unset($options['source_identity_upsert']);
+            $options['skip_dedup'] = true;
+
+            return $this->indexDocument(
+                $documentType,
+                $content,
+                $title,
+                $metadata,
+                $sourceId,
+                $sourceType,
+                $designation,
+                $mediaUrl,
+                $options,
+                $publicationGuard,
+            );
+        } finally {
+            if ($locked) {
+                try {
+                    $connection->selectOne(
+                        'SELECT pg_advisory_unlock(hashtextextended(?, 0)) AS unlocked',
+                        [$lockIdentity],
+                    );
+                } catch (\Throwable $e) {
+                    Log::warning('RAG source-identity advisory unlock failed', [
+                        'document_type' => $documentType,
+                        'source_type' => $sourceType,
+                        'source_id' => (string) $sourceId,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+        }
+    }
+
+    private function findSourceIdentityDocumentId(
+        object $connection,
+        string $documentType,
+        string $sourceType,
+        string|int $sourceId,
+    ): ?int {
+        $row = $connection->selectOne(
+            'SELECT id
+             FROM rag_documents
+             WHERE document_type = ?
+               AND source_type = ?
+               AND source_id = ?
+             ORDER BY updated_at DESC NULLS LAST, id DESC
+             LIMIT 1',
+            [$documentType, $sourceType, (string) $sourceId],
+        );
+
+        return $row ? (int) $row->id : null;
     }
 
     /**
@@ -492,21 +736,21 @@ class RAGService
 
             if ($result['success'] && $contentHash) {
                 DB::connection('pgsql_rag')->update(
-                    "UPDATE rag_documents SET kg_content_hash = ? WHERE id = ?",
+                    'UPDATE rag_documents SET kg_content_hash = ? WHERE id = ?',
                     [$contentHash, $documentId]
                 );
             }
 
             Log::info('GR-12: Incremental KG extraction at index time', [
-                'document_id'       => $documentId,
-                'success'           => $result['success'],
+                'document_id' => $documentId,
+                'success' => $result['success'],
                 'entities_extracted' => $result['entities_extracted'] ?? 0,
-                'triples_created'   => $result['triples_created'] ?? 0,
+                'triples_created' => $result['triples_created'] ?? 0,
             ]);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('GR-12: Incremental KG extraction failed (non-fatal)', [
                 'document_id' => $documentId,
-                'error'       => $e->getMessage(),
+                'error' => $e->getMessage(),
             ]);
         }
     }
@@ -521,22 +765,27 @@ class RAGService
      * - Query is short (<=3 words) - short queries often have poor embeddings
      * - Top vector similarity is below threshold (0.55)
      *
-     * @param string $query Search query
-     * @param int $limit Number of results to return
-     * @param string|null $documentType Optional filter by document type
-     * @param bool|string $useHyde Enable HyDE query expansion (true, false, or 'auto')
-     *                             'auto' uses HyDEService::shouldUseHyde() to decide
-     * @param array{trace?: bool} $options Search options. Set trace=false for approved read-only evidence runs.
+     * @param  string  $query  Search query
+     * @param  int  $limit  Number of results to return
+     * @param  string|null  $documentType  Optional filter by document type
+     * @param  bool|string  $useHyde  Enable HyDE query expansion (true, false, or 'auto')
+     *                                'auto' uses HyDEService::shouldUseHyde() to decide
+     * @param  array{trace?: bool}  $options  Search options. Set trace=false for approved read-only evidence runs.
      */
     public function search(string $query, int $limit = 5, ?string $documentType = null, bool|string $useHyde = false, ?string $agentId = null, array $options = []): array
     {
-        try {
-            $traceQueries = (bool) ($options['trace'] ?? true);
+        $traceStartedAt = hrtime(true);
+        $traceQueries = (bool) ($options['trace'] ?? true);
+        $tracePhases = [];
+        $tracePhase = 'embedding';
+        $traceStrategy = ['vector'];
+        $hydeEnabled = false;
+        $results = [];
 
+        try {
             // HyDE (Hypothetical Document Embeddings) query expansion
             // When enabled, delegates to HyDEService which generates a hypothetical answer
             // and embeds that instead of the original query
-            $hydeEnabled = false;
             if ($useHyde === 'auto') {
                 $hydeEnabled = $this->getHydeService()->shouldUseHyde($query);
             } elseif ($useHyde === true) {
@@ -545,16 +794,39 @@ class RAGService
 
             if ($hydeEnabled) {
                 Log::info('RAG search: Using HyDE query expansion', [
-                    'query' => substr($query, 0, 100),
+                    'query_chars' => mb_strlen($query),
                     'mode' => $useHyde,
                 ]);
-                return $this->getHydeService()->search($query, $limit, $documentType);
+                $tracePhase = 'hyde';
+                $results = $this->getTracingService()->measure(
+                    'hyde',
+                    fn (): array => $this->getHydeService()->search($query, $limit, $documentType),
+                    $tracePhases,
+                );
+                $this->recordSearchTraceSafely(
+                    $traceQueries,
+                    $query,
+                    'hyde',
+                    $tracePhases,
+                    $traceStartedAt,
+                    $results,
+                    true,
+                    $documentType !== null,
+                    $agentId !== null,
+                );
+
+                return $results;
             }
 
             // Generate query embedding using AIService with resilience
-            $result = $this->aiService->generateEmbedding($query);
-            if (!$result['success']) {
-                throw new Exception("Query embedding failed: " . ($result['error'] ?? 'unknown error'));
+            $tracePhase = 'embedding';
+            $result = $this->getTracingService()->measure(
+                'embedding',
+                fn (): array => $this->aiService->generateEmbedding($query),
+                $tracePhases,
+            );
+            if (! $result['success']) {
+                throw new Exception('Query embedding failed: '.($result['error'] ?? 'unknown error'));
             }
             $queryEmbedding = $result['embedding'];
 
@@ -572,7 +844,7 @@ class RAGService
                 $params[] = $agentId;
             }
 
-            $whereClause = !empty($whereClauses) ? 'WHERE ' . implode(' AND ', $whereClauses) : '';
+            $whereClause = ! empty($whereClauses) ? 'WHERE '.implode(' AND ', $whereClauses) : '';
             $params[] = $limit;
 
             $sql = "SELECT *,
@@ -583,7 +855,12 @@ class RAGService
                     ORDER BY distance ASC
                     LIMIT ?";
 
-            $documents = DB::connection('pgsql_rag')->select($sql, $params);
+            $tracePhase = 'vector';
+            $documents = $this->getTracingService()->measure(
+                'vector',
+                fn (): array => DB::connection('pgsql_rag')->select($sql, $params),
+                $tracePhases,
+            );
 
             $results = array_map(function ($doc) {
                 return [
@@ -599,53 +876,80 @@ class RAGService
 
             if ($wordCount <= 3 || $topSimilarity < $similarityThreshold) {
                 Log::info('RAG search: enhancing with hybrid for short/low-similarity query', [
-                    'query' => $query,
+                    'query_chars' => mb_strlen($query),
                     'word_count' => $wordCount,
                     'top_similarity' => $topSimilarity,
                 ]);
 
-                // Get full-text search results
-                $ftsResults = $this->getFullTextResults($query, $limit * 2, $documentType, $agentId);
+                $traceStrategy[] = 'hybrid';
+                $tracePhase = 'hybrid';
+                $results = $this->getTracingService()->measure(
+                    'hybrid',
+                    function () use ($query, $limit, $documentType, $agentId, $results): array {
+                        $ftsResults = $this->getFullTextResults($query, $limit * 2, $documentType, $agentId);
+                        $spladeResults = $this->trySpladeSearch($query, $limit * 2, $documentType);
 
-                // RAG-3: Get SPLADE sparse search results (three-way hybrid)
-                $spladeResults = $this->trySpladeSearch($query, $limit * 2, $documentType);
-
-                if (!empty($ftsResults) || !empty($spladeResults)) {
-                    $results = $this->mergeResultsTripleRRF($results, $ftsResults, $spladeResults, $limit);
-                }
+                        return ! empty($ftsResults) || ! empty($spladeResults)
+                            ? $this->mergeResultsTripleRRF($results, $ftsResults, $spladeResults, $limit)
+                            : $results;
+                    },
+                    $tracePhases,
+                );
             }
 
             // Apply fast reranking for improved relevance
             if (count($results) >= 3) {
-                $results = $this->getReranker()->rerank($query, $results, 'fast');
+                $traceStrategy[] = 'rerank';
+                $tracePhase = 'rerank';
+                $results = $this->getTracingService()->measure(
+                    'rerank',
+                    fn (): array => $this->getReranker()->rerank($query, $results, 'fast'),
+                    $tracePhases,
+                );
             }
 
             // Apply MMR diversity reranking when enough results
             if (count($results) >= 5) {
                 try {
-                    $results = $this->getMMRService()->diverseTopK($results, $limit, 0.7);
+                    $traceStrategy[] = 'mmr';
+                    $tracePhase = 'mmr';
+                    $results = $this->getTracingService()->measure(
+                        'mmr',
+                        fn (): array => $this->getMMRService()->diverseTopK($results, $limit, 0.7),
+                        $tracePhases,
+                    );
                 } catch (\Throwable $e) {
-                    Log::warning('RAG search: MMR reranking failed, using original order', ['error' => $e->getMessage()]);
+                    Log::warning('RAG search: MMR reranking failed, using original order', ['error_type' => $e::class]);
                 }
             }
 
             // Apply temporal decay for agent-scoped searches
             // Formula: score * e^(-decay * ageDays)
             // Newer agent findings rank higher than stale ones
-            if ($agentId && !empty($results)) {
-                $results = $this->applyTemporalDecay($results);
+            if ($agentId && ! empty($results)) {
+                $traceStrategy[] = 'temporal';
+                $tracePhase = 'temporal_decay';
+                $results = $this->getTracingService()->measure(
+                    'temporal_decay',
+                    fn (): array => $this->applyTemporalDecay($results),
+                    $tracePhases,
+                );
             }
 
-            if ($traceQueries) {
-                try {
-                    $this->getTracingService()->startTrace($query);
-                } catch (\Exception $e) {
-                    Log::debug('RAGService: trace recording failed', ['error' => $e->getMessage()]);
-                }
-            }
+            $this->recordSearchTraceSafely(
+                $traceQueries,
+                $query,
+                implode('_', $traceStrategy),
+                $tracePhases,
+                $traceStartedAt,
+                $results,
+                false,
+                $documentType !== null,
+                $agentId !== null,
+            );
 
             Log::info('RAG search completed', [
-                'query' => substr($query, 0, 100),
+                'query_chars' => mb_strlen($query),
                 'results_count' => count($results),
                 'top_similarity' => $results[0]['similarity'] ?? 0,
                 'reranked' => count($results) >= 3,
@@ -654,12 +958,66 @@ class RAGService
             ]);
 
             return $results;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
+            $this->recordSearchTraceSafely(
+                $traceQueries,
+                $query,
+                'error_'.$tracePhase,
+                $tracePhases,
+                $traceStartedAt,
+                $results,
+                $hydeEnabled,
+                $documentType !== null,
+                $agentId !== null,
+                'failure',
+                $tracePhase,
+            );
             Log::error('RAG search failed', [
-                'error' => $e->getMessage(),
-                'query' => substr($query, 0, 100),
+                'error_type' => $e::class,
+                'query_chars' => mb_strlen($query),
             ]);
             throw $e;
+        }
+    }
+
+    /**
+     * @param  array<string, int>  $phases
+     * @param  array<int, array<string, mixed>>  $results
+     */
+    private function recordSearchTraceSafely(
+        bool $enabled,
+        string $query,
+        string $strategy,
+        array $phases,
+        int $startedAt,
+        array $results,
+        bool $hydeUsed,
+        bool $documentTypeFilter,
+        bool $agentScopeFilter,
+        string $outcome = 'success',
+        ?string $failurePhase = null,
+    ): void {
+        if (! $enabled) {
+            return;
+        }
+
+        try {
+            $this->getTracingService()->recordSearch(
+                query: $query,
+                strategy: $strategy,
+                phases: $phases,
+                totalTimeMs: (int) round((hrtime(true) - $startedAt) / 1_000_000),
+                resultCount: count($results),
+                topSimilarity: isset($results[0]['similarity']) ? (float) $results[0]['similarity'] : null,
+                hydeUsed: $hydeUsed,
+                raptorUsed: false,
+                documentTypeFilter: $documentTypeFilter,
+                agentScopeFilter: $agentScopeFilter,
+                outcome: $outcome,
+                failurePhase: $failurePhase,
+            );
+        } catch (\Throwable $e) {
+            Log::debug('RAGService: trace recording failed', ['error_type' => $e::class]);
         }
     }
 
@@ -695,7 +1053,7 @@ class RAGService
         }
         unset($result);
 
-        usort($results, fn($a, $b) => ($b['similarity'] ?? 0) <=> ($a['similarity'] ?? 0));
+        usort($results, fn ($a, $b) => ($b['similarity'] ?? 0) <=> ($a['similarity'] ?? 0));
 
         return $results;
     }
@@ -736,10 +1094,11 @@ class RAGService
                     'source' => 'fts',
                 ];
             }, $documents);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('Full-text search failed, continuing with vector only', [
                 'error' => $e->getMessage(),
             ]);
+
             return [];
         }
     }
@@ -815,7 +1174,7 @@ class RAGService
                 $entry = $docMap[$docId];
                 $entry['similarity'] = $bestSimilarity[$docId];
                 $entry['rrf_score'] = $scores[$docId];
-                $entry['decomposed_boost'] = count(array_filter($scores, fn($s) => $s > 0)) > 1;
+                $entry['decomposed_boost'] = count(array_filter($scores, fn ($s) => $s > 0)) > 1;
                 $merged[] = $entry;
             }
         }
@@ -830,12 +1189,17 @@ class RAGService
     {
         try {
             $splade = $this->getSpladeService();
-            if (!$splade->isAvailable()) {
+            if (! $splade->isAvailable()) {
                 return [];
             }
+
             return $splade->search($query, $limit, $documentType);
         } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::debug('RAG search: SPLADE search failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -888,19 +1252,10 @@ class RAGService
     }
 
     /**
-     * Calculate cosine similarity between two vectors
-     */
-    private function cosineSimilarity(array $a, array $b): float
-    {
-        return \App\Support\VectorMath::cosineSimilarity($a, $b);
-    }
-
-    /**
      * Hybrid search combining semantic similarity + full-text search
      *
      * Uses Reciprocal Rank Fusion (RRF) to combine results from both methods.
      * Generally provides better results than pure semantic search.
-     *
      */
     public function hybridSearch(string $query, int $limit = 5, ?string $documentType = null): array
     {
@@ -961,21 +1316,21 @@ class RAGService
                 }, $documents);
 
                 // Sort by similarity descending
-                usort($results, function($a, $b) {
+                usort($results, function ($a, $b) {
                     return $b['similarity'] <=> $a['similarity'];
                 });
             }
 
             Log::info('RAG hybrid search completed', [
-                'query' => substr($query, 0, 100),
+                'query_chars' => mb_strlen($query),
                 'results_count' => count($results),
             ]);
 
             return $results;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('RAG hybrid search failed', [
-                'error' => $e->getMessage(),
-                'query' => substr($query, 0, 100),
+                'error_type' => $e::class,
+                'query_chars' => mb_strlen($query),
             ]);
             throw $e;
         }
@@ -987,17 +1342,17 @@ class RAGService
     public function findSimilar(int $documentId, int $limit = 5): array
     {
         // Get document using raw SQL
-        $sql = "SELECT * FROM rag_documents WHERE id = ? LIMIT 1";
+        $sql = 'SELECT * FROM rag_documents WHERE id = ? LIMIT 1';
         $documents = DB::connection('pgsql_rag')->select($sql, [$documentId]);
 
         if (empty($documents)) {
-            throw new \Exception("Document not found: {$documentId}");
+            throw new Exception("Document not found: {$documentId}");
         }
 
         $document = $documents[0];
         $documentEmbedding = json_decode($document->embedding, true);
 
-        if (!$documentEmbedding) {
+        if (! $documentEmbedding) {
             return [];
         }
 
@@ -1040,13 +1395,14 @@ class RAGService
                     $doc['source_id'] ?? null,
                     $doc['source_type'] ?? null
                 );
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::error('Bulk indexing failed for document', [
                     'error' => $e->getMessage(),
                     'title' => $doc['title'] ?? 'untitled',
                 ]);
             }
         }
+
         return $indexed;
     }
 
@@ -1062,15 +1418,15 @@ class RAGService
      * - chunk_index in metadata for ordering
      * - Same source_id/source_type as parent for filtering
      *
-     * @param string $documentType Type of document
-     * @param string $content Full document content
-     * @param string|null $title Document title
-     * @param array|null $metadata Additional metadata
-     * @param string|int|null $sourceId Source identifier
-     * @param string|null $sourceType Source type class
-     * @param string|null $designation Document designation
-     * @param string|null $mediaUrl Media URL for source
-     * @param array $chunkOptions Semantic chunking options (see SemanticChunkerService::chunk)
+     * @param  string  $documentType  Type of document
+     * @param  string  $content  Full document content
+     * @param  string|null  $title  Document title
+     * @param  array|null  $metadata  Additional metadata
+     * @param  string|int|null  $sourceId  Source identifier
+     * @param  string|null  $sourceType  Source type class
+     * @param  string|null  $designation  Document designation
+     * @param  string|null  $mediaUrl  Media URL for source
+     * @param  array  $chunkOptions  Semantic chunking options (see SemanticChunkerService::chunk)
      * @return array Array of indexed RAGDocument instances
      */
     public function indexDocumentWithSemanticChunking(
@@ -1089,7 +1445,7 @@ class RAGService
         $trimmedContent = trim($content);
 
         if (empty($trimmedContent)) {
-            throw new Exception("Cannot index document with empty content");
+            throw new Exception('Cannot index document with empty content');
         }
 
         // Semantic dedup check on full document before chunking
@@ -1103,6 +1459,7 @@ class RAGService
                     'matched_id' => $dedupResult['matched_document_id'],
                 ]);
                 $existing = $this->findRagDocument($dedupResult['matched_document_id']);
+
                 return $existing ? [$existing] : [];
             }
         }
@@ -1114,6 +1471,7 @@ class RAGService
                 'length' => strlen($trimmedContent),
                 'threshold' => $minContentForChunking,
             ]);
+
             return [$this->indexDocument(
                 $documentType,
                 $trimmedContent,
@@ -1131,6 +1489,7 @@ class RAGService
 
         if (empty($chunks)) {
             Log::warning('RAG: Semantic chunking produced no chunks, indexing as single document');
+
             return [$this->indexDocument(
                 $documentType,
                 $trimmedContent,
@@ -1145,6 +1504,11 @@ class RAGService
 
         $indexedDocuments = [];
         $parentId = null;
+        $chunkingRecord = $this->chunkingProvenance->record(
+            hash('sha256', $trimmedContent),
+            $chunks,
+            $chunkOptions
+        );
 
         foreach ($chunks as $index => $chunkContent) {
             try {
@@ -1153,6 +1517,7 @@ class RAGService
                 $chunkMetadata['chunk_index'] = $index;
                 $chunkMetadata['total_chunks'] = count($chunks);
                 $chunkMetadata['chunking_method'] = 'semantic';
+                $chunkMetadata = $this->chunkingProvenance->attachRecord($chunkMetadata, $chunkingRecord);
 
                 if ($parentId !== null) {
                     $chunkMetadata['parent_id'] = $parentId;
@@ -1161,27 +1526,33 @@ class RAGService
                 // Generate chunk title
                 $chunkTitle = $title;
                 if (count($chunks) > 1) {
-                    $chunkTitle = ($title ?? 'Document') . " [Part " . ($index + 1) . "/" . count($chunks) . "]";
+                    $chunkTitle = ($title ?? 'Document').' [Part '.($index + 1).'/'.count($chunks).']';
                 }
 
                 // Generate embedding for this chunk
                 $result = $this->aiService->generateEmbedding($chunkContent);
-                if (!$result['success']) {
+                if (! $result['success']) {
                     Log::warning('RAG: Failed to embed chunk', [
                         'chunk_index' => $index,
                         'error' => $result['error'] ?? 'unknown',
                     ]);
+
                     continue;
                 }
 
+                $chunkMetadata = $this->embeddingProvenance->attach(
+                    $chunkMetadata,
+                    $result,
+                    hash('sha256', $chunkContent)
+                );
                 $embeddingStr = $this->toVectorLiteral($result['embedding']);
 
                 // Insert chunk
                 $now = now()->toDateTimeString();
                 $insertResult = DB::connection('pgsql_rag')->select(
-                    "INSERT INTO rag_documents (document_type, title, content, embedding, metadata, source_id, source_type, designation, media_url, parent_id, created_at, updated_at)
+                    'INSERT INTO rag_documents (document_type, title, content, embedding, metadata, source_id, source_type, designation, media_url, parent_id, created_at, updated_at)
                      VALUES (?, ?, ?, ?::vector, ?, ?, ?, ?, ?, ?, ?, ?)
-                     RETURNING id",
+                     RETURNING id',
                     [
                         $documentType,
                         $chunkTitle,
@@ -1206,7 +1577,7 @@ class RAGService
 
                 $indexedDocuments[] = $this->findRagDocument($documentId);
 
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::error('RAG: Failed to index chunk', [
                     'chunk_index' => $index,
                     'error' => $e->getMessage(),
@@ -1214,7 +1585,7 @@ class RAGService
             }
         }
 
-        $durationMs = (int)((microtime(true) - $startTime) * 1000);
+        $durationMs = (int) ((microtime(true) - $startTime) * 1000);
 
         Log::info('RAG: Semantic chunking indexing completed', [
             'document_type' => $documentType,
@@ -1233,14 +1604,14 @@ class RAGService
      * Deletes the original document and re-indexes with semantic chunks.
      * Useful for migrating from fixed-size to semantic chunking.
      *
-     * @param int $documentId ID of document to re-chunk
-     * @param array $chunkOptions Semantic chunking options
+     * @param  int  $documentId  ID of document to re-chunk
+     * @param  array  $chunkOptions  Semantic chunking options
      * @return array Array of new chunk documents
      */
     public function rechunkDocument(int $documentId, array $chunkOptions = []): array
     {
         // Fetch original document
-        $sql = "SELECT * FROM rag_documents WHERE id = ? LIMIT 1";
+        $sql = 'SELECT * FROM rag_documents WHERE id = ? LIMIT 1';
         $docs = DB::connection('pgsql_rag')->select($sql, [$documentId]);
 
         if (empty($docs)) {
@@ -1250,10 +1621,10 @@ class RAGService
         $original = $docs[0];
 
         // Delete the original
-        DB::connection('pgsql_rag')->delete("DELETE FROM rag_documents WHERE id = ?", [$documentId]);
+        DB::connection('pgsql_rag')->delete('DELETE FROM rag_documents WHERE id = ?', [$documentId]);
 
         // Also delete any existing chunks (children)
-        DB::connection('pgsql_rag')->delete("DELETE FROM rag_documents WHERE parent_id = ?", [$documentId]);
+        DB::connection('pgsql_rag')->delete('DELETE FROM rag_documents WHERE parent_id = ?', [$documentId]);
 
         // Re-index with semantic chunking
         $metadata = $original->metadata ? json_decode($original->metadata, true) : [];
@@ -1285,18 +1656,18 @@ class RAGService
      * 3. Embed contextualized content (context + chunk)
      * 4. Store context_prefix and contextualized_at for tracking
      *
-     * @param string $documentType Type of document
-     * @param string $content Full document content
-     * @param string|null $title Document title
-     * @param array|null $metadata Additional metadata
-     * @param string|int|null $sourceId Source identifier
-     * @param string|null $sourceType Source type class
-     * @param string|null $designation Document designation
-     * @param string|null $mediaUrl Media URL
-     * @param array $options Options:
-     *   - enable_contextual: bool (default true) - Enable contextual retrieval
-     *   - chunk_options: array - Options for SemanticChunkerService
-     *   - context_options: array - Options for ContextualRetrievalService
+     * @param  string  $documentType  Type of document
+     * @param  string  $content  Full document content
+     * @param  string|null  $title  Document title
+     * @param  array|null  $metadata  Additional metadata
+     * @param  string|int|null  $sourceId  Source identifier
+     * @param  string|null  $sourceType  Source type class
+     * @param  string|null  $designation  Document designation
+     * @param  string|null  $mediaUrl  Media URL
+     * @param  array  $options  Options:
+     *                          - enable_contextual: bool (default true) - Enable contextual retrieval
+     *                          - chunk_options: array - Options for SemanticChunkerService
+     *                          - context_options: array - Options for ContextualRetrievalService
      * @return array Array of indexed RAGDocument instances
      */
     public function contextualizeAndIndex(
@@ -1317,7 +1688,7 @@ class RAGService
 
         $trimmedContent = trim($content);
         if (empty($trimmedContent)) {
-            throw new Exception("Cannot index document with empty content");
+            throw new Exception('Cannot index document with empty content');
         }
 
         // Semantic dedup check on full document before contextual chunking
@@ -1331,6 +1702,7 @@ class RAGService
                     'matched_id' => $dedupResult['matched_document_id'],
                 ]);
                 $existing = $this->findRagDocument($dedupResult['matched_document_id']);
+
                 return $existing ? [$existing] : [];
             }
         }
@@ -1341,6 +1713,7 @@ class RAGService
             Log::debug('RAG: Content too short for contextual chunking, indexing as single document', [
                 'length' => strlen($trimmedContent),
             ]);
+
             return [$this->indexDocument(
                 $documentType,
                 $trimmedContent,
@@ -1358,6 +1731,7 @@ class RAGService
 
         if (empty($chunks)) {
             Log::warning('RAG: Semantic chunking produced no chunks');
+
             return [$this->indexDocument(
                 $documentType, $trimmedContent, $title, $metadata,
                 $sourceId, $sourceType, $designation, $mediaUrl
@@ -1386,6 +1760,11 @@ class RAGService
         // Step 3: Index each chunk
         $indexedDocuments = [];
         $parentId = null;
+        $chunkingRecord = $this->chunkingProvenance->record(
+            hash('sha256', $trimmedContent),
+            $chunks,
+            $chunkOptions
+        );
 
         foreach ($contextualizedChunks as $index => $contextData) {
             try {
@@ -1399,6 +1778,7 @@ class RAGService
                 $chunkMetadata['total_chunks'] = count($chunks);
                 $chunkMetadata['chunking_method'] = 'semantic';
                 $chunkMetadata['contextualized'] = $enableContextual;
+                $chunkMetadata = $this->chunkingProvenance->attachRecord($chunkMetadata, $chunkingRecord);
 
                 if ($parentId !== null) {
                     $chunkMetadata['parent_id'] = $parentId;
@@ -1407,27 +1787,33 @@ class RAGService
                 // Generate chunk title
                 $chunkTitle = $title;
                 if (count($chunks) > 1) {
-                    $chunkTitle = ($title ?? 'Document') . " [Part " . ($index + 1) . "/" . count($chunks) . "]";
+                    $chunkTitle = ($title ?? 'Document').' [Part '.($index + 1).'/'.count($chunks).']';
                 }
 
                 // Generate embedding from contextualized content
                 $result = $this->aiService->generateEmbedding($embeddingContent);
-                if (!$result['success']) {
+                if (! $result['success']) {
                     Log::warning('RAG: Failed to embed contextualized chunk', [
                         'chunk_index' => $index,
                         'error' => $result['error'] ?? 'unknown',
                     ]);
+
                     continue;
                 }
 
+                $chunkMetadata = $this->embeddingProvenance->attach(
+                    $chunkMetadata,
+                    $result,
+                    hash('sha256', $embeddingContent)
+                );
                 $embeddingStr = $this->toVectorLiteral($result['embedding']);
 
                 // Insert chunk with context_prefix
                 $now = now()->toDateTimeString();
                 $insertResult = DB::connection('pgsql_rag')->select(
-                    "INSERT INTO rag_documents (document_type, title, content, embedding, metadata, source_id, source_type, designation, media_url, parent_id, context_prefix, contextualized_at, created_at, updated_at)
+                    'INSERT INTO rag_documents (document_type, title, content, embedding, metadata, source_id, source_type, designation, media_url, parent_id, context_prefix, contextualized_at, created_at, updated_at)
                      VALUES (?, ?, ?, ?::vector, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     RETURNING id",
+                     RETURNING id',
                     [
                         $documentType,
                         $chunkTitle,
@@ -1439,7 +1825,7 @@ class RAGService
                         $designation ?? $documentType,
                         $mediaUrl,
                         $parentId,
-                        !empty($contextPrefix) ? $contextPrefix : null,
+                        ! empty($contextPrefix) ? $contextPrefix : null,
                         $enableContextual ? $now : null,
                         $now,
                         $now,
@@ -1454,7 +1840,7 @@ class RAGService
 
                 $indexedDocuments[] = $this->findRagDocument($documentId);
 
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::error('RAG: Failed to index contextualized chunk', [
                     'chunk_index' => $index,
                     'error' => $e->getMessage(),
@@ -1462,7 +1848,7 @@ class RAGService
             }
         }
 
-        $durationMs = (int)((microtime(true) - $startTime) * 1000);
+        $durationMs = (int) ((microtime(true) - $startTime) * 1000);
 
         Log::info('RAG: Contextual retrieval indexing completed', [
             'document_type' => $documentType,
@@ -1494,7 +1880,7 @@ class RAGService
             $params[] = $sourceId;
         }
 
-        $whereClause = empty($conditions) ? '' : 'WHERE ' . implode(' AND ', $conditions);
+        $whereClause = empty($conditions) ? '' : 'WHERE '.implode(' AND ', $conditions);
         $sql = "DELETE FROM rag_documents {$whereClause}";
 
         return DB::connection('pgsql_rag')->delete($sql, $params);
@@ -1506,8 +1892,8 @@ class RAGService
      * Used for deep RAG retrieval where we need complete document content
      * rather than just previews for AI synthesis.
      *
-     * @param array $ids Document IDs to retrieve
-     * @param int|null $maxContentLength Optional limit per document (null = unlimited)
+     * @param  array  $ids  Document IDs to retrieve
+     * @param  int|null  $maxContentLength  Optional limit per document (null = unlimited)
      * @return array Documents with full content
      */
     public function getFullDocuments(array $ids, ?int $maxContentLength = null): array
@@ -1531,7 +1917,7 @@ class RAGService
         if ($maxContentLength !== null) {
             foreach ($documents as $doc) {
                 if (strlen($doc->content) > $maxContentLength) {
-                    $doc->content = substr($doc->content, 0, $maxContentLength) . "\n\n[... content truncated at {$maxContentLength} chars ...]";
+                    $doc->content = substr($doc->content, 0, $maxContentLength)."\n\n[... content truncated at {$maxContentLength} chars ...]";
                 }
             }
         }
@@ -1553,22 +1939,78 @@ class RAGService
     }
 
     /**
+     * Read an exact, character-addressed window from one RAG document.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function readDocumentWindow(int $documentId, int $offset = 0, int $maxChars = 4000): ?array
+    {
+        if ($documentId < 1) {
+            throw new \InvalidArgumentException('document_id must be a positive integer.');
+        }
+
+        if ($offset < 0) {
+            throw new \InvalidArgumentException('offset must be zero or greater.');
+        }
+
+        if ($maxChars < 1 || $maxChars > 20000) {
+            throw new \InvalidArgumentException('max_chars must be between 1 and 20000.');
+        }
+
+        $documents = DB::connection('pgsql_rag')->select(
+            'SELECT id, document_type, title, content FROM rag_documents WHERE id = ? LIMIT 1',
+            [$documentId]
+        );
+
+        if ($documents === []) {
+            return null;
+        }
+
+        $document = $documents[0];
+        $content = (string) ($document->content ?? '');
+        $totalChars = mb_strlen($content, 'UTF-8');
+
+        if ($offset > $totalChars) {
+            throw new \InvalidArgumentException('offset cannot exceed total document characters.');
+        }
+
+        $window = $offset < $totalChars
+            ? mb_substr($content, $offset, $maxChars, 'UTF-8')
+            : '';
+        $endOffset = min($offset + mb_strlen($window, 'UTF-8'), $totalChars);
+        $hasMore = $endOffset < $totalChars;
+
+        return [
+            'document_id' => (int) $document->id,
+            'document_ref' => 'RAG-DOC-'.(int) $document->id,
+            'title' => (string) ($document->title ?? 'Untitled'),
+            'type' => (string) ($document->document_type ?? 'unknown'),
+            'offset' => $offset,
+            'end_offset' => $endOffset,
+            'total_chars' => $totalChars,
+            'has_more' => $hasMore,
+            'next_offset' => $hasMore ? $endOffset : null,
+            'content' => $window,
+        ];
+    }
+
+    /**
      * Deep search with full content retrieval
      *
      * Performs semantic search then fetches full content for top results.
      * Designed for AI synthesis tasks that need comprehensive context.
      *
-     * @param string $query Search query
-     * @param int $topN Number of top results to fetch full content for
-     * @param int $maxContentPerDoc Max chars per document (prevents context explosion)
-     * @param string|null $documentType Optional filter by document type
-     * @param bool|string $useHyde Enable HyDE query expansion (true, false, or 'auto')
+     * @param  string  $query  Search query
+     * @param  int  $topN  Number of top results to fetch full content for
+     * @param  int|null  $maxContentPerDoc  Max bytes per document; null preserves complete content
+     * @param  string|null  $documentType  Optional filter by document type
+     * @param  bool|string  $useHyde  Enable HyDE query expansion (true, false, or 'auto')
      * @return array ['results' => search results, 'full_documents' => full content docs]
      */
     public function deepSearch(
         string $query,
         int $topN = 5,
-        int $maxContentPerDoc = 15000,
+        ?int $maxContentPerDoc = 15000,
         ?string $documentType = null,
         bool|string $useHyde = false,
         bool $useRaptor = true,
@@ -1586,26 +2028,27 @@ class RAGService
         bool $securityAudit = false,
         bool $useLazyGraph = false,
         bool $useLongContextRerank = false,
-        bool $useMultimodal = false
+        bool $useMultimodal = false,
+        bool $decomposeQuery = true
     ): array {
         // RAG-12: Adaptive Strategy Selection — override all flags from query classification
         $selectedStrategy = null;
         if ($useAutoStrategy) {
             try {
-                $strategyConfig  = $this->getStrategyService()->selectStrategy($query, $documentType);
+                $strategyConfig = $this->getStrategyService()->selectStrategy($query, $documentType);
                 $selectedStrategy = $strategyConfig['strategy_name'];
-                $useHyde             = $strategyConfig['useHyde'];
-                $useRaptor           = $strategyConfig['useRaptor'];
-                $useGraph            = $strategyConfig['useGraph'];
-                $graphMode           = $strategyConfig['graphMode'];
-                $graphAlpha          = $strategyConfig['graphAlpha'];
-                $useHype             = $strategyConfig['useHype'];
-                $useCrag             = $strategyConfig['useCrag'];
-                $useTemporal         = $strategyConfig['useTemporal'];
-                $useRelevanceGating  = $strategyConfig['useRelevanceGating'];
-                $useColbert          = $strategyConfig['useColbert'];
-                $useIterative        = $strategyConfig['useIterative'];
-            } catch (\Exception $e) {
+                $useHyde = $strategyConfig['useHyde'];
+                $useRaptor = $strategyConfig['useRaptor'];
+                $useGraph = $strategyConfig['useGraph'];
+                $graphMode = $strategyConfig['graphMode'];
+                $graphAlpha = $strategyConfig['graphAlpha'];
+                $useHype = $strategyConfig['useHype'];
+                $useCrag = $strategyConfig['useCrag'];
+                $useTemporal = $strategyConfig['useTemporal'];
+                $useRelevanceGating = $strategyConfig['useRelevanceGating'];
+                $useColbert = $strategyConfig['useColbert'];
+                $useIterative = $strategyConfig['useIterative'];
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: auto strategy selection failed, using caller flags', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1613,7 +2056,8 @@ class RAGService
         }
 
         // RAG-5: Query decomposition — break complex queries into sub-queries for better recall
-        $decomposition = $this->getDecompositionService()->decompose($query);
+        $decomposition = $decomposeQuery ? $this->getDecompositionService()->decompose($query)
+            : ['decomposed' => false, 'sub_queries' => [$query]];
         $subQueries = $decomposition['sub_queries'];
 
         if ($decomposition['decomposed']) {
@@ -1652,10 +2096,10 @@ class RAGService
         if ($useHype) {
             try {
                 $hypeResults = $this->getHyPEService()->search($query, $topN * 2, $documentType);
-                if (!empty($hypeResults)) {
+                if (! empty($hypeResults)) {
                     $searchResults = $this->mergeResultsRRF($searchResults, $hypeResults, $topN * 2);
                 }
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: HyPE search failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1665,15 +2109,15 @@ class RAGService
         // RAG-2: CRAG — evaluate retrieval quality, web fallback on poor results
         $cragEvaluation = null;
         $cragWebResults = [];
-        if ($useCrag && !empty($searchResults)) {
+        if ($useCrag && ! empty($searchResults)) {
             try {
-                $cragService    = $this->getCRAGService();
+                $cragService = $this->getCRAGService();
                 $cragEvaluation = $cragService->evaluateRetrieval($query, $searchResults);
                 if ($cragEvaluation['web_fallback_needed']) {
                     $cragWebResults = $cragService->webFallback($query, $topN);
-                    $searchResults  = $cragService->merge($searchResults, $cragWebResults, $cragEvaluation['classification']);
+                    $searchResults = $cragService->merge($searchResults, $cragWebResults, $cragEvaluation['classification']);
                 }
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: CRAG evaluation failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1682,12 +2126,12 @@ class RAGService
 
         // RAG-6: Relevance Gating — per-document LLM relevance filter before RAPTOR/rerank
         $relevanceFilteredCount = 0;
-        if ($useRelevanceGating && !empty($searchResults)) {
+        if ($useRelevanceGating && ! empty($searchResults)) {
             try {
-                $gated                  = $this->getRelevanceGatingService()->gateResults($query, $searchResults);
-                $searchResults          = $gated['results'];
+                $gated = $this->getRelevanceGatingService()->gateResults($query, $searchResults);
+                $searchResults = $gated['results'];
                 $relevanceFilteredCount = $gated['filtered_count'];
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: relevance gating failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1695,18 +2139,18 @@ class RAGService
         }
 
         // RAG-8: Iterative retrieval — fill knowledge gaps via CoRAG-style gap queries
-        $iterativeRounds    = 0;
+        $iterativeRounds = 0;
         $iterativeGapQueries = [];
-        if ($useIterative && !empty($searchResults)) {
+        if ($useIterative && ! empty($searchResults)) {
             try {
-                $searchFn = fn(string $subQuery) => $this->search(
+                $searchFn = fn (string $subQuery) => $this->search(
                     $subQuery, $topN, $documentType, $useHyde, $agentId
                 );
-                $iterResult          = $this->getIterativeService()->retrieve($query, $searchResults, $searchFn);
-                $searchResults        = $iterResult['results'];
-                $iterativeRounds      = $iterResult['rounds_used'];
-                $iterativeGapQueries  = $iterResult['gap_queries'];
-            } catch (\Exception $e) {
+                $iterResult = $this->getIterativeService()->retrieve($query, $searchResults, $searchFn);
+                $searchResults = $iterResult['results'];
+                $iterativeRounds = $iterResult['rounds_used'];
+                $iterativeGapQueries = $iterResult['gap_queries'];
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: iterative retrieval failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1745,8 +2189,8 @@ class RAGService
                 unset($result);
 
                 // Re-sort by boosted similarity
-                usort($searchResults, fn($a, $b) => ($b['similarity'] ?? 0) <=> ($a['similarity'] ?? 0));
-            } catch (\Exception $e) {
+                usort($searchResults, fn ($a, $b) => ($b['similarity'] ?? 0) <=> ($a['similarity'] ?? 0));
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: RAPTOR search failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1754,15 +2198,15 @@ class RAGService
         }
 
         // GR-9: LazyGraphRAG — on-the-fly mini-KG from retrieved docs
-        $lazyGraphEnabled  = false;
+        $lazyGraphEnabled = false;
         $lazyBridgeEntities = [];
-        if ($useLazyGraph && !empty($searchResults)) {
+        if ($useLazyGraph && ! empty($searchResults)) {
             try {
                 $lazyOut = $this->getLazyGraphService()->augment($query, $searchResults);
-                $searchResults      = $lazyOut['results'];
+                $searchResults = $lazyOut['results'];
                 $lazyBridgeEntities = $lazyOut['bridge_entities'];
-                $lazyGraphEnabled   = true;
-            } catch (\Exception $e) {
+                $lazyGraphEnabled = true;
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: lazy graph augment failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1774,23 +2218,23 @@ class RAGService
         if ($useMultimodal) {
             try {
                 $visualOut = $this->getMultimodalService()->searchVisual($query, $topN);
-                if (($visualOut['success'] ?? false) && !empty($visualOut['results'])) {
+                if (($visualOut['success'] ?? false) && ! empty($visualOut['results'])) {
                     // Merge: deduplicate by document ID, keep highest similarity
                     $existingIds = array_flip(array_map(
-                        fn($r) => $r['document']->id ?? 0,
+                        fn ($r) => $r['document']->id ?? 0,
                         $searchResults
                     ));
                     foreach ($visualOut['results'] as $vr) {
                         $vid = $vr['document']->id ?? 0;
-                        if (!isset($existingIds[$vid])) {
-                            $vr['search_type']   = 'visual';
-                            $searchResults[]     = $vr;
+                        if (! isset($existingIds[$vid])) {
+                            $vr['search_type'] = 'visual';
+                            $searchResults[] = $vr;
                             $multimodalResults[] = $vr;
-                            $existingIds[$vid]   = true;
+                            $existingIds[$vid] = true;
                         }
                     }
                 }
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: multimodal search failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1809,7 +2253,7 @@ class RAGService
                     default => $graphSearch->localSearch($query, $topN * 2),
                 };
 
-                if (!empty($graphRaw)) {
+                if (! empty($graphRaw)) {
                     // Fuse vector + graph results via RRF
                     $searchResults = $this->getGraphFusionService()->fuse(
                         $searchResults,
@@ -1819,14 +2263,14 @@ class RAGService
                     );
 
                     // Capture graph metadata for response
-                    $graphResults = array_map(fn($r) => [
+                    $graphResults = array_map(fn ($r) => [
                         'graph_source' => $r['graph_source'] ?? $graphMode,
                         'similarity' => $r['similarity'] ?? 0,
                         'entities' => $r['graph_entities'] ?? [],
                         'report' => $r['report'] ?? null,
                     ], $graphRaw);
                 }
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: graph search failed, continuing without', [
                     'error' => $e->getMessage(),
                     'graph_mode' => $graphMode,
@@ -1844,27 +2288,6 @@ class RAGService
             ];
         }
 
-        // Get IDs of top N results — skip web pseudo-docs (id=0)
-        $topSlice = array_slice($searchResults, 0, $topN);
-        $topIds   = array_values(array_filter(
-            array_map(fn($r) => $r['document']->id, $topSlice),
-            fn($id) => $id > 0
-        ));
-
-        // Fetch full content for persisted RAG docs
-        $fullDocs = $this->getFullDocuments($topIds, $maxContentPerDoc);
-
-        // Append web pseudo-docs to full_documents (they carry their own content)
-        foreach ($topSlice as $r) {
-            if (($r['document']->id ?? 1) === 0) {
-                $doc = $r['document'];
-                if ($maxContentPerDoc !== null && strlen($doc->content) > $maxContentPerDoc) {
-                    $doc->content = substr($doc->content, 0, $maxContentPerDoc);
-                }
-                $fullDocs[] = $doc;
-            }
-        }
-
         // Apply AI reranking for deep search (high-value queries)
         if (count($searchResults) >= 3) {
             $searchResults = $this->getReranker()->rerank($query, $searchResults, 'ai');
@@ -1874,7 +2297,7 @@ class RAGService
         if ($useColbert && count($searchResults) >= 2) {
             try {
                 $searchResults = $this->getColBERTService()->rerank($query, $searchResults);
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: ColBERT rerank failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1882,7 +2305,7 @@ class RAGService
         }
 
         // Phase 3C: Apply graph centrality boost after reranking
-        if ($useGraph && !empty($graphRaw)) {
+        if ($useGraph && ! empty($graphRaw)) {
             $searchResults = $this->applyGraphBoost($searchResults, $graphRaw);
         }
 
@@ -1891,17 +2314,17 @@ class RAGService
         if ($useTemporal) {
             $temporalService = $this->getTemporalService();
             if ($temporalService->isTemporalQuery($query)) {
-                $searchResults   = $temporalService->applyDecay($searchResults);
+                $searchResults = $temporalService->applyDecay($searchResults);
                 $temporalApplied = true;
             }
         }
 
         // RAG-13: Security audit — anomaly detection (advisory, never filters results)
         $securityAuditResult = null;
-        if ($securityAudit && !empty($searchResults)) {
+        if ($securityAudit && ! empty($searchResults)) {
             try {
                 $securityAuditResult = $this->getSecurityService()->auditResults($query, $searchResults);
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: security audit failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
@@ -1910,22 +2333,59 @@ class RAGService
 
         // RAG-16: Long Context Reranking — sliding-window score for long docs
         $longContextApplied = false;
-        if ($useLongContextRerank && !empty($searchResults)) {
+        if ($useLongContextRerank && ! empty($searchResults)) {
             try {
-                $searchResults      = $this->getLongContextRerankService()->rerank($query, $searchResults);
+                $searchResults = $this->getLongContextRerankService()->rerank($query, $searchResults);
                 $longContextApplied = true;
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 Log::warning('RAG deep search: long-context rerank failed, continuing without', [
                     'error' => $e->getMessage(),
                 ]);
             }
         }
 
+        // Materialize full context only after every ranking stage. Fetching it
+        // earlier can omit a document promoted into the final top N and retain
+        // a demoted document that no longer belongs in the prompt context.
+        foreach ($searchResults as $index => &$result) {
+            $result['retrieval_rank'] = $index + 1;
+        }
+        unset($result);
+
+        $topSlice = array_slice($searchResults, 0, $topN);
+        $topIds = array_values(array_filter(
+            array_map(fn ($result) => $result['document']->id, $topSlice),
+            fn ($id) => $id > 0
+        ));
+        $fullDocs = $this->getFullDocuments($topIds, $maxContentPerDoc);
+
+        foreach ($topSlice as $result) {
+            if (($result['document']->id ?? 1) !== 0) {
+                continue;
+            }
+
+            $document = clone $result['document'];
+            if ($maxContentPerDoc !== null && strlen($document->content) > $maxContentPerDoc) {
+                $document->content = substr($document->content, 0, $maxContentPerDoc)
+                    ."\n\n[... content truncated at {$maxContentPerDoc} chars ...]";
+            }
+            $fullDocs[] = $document;
+        }
+
+        $contextOrder = array_map(
+            fn (array $result) => [
+                'document_id' => $result['document']->id ?? 0,
+                'retrieval_rank' => $result['retrieval_rank'],
+                'context_position' => $result['context_position'],
+            ],
+            $this->getContextPositioningService()->position($topSlice)
+        );
+
         // Calculate total content size
-        $totalChars = array_sum(array_map(fn($d) => strlen($d->content), $fullDocs));
+        $totalChars = array_sum(array_map(fn ($d) => strlen($d->content), $fullDocs));
 
         Log::info('RAG deep search completed', [
-            'query' => substr($query, 0, 100),
+            'query_chars' => mb_strlen($query),
             'candidates' => count($searchResults),
             'full_docs_fetched' => count($fullDocs),
             'total_content_chars' => $totalChars,
@@ -1936,43 +2396,45 @@ class RAGService
             'graph_enabled' => $useGraph,
             'graph_mode' => $graphMode,
             'graph_matches' => count($graphResults),
-            'graph_boosted' => $useGraph && !empty($graphRaw),
-            'hype_enabled'        => $useHype,
-            'hype_matches'        => count($hypeResults),
-            'crag_enabled'        => $useCrag,
+            'graph_boosted' => $useGraph && ! empty($graphRaw),
+            'hype_enabled' => $useHype,
+            'hype_matches' => count($hypeResults),
+            'crag_enabled' => $useCrag,
             'crag_classification' => $cragEvaluation['classification'] ?? null,
-            'crag_web_count'      => count($cragWebResults),
-            'temporal_enabled'        => $useTemporal,
-            'temporal_applied'        => $temporalApplied,
+            'crag_web_count' => count($cragWebResults),
+            'temporal_enabled' => $useTemporal,
+            'temporal_applied' => $temporalApplied,
             'relevance_gating_enabled' => $useRelevanceGating,
-            'relevance_filtered'      => $relevanceFilteredCount,
-            'colbert_enabled'         => $useColbert,
-            'iterative_enabled'       => $useIterative,
-            'iterative_rounds'        => $iterativeRounds,
-            'auto_strategy'           => $selectedStrategy,
-            'security_audit_enabled'  => $securityAudit,
-            'security_risk_score'     => $securityAuditResult['risk_score'] ?? null,
-            'long_context_rerank'     => $longContextApplied,
-            'multimodal_enabled'      => $useMultimodal,
-            'multimodal_results'      => count($multimodalResults),
+            'relevance_filtered' => $relevanceFilteredCount,
+            'colbert_enabled' => $useColbert,
+            'iterative_enabled' => $useIterative,
+            'iterative_rounds' => $iterativeRounds,
+            'auto_strategy' => $selectedStrategy,
+            'security_audit_enabled' => $securityAudit,
+            'security_risk_score' => $securityAuditResult['risk_score'] ?? null,
+            'long_context_rerank' => $longContextApplied,
+            'multimodal_enabled' => $useMultimodal,
+            'multimodal_results' => count($multimodalResults),
+            'context_positioning' => true,
         ]);
 
         return [
-            'results'            => $searchResults,
-            'full_documents'     => $fullDocs,
-            'total_chars'        => $totalChars,
-            'raptor_results'     => $raptorResults,
-            'graph_results'      => $graphResults,
-            'hype_results'       => $hypeResults,
-            'crag_web_results'         => $cragWebResults,
-            'crag_classification'      => $cragEvaluation['classification'] ?? null,
+            'results' => $searchResults,
+            'full_documents' => $fullDocs,
+            'total_chars' => $totalChars,
+            'raptor_results' => $raptorResults,
+            'graph_results' => $graphResults,
+            'hype_results' => $hypeResults,
+            'crag_web_results' => $cragWebResults,
+            'crag_classification' => $cragEvaluation['classification'] ?? null,
             'relevance_filtered_count' => $relevanceFilteredCount,
-            'iterative_gap_queries'   => $iterativeGapQueries,
-            'security_audit'          => $securityAuditResult,
-            'lazy_graph_enabled'      => $lazyGraphEnabled,
-            'lazy_graph_bridges'      => $lazyBridgeEntities,
-            'long_context_rerank'     => $longContextApplied,
-            'multimodal_results'      => $multimodalResults,
+            'iterative_gap_queries' => $iterativeGapQueries,
+            'security_audit' => $securityAuditResult,
+            'lazy_graph_enabled' => $lazyGraphEnabled,
+            'lazy_graph_bridges' => $lazyBridgeEntities,
+            'long_context_rerank' => $longContextApplied,
+            'multimodal_results' => $multimodalResults,
+            'context_order' => $contextOrder,
         ];
     }
 
@@ -1986,7 +2448,7 @@ class RAGService
         // Build document_id → graph signals map from raw graph results
         $graphDocMap = [];
         foreach ($graphRaw as $gr) {
-            if (!isset($gr['document']) || !$gr['document']) {
+            if (! isset($gr['document']) || ! $gr['document']) {
                 continue;
             }
             $docId = $gr['document']->id;
@@ -2010,7 +2472,7 @@ class RAGService
         }
 
         $centralityMap = [];
-        if (!empty($allEntityNames)) {
+        if (! empty($allEntityNames)) {
             $names = array_keys($allEntityNames);
             $placeholders = implode(',', array_fill(0, count($names), '?'));
 
@@ -2035,11 +2497,11 @@ class RAGService
 
         // Apply boost to each result that appeared in graph results
         foreach ($results as &$result) {
-            if (!isset($result['document'])) {
+            if (! isset($result['document'])) {
                 continue;
             }
             $docId = $result['document']->id;
-            if (!isset($graphDocMap[$docId])) {
+            if (! isset($graphDocMap[$docId])) {
                 continue;
             }
 
@@ -2078,6 +2540,7 @@ class RAGService
         usort($results, function ($a, $b) {
             $scoreA = $a['rerank_score'] ?? $a['similarity'] ?? 0;
             $scoreB = $b['rerank_score'] ?? $b['similarity'] ?? 0;
+
             return $scoreB <=> $scoreA;
         });
 
@@ -2087,13 +2550,13 @@ class RAGService
     /**
      * Index a document and build RAPTOR hierarchy in one call
      *
-     * @param string $documentType Type of document
-     * @param string $content Document content
-     * @param string|null $title Document title
-     * @param array|null $metadata Additional metadata
-     * @param string|int|null $sourceId Source identifier
-     * @param string|null $sourceType Source type
-     * @param string|null $designation Document designation
+     * @param  string  $documentType  Type of document
+     * @param  string  $content  Document content
+     * @param  string|null  $title  Document title
+     * @param  array|null  $metadata  Additional metadata
+     * @param  string|int|null  $sourceId  Source identifier
+     * @param  string|null  $sourceType  Source type
+     * @param  string|null  $designation  Document designation
      * @return array ['document' => RAGDocument, 'raptor' => hierarchy stats]
      */
     public function indexDocumentWithRAPTOR(
@@ -2113,7 +2576,7 @@ class RAGService
         $raptorStats = null;
         try {
             $raptorStats = $this->getRaptorService()->buildHierarchy($document->id);
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('RAPTOR hierarchy build failed after indexing', [
                 'document_id' => $document->id,
                 'error' => $e->getMessage(),
@@ -2132,11 +2595,11 @@ class RAGService
     public function getStats(): array
     {
         // Get total count
-        $sql = "SELECT COUNT(*) as count FROM rag_documents";
+        $sql = 'SELECT COUNT(*) as count FROM rag_documents';
         $totalDocuments = DB::connection('pgsql_rag')->select($sql)[0]->count ?? 0;
 
         // Get count by document type
-        $sql = "SELECT document_type, COUNT(*) as count FROM rag_documents GROUP BY document_type";
+        $sql = 'SELECT document_type, COUNT(*) as count FROM rag_documents GROUP BY document_type';
         $byTypeResults = DB::connection('pgsql_rag')->select($sql);
         $byType = [];
         foreach ($byTypeResults as $row) {
@@ -2144,7 +2607,7 @@ class RAGService
         }
 
         // Get count by designation
-        $sql = "SELECT designation, COUNT(*) as count FROM rag_documents GROUP BY designation";
+        $sql = 'SELECT designation, COUNT(*) as count FROM rag_documents GROUP BY designation';
         $byDesignationResults = DB::connection('pgsql_rag')->select($sql);
         $byDesignation = [];
         foreach ($byDesignationResults as $row) {
@@ -2152,11 +2615,11 @@ class RAGService
         }
 
         // Get oldest created_at
-        $sql = "SELECT created_at FROM rag_documents ORDER BY created_at ASC LIMIT 1";
+        $sql = 'SELECT created_at FROM rag_documents ORDER BY created_at ASC LIMIT 1';
         $oldest = DB::connection('pgsql_rag')->select($sql)[0]->created_at ?? null;
 
         // Get newest created_at
-        $sql = "SELECT created_at FROM rag_documents ORDER BY created_at DESC LIMIT 1";
+        $sql = 'SELECT created_at FROM rag_documents ORDER BY created_at DESC LIMIT 1';
         $newest = DB::connection('pgsql_rag')->select($sql)[0]->created_at ?? null;
 
         return [

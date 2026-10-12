@@ -32,15 +32,15 @@ class FactCheckRunCommand extends Command
     private function showStats(): int
     {
         $claimCount = DB::connection('pgsql_rag')->selectOne(
-            "SELECT COUNT(*) AS total FROM claims"
+            'SELECT COUNT(*) AS total FROM claims'
         );
 
         $verdictCount = DB::connection('pgsql_rag')->selectOne(
-            "SELECT COUNT(*) AS total FROM verdicts"
+            'SELECT COUNT(*) AS total FROM verdicts'
         );
 
         $verdictsByLabel = DB::connection('pgsql_rag')->select(
-            "SELECT verdict, COUNT(*) AS cnt FROM verdicts GROUP BY verdict ORDER BY cnt DESC"
+            'SELECT verdict, COUNT(*) AS cnt FROM verdicts GROUP BY verdict ORDER BY cnt DESC'
         );
 
         $labelCounts = [];
@@ -49,10 +49,10 @@ class FactCheckRunCommand extends Command
         }
 
         $this->table(['Metric', 'Count'], [
-            ['Total Claims',  (int) ($claimCount->total  ?? 0)],
+            ['Total Claims',  (int) ($claimCount->total ?? 0)],
             ['Verdicts',      (int) ($verdictCount->total ?? 0)],
-            ['Supported',     $labelCounts['supported']    ?? 0],
-            ['Refuted',       $labelCounts['refuted']      ?? 0],
+            ['Supported',     $labelCounts['supported'] ?? 0],
+            ['Refuted',       $labelCounts['refuted'] ?? 0],
             ['Inconclusive',  $labelCounts['inconclusive'] ?? 0],
         ]);
 
@@ -62,17 +62,19 @@ class FactCheckRunCommand extends Command
     private function factCheckSingle(int $resultId): int
     {
         $row = DB::connection('pgsql_rag')->selectOne(
-            "SELECT id, ai_output FROM research_results WHERE id = ?",
+            'SELECT id, ai_output FROM research_results WHERE id = ?',
             [$resultId]
         );
 
-        if (!$row) {
+        if (! $row) {
             $this->error("research_results ID {$resultId} not found.");
+
             return Command::FAILURE;
         }
 
         if (empty($row->ai_output)) {
             $this->warn("Result {$resultId} has no ai_output — skipping.");
+
             return Command::FAILURE;
         }
 
@@ -80,6 +82,7 @@ class FactCheckRunCommand extends Command
         $this->processResult($row);
 
         $this->line('[ITEMS_PROCESSED:1]');
+
         return Command::SUCCESS;
     }
 
@@ -99,10 +102,11 @@ class FactCheckRunCommand extends Command
         if (empty($rows)) {
             $this->info('No approved research results pending fact-check.');
             $this->line('[ITEMS_PROCESSED:0]');
+
             return Command::SUCCESS;
         }
 
-        $this->info('Fact-checking ' . count($rows) . ' result(s)...');
+        $this->info('Fact-checking '.count($rows).' result(s)...');
 
         $processed = 0;
         foreach ($rows as $row) {
@@ -111,6 +115,7 @@ class FactCheckRunCommand extends Command
         }
 
         $this->line("[ITEMS_PROCESSED:{$processed}]");
+
         return Command::SUCCESS;
     }
 
@@ -120,20 +125,20 @@ class FactCheckRunCommand extends Command
             $result = app(FactCheckPipelineService::class)->run($row->ai_output, ['persist' => true]);
 
             $claimCount = count($result['claims'] ?? []);
-            $success    = $result['success'] ?? false;
+            $success = $result['success'] ?? false;
 
             $status = $success ? 'ok' : 'partial';
             $this->line("  Result #{$row->id}: {$status}, {$claimCount} claim(s) extracted.");
 
-            Log::info("factcheck:run — result #{$row->id} processed, claims={$claimCount}, success=" . ($success ? 'true' : 'false'));
+            Log::info("factcheck:run — result #{$row->id} processed, claims={$claimCount}, success=".($success ? 'true' : 'false'));
         } catch (\Throwable $e) {
-            $this->warn("  Result #{$row->id}: pipeline error — " . $e->getMessage());
-            Log::warning("factcheck:run — result #{$row->id} failed: " . $e->getMessage());
+            $this->warn("  Result #{$row->id}: pipeline error — ".$e->getMessage());
+            Log::warning('factcheck:run result failed', ['result_id' => $row->id, 'exception' => $e]);
         }
 
         // Always stamp fact_checked_at so broken content is not retried on the next run.
         DB::connection('pgsql_rag')->update(
-            "UPDATE research_results SET fact_checked_at = NOW() WHERE id = ?",
+            'UPDATE research_results SET fact_checked_at = NOW() WHERE id = ?',
             [$row->id]
         );
     }

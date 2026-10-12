@@ -1,0 +1,38 @@
+{
+  "schema": "plos.offline_controller.topology_example.v1",
+  "fictional": true,
+  "hosts": [
+    {
+      "host_id": "example-host-a",
+      "controller_url": "http://198.51.100.10:11440",
+      "manifest": "example-host-a.json",
+      "controller_enabled": false,
+      "token_file_env": "PLOS_EXAMPLE_CONTROLLER_TOKEN_FILE",
+      "resource_group": "example-host-a-serial"
+    },
+    {
+      "host_id": "example-host-b",
+      "controller_url": "http://198.51.100.11:11440",
+      "manifest": "example-host-b.json",
+      "controller_enabled": false,
+      "token_file_env": "PLOS_EXAMPLE_CONTROLLER_TOKEN_FILE",
+      "resource_group": "example-host-b-serial"
+    }
+  ],
+  "routes": [
+    {
+      "role": "standard",
+      "provider": "example-local-a",
+      "host_id": "example-host-a",
+      "target": "example_chat_a",
+      "enabled": false
+    },
+    {
+      "role": "embedding",
+      "provider": "example-local-b",
+      "host_id": "example-host-b",
+      "target": "example_embed_b",
+      "enabled": false
+    }
+  ]
+}

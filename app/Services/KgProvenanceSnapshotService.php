@@ -12,6 +12,12 @@ class KgProvenanceSnapshotService
     public const PIPELINE = 'kg_provenance';
 
     private const ISSUE_KEYS = [
+        'invalid_valid_time_ranges',
+        'transaction_time_inversions',
+        'active_superseded_triples',
+        'invalid_temporal_confidence',
+        'supersession_cycle_members',
+        'superseded_triples_without_history',
         'triples_missing_source_document_id',
         'triples_orphan_source_document',
         'active_triples_missing_entity_links',

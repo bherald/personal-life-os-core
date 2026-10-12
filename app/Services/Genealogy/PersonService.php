@@ -3,6 +3,7 @@
 namespace App\Services\Genealogy;
 
 use App\Controllers\NotificationController;
+use App\Services\AgentOutputQualityGateService;
 use App\Services\Genealogy\Support\ProximityNameMatcher;
 use App\Services\Genealogy\Support\TemporalProximityChecker;
 use Illuminate\Support\Facades\Cache;
@@ -939,6 +940,10 @@ class PersonService
             }
 
             if (ProximityNameMatcher::matchesFullName($localContent['content'], $person->given_name, $person->surname)) {
+                if ($this->isLowQualityGenericSearchSource($proposal, $person, $localContent['content'])) {
+                    return 'Local source media contains the shared name but lacks a date, place, relative/FAN, occupation, or source-chain identity bridge';
+                }
+
                 return null;
             }
 
@@ -975,6 +980,10 @@ class PersonService
         }
 
         if (ProximityNameMatcher::matchesFullName($content, $person->given_name, $person->surname)) {
+            if ($this->isLowQualityGenericSearchSource($proposal, $person, $content)) {
+                return 'Fetched source contains the shared name but lacks a date, place, relative/FAN, occupation, or source-chain identity bridge';
+            }
+
             return null;
         }
 
@@ -991,6 +1000,25 @@ class PersonService
             $person->given_name,
             $person->surname
         );
+    }
+
+    private function isLowQualityGenericSearchSource(object $proposal, object $person, string $sourceText): bool
+    {
+        $evidenceSources = $proposal->evidence_sources ?? [];
+        if (is_string($evidenceSources)) {
+            $decoded = json_decode($evidenceSources, true);
+            $evidenceSources = is_array($decoded) ? $decoded : [$evidenceSources];
+        } elseif (! is_array($evidenceSources)) {
+            $evidenceSources = [$evidenceSources];
+        }
+
+        return app(AgentOutputQualityGateService::class)->isLowQualityGenealogySourceSearchProposal([
+            'change_type' => 'source_add',
+            'proposed_value' => (string) ($proposal->proposed_value ?? ''),
+            'evidence_summary' => (string) ($proposal->evidence_summary ?? ''),
+            'evidence_sources' => $evidenceSources,
+            'extracted_text' => $sourceText,
+        ], trim((string) $person->given_name.' '.(string) $person->surname));
     }
 
     /**
@@ -2008,10 +2036,10 @@ class PersonService
                         ];
                     }
                     $treeId = $this->getPersonTreeId((int) $proposal->person_id);
-                    // Skip if this service+external_id already exists
+                    // Skip only a matching record in this tree.
                     $existing = DB::selectOne(
-                        'SELECT id FROM genealogy_external_records WHERE service_type = ? AND external_id = ? LIMIT 1',
-                        [$data['service_type'], $data['external_id']]
+                        'SELECT id FROM genealogy_external_records WHERE tree_id = ? AND service_type = ? AND external_id = ? LIMIT 1',
+                        [$treeId, $data['service_type'], $data['external_id']]
                     );
                     if ($existing) {
                         Log::info('external_record_link: already exists', [

@@ -32,18 +32,15 @@ class ContactsSyncRAGJob implements ShouldQueue
         // Then run full sync + index
         $results = $service->syncAndIndex();
 
-        $summary = sprintf(
-            'Contacts sync: fetched=%d, inserted=%d, updated=%d, unchanged=%d | RAG: indexed=%d, skipped=%d, reindexed=%d',
-            $results['sync']['fetched'],
-            $results['sync']['inserted'],
-            $results['sync']['updated'],
-            $results['sync']['unchanged'],
-            $results['rag']['indexed'],
-            $results['rag']['skipped'],
-            $reindex['marked_for_reindex']
-        );
-
-        Log::info("ContactsSyncRAGJob: {$summary}");
+        Log::info('ContactsSyncRAGJob completed', [
+            'fetched' => $results['sync']['fetched'],
+            'inserted' => $results['sync']['inserted'],
+            'updated' => $results['sync']['updated'],
+            'unchanged' => $results['sync']['unchanged'],
+            'rag_indexed' => $results['rag']['indexed'],
+            'rag_skipped' => $results['rag']['skipped'],
+            'marked_for_reindex' => $reindex['marked_for_reindex'],
+        ]);
 
         // Emit items_processed for ScheduledJobService
         $total = ($results['sync']['inserted'] ?? 0) + ($results['sync']['updated'] ?? 0) + ($results['rag']['indexed'] ?? 0);

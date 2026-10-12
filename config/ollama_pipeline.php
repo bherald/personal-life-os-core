@@ -1,6 +1,14 @@
 <?php
 
 return [
+    // Operator-enforced lossless prompt policy. No environment override.
+    'compression_enabled' => false,
+    'compression_stage_names' => ['compress'],
+    'compression_task_classes' => [
+        'search_log_compression',
+        'review_summary_cleanup',
+    ],
+
     'defaults' => [
         'chunk_chars' => 12000,
         'max_pages_per_chunk' => 2,

@@ -1,5 +1,5 @@
 <template>
-  <OpsPageWrapper title="KNOWLEDGE HUB" subtitle="Unified Search & Browse" sectionCode="KB" colorScheme="gold" :showSidebar="false">
+  <OpsPageWrapper title="Knowledge Hub" subtitle="Unified Search & Browse" sectionCode="KB" colorScheme="gold" :showSidebar="false">
     <template #header-actions>
       <button
         v-if="tabUsesSidebar"
@@ -32,12 +32,12 @@
 
       <!-- Review Mode: Research Hub content -->
       <div v-else-if="sourceTab === 'review'" class="flex-1 overflow-y-auto">
-        <ResearchHubContent :embedded="true" />
+        <router-link to="/reviews" class="btn-primary inline-flex m-4">Open Reviews →</router-link>
       </div>
 
       <!-- Faces Mode -->
       <div v-else-if="sourceTab === 'faces'" class="flex-1 overflow-y-auto">
-        <FacesView :embedded="true" />
+        <FacesView :embedded="true" @counts-updated="loadKnowledgeCounts" />
       </div>
 
       <!-- Agents Mode: Agent Reports Dashboard -->
@@ -106,7 +106,7 @@
                   :totalFiles="browseData.total_files"
                   @navigate="onBreadcrumbNav"
                 />
-                <div class="flex items-center gap-1 flex-shrink-0">
+                <div class="flex items-center gap-1 shrink-0">
                   <!-- View mode toggle -->
                   <button @click="viewMode = 'grid'" class="p-1.5 rounded transition-colors" :class="viewMode === 'grid' ? 'bg-ops-gold/20 text-ops-gold' : 'text-ops-text-muted hover:text-ops-peach'" title="Grid view">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/></svg>
@@ -200,7 +200,6 @@ import MediaLightbox from '../components/media/MediaLightbox.vue'
 import { defineAsyncComponent } from 'vue'
 
 const AIHubView = defineAsyncComponent(() => import('./AIHubView.vue'))
-const ResearchHubContent = defineAsyncComponent(() => import('./ResearchHubView.vue'))
 const AgentReportsView = defineAsyncComponent(() => import('./AgentReportsView.vue'))
 const FacesView = defineAsyncComponent(() => import('./FacesView.vue'))
 const KnowledgeGraphExplorer = defineAsyncComponent(() => import('../components/knowledge/KnowledgeGraphExplorer.vue'))
@@ -252,14 +251,18 @@ const isBrowsing = computed(() => browseFolder.value !== null)
 const emptyTitle = computed(() => query.value && query.value !== '*' ? 'No results found' : 'No content')
 const emptySubtext = computed(() => query.value && query.value !== '*' ? `No matches for "${query.value}"` : 'No items found in this category')
 
-const pendingReviewCount = ref(null)
+const knowledgeTabCounts = ref({ review: null, faces: null })
+
+function tabCount(value) {
+  const count = Number(value)
+  return Number.isFinite(count) ? count : undefined
+}
 
 const sourceTabs = computed(() => [
   { label: 'All', value: 'all' },
   { label: 'Files', value: 'files' },
   { label: 'Media', value: 'media' },
-  { label: 'Faces', value: 'faces' },
-  { label: 'Review', value: 'review', count: pendingReviewCount.value || undefined },
+  { label: 'Faces', value: 'faces', count: tabCount(knowledgeTabCounts.value.faces) },
   { label: 'Graph', value: 'graph' },
   { label: 'Agents', value: 'agents' },
   { label: 'AI', value: 'ai' },
@@ -637,6 +640,10 @@ function goToFaces() {
 }
 
 function refresh() {
+  if (sourceTab.value === 'review' || sourceTab.value === 'faces') {
+    loadKnowledgeCounts()
+    return
+  }
   if (isBrowsing.value) {
     browseTo(browseFolder.value)
   } else if (hasSearched.value) {
@@ -647,11 +654,31 @@ function refresh() {
 }
 
 async function loadReviewCount() {
+  await loadKnowledgeCounts()
+}
+
+async function loadKnowledgeCounts() {
   try {
-    const { data } = await axios.get('/api/research-hub/stats')
-    pendingReviewCount.value = data.reviews?._total || 0
+    const [reviewResult, mediaResult] = await Promise.allSettled([
+      axios.get('/api/research-hub/stats'),
+      axios.get('/api/media/stats'),
+    ])
+
+    const nextCounts = { ...knowledgeTabCounts.value }
+
+    if (reviewResult.status === 'fulfilled') {
+      const data = reviewResult.value.data || {}
+      nextCounts.review = Number(data.visible_total_pending ?? data.visible_reviews?._total ?? data.total_pending ?? data.reviews?._total ?? 0)
+    }
+
+    if (mediaResult.status === 'fulfilled') {
+      const data = mediaResult.value.data?.data || {}
+      nextCounts.faces = Number(data.pending_review ?? 0)
+    }
+
+    knowledgeTabCounts.value = nextCounts
   } catch (err) {
-    // Non-critical, badge just won't show
+    // Non-critical, badges just won't show
   }
 }
 
@@ -681,6 +708,7 @@ function updateUrl() {
 
 function restoreFromUrl() {
   const q = route.query
+  if (q.source === 'faces' && (q.face_tab === 'unidentified' || q.tab === 'unidentified')) { router.replace({ path: '/reviews', query: { mode: 'photos', ...(typeof q.ref === 'string' && /^face:[1-9]\d*$/.test(q.ref) ? { ref: q.ref } : {}) } }); return }
   if (q.q) { query.value = q.q; hasSearched.value = true }
   if (q.source) sourceTab.value = q.source
   if (q.year) filters.value.year = q.year
@@ -689,6 +717,7 @@ function restoreFromUrl() {
 
 // Watchers
 watch(sourceTab, (newTab) => {
+  if (newTab === 'review') { router.push('/reviews'); return }
   if (newTab === 'ai' || newTab === 'review' || newTab === 'agents' || newTab === 'faces') return // Embedded views handled separately
   if (isBrowsing.value) return // Don't disrupt browse mode
   // Always browse/search when switching tabs

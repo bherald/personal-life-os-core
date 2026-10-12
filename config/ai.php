@@ -8,6 +8,19 @@
  */
 return [
 
+    // Operator invariant: AI prompt and retrieved-context detail must not be
+    // compressed, summarized, or decomposed before provider execution.
+    // PromptIntegrityPolicy also enforces this in code so env/config overrides
+    // cannot re-enable a lossy transform.
+    'lossy_prompt_transforms_enabled' => false,
+
+    // Shared vision byte validation and the optional registry pixel audit.
+    // Other formats remain unsupported holds, regardless of readable headers.
+    'vision_supported_mime_types' => [
+        'image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp',
+        'image/bmp', 'image/x-ms-bmp', 'image/avif',
+    ],
+
     // Max output tokens for text generation (AIRouter default)
     'default_max_tokens' => (int) env('AI_DEFAULT_MAX_TOKENS', 4096),
 

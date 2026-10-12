@@ -55,16 +55,17 @@ class RoutingReassertCommand extends Command
         $profile = $policy->activeProfile();
         $offlineMode = $policy->isOfflineModeActive();
 
-        // Clean stale pending confirmations — these are guardrail requests
-        // the operator never responded to. After reassertion they should be
-        // expired rather than lingering.
+        // Honor each request's persisted expiry. The configured stale age is
+        // only a fallback for legacy rows that have no expires_at value.
         $staleCleaned = 0;
         if ($this->tableExists('guardrail_confirmations')) {
             $staleCleaned = (int) DB::update(
                 "UPDATE guardrail_confirmations
                  SET status = 'expired'
                  WHERE status = 'pending'
-                   AND created_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)",
+                   AND (expires_at <= NOW()
+                        OR (expires_at IS NULL
+                            AND created_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)))",
                 [$staleMinutes]
             );
         }

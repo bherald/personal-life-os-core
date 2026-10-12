@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+<title>Cedar Valley Ledger — fictional demonstration feed</title><link>https://cedar-valley-ledger.example.test/</link>
+<description>Original synthetic RSS. No real news, community, publisher or live feed.</description>
+<item><title>Footbridge work expected after the market</title><link>https://cedar-valley-ledger.example.test/local/footbridge-window</link><guid isPermaLink="false">demo-ledger-notice-a</guid><description>Fictional planning notice proposes 14:00; no completed closure reported.</description></item>
+<item><title>Community board revises proposed start time</title><link>https://cedar-valley-ledger.example.test/local/footbridge-revision</link><guid isPermaLink="false">demo-ledger-notice-b</guid><description>Fictional revision proposes 16:00 provisionally; prior notice not explicitly cancelled.</description></item>
+</channel></rss>

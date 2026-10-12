@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\SPLADEService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 class SpladeBatchIndexCommand extends Command
 {
@@ -21,9 +22,19 @@ class SpladeBatchIndexCommand extends Command
 
         $limit = (int) $this->option('limit');
 
-        if (!$splade->isAvailable()) {
-            $this->error('SPLADE encoding is not available (no compute instance with splade capability).');
-            return Command::FAILURE;
+        $availability = $splade->availabilityStatus(true);
+        if (($availability['state'] ?? 'unavailable') !== 'available') {
+            $state = (string) ($availability['state'] ?? 'unavailable');
+            $this->warn(sprintf(
+                'SPLADE deferred: state=%s registered=%d recovery_attempted=%d retry=next_schedule',
+                $state,
+                (int) ($availability['registered'] ?? 0),
+                (int) ($availability['recovery_attempted'] ?? 0)
+            ));
+            $this->line('[DEFERRED:compute_capability_unavailable]');
+            $this->line('[ITEMS_PROCESSED:0]');
+
+            return Command::SUCCESS;
         }
 
         $this->info("SPLADE batch indexing (limit: {$limit})...");
@@ -51,7 +62,7 @@ class SpladeBatchIndexCommand extends Command
 
     private function showStats(SPLADEService $splade): int
     {
-        $row = \Illuminate\Support\Facades\DB::connection('pgsql_rag')->selectOne("
+        $row = DB::connection('pgsql_rag')->selectOne('
             SELECT
                 COUNT(*) AS total,
                 COUNT(sparse_embedding) AS indexed,
@@ -59,7 +70,7 @@ class SpladeBatchIndexCommand extends Command
                 COUNT(splade_indexed_at) AS with_timestamp
             FROM rag_documents
             WHERE content IS NOT NULL AND LENGTH(content) > 50
-        ");
+        ');
 
         $this->table(['Metric', 'Value'], [
             ['SPLADE Available', $splade->isAvailable() ? 'Yes' : 'No'],

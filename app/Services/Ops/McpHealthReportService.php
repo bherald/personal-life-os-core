@@ -15,6 +15,7 @@ class McpHealthReportService
         'offline_genealogy_assist',
         'hybrid_review',
         'hybrid_dev_assist',
+        'private_genealogy_research',
         'cloud_escalation_only',
     ];
 

@@ -115,7 +115,7 @@ class JoplinMetadataCacheService
                     }
                 } catch (\Exception $e) {
                     $stats['errors']++;
-                    Log::warning("Error caching note {$noteId}: ".$e->getMessage());
+                    Log::warning('Error caching note', ['note_id' => $noteId, 'exception' => $e]);
                 }
 
                 if ($stats['processed'] % 50 == 0) {

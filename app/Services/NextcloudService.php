@@ -609,7 +609,7 @@ XML;
 
                 if ($isCalendar && ! empty($displayname)) {
                     // Extract calendar ID from href (last path component before trailing slash)
-                    // Example: /remote.php/dav/calendars/bill/408f9dce-2d4d-49af-9abe-f732aed65cff/
+                    // Example: /remote.php/dav/calendars/example-user/example-calendar/
                     $calendarId = basename(rtrim($href, '/'));
 
                     $calendars[] = [
@@ -1645,7 +1645,7 @@ XML;
     /**
      * Delete a calendar event from Nextcloud via CalDAV DELETE
      *
-     * @param  string  $href  The CalDAV href path (e.g. /remote.php/dav/calendars/bill/personal/uuid.ics)
+     * @param  string  $href  The CalDAV href path (e.g. /remote.php/dav/calendars/example-user/personal/uuid.ics)
      * @return array Success status
      */
     public function deleteCalendarEventByHref(string $href): array

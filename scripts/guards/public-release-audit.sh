@@ -5,6 +5,9 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 cd "$ROOT"
 
 failures=0
+review_manifest="scripts/guards/public-audit-reviews.json"
+review_filter="scripts/guards/public-audit-filter.py"
+python3 "$review_filter" --root "$ROOT" --manifest "$review_manifest" --validate
 
 print_header() {
     printf '\n== %s ==\n' "$1"
@@ -18,6 +21,7 @@ flag_lines() {
     limit="${PUBLIC_AUDIT_LIMIT:-80}"
     output="$("$@" || true)"
     output="$(printf '%s\n' "$output" | sed '/^$/d')"
+    output="$(printf '%s\n' "$output" | python3 "$review_filter" --root "$ROOT" --manifest "$review_manifest" --rule "$title")"
     if [[ -n "$output" ]]; then
         count="$(printf '%s\n' "$output" | wc -l | tr -d ' ')"
         print_header "$title"
@@ -36,6 +40,7 @@ public_privacy_scan_excludes=(
     ':!docs/TODO.md'
     ':!docs/PROJECT.md'
     ':!docs/PROD-MAINTENANCE.md'
+    ':!docs/internal-plos-*.md'
     ':!docs/papers-and-newsletters'
     ':!docs/papers-and-newsletters/**'
     ':!docs/planning'
@@ -165,7 +170,7 @@ flag_lines "Credentialed URLs" \
     scan_credentialed_urls
 
 flag_lines "Private paths, hosts, users, and compute labels" \
-    git grep -n -I -E '(/home/bill|/Users/bill|C:\\Users\\bill|D:\\master|/MASTER(/|$)|192\.168\.8\.|ai-wphc-production|prod_252|gpu_252|cpu_252|prod_87|gpu_87|cpu_87|\.252_only|\.87_only|bill@|id_rsa|id_ed25519)' -- "${public_candidate_scan_paths[@]}" \
+    git grep -n -I -E '(/home/bill|/Users/bill|C:\\Users\\bill|D:\\master|/MASTER(/|$)|192\.168\.8\.|ai-wphc-production|prod_252|gpu_252|cpu_252|prod_87|gpu_87|cpu_87|\.252_only|\.87_only|bill@|bherald|id_rsa|id_ed25519)' -- "${public_candidate_scan_paths[@]}" \
         "${public_username_scan_excludes[@]}"
 
 flag_lines "Public-candidate files referencing non-exported planning paths" \
@@ -173,7 +178,7 @@ flag_lines "Public-candidate files referencing non-exported planning paths" \
         "${public_privacy_scan_excludes[@]}"
 
 flag_lines "Files containing private paths, LAN hosts, usernames, or machine-specific values" \
-    git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@)' -- "${public_candidate_scan_paths[@]}" \
+    git grep -l -I -E '(/home/bill|192\.168\.8\.|ai-wphc-production|bill@|bherald)' -- "${public_candidate_scan_paths[@]}" \
         "${public_username_scan_excludes[@]}"
 
 flag_lines "Operator-specific Nextcloud library root literal (/MASTER)" \
@@ -231,7 +236,7 @@ flag_lines "Operator username default ('bill') in SSH/Nextcloud helpers" \
         ':!scripts/guards/public-release-audit.sh'
 
 flag_lines "Public-bound source containing private genealogy/person literals" \
-    git grep -n -I -E '(William_P_Herald|\bHerald\b|\bMancini\b|/home/bill|192\.168\.8\.)' -- \
+    git grep -n -I -E '(William_P_Herald|\bHerald\b|\bMancini\b|bherald|/home/bill|192\.168\.8\.)' -- \
         .github \
         app \
         config \
@@ -279,6 +284,7 @@ flag_lines "Files containing private database names or historical credential lit
         ':!docs/TODO.md' \
         ':!docs/PROJECT.md' \
         ':!docs/PROD-MAINTENANCE.md' \
+        ':!docs/internal-plos-*.md' \
         ':!docs/papers-and-newsletters' \
         ':!docs/papers-and-newsletters/**' \
         ':!docs/planning' \
@@ -290,12 +296,13 @@ flag_lines "Files containing private database names or historical credential lit
         ':!scripts/guards/public-release-audit.sh'
 
 flag_lines "Brand/trademark file paths to rename or private-only gate" \
-    bash -c "git ls-files app resources routes config database docs tailwind.config.js ':!docs/planning' ':!docs/planning/**' | grep -i -E '(lcars|star[ _-]?trek|starfleet|federation|tricorder|viewscreen|comm[ _-]?badge|warp[ _-]?drive|impulse[ _-]?engine|(^|[^[:alnum:]_])(tng|voy|ds9)([^[:alnum:]_]|$))' | grep -v -E '^docs/(PROJECT.md|plos-focus-report-.*|public-release-readiness.md|public-release/npm-license-snapshot\\.(json|md)|canonical-docs-archive-.*\\.zip)$'"
+    bash -c "git ls-files app resources routes config database docs tailwind.config.js ':!docs/planning' ':!docs/planning/**' | grep -i -E '(lcars|star[ _-]?trek|starfleet|federation|tricorder|viewscreen|comm[ _-]?badge|warp[ _-]?drive|impulse[ _-]?engine|(^|[^[:alnum:]_])(tng|voy|ds9)([^[:alnum:]_]|$))' | grep -v -E '^docs/(internal-plos-[^/]+\\.md|PROJECT.md|plos-focus-report-.*|public-release-readiness.md|public-release/npm-license-snapshot\\.(json|md)|canonical-docs-archive-.*\\.zip)$'"
 
 flag_lines "Brand/trademark terms to replace or private-only gate" \
     git grep -n -i -I -E '(lcars|star[ _-]?trek|starfleet|federation|tricorder|viewscreen|comm[ _-]?badge|warp[ _-]?drive|impulse[ _-]?engine|(^|[^[:alnum:]_])(tng|voy|ds9)([^[:alnum:]_]|$))' -- app resources routes config database docs tailwind.config.js \
         ':!docs/canonical-docs-archive-*.zip' \
         ':!docs/PROJECT.md' \
+        ':!docs/internal-plos-*.md' \
         ':!docs/planning' \
         ':!docs/planning/**' \
         ':!docs/plos-focus-report-*' \
@@ -309,6 +316,7 @@ flag_lines "Legacy private project brand terms to replace or private-only gate" 
         ':!docs/PROJECT.md' \
         ':!docs/PROD-MAINTENANCE.md' \
         ':!docs/TODO.md' \
+        ':!docs/internal-plos-*.md' \
         ':!docs/papers-and-newsletters' \
         ':!docs/papers-and-newsletters/**' \
         ':!docs/planning' \
@@ -322,6 +330,7 @@ flag_lines "PhotoPrism provenance language requiring review" \
     git grep -n -I -E '(PhotoPrism-adapted|PhotoPrism-inspired|adapted directly from PhotoPrism|adapted from PhotoPrism|ported from PhotoPrism|PhotoPrism integration|PhotoPrism RAG|adapted from LibrePhotos|ported from LibrePhotos|adapted from digiKam|ported from digiKam|adapted from Joplin|ported from Joplin)' -- app resources routes config database docs \
         ':!docs/canonical-docs-archive-*.zip' \
         ':!docs/PROJECT.md' \
+        ':!docs/internal-plos-*.md' \
         ':!docs/planning' \
         ':!docs/planning/**' \
         ':!docs/plos-focus-report-*' \
@@ -335,6 +344,7 @@ flag_lines "Dev-agent copied-provenance language requiring review" \
     git grep -n -I -E '(adapted from (Claude Code|Clawcode|Cline|Roo Code|Aider|Continue|OpenHands|SWE-agent|goose)|ported from (Claude Code|Clawcode|Cline|Roo Code|Aider|Continue|OpenHands|SWE-agent|goose)|copied from (Claude Code|Clawcode|Cline|Roo Code|Aider|Continue|OpenHands|SWE-agent|goose)|based on (Claude Code|Clawcode|Cline|Roo Code|Aider|Continue|OpenHands|SWE-agent|goose) source|Claude Code source tree|Clawcode source tree)' -- app resources routes config database docs scripts \
         ':!docs/canonical-docs-archive-*.zip' \
         ':!docs/PROJECT.md' \
+        ':!docs/internal-plos-*.md' \
         ':!docs/planning' \
         ':!docs/planning/**' \
         ':!docs/plos-focus-report-*' \

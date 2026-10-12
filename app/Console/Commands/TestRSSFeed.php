@@ -2,75 +2,138 @@
 
 namespace App\Console\Commands;
 
-use Illuminate\Console\Command;
 use App\Nodes\RSSFeedReader;
+use Illuminate\Console\Command;
 
 class TestRSSFeed extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
-    protected $signature = 'rss:test {url} {--limit=5 : Number of articles to fetch}';
+    private const RUNTIME_POLICY_SOURCE = 'system_configs.rss.reader_runtime_policy';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
-    protected $description = 'Test an RSS feed and display results';
+    protected $signature = 'rss:test
+        {url : RSS or Atom feed URL to fetch}
+        {--limit= : Number of articles to fetch; defaults to the RSS reader runtime policy}
+        {--timeout= : Fetch timeout in seconds; defaults to the RSS reader runtime policy}';
 
-    /**
-     * Execute the console command.
-     */
-    public function handle()
+    protected $description = 'Fetch and display an RSS feed without persisting articles or health state';
+
+    public function handle(): int
     {
-        $url = $this->argument('url');
-        $limit = $this->option('limit');
+        $limit = $this->positiveIntegerOption('limit');
+        if ($limit === false) {
+            $this->error('--limit must be a positive integer.');
 
-        $this->info('🔍 Testing RSS Feed');
-        $this->info('URL: ' . $url);
-        $this->info('Limit: ' . $limit);
-        $this->newLine();
-
-        // Create RSS reader
-        $reader = new RSSFeedReader([
-            'feed_url' => $url,
-            'limit' => $limit,
-            'timeout' => 10,
-            'include_content' => false
-        ]);
-
-        // Execute
-        $this->info('Fetching feed...');
-        $result = $reader->execute([]);
-
-        // Display results
-        if (isset($result['error']) && $result['error']) {
-            $this->error('❌ Error: ' . $result['error']);
-            return 1;
+            return self::INVALID;
         }
 
-        $this->info('✅ Success!');
+        $timeout = $this->positiveIntegerOption('timeout');
+        if ($timeout === false) {
+            $this->error('--timeout must be a positive integer.');
+
+            return self::INVALID;
+        }
+
+        $url = trim((string) $this->argument('url'));
+        if ($url === '') {
+            $this->error('url must not be empty.');
+
+            return self::INVALID;
+        }
+        $readerConfig = [
+            'feed_url' => $url,
+            'include_content' => false,
+            'persist_articles' => false,
+            'track_health' => false,
+        ];
+        if ($limit !== null) {
+            $readerConfig['limit'] = $limit;
+        }
+        if ($timeout !== null) {
+            $readerConfig['timeout'] = $timeout;
+        }
+
+        $displayUrl = $this->displayUrl($url);
+        $this->info('Testing RSS feed');
+        $this->line('URL: '.$displayUrl);
+        $this->line('Policy: '.self::RUNTIME_POLICY_SOURCE);
+        $this->line('Requested limit: '.($limit ?? 'table default'));
+        $this->line('Requested timeout: '.($timeout !== null ? $timeout.'s' : 'table default'));
+        $this->line('Writes: article persistence off; feed health tracking off; normal fetch telemetry active');
+        $this->newLine();
+        $this->info('Fetching feed...');
+
+        /** @var RSSFeedReader $reader */
+        $reader = app()->makeWith(RSSFeedReader::class, ['config' => $readerConfig]);
+        $result = $reader->execute([]);
+
+        if (($result['error'] ?? null) !== null && $result['error'] !== '') {
+            $this->error('Error: '.str_replace($url, $displayUrl, (string) $result['error']));
+
+            return self::FAILURE;
+        }
+
+        $this->info('Success');
         $this->newLine();
 
-        // Display metadata
-        if (isset($result['meta'])) {
-            $this->line('📊 Metadata:');
-            foreach ($result['meta'] as $key => $value) {
-                $this->line("  {$key}: {$value}");
+        $meta = is_array($result['meta'] ?? null) ? $result['meta'] : [];
+        if ($meta !== []) {
+            $this->line('Metadata:');
+            foreach ($meta as $key => $value) {
+                if ($key === 'feed_url' && is_string($value)) {
+                    $value = $this->displayUrl($value);
+                }
+                $this->line(sprintf('  %s: %s', $key, $this->displayValue($value)));
             }
             $this->newLine();
         }
 
-        // Display formatted data
-        if (isset($result['data'])) {
-            $this->line('📰 Articles:');
+        $data = is_array($result['data'] ?? null) ? $result['data'] : [];
+        $formatted = $data['formatted_text'] ?? null;
+        if (is_string($formatted) && $formatted !== '') {
+            $this->line('Articles:');
             $this->line(str_repeat('=', 80));
-            $this->line($result['data']);
+            $this->line(str_replace($url, $displayUrl, $formatted));
         }
 
-        return 0;
+        return self::SUCCESS;
+    }
+
+    private function positiveIntegerOption(string $name): int|false|null
+    {
+        $value = $this->option($name);
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return filter_var($value, FILTER_VALIDATE_INT, [
+            'options' => ['min_range' => 1],
+        ]);
+    }
+
+    private function displayValue(mixed $value): string
+    {
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if ($value === null) {
+            return 'null';
+        }
+
+        if (is_scalar($value)) {
+            return (string) $value;
+        }
+
+        return (string) json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    private function displayUrl(string $url): string
+    {
+        if (str_starts_with(strtolower($url), 'data:')) {
+            return 'data://[inline-feed]';
+        }
+
+        $withoutSecrets = preg_replace('/[?#].*$/', '', $url) ?? $url;
+
+        return preg_replace('#^([a-z][a-z0-9+.-]*://)[^/@]+@#i', '$1', $withoutSecrets) ?? $withoutSecrets;
     }
 }

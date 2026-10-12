@@ -2,7 +2,9 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Ops\AgentBehaviorGoldenEvalService;
 use App\Services\Ops\AgentDoctorService;
+use App\Services\Ops\TraceGoldenEvalService;
 use Illuminate\Console\Command;
 
 class AgentDoctorCommand extends Command
@@ -16,8 +18,11 @@ class AgentDoctorCommand extends Command
 
     protected $description = 'Observe-only health summary for agent sessions, scheduled agent jobs, and review queues';
 
-    public function handle(AgentDoctorService $doctor): int
-    {
+    public function handle(
+        AgentDoctorService $doctor,
+        TraceGoldenEvalService $traceGoldenEval,
+        AgentBehaviorGoldenEvalService $agentBehaviorGoldenEval,
+    ): int {
         $windowHours = filter_var($this->option('since'), FILTER_VALIDATE_INT);
         if (! is_int($windowHours) || $windowHours < 1 || $windowHours > 168) {
             $this->error('Since must be an integer from 1 to 168 hours.');
@@ -30,6 +35,28 @@ class AgentDoctorCommand extends Command
             agent: $this->option('agent') ? (string) $this->option('agent') : null,
             quick: (bool) $this->option('quick')
         );
+        $payload['trace_golden_eval'] = $traceGoldenEval->evaluate();
+        if (($payload['trace_golden_eval']['status'] ?? 'fail') !== 'pass') {
+            if (($payload['overall_status'] ?? 'ok') === 'ok') {
+                $payload['overall_status'] = 'warning';
+            }
+            $payload['checks'][] = [
+                'id' => 'trace_golden_eval',
+                'status' => 'warning',
+                'detail' => 'One or more deterministic trace envelope contracts failed.',
+            ];
+        }
+        $payload['agent_behavior_golden_eval'] = $agentBehaviorGoldenEval->evaluate();
+        if (($payload['agent_behavior_golden_eval']['status'] ?? 'fail') !== 'pass') {
+            if (($payload['overall_status'] ?? 'ok') === 'ok') {
+                $payload['overall_status'] = 'warning';
+            }
+            $payload['checks'][] = [
+                'id' => 'agent_behavior_golden_eval',
+                'status' => 'warning',
+                'detail' => 'One or more deterministic agent behavior contracts failed.',
+            ];
+        }
 
         if ($this->option('json')) {
             $json = json_encode(
@@ -55,12 +82,14 @@ class AgentDoctorCommand extends Command
 
         $summary = $payload['summary'];
         $this->line(sprintf(
-            'Agent doctor: %s  agents=%d  active_sessions=%d  stalled=%d  pending_reviews=%d',
+            'Agent doctor: %s  agents=%d  active_sessions=%d  stalled=%d  pending_reviews=%d  actionable_reviews=%d  review_ready=%d',
             strtoupper((string) $payload['overall_status']),
             (int) $summary['agents_total'],
             (int) $summary['sessions_active'],
             (int) $summary['sessions_stalled'],
             (int) $summary['review_queue_pending'],
+            (int) ($summary['review_queue_actionable_pending'] ?? 0),
+            (int) ($summary['review_queue_review_ready_pending'] ?? 0),
         ));
         $this->line(sprintf(
             'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  non_ascii_markers=%d  guarded=%d',
@@ -88,6 +117,8 @@ class AgentDoctorCommand extends Command
             (int) ($summary['memory_error_episodes_window'] ?? 0),
             (int) ($summary['procedures_low_quality_total'] ?? 0),
         ));
+        $memoryMaintenance = is_array($payload['memory_maintenance'] ?? null) ? $payload['memory_maintenance'] : [];
+        $this->line($this->memoryMaintenanceLine($memoryMaintenance));
         $this->line('Failure modes: '.$this->formatCountMap((array) ($summary['failure_mode_counts'] ?? [])));
 
         $recursion = $payload['recursion'] ?? null;
@@ -148,7 +179,10 @@ class AgentDoctorCommand extends Command
         $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : [];
         $recursion = is_array($payload['recursion'] ?? null) ? $payload['recursion'] : [];
         $trace = is_array($payload['trace'] ?? null) ? $payload['trace'] : [];
+        $traceGoldenEval = is_array($payload['trace_golden_eval'] ?? null) ? $payload['trace_golden_eval'] : [];
+        $agentBehaviorGoldenEval = is_array($payload['agent_behavior_golden_eval'] ?? null) ? $payload['agent_behavior_golden_eval'] : [];
         $agents = is_array($payload['agents'] ?? null) ? $payload['agents'] : [];
+        $memoryMaintenance = is_array($payload['memory_maintenance'] ?? null) ? $payload['memory_maintenance'] : [];
 
         return [
             'generated_at' => $payload['generated_at'] ?? null,
@@ -167,6 +201,9 @@ class AgentDoctorCommand extends Command
             ],
             'review_queue' => [
                 'pending' => (int) ($summary['review_queue_pending'] ?? 0),
+                'actionable' => (int) ($summary['review_queue_actionable_pending'] ?? 0),
+                'review_ready' => (int) ($summary['review_queue_review_ready_pending'] ?? 0),
+                'non_actionable' => (int) ($summary['review_queue_non_actionable_pending'] ?? 0),
             ],
             'registry_tools' => [
                 'missing' => (int) ($summary['tools_missing_total'] ?? 0),
@@ -202,6 +239,29 @@ class AgentDoctorCommand extends Command
                 'low_signal_undistilled_sessions' => (int) ($summary['memory_low_signal_undistilled_sessions_window'] ?? 0),
                 'memory_errors' => (int) ($summary['memory_error_episodes_window'] ?? 0),
                 'low_quality_procedures' => (int) ($summary['procedures_low_quality_total'] ?? 0),
+            ],
+            'memory_maintenance' => [
+                'status' => (string) ($memoryMaintenance['status'] ?? 'unconfigured'),
+                'enabled' => (bool) ($memoryMaintenance['enabled'] ?? false),
+                'last_run_status' => (string) ($memoryMaintenance['last_run_status'] ?? 'unknown'),
+                'last_run_age_hours' => $memoryMaintenance['last_run_age_hours'] ?? null,
+                'session_limit' => (int) ($memoryMaintenance['session_limit'] ?? 0),
+                'daily_capacity' => (int) ($memoryMaintenance['daily_capacity'] ?? 0),
+                'freshness_slo_hours' => (float) ($memoryMaintenance['freshness_slo_hours'] ?? 0.0),
+                'backlog_sessions' => (int) ($memoryMaintenance['backlog_sessions'] ?? 0),
+                'backlog_episodes' => (int) ($memoryMaintenance['backlog_episodes'] ?? 0),
+                'oldest_backlog_age_hours' => $memoryMaintenance['oldest_backlog_age_hours'] ?? null,
+                'within_next_run_capacity' => (bool) ($memoryMaintenance['within_next_run_capacity'] ?? false),
+                'runs_required' => (int) ($memoryMaintenance['runs_required'] ?? 0),
+                'runs_available_before_slo' => (int) ($memoryMaintenance['runs_available_before_slo'] ?? 0),
+                'freshness_horizon_capacity' => (int) ($memoryMaintenance['freshness_horizon_capacity'] ?? 0),
+                'projected_clearance_hours' => $memoryMaintenance['projected_clearance_hours'] ?? null,
+                'projected_oldest_age_at_clear_hours' => $memoryMaintenance['projected_oldest_age_at_clear_hours'] ?? null,
+                'within_freshness_capacity' => (bool) ($memoryMaintenance['within_freshness_capacity'] ?? false),
+                'projection_scope' => (string) ($memoryMaintenance['projection_scope'] ?? 'current_backlog_only'),
+                'within_freshness_slo' => (bool) ($memoryMaintenance['within_freshness_slo'] ?? false),
+                'last_run_within_slo' => (bool) ($memoryMaintenance['last_run_within_slo'] ?? false),
+                'on_track' => (bool) ($memoryMaintenance['on_track'] ?? false),
             ],
             'issue_code_counts' => array_slice(
                 array_filter(
@@ -246,6 +306,23 @@ class AgentDoctorCommand extends Command
                 'events_24h_exact' => (bool) ($trace['events_24h_exact'] ?? false),
                 'malformed_lines_24h' => $trace['malformed_lines_24h'] ?? null,
             ],
+            'trace_golden_eval' => [
+                'status' => (string) ($traceGoldenEval['status'] ?? 'unknown'),
+                'cases' => (int) data_get($traceGoldenEval, 'summary.cases', 0),
+                'passed' => (int) data_get($traceGoldenEval, 'summary.passed', 0),
+                'failed' => (int) data_get($traceGoldenEval, 'summary.failed', 0),
+                'checks' => (int) data_get($traceGoldenEval, 'summary.checks', 0),
+                'violations' => (int) data_get($traceGoldenEval, 'summary.violations', 0),
+            ],
+            'agent_behavior_golden_eval' => [
+                'status' => (string) ($agentBehaviorGoldenEval['status'] ?? 'unknown'),
+                'cases' => (int) data_get($agentBehaviorGoldenEval, 'summary.cases', 0),
+                'passed' => (int) data_get($agentBehaviorGoldenEval, 'summary.passed', 0),
+                'failed' => (int) data_get($agentBehaviorGoldenEval, 'summary.failed', 0),
+                'competencies' => (int) data_get($agentBehaviorGoldenEval, 'summary.competencies', 0),
+                'checks' => (int) data_get($agentBehaviorGoldenEval, 'summary.checks', 0),
+                'violations' => (int) data_get($agentBehaviorGoldenEval, 'summary.violations', 0),
+            ],
             'top_agents' => [
                 'critical' => $this->topAgentIds($agents, 'critical'),
                 'warning' => $this->topAgentIds($agents, 'warning'),
@@ -283,8 +360,11 @@ class AgentDoctorCommand extends Command
         $registryTools = $compact['registry_tools'];
         $scheduledOutput = $compact['scheduled_output'];
         $memory = $compact['memory_evidence'];
+        $memoryMaintenance = is_array($compact['memory_maintenance'] ?? null) ? $compact['memory_maintenance'] : [];
         $recursion = $compact['recursion'];
         $trace = $compact['trace_readiness'];
+        $traceGoldenEval = $compact['trace_golden_eval'];
+        $agentBehaviorGoldenEval = $compact['agent_behavior_golden_eval'];
         $topAgents = $compact['top_agents'];
         $topAgentReasons = is_array($compact['top_agent_reasons'] ?? null) ? $compact['top_agent_reasons'] : [];
         $failureModeCounts = is_array($compact['failure_mode_counts'] ?? null) ? $compact['failure_mode_counts'] : [];
@@ -296,7 +376,7 @@ class AgentDoctorCommand extends Command
         };
 
         $this->line(sprintf(
-            'Agent doctor compact: %s  agents=%d  enabled=%d  warning=%d  critical=%d  active_sessions=%d  stalled=%d  pending_reviews=%d',
+            'Agent doctor compact: %s  agents=%d  enabled=%d  warning=%d  critical=%d  active_sessions=%d  stalled=%d  pending_reviews=%d  actionable_reviews=%d  review_ready=%d',
             strtoupper((string) ($compact['overall_status'] ?? 'unknown')),
             (int) ($agentCounts['total'] ?? 0),
             (int) ($agentCounts['enabled'] ?? 0),
@@ -305,6 +385,8 @@ class AgentDoctorCommand extends Command
             (int) ($sessions['active'] ?? 0),
             (int) ($sessions['stalled'] ?? 0),
             (int) ($reviewQueue['pending'] ?? 0),
+            (int) ($reviewQueue['actionable'] ?? 0),
+            (int) ($reviewQueue['review_ready'] ?? 0),
         ));
         $this->line(sprintf(
             'Scheduled output: success_runs=%d  empty_success=%d  cjk_signals=%d  non_ascii_markers=%d  guarded=%d',
@@ -332,6 +414,7 @@ class AgentDoctorCommand extends Command
             (int) ($memory['memory_errors'] ?? 0),
             (int) ($memory['low_quality_procedures'] ?? 0),
         ));
+        $this->line($this->memoryMaintenanceLine($memoryMaintenance));
         $this->line('Failure modes: '.$this->formatCountMap($failureModeCounts));
         $this->line(sprintf(
             'Recursion signal: %s  calls_7d=%d  move_on_7d=%s  master=%s',
@@ -351,6 +434,25 @@ class AgentDoctorCommand extends Command
             $trace['events_24h'] === null ? 'n/a' : (string) $trace['events_24h'],
             $this->boolWord($trace['events_24h_exact'] ?? false),
             $trace['malformed_lines_24h'] === null ? 'n/a' : (string) $trace['malformed_lines_24h'],
+        ));
+        $this->line(sprintf(
+            'Trace golden eval: %s  cases=%d  passed=%d  failed=%d  checks=%d  violations=%d',
+            strtoupper((string) ($traceGoldenEval['status'] ?? 'unknown')),
+            (int) ($traceGoldenEval['cases'] ?? 0),
+            (int) ($traceGoldenEval['passed'] ?? 0),
+            (int) ($traceGoldenEval['failed'] ?? 0),
+            (int) ($traceGoldenEval['checks'] ?? 0),
+            (int) ($traceGoldenEval['violations'] ?? 0),
+        ));
+        $this->line(sprintf(
+            'Agent behavior golden eval: %s  cases=%d  passed=%d  failed=%d  competencies=%d  checks=%d  violations=%d',
+            strtoupper((string) ($agentBehaviorGoldenEval['status'] ?? 'unknown')),
+            (int) ($agentBehaviorGoldenEval['cases'] ?? 0),
+            (int) ($agentBehaviorGoldenEval['passed'] ?? 0),
+            (int) ($agentBehaviorGoldenEval['failed'] ?? 0),
+            (int) ($agentBehaviorGoldenEval['competencies'] ?? 0),
+            (int) ($agentBehaviorGoldenEval['checks'] ?? 0),
+            (int) ($agentBehaviorGoldenEval['violations'] ?? 0),
         ));
         $this->line('Critical agents: '.$this->formatAgentReasonList($topAgentReasons['critical'] ?? [], $topAgents['critical'] ?? []));
         $this->line('Warning agents: '.$this->formatAgentReasonList($topAgentReasons['warning'] ?? [], $topAgents['warning'] ?? []));
@@ -409,6 +511,28 @@ class AgentDoctorCommand extends Command
         }
 
         return $items === [] ? $this->formatAgentIdList($fallbackAgentIds) : implode(', ', $items);
+    }
+
+    /** @param array<string, mixed> $maintenance */
+    private function memoryMaintenanceLine(array $maintenance): string
+    {
+        return sprintf(
+            'Memory maintenance: %s  enabled=%s  last=%s  last_age_h=%s  last_recent=%s  backlog_sessions=%d  next_run_capacity=%d  runs_required=%d  runs_before_slo=%d  horizon_capacity=%d  freshness_slo_h=%s  within_next=%s  within_horizon=%s  within_slo=%s',
+            strtoupper((string) ($maintenance['status'] ?? 'unconfigured')),
+            $this->boolWord($maintenance['enabled'] ?? false),
+            (string) ($maintenance['last_run_status'] ?? 'unknown'),
+            $maintenance['last_run_age_hours'] ?? 'n/a',
+            $this->boolWord($maintenance['last_run_within_slo'] ?? false),
+            (int) ($maintenance['backlog_sessions'] ?? 0),
+            (int) ($maintenance['session_limit'] ?? 0),
+            (int) ($maintenance['runs_required'] ?? 0),
+            (int) ($maintenance['runs_available_before_slo'] ?? 0),
+            (int) ($maintenance['freshness_horizon_capacity'] ?? 0),
+            $maintenance['freshness_slo_hours'] ?? 'n/a',
+            $this->boolWord($maintenance['within_next_run_capacity'] ?? false),
+            $this->boolWord($maintenance['within_freshness_capacity'] ?? false),
+            $this->boolWord($maintenance['within_freshness_slo'] ?? false),
+        );
     }
 
     private function boolWord(mixed $value): string

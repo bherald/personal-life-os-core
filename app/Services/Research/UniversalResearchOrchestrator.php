@@ -3,14 +3,17 @@
 namespace App\Services\Research;
 
 use App\DTOs\TrustEnvelope;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\AIService;
+use App\Services\RagEmbeddingProvenanceService;
 use App\Services\TrustBoundaryFormatterService;
+use App\Services\UniversalResearchRuntimePolicyService;
 use App\Support\PgVector;
+use App\Support\SensitiveTextTelemetry;
+use App\Traits\RecursionAware;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
-use Exception;
-use App\Traits\RecursionAware;
 
 /**
  * UniversalResearchOrchestrator - Coordinates all research services
@@ -30,36 +33,58 @@ class UniversalResearchOrchestrator
     use RecursionAware;
 
     private AIService $aiService;
+
     private DynamicSourceDiscoveryService $discoveryService;
+
     private LLMKnowledgeVettingService $vettingService;
+
     private SafeScrapingService $scrapingService;
+
+    private UniversalResearchRuntimePolicyService $runtimePolicyService;
+
+    private ?array $runtimePolicy = null;
+
     private ?TrustBoundaryFormatterService $trustBoundaryFormatter = null;
+
     private string $connection = 'pgsql_rag';
 
     // Mission phases
     private const PHASE_DISCOVER = 'discover';
+
     private const PHASE_GATHER = 'gather';
+
     private const PHASE_EXTRACT = 'extract';
+
     private const PHASE_VERIFY = 'verify';
+
     private const PHASE_SYNTHESIZE = 'synthesize';
+
     private const PHASE_INDEX = 'index';
+
     private const PHASE_COMPLETE = 'complete';
 
     public function __construct(
         AIService $aiService,
         DynamicSourceDiscoveryService $discoveryService,
         LLMKnowledgeVettingService $vettingService,
-        SafeScrapingService $scrapingService
+        SafeScrapingService $scrapingService,
+        UniversalResearchRuntimePolicyService $runtimePolicyService
     ) {
         $this->aiService = $aiService;
         $this->discoveryService = $discoveryService;
         $this->vettingService = $vettingService;
         $this->scrapingService = $scrapingService;
+        $this->runtimePolicyService = $runtimePolicyService;
     }
 
     private function trustBoundaryFormatter(): TrustBoundaryFormatterService
     {
         return $this->trustBoundaryFormatter ??= app(TrustBoundaryFormatterService::class);
+    }
+
+    private function runtimePolicy(): array
+    {
+        return $this->runtimePolicy ??= $this->runtimePolicyService->required();
     }
 
     /**
@@ -70,7 +95,7 @@ class UniversalResearchOrchestrator
         $missionId = $this->generateUuid();
 
         try {
-            DB::connection($this->connection)->insert("
+            DB::connection($this->connection)->insert('
                 INSERT INTO research_missions (
                     id, title, description, mission_type, domain_category,
                     query_template, constraints, depth_level, verification_level,
@@ -80,7 +105,7 @@ class UniversalResearchOrchestrator
                     ?, ?::jsonb, ?, ?,
                     ?, ?, ?
                 )
-            ", [
+            ', [
                 $missionId,
                 $params['title'] ?? 'Research Mission',
                 $params['description'] ?? null,
@@ -105,6 +130,7 @@ class UniversalResearchOrchestrator
 
         } catch (Exception $e) {
             Log::error('Failed to create mission', ['error' => $e->getMessage()]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -114,10 +140,10 @@ class UniversalResearchOrchestrator
      */
     public function executeMission(string $missionId, array $options = []): array
     {
-        $skipRecursive = !empty($options['skip_recursive']);
-        $traceTiming = !empty($options['trace_timing']);
+        $skipRecursive = ! empty($options['skip_recursive']);
+        $traceTiming = ! empty($options['trace_timing']);
 
-        if (!$skipRecursive) {
+        if (! $skipRecursive) {
             // RLM: Try recursive research orchestration
             $rlm = $this->tryRecursive('universal_research', 'partition_map', ['mission_id' => $missionId, 'options' => $options], function ($ctx) {
                 return $this->executeMission($ctx['mission_id'] ?? $ctx['data'], $ctx['options'] ?? []);
@@ -128,16 +154,18 @@ class UniversalResearchOrchestrator
         }
 
         $mission = $this->getMission($missionId);
-        if (!$mission) {
+        if (! $mission) {
             return ['success' => false, 'error' => 'Mission not found'];
         }
+
+        $this->runtimePolicy();
 
         $startTime = microtime(true);
         $timeLimit = ($mission['time_limit_minutes'] ?? 30) * 60;
         $phaseStartedAt = $startTime;
 
         $logPhase = function (string $phase, array $extra = []) use (&$phaseStartedAt, $startTime, $traceTiming, $missionId, $skipRecursive): void {
-            if (!$traceTiming) {
+            if (! $traceTiming) {
                 return;
             }
 
@@ -163,13 +191,14 @@ class UniversalResearchOrchestrator
             $discoveryResult = $this->discoverPhase($mission);
             $logPhase(self::PHASE_DISCOVER, [
                 'sources_found' => count($discoveryResult['sources'] ?? []),
-                'success' => !empty($discoveryResult['success']),
+                'success' => ! empty($discoveryResult['success']),
             ]);
 
-            if (!$discoveryResult['success'] || empty($discoveryResult['sources'])) {
+            if (! $discoveryResult['success'] || empty($discoveryResult['sources'])) {
                 $this->updateMissionStatus($missionId, 'failed', [
                     'last_error' => 'No sources discovered',
                 ]);
+
                 return ['success' => false, 'error' => 'No sources discovered'];
             }
 
@@ -194,7 +223,6 @@ class UniversalResearchOrchestrator
             $this->updateMissionPhase($missionId, self::PHASE_EXTRACT, 50);
             $extractResult = $this->extractPhase($mission, $gatherResult['content']);
 
-            // Assess content quality - if poor, rely more heavily on LLM knowledge
             $webFactCount = count($extractResult['facts'] ?? []);
             $contentQuality = $this->assessContentQuality($gatherResult['content'], $webFactCount);
 
@@ -205,28 +233,14 @@ class UniversalResearchOrchestrator
                 'quality_level' => $contentQuality['level'],
             ]);
 
-            // Extract LLM knowledge - more aggressively if web content is poor
-            $llmKnowledge = $this->extractEnhancedLLMKnowledge(
-                $mission['query_template'],
-                $mission['domain_category'],
-                $contentQuality['level'],
-                $extractResult['facts'] ?? []
-            );
-
-            // Merge extracted facts (LLM facts marked with lower initial confidence)
-            $allFacts = array_merge(
-                $extractResult['facts'] ?? [],
-                $llmKnowledge['facts'] ?? []
-            );
+            $allFacts = $extractResult['facts'] ?? [];
             $logPhase(self::PHASE_EXTRACT, [
                 'web_facts' => $webFactCount,
-                'llm_facts' => count($llmKnowledge['facts'] ?? []),
                 'total_facts' => count($allFacts),
             ]);
 
-            Log::warning('Facts merged', [
+            Log::warning('Source facts admitted', [
                 'web_facts' => $webFactCount,
-                'llm_facts' => count($llmKnowledge['facts'] ?? []),
                 'total_facts' => count($allFacts),
             ]);
 
@@ -298,6 +312,9 @@ class UniversalResearchOrchestrator
             ];
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('Mission execution failed', [
                 'mission_id' => $missionId,
                 'error' => $e->getMessage(),
@@ -331,7 +348,7 @@ class UniversalResearchOrchestrator
 
         Log::warning('DiscoverPhase found curated sources', [
             'count' => count($existing),
-            'sources' => array_map(fn($s) => $s['name'] ?? $s['domain'] ?? 'unknown', $existing),
+            'sources' => array_map(fn ($s) => $s['name'] ?? $s['domain'] ?? 'unknown', $existing),
         ]);
 
         // Only discover dynamic sources if we need more
@@ -350,7 +367,7 @@ class UniversalResearchOrchestrator
         // Add curated first
         foreach ($existing as $source) {
             $domain = $source['domain'] ?? '';
-            if ($domain && !isset($seenDomains[$domain])) {
+            if ($domain && ! isset($seenDomains[$domain])) {
                 $seenDomains[$domain] = true;
                 $allSources[] = $source;
             }
@@ -359,24 +376,24 @@ class UniversalResearchOrchestrator
         // Then add discovered
         foreach ($discovered['sources'] ?? [] as $source) {
             $domain = $source['domain'] ?? '';
-            if ($domain && !isset($seenDomains[$domain])) {
+            if ($domain && ! isset($seenDomains[$domain])) {
                 $seenDomains[$domain] = true;
                 $allSources[] = $source;
             }
         }
 
         // Sort by trust score
-        usort($allSources, fn($a, $b) => ($b['trust_score'] ?? 0) <=> ($a['trust_score'] ?? 0));
+        usort($allSources, fn ($a, $b) => ($b['trust_score'] ?? 0) <=> ($a['trust_score'] ?? 0));
 
         $finalSources = array_slice($allSources, 0, $maxSources);
 
         Log::warning('DiscoverPhase complete', [
             'total_sources' => count($finalSources),
-            'with_search_template' => count(array_filter($finalSources, fn($s) => !empty($s['search_url_template']))),
+            'with_search_template' => count(array_filter($finalSources, fn ($s) => ! empty($s['search_url_template']))),
         ]);
 
         return [
-            'success' => !empty($allSources),
+            'success' => ! empty($allSources),
             'sources' => $finalSources,
             'discovered_new' => count($discovered['sources'] ?? []),
             'existing_specialized' => count($existing),
@@ -389,19 +406,21 @@ class UniversalResearchOrchestrator
      */
     public function gatherPhase(array $mission, array $sources): array
     {
+        $policy = $this->runtimePolicy()['gather'];
         $content = [];
         $successfulSources = [];
         $failedSources = [];
         $skippedSources = [];
         $query = $mission['query_template'];
-        $maxArticlesPerSource = config('research.max_articles_per_source', 3);
+        $maxArticlesPerSource = $policy['max_articles_per_source'];
         $followLinks = $mission['follow_links'] ?? true;
 
         Log::warning('GatherPhase starting', [
             'mission_id' => $mission['id'] ?? 'unknown',
             'source_count' => count($sources),
-            'query' => substr($query, 0, 100),
             'follow_links' => $followLinks,
+            'runtime_policy_source' => UniversalResearchRuntimePolicyService::CONFIG_KEY,
+            ...SensitiveTextTelemetry::query($query, 'research.universal_orchestrator.gather'),
         ]);
 
         foreach ($sources as $source) {
@@ -409,11 +428,11 @@ class UniversalResearchOrchestrator
             $sourceName = $source['name'] ?? $domain;
 
             // Build search URL - ONLY use sources with proper search capability
-            if (!empty($source['search_url_template'])) {
+            if (! empty($source['search_url_template'])) {
                 $url = str_replace('{query}', urlencode($query), $source['search_url_template']);
-            } elseif (!empty($source['is_search_engine']) && !empty($source['full_url'])) {
+            } elseif (! empty($source['is_search_engine']) && ! empty($source['full_url'])) {
                 // Fallback: append query params for known search engines
-                $url = $source['full_url'] . (strpos($source['full_url'], '?') === false ? '?' : '&');
+                $url = $source['full_url'].(strpos($source['full_url'], '?') === false ? '?' : '&');
                 $url .= http_build_query(['q' => $query]);
             } else {
                 // Skip sources without search capability - don't scrape random homepages
@@ -421,15 +440,17 @@ class UniversalResearchOrchestrator
                     'domain' => $domain,
                     'reason' => 'No search_url_template defined',
                 ];
+
                 continue;
             }
 
             // Validate URL before scraping — malformed templates produce "Invalid URL" errors
-            if (!filter_var($url, FILTER_VALIDATE_URL)) {
+            if (! filter_var($url, FILTER_VALIDATE_URL)) {
                 $skippedSources[] = [
                     'domain' => $domain,
                     'reason' => "Invalid URL after template substitution: {$url}",
                 ];
+
                 continue;
             }
 
@@ -437,15 +458,15 @@ class UniversalResearchOrchestrator
             $isApiSource = ($source['source_type'] ?? '') === 'api';
 
             $scrapeResult = $this->scrapingService->scrape($url, [
-                'timeout' => 20,
+                'timeout' => $policy['search_timeout_seconds'],
                 'is_api' => $isApiSource,
             ]);
 
-            if ($scrapeResult['success'] && !empty($scrapeResult['content'])) {
+            if ($scrapeResult['success'] && ! empty($scrapeResult['content'])) {
                 $contentLength = strlen($scrapeResult['content'] ?? '');
 
                 // For API sources (like PubMed), content is already article data
-                if (!empty($scrapeResult['api'])) {
+                if (! empty($scrapeResult['api'])) {
                     $content[] = [
                         'source' => $source,
                         'url' => $url,
@@ -457,13 +478,12 @@ class UniversalResearchOrchestrator
                     $successfulSources[] = $sourceName;
 
                     Log::warning('GatherPhase API response', [
-                        'source' => $sourceName,
                         'content_length' => $contentLength,
                         'articles' => $scrapeResult['article_count'] ?? 0,
                     ]);
                 }
                 // For HTML sources, try to follow links to actual articles
-                elseif ($followLinks && !empty($scrapeResult['links'])) {
+                elseif ($followLinks && ! empty($scrapeResult['links'])) {
                     // First add the search results page content
                     $content[] = [
                         'source' => $source,
@@ -489,7 +509,6 @@ class UniversalResearchOrchestrator
                     $successfulSources[] = $sourceName;
 
                     Log::warning('GatherPhase with follow-links', [
-                        'source' => $sourceName,
                         'search_content_length' => $contentLength,
                         'articles_followed' => count($articlesFollowed),
                     ]);
@@ -505,7 +524,6 @@ class UniversalResearchOrchestrator
                     $successfulSources[] = $sourceName;
 
                     Log::warning('GatherPhase scraped', [
-                        'source' => $sourceName,
                         'content_length' => $contentLength,
                     ]);
                 }
@@ -516,13 +534,14 @@ class UniversalResearchOrchestrator
                 ];
 
                 Log::warning('GatherPhase failed', [
-                    'source' => $sourceName,
-                    'error' => $scrapeResult['error'] ?? 'Empty content',
+                    'error_present' => ! empty($scrapeResult['error']),
                 ]);
             }
 
             // Rate limiting between requests
-            usleep(500000); // 500ms
+            if ($policy['source_delay_ms'] > 0) {
+                usleep($policy['source_delay_ms'] * 1000);
+            }
         }
 
         Log::warning('GatherPhase complete', [
@@ -533,7 +552,7 @@ class UniversalResearchOrchestrator
         ]);
 
         return [
-            'success' => !empty($content),
+            'success' => ! empty($content),
             'content' => $content,
             'successful_sources' => $successfulSources,
             'failed_sources' => $failedSources,
@@ -544,8 +563,9 @@ class UniversalResearchOrchestrator
     /**
      * Follow relevant links from search results to get actual article content
      */
-    private function followRelevantLinks(array $links, array $source, string $query, int $maxArticles = 3): array
+    private function followRelevantLinks(array $links, array $source, string $query, int $maxArticles): array
     {
+        $policy = $this->runtimePolicy()['gather'];
         $articles = [];
         $sourceDomain = $source['domain'] ?? '';
         $queryWords = array_filter(explode(' ', strtolower($query)));
@@ -558,10 +578,18 @@ class UniversalResearchOrchestrator
             $linkText = strtolower($link['text'] ?? '');
 
             // Skip external links, navigation, etc.
-            if (empty($linkUrl)) continue;
-            if (!str_contains($linkUrl, $sourceDomain) && !str_starts_with($linkUrl, '/')) continue;
-            if (preg_match('/\/(login|signup|subscribe|about|contact|privacy|terms)/i', $linkUrl)) continue;
-            if (strlen($linkText) < 10) continue;
+            if (empty($linkUrl)) {
+                continue;
+            }
+            if (! str_contains($linkUrl, $sourceDomain) && ! str_starts_with($linkUrl, '/')) {
+                continue;
+            }
+            if (preg_match('/\/(login|signup|subscribe|about|contact|privacy|terms)/i', $linkUrl)) {
+                continue;
+            }
+            if (strlen($linkText) < $policy['min_link_text_chars']) {
+                continue;
+            }
 
             // Score by query word matches in link text
             $score = 0;
@@ -582,7 +610,7 @@ class UniversalResearchOrchestrator
         }
 
         // Sort by score and take top matches
-        usort($scoredLinks, fn($a, $b) => $b['score'] <=> $a['score']);
+        usort($scoredLinks, fn ($a, $b) => $b['score'] <=> $a['score']);
         $topLinks = array_slice($scoredLinks, 0, $maxArticles);
 
         foreach ($topLinks as $item) {
@@ -592,19 +620,19 @@ class UniversalResearchOrchestrator
             // Make absolute URL if relative
             if (str_starts_with($linkUrl, '/')) {
                 $baseUrl = $source['base_url'] ?? "https://{$sourceDomain}";
-                $linkUrl = rtrim($baseUrl, '/') . $linkUrl;
+                $linkUrl = rtrim($baseUrl, '/').$linkUrl;
             }
 
             try {
                 $articleResult = $this->scrapingService->scrape($linkUrl, [
-                    'timeout' => 15,
+                    'timeout' => $policy['article_timeout_seconds'],
                 ]);
 
-                if ($articleResult['success'] && !empty($articleResult['content'])) {
+                if ($articleResult['success'] && ! empty($articleResult['content'])) {
                     $contentLength = strlen($articleResult['content']);
 
                     // Only add if content is substantial
-                    if ($contentLength > 500) {
+                    if ($contentLength > $policy['min_article_content_chars']) {
                         $articles[] = [
                             'source' => $source,
                             'url' => $linkUrl,
@@ -616,21 +644,31 @@ class UniversalResearchOrchestrator
                         $followed++;
 
                         Log::debug('Followed link to article', [
-                            'url' => $linkUrl,
                             'content_length' => $contentLength,
+                            'source_url_receipt' => SensitiveTextTelemetry::content(
+                                $linkUrl,
+                                'research.universal_orchestrator.article_url',
+                                'source_url',
+                            ),
                         ]);
                     }
                 }
 
             } catch (Exception $e) {
                 Log::debug('Failed to follow link', [
-                    'url' => $linkUrl,
-                    'error' => $e->getMessage(),
+                    'exception_class' => $e::class,
+                    'source_url_receipt' => SensitiveTextTelemetry::content(
+                        $linkUrl,
+                        'research.universal_orchestrator.article_url',
+                        'source_url',
+                    ),
                 ]);
             }
 
             // Rate limiting
-            usleep(300000); // 300ms
+            if ($policy['article_delay_ms'] > 0) {
+                usleep($policy['article_delay_ms'] * 1000);
+            }
         }
 
         return $articles;
@@ -641,6 +679,7 @@ class UniversalResearchOrchestrator
      */
     public function extractPhase(array $mission, array $content): array
     {
+        $policy = $this->runtimePolicy()['extraction'];
         $allFacts = [];
         $query = $mission['query_template'];
         $category = $mission['domain_category'];
@@ -648,18 +687,20 @@ class UniversalResearchOrchestrator
         Log::warning('ExtractPhase starting', [
             'mission_id' => $mission['id'] ?? 'unknown',
             'content_items' => count($content),
-            'query' => substr($query, 0, 100),
+            'runtime_policy_source' => UniversalResearchRuntimePolicyService::CONFIG_KEY,
+            ...SensitiveTextTelemetry::query($query, 'research.universal_orchestrator.extract'),
         ]);
 
         foreach ($content as $idx => $item) {
             $sourceContent = $item['content'] ?? '';
             $contentLen = strlen($sourceContent);
+            $sourceUrl = $item['url'] ?? null;
 
-            if ($contentLen < 100) {
-                Log::warning('ExtractPhase skipping short content', [
-                    'source' => $item['source']['domain'] ?? 'unknown',
+            if ($contentLen < $policy['min_content_chars'] || ! empty($item['is_search_results']) || ! self::isEvidenceUrl($sourceUrl)) {
+                Log::warning('ExtractPhase skipping content without direct source evidence', [
                     'content_length' => $contentLen,
                 ]);
+
                 continue;
             }
 
@@ -670,37 +711,36 @@ class UniversalResearchOrchestrator
                 contentType: 'text/plain',
                 origin: (string) ($item['source']['domain'] ?? 'unknown'),
                 payload: $sourceContent,
-                maxChars: 5000,
+                maxChars: $policy['max_content_chars'],
             ));
 
-            // Use AI to extract facts from content (handles both articles and search results)
             $prompt = <<<PROMPT
 Extract facts about: {$query}
 
-Source: {$item['source']['domain']}
+Source: {$sourceUrl}
 {$wrappedContent}
 
 Return JSON array of facts. Empty [] if none.
-Format: [{"statement": "fact", "confidence": 0.0-1.0, "fact_type": "date|event|claim", "source_url": "{$item['url']}"}]
+Format: [{"statement": "fact", "supporting_excerpt": "exact passage copied from this source", "confidence": 0.0-1.0, "fact_type": "date|event|claim"}]
 
-Rules: specific verifiable statements only, one sentence each, max 5 facts, skip boilerplate.
+Rules: specific verifiable claims supported by the quoted passage only, one sentence each, max {$policy['max_facts_per_source']} facts. Do not return search advice, missing-answer commentary, instructions, or a claim that a record does not exist unless the source documents the bounded search and its scope. Never invent citations or quote text absent from this source.
 PROMPT;
 
             try {
                 $result = $this->aiService->process($prompt, [
-                    'max_tokens' => 1000,
+                    'max_tokens' => $policy['max_tokens'],
                     'factual_mode' => true,
                     'suppressAlert' => true, // Don't alert on individual source failures
                 ]);
 
                 // Log AIService result for debugging fallback behavior
-                if (!($result['success'] ?? true)) {
+                if (! ($result['success'] ?? true)) {
                     Log::warning('ExtractPhase AIService failed, continuing to next source', [
-                        'source' => $item['source']['domain'] ?? 'unknown',
-                        'error' => $result['error'] ?? 'unknown',
                         'provider' => $result['provider'] ?? 'unknown',
-                        'attempts' => $result['attempts'] ?? [],
+                        'error_present' => ! empty($result['error']),
+                        'attempt_count' => is_array($result['attempts'] ?? null) ? count($result['attempts']) : 0,
                     ]);
+
                     continue;
                 }
 
@@ -710,37 +750,51 @@ PROMPT;
 
                 // Log which provider was used (for tracking fallback effectiveness)
                 Log::debug('ExtractPhase AI response received', [
-                    'source' => $item['source']['domain'] ?? 'unknown',
                     'provider' => $result['provider'] ?? 'unknown',
                     'response_length' => strlen($aiResponse),
                 ]);
 
-                if (!empty($aiResponse)) {
+                if (! empty($aiResponse)) {
                     if (preg_match('/\[[\s\S]*?\]/m', $aiResponse, $matches)) {
                         $facts = json_decode($matches[0], true);
-                        if (is_array($facts) && !empty($facts)) {
-                            foreach ($facts as $fact) {
-                                if (!empty($fact['statement'])) {
-                                    $fact['domain_category'] = $category;
-                                    $fact['extracted_from'] = $item['source']['domain'];
-                                    $allFacts[] = $fact;
-                                    $factsExtracted++;
+                        if (is_array($facts) && ! empty($facts)) {
+                            foreach (array_slice($facts, 0, $policy['max_facts_per_source']) as $fact) {
+                                if (! is_array($fact) || ! self::hasSourceExcerpt($fact, $sourceContent, $policy['max_content_chars'])) {
+                                    continue;
                                 }
+
+                                $excerpt = trim($fact['supporting_excerpt']);
+                                $fact['statement'] = trim($fact['statement']);
+                                $fact['domain_category'] = $category;
+                                $fact['extracted_from'] = $item['source']['domain'] ?? null;
+                                $fact['source_urls'] = [$sourceUrl];
+                                $fact['source_citations'] = [[
+                                    'url' => $sourceUrl,
+                                    'title' => $item['title'] ?? null,
+                                    'supporting_excerpt' => $excerpt,
+                                    'type' => 'extraction',
+                                ]];
+                                $fact['context_snippet'] = $excerpt;
+                                $fact['source_count'] = 1;
+                                $fact['llm_stated'] = false;
+                                $allFacts[] = $fact;
+                                $factsExtracted++;
                             }
                         }
                     }
                 }
 
                 Log::warning('ExtractPhase processed source', [
-                    'source' => $item['source']['domain'] ?? 'unknown',
                     'content_length' => $contentLen,
                     'facts_extracted' => $factsExtracted,
                 ]);
 
             } catch (Exception $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 Log::warning('ExtractPhase fact extraction failed', [
-                    'source' => $item['source']['domain'] ?? 'unknown',
-                    'error' => $e->getMessage(),
+                    'exception_class' => $e::class,
                 ]);
             }
         }
@@ -761,12 +815,58 @@ PROMPT;
         ];
     }
 
+    private static function isEvidenceUrl(mixed $value): bool
+    {
+        if (! is_string($value) || ! filter_var($value, FILTER_VALIDATE_URL)) {
+            return false;
+        }
+
+        $parts = parse_url($value);
+
+        return is_array($parts)
+            && in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            && ! empty($parts['host'])
+            && ! isset($parts['user'])
+            && ! isset($parts['pass']);
+    }
+
+    private static function hasSourceAttribution(array $fact): bool
+    {
+        if (! is_string($fact['statement'] ?? null) || trim($fact['statement']) === '' || ! is_string($fact['context_snippet'] ?? null) || trim($fact['context_snippet']) === '' || ! is_array($fact['source_urls'] ?? null) || ! $fact['source_urls']) {
+            return false;
+        }
+
+        foreach ($fact['source_urls'] as $url) {
+            if (! self::isEvidenceUrl($url)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function hasSourceExcerpt(array $fact, string $sourceContent, int $maxContentChars): bool
+    {
+        $statement = $fact['statement'] ?? null;
+        $excerpt = $fact['supporting_excerpt'] ?? null;
+        if (! is_string($statement) || ! is_string($excerpt) || trim($statement) === '' || trim($excerpt) === '') {
+            return false;
+        }
+
+        $normalizedSource = preg_replace('/\s+/u', ' ', mb_substr($sourceContent, 0, $maxContentChars));
+        $normalizedExcerpt = preg_replace('/\s+/u', ' ', trim($excerpt));
+
+        return is_string($normalizedSource)
+            && is_string($normalizedExcerpt)
+            && str_contains($normalizedSource, $normalizedExcerpt);
+    }
+
     /**
      * Phase 4: Verify extracted facts
      */
     public function verifyPhase(array $mission, array|string $facts, array $options = []): array
     {
-        if (!is_array($facts)) {
+        if (! is_array($facts)) {
             Log::warning('Research mission verifyPhase received non-array facts payload', [
                 'mission_id' => $mission['id'] ?? null,
                 'facts_type' => gettype($facts),
@@ -781,6 +881,7 @@ PROMPT;
         $maxVerificationFacts = max(1, (int) ($options['max_verification_facts'] ?? count($facts)));
         $factsToVerify = array_slice($facts, 0, $maxVerificationFacts);
         $skippedFacts = max(0, count($facts) - count($factsToVerify));
+        $notVerifiedFacts = 0;
 
         if ($skippedFacts > 0) {
             Log::info('Research mission verification capped', [
@@ -792,8 +893,23 @@ PROMPT;
         }
 
         foreach ($factsToVerify as $fact) {
+            if (! is_array($fact) || ! self::hasSourceAttribution($fact)) {
+                $skippedFacts++;
+                $notVerifiedFacts++;
+
+                continue;
+            }
+
+            $factHash = hash('sha256', strtolower(trim($fact['statement'])));
+            if ($this->isDuplicateFact($factHash)['duplicate']) {
+                $skippedFacts++;
+                $notVerifiedFacts++;
+
+                continue;
+            }
+
             $verificationResult = $this->vettingService->verifyFact($fact, $verificationLevel, [
-                'skip_recursive' => !empty($options['skip_recursive']),
+                'skip_recursive' => ! empty($options['skip_recursive']),
             ]);
 
             $fact['verification_result'] = $verificationResult;
@@ -821,7 +937,7 @@ PROMPT;
             'rejected_facts' => $rejectedFacts,
             'pending_facts' => $pendingFacts,
             'verification_level' => $verificationLevel,
-            'attempted_facts' => count($factsToVerify),
+            'attempted_facts' => count($factsToVerify) - $notVerifiedFacts,
             'skipped_facts' => $skippedFacts,
         ];
     }
@@ -831,15 +947,20 @@ PROMPT;
      */
     public function synthesizePhase(array $mission, array $verifiedFacts, array $rawContent): array
     {
+        if (! $verifiedFacts) {
+            return ['success' => true, 'report' => 'No source-backed facts were verified. Research remains incomplete.'];
+        }
+
+        $policy = $this->runtimePolicy()['synthesis'];
         $query = $mission['query_template'];
         $category = $mission['domain_category'];
 
         // Build fact summary
-        $factStatements = array_map(fn($f) => "- " . $f['statement'] . " (confidence: " . round(($f['verification_result']['confidence_score'] ?? 0) * 100) . "%)", $verifiedFacts);
-        $factSummary = implode("\n", array_slice($factStatements, 0, 30));
+        $factStatements = array_map(fn ($f) => '- '.$f['statement'].' (confidence: '.round(($f['verification_result']['confidence_score'] ?? 0) * 100).'%)', $verifiedFacts);
+        $factSummary = implode("\n", array_slice($factStatements, 0, $policy['max_facts']));
 
         // Build source summary
-        $sourceSummary = implode("\n", array_map(fn($c) => "- " . ($c['source']['domain'] ?? 'unknown'), array_slice($rawContent, 0, 10)));
+        $sourceSummary = implode("\n", array_map(fn ($c) => '- '.($c['source']['domain'] ?? 'unknown'), array_slice($rawContent, 0, $policy['max_sources'])));
 
         $prompt = <<<PROMPT
 Synthesize research findings about: {$query}
@@ -857,14 +978,14 @@ Output requirements:
 - Only include verified facts - no speculation
 - Note confidence only for uncertain items
 - Skip obvious context the user already knows
-- Keep total output under 500 words
+- Keep total output under {$policy['max_words']} words
 
 Format: Brief markdown, sections only if needed.
 PROMPT;
 
         try {
             $result = $this->aiService->process($prompt, [
-                'max_tokens' => 3000,
+                'max_tokens' => $policy['max_tokens'],
                 'factual_mode' => true,
             ]);
 
@@ -874,7 +995,10 @@ PROMPT;
             ];
 
         } catch (Exception $e) {
-            Log::warning('Report synthesis failed', ['error' => $e->getMessage()]);
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+            Log::warning('Report synthesis failed', ['exception_class' => $e::class]);
 
             // Fallback: simple fact list
             return [
@@ -892,14 +1016,18 @@ PROMPT;
      */
     public function indexPhase(string $missionId, array $verifiedFacts, string $report): array
     {
+        if (! $verifiedFacts) {
+            return ['success' => true, 'indexed_count' => 0, 'pending_review' => 0];
+        }
+
         // Check if auto-indexing is enabled for this mission
-        $mission = DB::connection($this->connection)->select("
+        $mission = DB::connection($this->connection)->select('
             SELECT auto_index_to_rag FROM research_missions WHERE id = ?
-        ", [$missionId]);
+        ', [$missionId]);
 
-        $autoIndex = !empty($mission) && ($mission[0]->auto_index_to_rag ?? false);
+        $autoIndex = ! empty($mission) && ($mission[0]->auto_index_to_rag ?? false);
 
-        if (!$autoIndex) {
+        if (! $autoIndex) {
             Log::info('Research mission facts queued for human review (auto_index_to_rag = false)', [
                 'mission_id' => $missionId,
                 'facts_count' => count($verifiedFacts),
@@ -907,7 +1035,7 @@ PROMPT;
 
             // Mark facts as pending review instead of indexing
             foreach ($verifiedFacts as $fact) {
-                if (!empty($fact['verification_result']['fact_hash'])) {
+                if (! empty($fact['verification_result']['fact_hash'])) {
                     try {
                         DB::connection($this->connection)->update("
                             UPDATE research_facts
@@ -938,32 +1066,42 @@ PROMPT;
             // Extract the actual embedding array from the result
             $embedding = $embeddingResult['embedding'] ?? null;
 
-            if (!empty($embedding) && is_array($embedding)) {
+            if (! empty($embedding) && is_array($embedding)) {
                 $embeddingStr = PgVector::literal($embedding);
-
-                DB::connection($this->connection)->insert("
-                    INSERT INTO rag_documents (title, content, embedding, metadata, created_at)
-                    VALUES (?, ?, ?::vector, ?::jsonb, CURRENT_TIMESTAMP)
-                ", [
-                    "Research Report: Mission {$missionId}",
-                    $report,
-                    $embeddingStr,
-                    json_encode([
+                $contentHash = hash('sha256', trim($report));
+                $metadata = app(RagEmbeddingProvenanceService::class)->attach(
+                    [
                         'type' => 'research_report',
                         'mission_id' => $missionId,
                         'fact_count' => count($verifiedFacts),
-                    ]),
+                    ],
+                    $embeddingResult,
+                    $contentHash
+                );
+
+                DB::connection($this->connection)->insert('
+                    INSERT INTO rag_documents (title, content, embedding, metadata, content_hash, created_at)
+                    VALUES (?, ?, ?::vector, ?::jsonb, ?, CURRENT_TIMESTAMP)
+                ', [
+                    "Research Report: Mission {$missionId}",
+                    $report,
+                    $embeddingStr,
+                    json_encode($metadata, JSON_THROW_ON_ERROR),
+                    $contentHash,
                 ]);
 
                 $indexedCount++;
             }
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::warning('Failed to index report to RAG', ['error' => $e->getMessage()]);
         }
 
         // Mark verified facts as indexed
         foreach ($verifiedFacts as $fact) {
-            if (!empty($fact['verification_result']['fact_hash'])) {
+            if (! empty($fact['verification_result']['fact_hash'])) {
                 try {
                     DB::connection($this->connection)->update("
                         UPDATE research_facts
@@ -992,14 +1130,20 @@ PROMPT;
         $seen = [];
 
         foreach ($facts as $fact) {
-            $statement = strtolower(trim($fact['statement'] ?? ''));
+            $statement = mb_strtolower(trim($fact['statement'] ?? ''));
             $hash = md5($statement);
 
-            // Simple hash-based dedup
-            if (!isset($seen[$hash])) {
-                $seen[$hash] = true;
+            if (! isset($seen[$hash])) {
+                $seen[$hash] = count($unique);
                 $unique[] = $fact;
+
+                continue;
             }
+
+            $index = $seen[$hash];
+            $unique[$index]['source_urls'] = array_values(array_unique(array_merge($unique[$index]['source_urls'] ?? [], $fact['source_urls'] ?? [])));
+            $unique[$index]['source_citations'] = array_merge($unique[$index]['source_citations'] ?? [], $fact['source_citations'] ?? []);
+            $unique[$index]['source_count'] = count($unique[$index]['source_urls']);
         }
 
         return $unique;
@@ -1021,17 +1165,17 @@ PROMPT;
             $totalContent += $contentLength;
 
             // API content (like PubMed) is high quality
-            if (!empty($item['is_api'])) {
+            if (! empty($item['is_api'])) {
                 $apiContent += $contentLength;
                 $substantiveContent += $contentLength;
             }
             // Followed article links are usually good content
-            elseif (!empty($item['is_followed_article'])) {
+            elseif (! empty($item['is_followed_article'])) {
                 $articleContent += $contentLength;
                 $substantiveContent += $contentLength;
             }
             // Search results pages have lower value
-            elseif (!empty($item['is_search_results'])) {
+            elseif (! empty($item['is_search_results'])) {
                 // Only count 10% of search results page content
                 $substantiveContent += $contentLength * 0.1;
             }
@@ -1083,118 +1227,19 @@ PROMPT;
     }
 
     /**
-     * Extract enhanced LLM knowledge based on content quality
-     * Poor content quality = more comprehensive LLM knowledge extraction
-     */
-    private function extractEnhancedLLMKnowledge(
-        string $query,
-        string $category,
-        string $qualityLevel,
-        array $existingFacts = []
-    ): array {
-        // If content quality is good, use standard extraction
-        if ($qualityLevel === 'good') {
-            return $this->vettingService->extractLLMKnowledge($query, $category);
-        }
-
-        // For fair/poor quality, do enhanced extraction
-        $existingStatements = array_map(
-            fn($f) => $f['statement'] ?? '',
-            array_slice($existingFacts, 0, 10)
-        );
-        $existingContext = !empty($existingStatements)
-            ? "\n\nAlready discovered (don't repeat): " . implode('; ', $existingStatements)
-            : '';
-
-        $depthInstruction = $qualityLevel === 'poor'
-            ? "Provide comprehensive factual information as web sources yielded limited data."
-            : "Supplement the limited web-sourced data with additional relevant facts.";
-
-        $prompt = <<<PROMPT
-Research query: {$query}
-Domain: {$category}
-
-{$depthInstruction}
-{$existingContext}
-
-Provide specific, verifiable facts about this topic. Focus on:
-- Key statistics and numbers
-- Important dates and timelines
-- Named entities (people, organizations, places)
-- Technical specifications or medical data
-- Recent developments or changes
-
-Return ONLY a JSON array of facts:
-[{"statement": "specific fact", "confidence": 0.7-0.95, "fact_type": "statistic|date|entity|technical|development", "source": "llm_knowledge"}]
-
-Rules:
-- Only include facts you are confident about
-- Be specific with numbers, dates, names
-- Max 15 facts
-- No speculation or generalizations
-- Mark confidence 0.7-0.8 for common knowledge, 0.8-0.9 for well-established facts, 0.9-0.95 for widely verified facts
-PROMPT;
-
-        try {
-            $result = $this->aiService->process($prompt, [
-                'max_tokens' => 2500,
-                'factual_mode' => true,
-            ]);
-
-            $facts = [];
-            // AIService returns 'response' not 'content'
-            $aiResponse = $result['response'] ?? $result['content'] ?? '';
-            if (!empty($aiResponse)) {
-                if (preg_match('/\[[\s\S]*?\]/m', $aiResponse, $matches)) {
-                    $parsed = json_decode($matches[0], true);
-                    if (is_array($parsed)) {
-                        foreach ($parsed as $fact) {
-                            if (!empty($fact['statement'])) {
-                                $fact['source_type'] = 'llm_enhanced';
-                                $fact['quality_level'] = $qualityLevel;
-                                $facts[] = $fact;
-                            }
-                        }
-                    }
-                }
-            }
-
-            Log::warning('Enhanced LLM knowledge extraction', [
-                'quality_level' => $qualityLevel,
-                'facts_extracted' => count($facts),
-            ]);
-
-            return [
-                'success' => true,
-                'facts' => $facts,
-                'enhanced' => true,
-                'quality_level' => $qualityLevel,
-            ];
-
-        } catch (Exception $e) {
-            Log::warning('Enhanced LLM knowledge extraction failed', [
-                'error' => $e->getMessage(),
-            ]);
-
-            // Fall back to standard extraction
-            return $this->vettingService->extractLLMKnowledge($query, $category);
-        }
-    }
-
-    /**
      * Get mission by ID
      */
     public function getMission(string $missionId): ?array
     {
-        $result = DB::connection($this->connection)->select("
+        $result = DB::connection($this->connection)->select('
             SELECT * FROM research_missions WHERE id = ?
-        ", [$missionId]);
+        ', [$missionId]);
 
         if (empty($result)) {
             return null;
         }
 
-        $mission = (array)$result[0];
+        $mission = (array) $result[0];
         $mission['constraints'] = json_decode($mission['constraints'] ?? '{}', true);
         $mission['phase_details'] = json_decode($mission['phase_details'] ?? '{}', true);
 
@@ -1215,14 +1260,14 @@ PROMPT;
                 $params[] = $value;
             } elseif (in_array($field, ['facts_discovered', 'facts_verified', 'sources_discovered', 'sources_used', 'error_count'])) {
                 $sets[] = "{$field} = ?";
-                $params[] = (int)$value;
+                $params[] = (int) $value;
             }
         }
 
         $params[] = $missionId;
 
         DB::connection($this->connection)->update(
-            "UPDATE research_missions SET " . implode(', ', $sets) . " WHERE id = ?",
+            'UPDATE research_missions SET '.implode(', ', $sets).' WHERE id = ?',
             $params
         );
     }
@@ -1232,11 +1277,11 @@ PROMPT;
      */
     private function updateMissionPhase(string $missionId, string $phase, int $progressPct): void
     {
-        DB::connection($this->connection)->update("
+        DB::connection($this->connection)->update('
             UPDATE research_missions
             SET current_phase = ?, progress_pct = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        ", [$phase, $progressPct, $missionId]);
+        ', [$phase, $progressPct, $missionId]);
     }
 
     /**
@@ -1244,11 +1289,11 @@ PROMPT;
      */
     private function storeReport(string $missionId, string $report): void
     {
-        DB::connection($this->connection)->update("
+        DB::connection($this->connection)->update('
             UPDATE research_missions
             SET report = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        ", [$report, $missionId]);
+        ', [$report, $missionId]);
     }
 
     /**
@@ -1272,7 +1317,8 @@ PROMPT;
      */
     private function generateUuid(): string
     {
-        $result = DB::connection($this->connection)->select("SELECT gen_random_uuid() as uuid");
+        $result = DB::connection($this->connection)->select('SELECT gen_random_uuid() as uuid');
+
         return $result[0]->uuid;
     }
 
@@ -1290,27 +1336,25 @@ PROMPT;
     public function isDuplicateFact(string $factHash): array
     {
         // Check rejected facts table first (fastest, most common case for recurring research)
-        $rejected = DB::connection($this->connection)->select("
-            SELECT fact_hash, rejection_reason FROM research_rejected_facts WHERE fact_hash = ?
-        ", [$factHash]);
+        $rejected = app(ResearchReviewService::class)->isRejectedFact($factHash);
 
-        if (!empty($rejected)) {
+        if ($rejected) {
             return [
                 'duplicate' => true,
-                'reason' => 'Previously rejected: ' . ($rejected[0]->rejection_reason ?? 'No reason given'),
+                'reason' => 'Previously rejected: '.($rejected['rejection_reason'] ?? 'No reason given'),
                 'source' => 'rejection_tracking',
             ];
         }
 
         // Check existing facts (approved, rejected, or pending)
-        $existing = DB::connection($this->connection)->select("
+        $existing = DB::connection($this->connection)->select('
             SELECT fact_hash, review_status FROM research_facts WHERE fact_hash = ?
-        ", [$factHash]);
+        ', [$factHash]);
 
-        if (!empty($existing)) {
+        if (! empty($existing)) {
             return [
                 'duplicate' => true,
-                'reason' => 'Exists with status: ' . $existing[0]->review_status,
+                'reason' => 'Exists with status: '.$existing[0]->review_status,
                 'source' => 'existing_facts',
             ];
         }
@@ -1331,14 +1375,14 @@ PROMPT;
             $embeddingResult = $this->aiService->generateEmbedding($factStatement);
             $embedding = $embeddingResult['embedding'] ?? null;
 
-            if (empty($embedding) || !is_array($embedding)) {
+            if (empty($embedding) || ! is_array($embedding)) {
                 return ['duplicate' => false, 'reason' => 'Could not generate embedding'];
             }
 
             $embeddingStr = PgVector::literal($embedding);
 
             // Search for high-similarity matches (>= 0.90)
-            $matches = DB::connection($this->connection)->select("
+            $matches = DB::connection($this->connection)->select('
                 SELECT
                     id,
                     title,
@@ -1347,12 +1391,12 @@ PROMPT;
                 WHERE 1 - (embedding <=> ?::vector) >= 0.90
                 ORDER BY similarity DESC
                 LIMIT 1
-            ", [$embeddingStr, $embeddingStr]);
+            ', [$embeddingStr, $embeddingStr]);
 
-            if (!empty($matches)) {
+            if (! empty($matches)) {
                 return [
                     'duplicate' => true,
-                    'reason' => 'Semantic duplicate of RAG doc #' . $matches[0]->id . ' (' . $matches[0]->title . ')',
+                    'reason' => 'Semantic duplicate of RAG doc #'.$matches[0]->id.' ('.$matches[0]->title.')',
                     'match_score' => round((float) $matches[0]->similarity, 4),
                     'match_id' => $matches[0]->id,
                 ];
@@ -1361,7 +1405,11 @@ PROMPT;
             return ['duplicate' => false];
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::debug('Semantic duplicate check failed', ['error' => $e->getMessage()]);
+
             return ['duplicate' => false, 'error' => $e->getMessage()];
         }
     }
@@ -1378,6 +1426,10 @@ PROMPT;
         $factStatement = $fact['statement'] ?? '';
         $factHash = hash('sha256', strtolower(trim($factStatement)));
 
+        if (! self::hasSourceAttribution($fact)) {
+            return ['success' => false, 'error' => 'A source URL and supporting excerpt are required'];
+        }
+
         try {
             // Build verification summary
             $verificationSummary = json_encode([
@@ -1387,25 +1439,25 @@ PROMPT;
                 'llm_confidence' => $fact['verification_result']['llm_confidence'] ?? 0,
             ]);
 
-            DB::connection($this->connection)->insert("
+            DB::connection($this->connection)->insert('
                 INSERT INTO research_facts (
                     id, mission_id, fact_statement, fact_hash, fact_type, domain_category,
                     context_snippet, verification_status, confidence_score, review_status,
-                    skip_reason, source_count, verification_summary, source_urls,
+                    skip_reason, source_count, verification_summary, source_urls, source_citations,
                     external_sources_checked, external_sources_confirmed, external_sources_denied,
                     rag_match_score, llm_confidence, needs_human_review
                 )
                 VALUES (
                     gen_random_uuid(), ?, ?, ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?, ?::jsonb, ?::jsonb,
+                    ?, ?, ?::jsonb, ?::jsonb, ?::jsonb,
                     ?, ?, ?,
                     ?, ?, ?
                 )
                 ON CONFLICT (fact_hash) DO UPDATE
                 SET mission_id = EXCLUDED.mission_id,
                     updated_at = CURRENT_TIMESTAMP
-            ", [
+            ', [
                 $missionId,
                 $factStatement,
                 $factHash,
@@ -1416,9 +1468,10 @@ PROMPT;
                 $fact['verification_result']['confidence_score'] ?? 0,
                 $reviewStatus,
                 $skipReason,
-                $fact['verification_result']['external_sources_checked'] ?? 0,
+                count(array_unique($fact['source_urls'])),
                 $verificationSummary,
                 json_encode($fact['source_urls'] ?? []),
+                json_encode($fact['source_citations'] ?? []),
                 $fact['verification_result']['external_sources_checked'] ?? 0,
                 $fact['verification_result']['external_sources_confirmed'] ?? 0,
                 $fact['verification_result']['external_sources_denied'] ?? 0,
@@ -1431,6 +1484,7 @@ PROMPT;
 
         } catch (Exception $e) {
             Log::debug('Failed to store fact', ['error' => $e->getMessage()]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -1457,6 +1511,7 @@ PROMPT;
             $mission = (array) $m;
             $mission['constraints'] = json_decode($mission['constraints'] ?? '{}', true);
             $mission['phase_details'] = json_decode($mission['phase_details'] ?? '{}', true);
+
             return $mission;
         }, $missions);
     }
@@ -1467,7 +1522,7 @@ PROMPT;
     public function updateNextRunTime(string $missionId): void
     {
         $mission = $this->getMission($missionId);
-        if (!$mission) {
+        if (! $mission) {
             return;
         }
 
@@ -1511,9 +1566,11 @@ PROMPT;
     public function executeMissionWithDeduplication(string $missionId): array
     {
         $mission = $this->getMission($missionId);
-        if (!$mission) {
+        if (! $mission) {
             return ['success' => false, 'error' => 'Mission not found'];
         }
+
+        $this->runtimePolicy();
 
         $startTime = microtime(true);
         $timeLimit = ($mission['time_limit_minutes'] ?? 30) * 60;
@@ -1537,10 +1594,11 @@ PROMPT;
             $this->updateMissionPhase($missionId, self::PHASE_DISCOVER, 10);
             $discoveryResult = $this->discoverPhase($mission);
 
-            if (!$discoveryResult['success'] || empty($discoveryResult['sources'])) {
+            if (! $discoveryResult['success'] || empty($discoveryResult['sources'])) {
                 $this->updateMissionStatus($missionId, 'failed', [
                     'last_error' => 'No sources discovered',
                 ]);
+
                 return ['success' => false, 'error' => 'No sources discovered'];
             }
 
@@ -1560,20 +1618,9 @@ PROMPT;
             $this->updateMissionPhase($missionId, self::PHASE_EXTRACT, 50);
             $extractResult = $this->extractPhase($mission, $gatherResult['content']);
 
-            // Assess content quality and extract enhanced LLM knowledge if needed
             $webFactCount = count($extractResult['facts'] ?? []);
             $contentQuality = $this->assessContentQuality($gatherResult['content'], $webFactCount);
-            $llmKnowledge = $this->extractEnhancedLLMKnowledge(
-                $mission['query_template'],
-                $mission['domain_category'],
-                $contentQuality['level'],
-                $extractResult['facts'] ?? []
-            );
-
-            $allFacts = array_merge(
-                $extractResult['facts'] ?? [],
-                $llmKnowledge['facts'] ?? []
-            );
+            $allFacts = $extractResult['facts'] ?? [];
             $deduplicationStats['facts_extracted'] = count($allFacts);
 
             if ((microtime(true) - $startTime) > $timeLimit) {
@@ -1586,6 +1633,10 @@ PROMPT;
             $rejectedFacts = [];
 
             foreach ($allFacts as $fact) {
+                if (! is_array($fact) || ! self::hasSourceAttribution($fact)) {
+                    continue;
+                }
+
                 $factStatement = $fact['statement'] ?? '';
                 $factHash = hash('sha256', strtolower(trim($factStatement)));
 
@@ -1597,6 +1648,7 @@ PROMPT;
                     } else {
                         $deduplicationStats['deduplicated_by_hash']++;
                     }
+
                     continue;
                 }
 
@@ -1612,6 +1664,7 @@ PROMPT;
                             'auto_skipped',
                             $semanticCheck['reason']
                         );
+
                         continue;
                     }
                 }
@@ -1628,8 +1681,9 @@ PROMPT;
                         $missionId,
                         $fact,
                         'auto_skipped',
-                        "Semantic duplicate: RAG match " . round($ragMatchScore * 100) . "%"
+                        'Semantic duplicate: RAG match '.round($ragMatchScore * 100).'%'
                     );
+
                     continue;
                 }
 
@@ -1696,6 +1750,9 @@ PROMPT;
             ];
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('Mission execution failed', [
                 'mission_id' => $missionId,
                 'error' => $e->getMessage(),
@@ -1729,16 +1786,16 @@ PROMPT;
             FROM research_missions
         ");
 
-        $recentMissions = DB::connection($this->connection)->select("
+        $recentMissions = DB::connection($this->connection)->select('
             SELECT id, title, status, progress_pct, current_phase, created_at
             FROM research_missions
             ORDER BY created_at DESC
             LIMIT 10
-        ");
+        ');
 
         return [
-            'summary' => (array)($missionStats[0] ?? []),
-            'recent_missions' => array_map(fn($r) => (array)$r, $recentMissions),
+            'summary' => (array) ($missionStats[0] ?? []),
+            'recent_missions' => array_map(fn ($r) => (array) $r, $recentMissions),
         ];
     }
 }

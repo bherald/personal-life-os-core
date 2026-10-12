@@ -8,7 +8,7 @@ applies 6x over-clustering split rule, outputs JSON assignments.
 Supports semi-supervised mode with --anchors for confirmed cluster centroids.
 
 Usage:
-    python3 face_clusterer.py --db-url "postgresql://user:pass@host/db"
+    php artisan faces:cluster --unnamed-only
     python3 face_clusterer.py --input embeddings.json --output clusters.json
     python3 face_clusterer.py --input embeddings.json --output clusters.json --dry-run
     python3 face_clusterer.py --input embeddings.json --output clusters.json --anchors anchors.json
@@ -49,33 +49,8 @@ def load_embeddings_from_json(path):
 
 
 def load_embeddings_from_db(db_url):
-    """Load unclustered embeddings directly from pgvector."""
-    try:
-        import psycopg2
-    except ImportError:
-        print(json.dumps({"success": False, "error": "psycopg2 not installed"}))
-        sys.exit(1)
-
-    conn = psycopg2.connect(db_url)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, embedding::text
-        FROM face_embeddings
-        WHERE person_cluster_id IS NULL
-        ORDER BY id
-    """)
-
-    data = []
-    for row in cur:
-        fid = row[0]
-        # Parse pgvector text format: [0.1,0.2,...]
-        emb_str = row[1].strip('[]')
-        embedding = [float(x) for x in emb_str.split(',')]
-        data.append({"id": fid, "embedding": embedding})
-
-    cur.close()
-    conn.close()
-    return data
+    """Raw PG rows lack the MySQL source/region/operator admission proof."""
+    raise ValueError("Direct database loading is unavailable; use faces:cluster current-face admission.")
 
 
 def load_anchors(path):
@@ -342,7 +317,7 @@ def main():
     parser = argparse.ArgumentParser(description='HDBSCAN face clustering')
     parser.add_argument('--input', '-i', help='Input JSON file (or - for stdin)')
     parser.add_argument('--output', '-o', help='Output JSON file (default: stdout)')
-    parser.add_argument('--db-url', help='PostgreSQL connection URL for direct DB access')
+    parser.add_argument('--db-url', help='Unsupported; use faces:cluster for current-face admission')
     parser.add_argument('--anchors', help='JSON file with confirmed cluster centroids for semi-supervised mode')
     parser.add_argument('--min-cluster-size', type=int, default=2)
     parser.add_argument('--min-samples', type=int, default=1)
@@ -352,11 +327,12 @@ def main():
 
     # Load embeddings
     if args.db_url:
-        data = load_embeddings_from_db(args.db_url)
+        print(json.dumps({"success": False, "error": "Direct database loading is unavailable; use faces:cluster current-face admission."}))
+        sys.exit(1)
     elif args.input:
         data = load_embeddings_from_json(args.input)
     else:
-        print(json.dumps({"success": False, "error": "Provide --input or --db-url"}))
+        print(json.dumps({"success": False, "error": "Provide an admitted --input file from faces:cluster"}))
         sys.exit(1)
 
     if not data:

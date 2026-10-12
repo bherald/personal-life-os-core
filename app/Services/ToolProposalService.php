@@ -27,39 +27,39 @@ class ToolProposalService implements ReviewApprovalHandler
      *
      * Called by agents via the `propose_tool` registered tool.
      *
-     * @param array $params Tool proposal from agent (merged with context by resolver):
-     *   - name (required): tool name (snake_case)
-     *   - service_class (required): fully qualified class name
-     *   - method (required): method name on service class
-     *   - description (required): what the tool does
-     *   - parameters (optional): JSON schema of parameters
-     *   - returns (optional): description of return value
-     *   - reason (optional): why the agent thinks this tool is needed
-     *   - category (optional): tool category
-     *   - risk_level (optional): read|write|destructive (default: read)
-     *   - agent_id (injected from context): agent proposing the tool
-     * @return array
+     * @param  array  $params  Tool proposal from agent (merged with context by resolver):
+     *                         - name (required): tool name (snake_case)
+     *                         - service_class (required): fully qualified class name
+     *                         - method (required): method name on service class
+     *                         - description (required): what the tool does
+     *                         - parameters (optional): JSON schema of parameters
+     *                         - returns (optional): description of return value
+     *                         - reason (optional): why the agent thinks this tool is needed
+     *                         - category (optional): tool category
+     *                         - risk_level (optional): read|write|destructive (default: read)
+     *                         - agent_id (injected from context): agent proposing the tool
      */
     public function propose(array $params): array
     {
         $agentId = $params['agent_id'] ?? 'unknown';
         $name = $params['name'] ?? null;
-        if (!$name) {
+        if (! $name) {
             return ['success' => false, 'error' => 'Tool name is required'];
         }
 
         // Validate name format
-        if (!preg_match('/^[a-z][a-z0-9_]{2,99}$/', $name)) {
+        if (! preg_match('/^[a-z][a-z0-9_]{2,99}$/', $name)) {
             return ['success' => false, 'error' => 'Tool name must be snake_case, 3-100 chars, start with letter'];
         }
 
         // Check for duplicate (existing or already proposed)
-        $existing = DB::select("SELECT name, source, enabled FROM agent_tool_registry WHERE name = ?", [$name]);
+        $existing = DB::select('SELECT name, source, enabled FROM agent_tool_registry WHERE name = ?', [$name]);
         if ($existing) {
             $row = $existing[0];
-            if ($row->source === 'agent_proposed' && !$row->enabled) {
+            if ($row->source === 'agent_proposed' && ! $row->enabled) {
                 return ['success' => false, 'error' => "Tool '{$name}' already proposed and awaiting review"];
             }
+
             return ['success' => false, 'error' => "Tool '{$name}' already exists in registry"];
         }
 
@@ -68,7 +68,7 @@ class ToolProposalService implements ReviewApprovalHandler
         $method = $params['method'] ?? null;
         $description = $params['description'] ?? null;
 
-        if (!$serviceClass || !$method || !$description) {
+        if (! $serviceClass || ! $method || ! $description) {
             return ['success' => false, 'error' => 'service_class, method, and description are required'];
         }
 
@@ -85,35 +85,35 @@ class ToolProposalService implements ReviewApprovalHandler
 
         $result = $this->toolRegistry->proposeTool($toolDef, $agentId);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return $result;
         }
 
         // Set optional fields that proposeTool doesn't handle
         $updates = [];
         $bindings = [];
-        if (!empty($params['category'])) {
+        if (! empty($params['category'])) {
             $updates[] = 'category = ?';
             $bindings[] = $params['category'];
         }
-        if (!empty($params['risk_level']) && in_array($params['risk_level'], ['read', 'write', 'destructive'])) {
+        if (! empty($params['risk_level']) && in_array($params['risk_level'], ['read', 'write', 'destructive'])) {
             $updates[] = 'risk_level = ?';
             $bindings[] = $params['risk_level'];
         }
-        if (!empty($params['notes'])) {
+        if (! empty($params['notes'])) {
             $updates[] = 'notes = ?';
             $bindings[] = $params['notes'];
         }
         if ($updates) {
             $bindings[] = $name;
-            DB::update("UPDATE agent_tool_registry SET " . implode(', ', $updates) . " WHERE name = ?", $bindings);
+            DB::update('UPDATE agent_tool_registry SET '.implode(', ', $updates).' WHERE name = ?', $bindings);
         }
 
         // Create review queue entry
         $reason = $params['reason'] ?? "Agent {$agentId} identified a capability gap";
         $reviewResult = $this->submitForReview($name, $agentId, $toolDef, $reason);
 
-        Log::info("ToolProposal: Tool proposed", [
+        Log::info('ToolProposal: Tool proposed', [
             'tool' => $name,
             'agent' => $agentId,
             'service' => $serviceClass,
@@ -151,9 +151,8 @@ class ToolProposalService implements ReviewApprovalHandler
      * The $token comes from the unified_id_template 'tool_proposal:{{token}}'.
      * We look up the review queue entry by token to find the tool name in details JSON.
      *
-     * @param string $token Review queue token from unified ID
-     * @param string|null $notes Optional reviewer notes
-     * @return array
+     * @param  string  $token  Review queue token from unified ID
+     * @param  string|null  $notes  Optional reviewer notes
      */
     public function approveProposal(string $token, ?string $notes = null): array
     {
@@ -163,14 +162,14 @@ class ToolProposalService implements ReviewApprovalHandler
             [$token]
         );
 
-        if (!$review) {
+        if (! $review) {
             return ['success' => false, 'error' => 'Review queue entry not found for token'];
         }
 
         $details = json_decode($review->details, true) ?: [];
         $toolName = $details['tool_name'] ?? null;
 
-        if (!$toolName) {
+        if (! $toolName) {
             return ['success' => false, 'error' => 'No tool_name in review details'];
         }
 
@@ -180,7 +179,7 @@ class ToolProposalService implements ReviewApprovalHandler
             [$toolName]
         );
 
-        if (!$rows) {
+        if (! $rows) {
             return ['success' => false, 'error' => "Proposed tool '{$toolName}' not found in registry"];
         }
 
@@ -198,7 +197,10 @@ class ToolProposalService implements ReviewApprovalHandler
         );
 
         if ($result['success']) {
-            Log::info("ToolProposal: Tool approved", ['tool' => $toolName, 'token' => $token]);
+            Log::info('ToolProposal: Tool approved', [
+                'tool' => $toolName,
+                'review_id' => (int) $review->id,
+            ]);
         }
 
         return array_merge($result, [
@@ -211,9 +213,8 @@ class ToolProposalService implements ReviewApprovalHandler
      *
      * Called by ReviewTypeRegistryService::callServiceMethod($token, $reason).
      *
-     * @param string $token Review queue token from unified ID
-     * @param string|null $reason Rejection reason
-     * @return array
+     * @param  string  $token  Review queue token from unified ID
+     * @param  string|null  $reason  Rejection reason
      */
     public function rejectProposal(string $token, ?string $reason = null): array
     {
@@ -222,14 +223,14 @@ class ToolProposalService implements ReviewApprovalHandler
             [$token]
         );
 
-        if (!$review) {
+        if (! $review) {
             return ['success' => false, 'error' => 'Review queue entry not found for token'];
         }
 
         $details = json_decode($review->details, true) ?: [];
         $toolName = $details['tool_name'] ?? null;
 
-        if (!$toolName) {
+        if (! $toolName) {
             return ['success' => false, 'error' => 'No tool_name in review details'];
         }
 
@@ -242,7 +243,7 @@ class ToolProposalService implements ReviewApprovalHandler
             [$reason, $token]
         );
 
-        Log::info("ToolProposal: Tool rejected", ['tool' => $toolName, 'reason' => $reason]);
+        Log::info('ToolProposal: Tool rejected', ['tool' => $toolName, 'reason' => $reason]);
 
         return [
             'success' => true,
@@ -258,13 +259,13 @@ class ToolProposalService implements ReviewApprovalHandler
     public function onApprove(int $itemId, array $details): array
     {
         $toolName = $details['tool_name'] ?? null;
-        if (!$toolName) {
+        if (! $toolName) {
             return ['success' => false, 'error' => 'No tool_name in review details'];
         }
 
         // Find the token for this review queue item
-        $review = DB::selectOne("SELECT token FROM agent_review_queue WHERE id = ?", [$itemId]);
-        if (!$review) {
+        $review = DB::selectOne('SELECT token FROM agent_review_queue WHERE id = ?', [$itemId]);
+        if (! $review) {
             return ['success' => false, 'error' => 'Review queue entry not found'];
         }
 
@@ -300,11 +301,12 @@ class ToolProposalService implements ReviewApprovalHandler
                 $token,
             ]);
 
-            $reviewId = (int) DB::selectOne("SELECT LAST_INSERT_ID() as id")->id;
+            $reviewId = (int) DB::selectOne('SELECT LAST_INSERT_ID() as id')->id;
 
             return ['success' => true, 'review_id' => $reviewId, 'token' => $token];
         } catch (\Throwable $e) {
-            Log::error("ToolProposal: Failed to create review entry", ['error' => $e->getMessage()]);
+            Log::error('ToolProposal: Failed to create review entry', ['error' => $e->getMessage()]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }

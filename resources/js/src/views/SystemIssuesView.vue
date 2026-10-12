@@ -96,7 +96,7 @@
             <div class="flex items-start justify-between">
               <div class="flex items-start space-x-3">
                 <!-- Severity Icon -->
-                <div class="text-2xl flex-shrink-0">
+                <div class="text-2xl shrink-0">
                   {{ getSeverityIcon(issue.severity, issue.status) }}
                 </div>
 
@@ -364,7 +364,7 @@
     </div>
 
     <!-- Issue Detail Modal -->
-    <div v-if="selectedIssue" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
+    <div v-if="selectedIssue" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div class="bg-black border-2 border-ops-orange rounded-r-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto ops-scroll">
         <div class="p-6">
           <div class="flex items-start justify-between mb-4">

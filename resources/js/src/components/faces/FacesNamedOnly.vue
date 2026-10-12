@@ -65,7 +65,7 @@
               v-model="searchDraft"
               type="search"
               maxlength="100"
-              class="min-w-0 flex-1 rounded border border-ops-plum/40 bg-black/20 px-2 py-1 text-xs text-ops-text outline-none placeholder:text-ops-text-muted/70 focus:border-ops-peach/50"
+              class="min-w-0 flex-1 rounded border border-ops-plum/40 bg-black/20 px-2 py-1 text-xs text-ops-text outline-hidden placeholder:text-ops-text-muted/70 focus:border-ops-peach/50"
               placeholder="Name or file"
               :disabled="namedOnlyLoading"
             />
@@ -217,6 +217,7 @@
               {{ selectedFace.person_name || 'Unnamed' }}
             </div>
             <div class="mt-1 text-xs text-ops-text-muted">Named-only face</div>
+            <p class="named-identity-claim">Stored label claim; confirm the person separately.</p>
             <div class="mt-1 flex flex-wrap gap-1">
               <span class="rounded border border-ops-plum/40 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-ops-text-muted">
                 {{ formatAge(selectedFace.backlog_age_hours) }}
@@ -264,6 +265,8 @@
             </div>
           </div>
         </div>
+
+        <button type="button" class="named-identity-button" @click="openIdentityEditor(selectedFace)">Confirm person for this face</button>
 
         <div
           v-if="faceGenealogyPostureBadges(selectedFace).length"
@@ -443,7 +446,7 @@
             v-model="assignmentValue"
             type="text"
             maxlength="120"
-            class="w-full rounded border border-ops-peach/40 bg-black/50 px-3 py-2 text-sm text-ops-text outline-none placeholder:text-ops-text-muted/70 focus:border-ops-peach"
+            class="w-full rounded border border-ops-peach/40 bg-black/50 px-3 py-2 text-sm text-ops-text outline-hidden placeholder:text-ops-text-muted/70 focus:border-ops-peach"
             placeholder="Person name or FT person"
             @input="onAssignmentInput"
             @keydown.enter.prevent="submitAssignment"
@@ -491,6 +494,9 @@
         </div>
       </div>
     </div>
+    <div v-if="identityFace" class="named-identity-dialog" role="dialog" aria-modal="true" aria-label="Confirm selected face identity">
+      <GlobalFaceIdentityEditor :face="identityFace" @close="identityFace = null" @staged="identityStaged" />
+    </div>
   </div>
 </template>
 
@@ -498,15 +504,16 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import api from '../../utils/api'
 import { useFacesData } from '../../composables/useFacesData'
+import GlobalFaceIdentityEditor from '../review/GlobalFaceIdentityEditor.vue'
 
 const props = defineProps({
   treeId: { type: [Number, String], default: null },
 })
 
-const emit = defineEmits(['linked', 'decided'])
+const emit = defineEmits(['linked', 'decided', 'identity-staged'])
 
 const {
-  namedOnlyFaces: faces,
+  namedOnlyFaces: storedFaces,
   namedOnlyTotal,
   namedOnlyLoading,
   namedOnlyDecisionState,
@@ -530,7 +537,11 @@ const {
   searchPersons,
 } = useFacesData()
 
+// Confirmed associations belong in People; legacy label controls remain for unresolved claims.
+const faces = computed(() => storedFaces.value.filter(face => !face.global_identity_uuid && !face.identity_uuid && face.assignment_source !== 'global_identity'))
+
 const selectedFaceId = ref(null)
+const identityFace = ref(null)
 const searchDraft = ref(namedOnlySearch.value)
 const candidatePayload = ref(null)
 const candidateLoading = ref(false)
@@ -567,6 +578,9 @@ const namedOnlySortOptions = [
 ]
 
 const selectedFace = computed(() => faces.value.find(face => face.face_id === selectedFaceId.value) || null)
+function openIdentityEditor(face) { if (face?.face_id) identityFace.value = face }
+function identityStaged(result) { emit('identity-staged', result) }
+watch(selectedFace, face => { if (!face || identityFace.value?.face_id !== face.face_id) identityFace.value = null; else if (identityFace.value) identityFace.value = face })
 const candidates = computed(() => candidatePayload.value?.candidates || [])
 const namedOnlyDecisionLabel = computed(() => {
   const filter = namedOnlyDecisionFilters.find(item => item.value === namedOnlyDecisionState.value)
@@ -711,7 +725,7 @@ function selectAssignmentSuggestion(suggestion) {
 async function submitAssignment() {
   const name = assignmentValue.value.trim()
   const ids = [...assignmentFaceIds.value]
-  if (!name || ids.length === 0 || assignmentSaving.value) return
+  if (!name || ids.length === 0 || assignmentSaving.value || ids.some(id => !faces.value.some(face => face.face_id === id))) return
 
   assignmentSaving.value = true
   assignmentError.value = ''
@@ -1140,7 +1154,7 @@ function decisionBadge(face) {
 }
 
 function faceImageAlt(face) {
-  return face?.person_name || 'Named-only face'
+  return face?.person_name ? `Stored label claim: ${face.person_name}` : 'Named-only face'
 }
 
 function faceFileLabel(face) {
@@ -1176,3 +1190,10 @@ function onImgError(e) {
   e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23333" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="14">?</text></svg>'
 }
 </script>
+
+<style scoped>
+.named-identity-button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--desk-line); border-radius: 8px; background: var(--desk-teal); color: white; font-weight: 650; }
+.named-identity-claim { color: var(--desk-muted); font-size: 13px; line-height: 1.5; margin-top: 6px; }
+.named-identity-dialog { position: fixed; inset: 0; z-index: 60; overflow-y: auto; padding: 20px; background: rgba(13, 34, 52, .65); display: grid; justify-items: center; align-content: start; }
+@media (max-width: 600px) { .named-identity-dialog { padding: 10px; } }
+</style>

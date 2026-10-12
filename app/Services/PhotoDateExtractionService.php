@@ -124,13 +124,22 @@ class PhotoDateExtractionService
         $exifResult = $this->extractFromExif($localPath);
         $result['sources_checked']['exif'] = $exifResult;
 
+        if (($exifResult['status'] ?? null) === 'held') {
+            return ['success' => false, 'status' => 'held', 'error' => $exifResult['error'] ?? 'Operator-confirmed capture date needs review.',
+                'sources_checked' => $result['sources_checked']];
+        }
+
         if ($exifResult['success']) {
             return [
                 'success' => true,
                 'date_taken' => $exifResult['date'],
+                'precision' => $exifResult['precision'] ?? 'exact',
+                'time_known' => $exifResult['time_known'] ?? true,
+                'requires_operator_review' => (bool) ($exifResult['requires_operator_review'] ?? false),
+                'provenance_claim' => $exifResult['provenance_claim'] ?? null,
                 'source' => $exifResult['source'],
                 'confidence' => $exifResult['confidence'],
-                'reasoning' => 'Date extracted from EXIF metadata',
+                'reasoning' => $exifResult['reasoning'] ?? 'Date extracted from EXIF metadata',
                 'sources_checked' => $result['sources_checked'],
             ];
         }
@@ -143,6 +152,7 @@ class PhotoDateExtractionService
             return [
                 'success' => true,
                 'date_taken' => $filenameResult['date'],
+                'precision' => $filenameResult['precision'],
                 'source' => 'filename_extracted',
                 'confidence' => $filenameResult['confidence'],
                 'reasoning' => "Date extracted from filename pattern: {$filenameResult['pattern_matched']}",
@@ -158,6 +168,7 @@ class PhotoDateExtractionService
             return [
                 'success' => true,
                 'date_taken' => $pathResult['date'],
+                'precision' => $pathResult['precision'],
                 'source' => 'path_extracted',
                 'confidence' => $pathResult['confidence'],
                 'reasoning' => "Date extracted from folder path: {$pathResult['matched_segment']}",
@@ -177,6 +188,7 @@ class PhotoDateExtractionService
                 return [
                     'success' => true,
                     'date_taken' => date('Y-m-d H:i:s', $mtime),
+                    'precision' => 'exact',
                     'source' => 'file_modified',
                     'confidence' => 0.20, // Low confidence - file could have been copied
                     'reasoning' => 'Using file modification date as fallback (low confidence)',
@@ -197,8 +209,24 @@ class PhotoDateExtractionService
             return ['success' => false, 'error' => 'File not found'];
         }
 
-        // Use exiftool to get date fields
+        // Check only the explicit marker written by the verified operator-date path.
+        // Unmarked XMP/IPTC dates are not promoted because AI or scanner metadata may use them.
         try {
+            $markerResult = Process::timeout(15)->run([
+                $this->exiftoolPath, '-json', '-G1', '-a', '-s',
+                '-XMP-dc:Source', '-XMP-photoshop:DateCreated', '-IPTC:DateCreated', $filePath,
+            ]);
+            $markerRows = $markerResult->successful() ? json_decode($markerResult->output(), true) : null;
+            if (! is_array($markerRows) || count($markerRows) !== 1 || ! is_array($markerRows[0] ?? null)
+                || ($markerRows[0]['SourceFile'] ?? null) !== $filePath
+                || isset($markerRows[0]['Error']) || isset($markerRows[0]['Warning'])) {
+                return ['success' => false, 'status' => 'held', 'error' => 'Date provenance could not be checked safely.'];
+            }
+            $operatorDate = $this->operatorDateFromExifMetadata($markerRows[0]);
+            if ($operatorDate !== null) {
+                return $operatorDate;
+            }
+
             $result = Process::timeout(15)->run([
                 $this->exiftoolPath, '-DateTimeOriginal', '-CreateDate', '-ModifyDate', '-j', $filePath,
             ]);
@@ -259,35 +287,59 @@ class PhotoDateExtractionService
         return ['success' => false, 'error' => 'No valid date fields in EXIF'];
     }
 
+    /** Pure provenance classification shared by bounded readers; a marker is not current approval. */
+    public function operatorDateFromExifMetadata(array $metadata): ?array
+    {
+        $marker = $metadata['XMP-dc:Source'] ?? null;
+        if ($marker === 'plos:operator-confirmed-date-only') {
+            $xmpDate = $this->parseOperatorDateOnly($metadata['XMP-photoshop:DateCreated'] ?? null);
+            $iptcDate = $this->parseOperatorDateOnly($metadata['IPTC:DateCreated'] ?? null);
+            if ($xmpDate === null || $iptcDate === null || $xmpDate !== $iptcDate) {
+                return ['success' => false, 'status' => 'held', 'error' => 'Operator-confirmed date tags are missing or conflict.'];
+            }
+
+            return ['success' => true, 'date' => $xmpDate.' 00:00:00', 'precision' => 'exact',
+                'time_known' => false, 'requires_operator_review' => true,
+                'provenance_claim' => 'operator_confirmed_date_only_marker', 'source' => 'exif_original', 'confidence' => 0.5,
+                'reasoning' => 'Date-only tags carry the PLOS operator-workflow marker; it is a provenance claim, not a current approval receipt. Time is unknown.'];
+        }
+
+        return null;
+    }
+
+    /** Parse only the full date forms emitted by the verified date-only writer. */
+    private function parseOperatorDateOnly(mixed $value): ?string
+    {
+        if (! is_string($value) || ! preg_match('/\A(\d{4})[:\-](\d{2})[:\-](\d{2})\z/', trim($value), $matches)) {
+            return null;
+        }
+        $date = sprintf('%04d-%02d-%02d', (int) $matches[1], (int) $matches[2], (int) $matches[3]);
+        $parsed = Carbon::createFromFormat('!Y-m-d', $date);
+
+        return $parsed && $parsed->format('Y-m-d') === $date ? $date : null;
+    }
+
     /**
      * Parse EXIF date format to standard datetime
      */
-    private function parseExifDate(string $exifDate): ?string
+    public function parseExifDate(mixed $exifDate): ?string
     {
-        // EXIF format: "2015:03:25 14:30:22" or "2015:03:25"
+        if (! is_string($exifDate)) {
+            return null;
+        }
         $exifDate = trim($exifDate);
-
-        // Skip invalid dates
-        if (preg_match('/^0000:00:00/', $exifDate) || empty($exifDate)) {
+        // Preserve the recorded wall clock, as this service already does; do not infer scan time.
+        if (! preg_match('/\A(\d{4})[:-](\d{2})[:-](\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?)?(?:Z|[+-](?:0\d|1[0-3]):[0-5]\d|[+-]14:00)?\z/', $exifDate, $parts)) {
+            return null;
+        }
+        [$year, $month, $day] = [(int) $parts[1], (int) $parts[2], (int) $parts[3]];
+        [$hour, $minute, $second] = [(int) ($parts[4] ?? 0), (int) ($parts[5] ?? 0), (int) ($parts[6] ?? 0)];
+        if (! checkdate($month, $day, $year) || $hour > 23 || $minute > 59 || $second > 59
+            || $year < 1800 || $year > now()->addYear()->year) {
             return null;
         }
 
-        // Convert EXIF format to standard
-        $exifDate = preg_replace('/^(\d{4}):(\d{2}):(\d{2})/', '$1-$2-$3', $exifDate);
-
-        try {
-            $carbon = Carbon::parse($exifDate);
-            // Sanity check - dates before 1800 or after now+1year are suspicious
-            if ($carbon->year < 1800 || $carbon->year > now()->addYear()->year) {
-                return null;
-            }
-
-            return $carbon->format('Y-m-d H:i:s');
-        } catch (\Exception $e) {
-            Log::debug('PhotoDateExtractionService: EXIF date parse failed', ['error' => $e->getMessage()]);
-
-            return null;
-        }
+        return sprintf('%04d-%02d-%02d %02d:%02d:%02d', $year, $month, $day, $hour, $minute, $second);
     }
 
     /**
@@ -302,6 +354,7 @@ class PhotoDateExtractionService
                     return [
                         'success' => true,
                         'date' => $date,
+                        'precision' => $this->datePrecisionFromMatches($matches),
                         'confidence' => 0.85, // High confidence for structured filenames
                         'pattern_matched' => $pattern,
                     ];
@@ -327,6 +380,7 @@ class PhotoDateExtractionService
                     return [
                         'success' => true,
                         'date' => $date,
+                        'precision' => $this->datePrecisionFromPathMatches($matches),
                         'confidence' => $this->getPathConfidence($matches),
                         'matched_segment' => $matchedSegment,
                     ];
@@ -367,6 +421,14 @@ class PhotoDateExtractionService
 
             return null;
         }
+    }
+
+    /**
+     * Preserve the precision actually present in a filename date match.
+     */
+    private function datePrecisionFromMatches(array $matches): string
+    {
+        return ! empty($matches[3]) ? 'exact' : (! empty($matches[2]) ? 'month' : 'year');
     }
 
     /**
@@ -430,6 +492,21 @@ class PhotoDateExtractionService
     }
 
     /**
+     * Preserve the calendar precision actually present in a path match.
+     */
+    private function datePrecisionFromPathMatches(array $matches): string
+    {
+        $m1 = strtolower((string) ($matches[1] ?? ''));
+        $m2 = strtolower((string) ($matches[2] ?? ''));
+        $hasNamedMonth = isset($this->monthNames[$m1]) || isset($this->monthNames[$m2]);
+        if ($hasNamedMonth || ctype_digit($m2)) {
+            return ! empty($matches[3]) ? 'exact' : 'month';
+        }
+
+        return ! empty($matches[3]) ? 'exact' : 'year';
+    }
+
+    /**
      * Get confidence score based on path specificity
      */
     private function getPathConfidence(array $matches): float
@@ -448,11 +525,16 @@ class PhotoDateExtractionService
      * Use AI to estimate date from visual content
      * Uses AIService->processImage() which handles:
      * - Ollama llava first (local GPU, single instance)
-     * - Falls back to Claude vision (20 parallel slots, API-based)
+     * - Falls back according to AIService provider policy
      */
-    public function estimateDateWithAI(string $filePath, AIService $aiService): array
-    {
-        $prompt = <<<'PROMPT'
+    public function estimateDateWithAI(
+        string $filePath,
+        AIService $aiService,
+        ?string $filename = null,
+        ?string $directoryContext = null
+    ): array {
+        $context = $this->dateEstimationContext($filePath, $filename, $directoryContext);
+        $prompt = <<<PROMPT
 Analyze this photograph and estimate when it was taken. Look for visual clues:
 
 1. Technology visible (phones, computers, TVs, cars)
@@ -460,6 +542,10 @@ Analyze this photograph and estimate when it was taken. Look for visual clues:
 3. Photo quality and format characteristics (black & white, sepia, color saturation)
 4. Architecture and signage styles
 5. Any visible dates, calendars, newspapers
+6. The file and folder names below, when they contain credible event or date clues
+
+File context: {$context}
+Treat scanner/import dates and generic sequence numbers as non-evidence. In the reasoning, distinguish visual clues from filename or folder clues.
 
 Provide your estimate in this exact format:
 ESTIMATED_YEAR: [4-digit year or range like "1995-2000"]
@@ -472,15 +558,13 @@ CONFIDENCE: none
 REASONING: [Why estimation is not possible]
 PROMPT;
 
-        // estimateWithClaude now uses processImage which handles Ollama→Claude fallback
-        return $this->estimateWithClaude($filePath, $prompt, $aiService);
+        return $this->estimateWithVisionPipeline($filePath, $prompt, $aiService);
     }
 
     /**
-     * Estimate date using Claude vision API (via processImage which handles Ollama→Claude fallback)
-     * Uses AIService's built-in slot management (20 parallel Claude slots)
+     * Estimate a date using the configured vision pipeline.
      */
-    private function estimateWithClaude(string $filePath, string $prompt, AIService $aiService): array
+    private function estimateWithVisionPipeline(string $filePath, string $prompt, AIService $aiService): array
     {
         try {
             if (! file_exists($filePath)) {
@@ -493,7 +577,6 @@ PROMPT;
                 return ['success' => false, 'error' => 'Could not read file'];
             }
 
-            // Use AIService's processImage which handles Ollama→Claude fallback with slot management
             // Set suppressAlert=true since we're in a batch process with fallback handling
             $result = $aiService->processImage($imageContent, $prompt, ['suppressAlert' => true]);
 
@@ -524,20 +607,32 @@ PROMPT;
                 return ['success' => false, 'error' => 'AI could not estimate date', 'provider' => $provider];
             }
 
-            // Handle range (take midpoint)
+            $year = null;
+            $estimateLabel = null;
+
+            // The database review contract currently stores one catalog date
+            // and a precision label, so keep the earliest year as a stable
+            // year-only sort value and preserve the full interval in evidence.
             if (preg_match('/(\d{4})-(\d{4})/', $yearStr, $rangeMatch)) {
-                $year = (int) (((int) $rangeMatch[1] + (int) $rangeMatch[2]) / 2);
+                $startYear = (int) $rangeMatch[1];
+                $endYear = (int) $rangeMatch[2];
+                if ($startYear > $endYear) {
+                    return ['success' => false, 'error' => 'AI returned an invalid year range', 'provider' => $provider];
+                }
+                $year = $startYear;
+                $estimateLabel = "Estimated year range: {$startYear}-{$endYear}";
+                $yearRange = ['start' => $startYear, 'end' => $endYear];
             } else {
                 $year = (int) $yearStr;
+                $estimateLabel = "Estimated year: {$year}";
+                $yearRange = null;
             }
 
-            // Higher confidence for Claude (better model)
-            $baseConfidence = $provider === 'claude' ? 0.40 : 0.30;
-            $confidence = $baseConfidence;
+            $confidence = 0.30;
             if (preg_match('/CONFIDENCE:\s*(high)/i', $response)) {
-                $confidence = $provider === 'claude' ? 0.60 : 0.50;
+                $confidence = 0.50;
             } elseif (preg_match('/CONFIDENCE:\s*(medium)/i', $response)) {
-                $confidence = $provider === 'claude' ? 0.50 : 0.40;
+                $confidence = 0.40;
             }
 
             $reasoning = '';
@@ -547,9 +642,11 @@ PROMPT;
 
             return [
                 'success' => true,
-                'date' => sprintf('%04d-06-15 12:00:00', $year), // Mid-year estimate
+                'date' => sprintf('%04d-01-01 00:00:00', $year),
+                'precision' => 'year',
                 'confidence' => $confidence,
-                'reasoning' => "AI visual analysis ({$provider}): {$reasoning}",
+                'reasoning' => "{$estimateLabel}; precision: year. AI visual analysis ({$provider}): {$reasoning}",
+                'year_range' => $yearRange,
                 'raw_response' => $response,
                 'provider' => $provider,
             ];
@@ -561,71 +658,25 @@ PROMPT;
     /**
      * Write date back to EXIF metadata in the physical file
      */
-    public function writeExifDate(string $filePath, string $date): array
-    {
-        if (! file_exists($filePath)) {
-            return ['success' => false, 'error' => 'File not found'];
+    public function writeExifDate(
+        string $filePath,
+        string $date,
+        string $source = '',
+        float $confidence = 0.0,
+        string $precision = ''
+    ): array {
+        if ($precision !== 'exact') {
+            return ['success' => false, 'error' => 'Approximate dates cannot be written as confirmed EXIF dates'];
+        }
+        if ($confidence < 0.70) {
+            return ['success' => false, 'error' => 'Confidence too low for direct EXIF write'];
+        }
+        if ($source === '' || str_starts_with($source, 'ai') || str_starts_with($source, 'exif_')
+            || $this->isScanContext($filePath, basename($filePath))) {
+            return ['success' => false, 'error' => 'EXIF and scan dates cannot be written as confirmed capture dates'];
         }
 
-        // Format date for EXIF (YYYY:MM:DD HH:MM:SS)
-        try {
-            $carbon = Carbon::parse($date);
-            $exifDate = $carbon->format('Y:m:d H:i:s');
-        } catch (\Exception $e) {
-            return ['success' => false, 'error' => 'Invalid date format'];
-        }
-
-        // Use exiftool to write date (creates backup by default)
-        try {
-            $result = Process::timeout(30)->run([
-                $this->exiftoolPath,
-                '-overwrite_original',
-                "-DateTimeOriginal={$exifDate}",
-                "-CreateDate={$exifDate}",
-                $filePath,
-            ]);
-
-            $output = $result->output().$result->errorOutput();
-
-            if ($result->failed()) {
-                Log::warning('PhotoDateExtractionService: exiftool write failed', [
-                    'path' => $filePath,
-                    'exitCode' => $result->exitCode(),
-                    'output' => mb_substr($output, 0, 300),
-                ]);
-
-                return [
-                    'success' => false,
-                    'error' => 'exiftool write failed',
-                    'output' => $output,
-                ];
-            }
-
-            // Check if successful
-            if (str_contains($output, '1 image files updated')) {
-                return [
-                    'success' => true,
-                    'message' => 'EXIF date written successfully',
-                    'exif_date' => $exifDate,
-                ];
-            }
-
-            return [
-                'success' => false,
-                'error' => 'exiftool write did not confirm update',
-                'output' => $output,
-            ];
-        } catch (\Exception $e) {
-            Log::warning('PhotoDateExtractionService: exiftool write exception', [
-                'path' => $filePath,
-                'error' => $e->getMessage(),
-            ]);
-
-            return [
-                'success' => false,
-                'error' => 'exiftool write failed: '.$e->getMessage(),
-            ];
-        }
+        return app(ExifWritebackService::class)->writeDate($filePath, $date, $source, $confidence);
     }
 
     /**
@@ -687,12 +738,20 @@ PROMPT;
      * Instructs the model to estimate the original photo date based on visual
      * scene content, explicitly ignoring the digitization/scan year.
      */
-    public function estimateDateWithAIScanContext(string $filePath, AIService $aiService, ?string $scanDate, string $scanContext): array
-    {
-        $scanYear = $scanDate ? date('Y', strtotime($scanDate)) : 'recently';
+    public function estimateDateWithAIScanContext(
+        string $filePath,
+        AIService $aiService,
+        ?string $scanDate,
+        string $scanContext,
+        ?string $filename = null,
+        ?string $directoryContext = null
+    ): array {
+        $meaningfulScanDate = $scanDate && ! str_starts_with($scanDate, '1970-01-01') ? $scanDate : null;
+        $scanYear = $meaningfulScanDate ? date('Y', strtotime($meaningfulScanDate)) : 'an unknown date';
+        $context = $this->dateEstimationContext($filePath, $filename, $directoryContext);
 
         $prompt = <<<PROMPT
-This image is a scanned photograph. It was digitized in {$scanYear}. Your task is to estimate when the ORIGINAL photograph was taken — NOT when it was scanned.
+This image is a scanned photograph. It was digitized at {$scanYear}. Your task is to estimate when the ORIGINAL photograph was taken — NOT when it was scanned.
 
 Look for visual clues in the scene content:
 1. Technology visible (phones, computers, TVs, cars, appliances, cameras)
@@ -701,8 +760,12 @@ Look for visual clues in the scene content:
 4. Photo format cues (slide mount edges, Polaroid border, print texture, age fading)
 5. Architecture, vehicles, and visible signage
 6. Any visible dates, newspapers, calendars, or event banners
+7. The file and folder names below, when they contain credible event or date clues
 
-The digitization year ({$scanYear}) reflects when the photo was scanned — ignore it entirely for your estimate.
+File context: {$context}
+Treat scanner/import dates and generic sequence numbers as non-evidence. In the reasoning, distinguish visual clues from filename or folder clues.
+
+The digitization date ({$scanYear}) reflects when the photo was scanned — ignore it entirely for your estimate.
 
 Respond in this exact format:
 ESTIMATED_YEAR: [4-digit year or range like "1965-1970"]
@@ -715,7 +778,7 @@ CONFIDENCE: none
 REASONING: [why estimation is not possible]
 PROMPT;
 
-        return $this->estimateWithClaude($filePath, $prompt, $aiService);
+        return $this->estimateWithVisionPipeline($filePath, $prompt, $aiService);
     }
 
     /**
@@ -725,7 +788,7 @@ PROMPT;
     {
         // Get file info
         $file = DB::selectOne('
-            SELECT id, current_path, filename, extension, date_taken, date_taken_source
+            SELECT id, current_path, filename, extension, date_taken, date_taken_source, date_needs_review
             FROM file_registry
             WHERE id = ?
         ', [$fileId]);
@@ -737,6 +800,10 @@ PROMPT;
         // User-set dates are authoritative — never override
         if ($file->date_taken && $file->date_taken_source === 'user_manual') {
             return ['success' => true, 'skipped' => true, 'reason' => 'User-set date preserved'];
+        }
+
+        if ((int) ($file->date_needs_review ?? 0) === 1) {
+            return ['success' => true, 'skipped' => true, 'reason' => 'Existing date evidence requires operator review'];
         }
 
         // High-confidence EXIF date: skip UNLESS scan context detected.
@@ -770,12 +837,13 @@ PROMPT;
         $result = $this->extractDate($fileId, $localPath, $file->filename, $file->current_path);
 
         // If primary extraction failed and AI service provided, try AI
-        if (! $result['success'] && $aiService) {
-            $aiResult = $this->estimateDateWithAI($localPath, $aiService);
+        if (! $result['success'] && ($result['status'] ?? null) !== 'held' && $aiService) {
+            $aiResult = $this->estimateDateWithAI($localPath, $aiService, $file->filename, $file->current_path);
             if ($aiResult['success']) {
                 $result = [
                     'success' => true,
                     'date_taken' => $aiResult['date'],
+                    'precision' => $aiResult['precision'] ?? 'year',
                     'source' => 'ai_estimated',
                     'confidence' => $aiResult['confidence'],
                     'reasoning' => $aiResult['reasoning'],
@@ -784,13 +852,14 @@ PROMPT;
         }
 
         if (! $result['success']) {
-            // Mark as processed but no date found
+            // Conflicting operator-marker tags need review and must not fall through to AI.
             DB::update('
                 UPDATE file_registry
                 SET date_extracted_at = NOW(),
-                    date_taken_reasoning = ?
+                    date_taken_reasoning = ?,
+                    date_needs_review = ?
                 WHERE id = ?
-            ', ['No date could be extracted from any source', $fileId]);
+            ', ['No date applied; retained metadata evidence requires review.', ($result['status'] ?? null) === 'held' ? 1 : 0, $fileId]);
 
             return $result;
         }
@@ -799,22 +868,38 @@ PROMPT;
         DB::update('
             UPDATE file_registry
             SET date_taken = ?,
+                date_taken_precision = ?,
                 date_taken_source = ?,
                 date_taken_confidence = ?,
                 date_taken_reasoning = ?,
-                date_extracted_at = NOW()
+                date_extracted_at = NOW(),
+                date_needs_review = ?
             WHERE id = ?
         ', [
             $result['date_taken'],
+            $result['precision'] ?? 'exact',
             $result['source'],
             $result['confidence'],
             $result['reasoning'],
+            ! empty($result['requires_operator_review']) ? 1 : 0,
             $fileId,
         ]);
 
         // Optionally write back to EXIF (only for non-EXIF sources with high confidence)
-        if ($writeExif && ! str_starts_with($result['source'], 'exif_') && $result['confidence'] >= 0.70) {
-            $writeResult = $this->writeExifDate($localPath, $result['date_taken']);
+        if ($writeExif
+            && ($result['precision'] ?? 'exact') === 'exact'
+            && empty($result['requires_operator_review'])
+            && ! str_starts_with($result['source'], 'exif_')
+            && ! $this->isScanContext($file->current_path, $file->filename)
+            && $result['confidence'] >= 0.70
+        ) {
+            $writeResult = $this->writeExifDate(
+                $localPath,
+                $result['date_taken'],
+                $result['source'],
+                (float) $result['confidence'],
+                (string) ($result['precision'] ?? 'exact')
+            );
             if ($writeResult['success']) {
                 DB::update('UPDATE file_registry SET exif_written = 1 WHERE id = ?', [$fileId]);
                 $result['exif_written'] = true;
@@ -866,5 +951,15 @@ PROMPT;
         }
 
         return $this->basePath.'/'.ltrim($ncPath, '/');
+    }
+
+    private function dateEstimationContext(string $filePath, ?string $filename, ?string $directoryContext): string
+    {
+        $name = trim((string) ($filename ?: basename($filePath)));
+        $directory = trim((string) ($directoryContext ?: dirname($filePath)), '/');
+        $segments = array_values(array_filter(explode('/', str_replace('\\', '/', $directory))));
+        $folders = implode(' / ', array_slice($segments, -3));
+
+        return 'filename="'.mb_substr($name, 0, 240).'"; folders="'.mb_substr($folders, 0, 500).'"';
     }
 }

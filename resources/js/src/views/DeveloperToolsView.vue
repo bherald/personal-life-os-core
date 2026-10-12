@@ -94,11 +94,11 @@
         </div>
       </div>
 
-      <!-- OAuth Client Management Section -->
+      <!-- Personal Access Token Management Section -->
       <div class="ops-panel">
         <div class="ops-panel-header">
           <div class="ops-panel-header-bar bg-ops-gold"></div>
-          <h3 class="ops-panel-title">API TOKEN MANAGEMENT</h3>
+          <h3 class="ops-panel-title">READ-ONLY API TOKENS</h3>
           <div class="flex gap-2 ml-auto">
             <button
               @click="showCreateTokenModal = true"
@@ -132,7 +132,7 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"></path>
             </svg>
             <h3 class="mt-2 text-sm font-semibold text-ops-text">NO API TOKENS</h3>
-            <p class="mt-1 text-sm text-ops-text-muted">Create an API token to access the API programmatically</p>
+            <p class="mt-1 text-sm text-ops-text-muted">No scoped operational-status tokens are active</p>
           </div>
 
           <!-- Tokens List -->
@@ -145,14 +145,19 @@
                   <p class="text-xs text-ops-text-muted">
                     EXPIRES: {{ token.expires_at ? new Date(token.expires_at).toLocaleString() : 'NEVER' }}
                   </p>
-                  <p v-if="token.revoked" class="text-xs text-ops-alert font-semibold mt-1">REVOKED</p>
+                  <p
+                    class="text-xs font-semibold mt-1"
+                    :class="token.ops_status_access ? 'text-green-300' : 'text-ops-alert'"
+                  >
+                    ACCESS: {{ token.ops_status_access ? 'OPS STATUS READ' : 'NOT ADMITTED' }}
+                  </p>
                 </div>
                 <button
                   @click="revokeToken(token.id)"
-                  :disabled="revokingToken === token.id || token.revoked"
+                  :disabled="revokingToken === token.id"
                   class="ops-button ops-button-small ops-button-alert"
                 >
-                  {{ revokingToken === token.id ? 'REVOKING...' : token.revoked ? 'REVOKED' : 'REVOKE' }}
+                  {{ revokingToken === token.id ? 'REVOKING...' : 'REVOKE' }}
                 </button>
               </div>
             </div>
@@ -296,11 +301,11 @@
     </div>
 
     <!-- Create Token Modal -->
-    <div v-if="showCreateTokenModal" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+    <div v-if="showCreateTokenModal" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
       <div class="ops-modal">
         <div class="ops-modal-header">
           <div class="ops-modal-header-bar bg-ops-gold"></div>
-          <h3 class="ops-modal-title">CREATE API TOKEN</h3>
+          <h3 class="ops-modal-title">CREATE READ-ONLY TOKEN</h3>
         </div>
         <div class="ops-modal-content">
           <div class="space-y-4">
@@ -317,7 +322,7 @@
             <!-- Success - Show Token (only shown once) -->
             <div v-if="createdToken" class="ops-output-success">
               <p class="text-sm font-semibold text-green-300 mb-2">TOKEN CREATED SUCCESSFULLY</p>
-              <p class="text-xs text-green-400 mb-2">Copy this token now - it won't be shown again!</p>
+              <p class="text-xs text-green-400 mb-2">Copy this ops-status token now - it won't be shown again!</p>
               <div class="bg-black/50 border border-green-500/50 rounded p-2 font-mono text-xs break-all text-green-300">
                 {{ createdToken }}
               </div>
@@ -369,7 +374,7 @@ const retryingJob = ref(null);
 const deletingJob = ref(null);
 const expandedJobs = ref(new Set());
 
-// OAuth Token State
+// Personal Access Token State
 const accessTokens = ref([]);
 const loadingTokens = ref(false);
 const revokingToken = ref(null);
@@ -548,6 +553,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+@reference "../../../css/app.css";
 /* Ops Console-styled form elements */
 .ops-label {
   @apply block text-xs font-semibold text-ops-peach mb-2 tracking-wider;
@@ -556,12 +562,12 @@ onMounted(async () => {
 
 .ops-input {
   @apply w-full px-4 py-2 bg-black/50 border-2 border-ops-frame rounded text-ops-text;
-  @apply focus:outline-none focus:border-ops-orange focus:ring-1 focus:ring-ops-orange/50;
+  @apply focus:outline-hidden focus:border-ops-orange focus:ring-1 focus:ring-ops-orange/50;
 }
 
 .ops-select {
   @apply w-full px-4 py-2 bg-black/50 border-2 border-ops-frame rounded text-ops-text;
-  @apply focus:outline-none focus:border-ops-orange focus:ring-1 focus:ring-ops-orange/50;
+  @apply focus:outline-hidden focus:border-ops-orange focus:ring-1 focus:ring-ops-orange/50;
 }
 
 .ops-select option {

@@ -14,13 +14,83 @@
       <div class="ops-cap"></div>
     </div>
 
-    <div :class="props.embedded ? 'px-4 pb-4' : 'px-4 pb-6'">
+    <div :class="props.embedded ? 'review-content-shell px-4 pb-4' : 'px-4 pb-6'">
+      <div
+        v-if="pictureReviewMode"
+        class="picture-review-header mb-4 border-y border-ops-peach/30 bg-ops-peach/5 px-3 py-3 text-sm text-ops-text"
+      >
+        <div class="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div class="min-w-0 sm:mr-auto">
+            <div class="text-xs font-bold uppercase text-ops-peach">
+              Picture Match Approval
+            </div>
+            Approve &amp; link confirms the suggested person. Reject changes no identity link.
+          </div>
+          <div class="picture-review-header-actions">
+            <div class="picture-review-switch" role="tablist" aria-label="Picture review queue">
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="pictureReviewMode === 'matches'"
+                :class="{ active: pictureReviewMode === 'matches' }"
+                @click="switchPictureReviewMode('matches')"
+              >
+                <span>Match approval</span>
+                <span class="picture-review-count">{{ pictureReviewCount('matches') }}</span>
+              </button>
+            </div>
+            <a
+              :href="`/genealogy${pictureReviewTreeId ? `?tree_id=${pictureReviewTreeId}` : ''}`"
+              class="ops-btn ops-btn-sky shrink-0 text-xs"
+            >
+              Back to Genealogy
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <section class="review-run-bar" aria-labelledby="review-run-title">
+        <div class="review-run-copy">
+          <div class="review-run-kicker">Operator review</div>
+          <h2 id="review-run-title">{{ reviewRunTitle }}</h2>
+          <div class="review-run-status">{{ reviewRunStatus }}</div>
+        </div>
+        <div class="review-run-counts" aria-label="Current review queue counts">
+          <div>
+            <strong>{{ filteredItems.length }}</strong>
+            <span>loaded</span>
+          </div>
+          <div>
+            <strong>{{ scopedPendingCount }}</strong>
+            <span>{{ scopedPendingLabel }}</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          class="review-next-button"
+          :disabled="loading"
+          @click="openNextReview"
+        >
+          {{ nextReviewItem ? 'Review next' : 'No actionable items' }}
+        </button>
+      </section>
+
+      <details
+        class="review-tools"
+        :open="reviewToolsOpen"
+        @toggle="reviewToolsOpen = $event.currentTarget.open"
+      >
+        <summary>
+          <span>Queue controls</span>
+          <span>{{ reviewRunTitle }} · {{ scopedPendingCount }} {{ scopedPendingLabel }}</span>
+        </summary>
+        <div class="review-tools-body">
       <!-- Stats Row -->
       <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
         <div
           v-for="(stat, key) in reviewStats"
           :key="key"
-          v-show="key !== '_total' && !EXCLUDED_CATEGORIES.includes(stat.category) && (stat.total || 0) > 0"
+          v-show="key !== '_total' && stat.inspection_only !== true && !EXCLUDED_CATEGORIES.includes(stat.category) && (stat.total || 0) > 0"
           class="ops-stat-card"
           :style="getStatCardStyle(stat)"
           @click="filterByType(key)"
@@ -95,7 +165,7 @@
       <!-- Category Tabs + Show Expired -->
       <div class="flex flex-wrap items-center gap-2 mb-4">
         <button
-          @click="activeCategory = null; activeType = null"
+          @click="selectReviewCategory(null)"
           class="ops-tab"
           :class="{ active: activeCategory === null }"
         >
@@ -104,11 +174,11 @@
         <button
           v-for="(types, category) in typesByCategory"
           :key="category"
-          @click="activeCategory = category; activeType = null"
+          @click="selectReviewCategory(category)"
           class="ops-tab"
           :class="{ active: activeCategory === category }"
         >
-          {{ category }} ({{ getCategoryCount(category) }})
+          {{ reviewCategoryLabel(category) }} ({{ getCategoryCount(category) }})
         </button>
         <label class="flex items-center gap-1.5 cursor-pointer ml-auto">
           <input
@@ -118,14 +188,6 @@
             class="w-3.5 h-3.5 accent-ops-peach cursor-pointer"
           />
           <span class="text-xs text-ops-text-muted uppercase">Include Expired</span>
-        </label>
-        <label class="flex items-center gap-1.5 cursor-pointer">
-          <input
-            type="checkbox"
-            v-model="showDiagnosticRows"
-            class="w-3.5 h-3.5 accent-ops-peach cursor-pointer"
-          />
-          <span class="text-xs text-ops-text-muted uppercase">Diagnostics</span>
         </label>
       </div>
 
@@ -162,16 +224,6 @@
         </div>
       </div>
       <div
-        v-if="!showDiagnosticRows && hiddenDiagnosticCount > 0 && !targetRefActive"
-        class="mb-4 p-3 bg-ops-sky/10 border border-ops-sky/30 rounded text-sm text-ops-text"
-      >
-        <div class="font-bold text-ops-sky uppercase tracking-wide text-xs mb-1">Action-ready inbox</div>
-        <div>
-          Hiding {{ hiddenDiagnosticCount }} blocked, advisory, preview-only, or weak-identity row{{ hiddenDiagnosticCount === 1 ? '' : 's' }}.
-          Turn on Diagnostics to inspect them without mixing them into an approval pass.
-        </div>
-      </div>
-      <div
         v-else-if="activeType === 'genealogy_finding'"
         class="mb-4 p-3 bg-ops-orange/10 border border-ops-orange/30 rounded text-sm text-ops-text"
       >
@@ -187,7 +239,9 @@
         <label class="flex items-center gap-1.5">
           <span class="text-xs text-ops-text-muted uppercase">Sort</span>
           <select v-model="sortMode" class="bg-ops-black border border-ops-plum/40 text-ops-peach text-xs rounded px-2 py-0.5">
+            <option value="review_priority">Review priority</option>
             <option value="confidence_desc">Confidence high → low</option>
+            <option value="oldest_first">Oldest first</option>
             <option value="recent_first">Newest first</option>
             <option value="by_person">Group by person</option>
           </select>
@@ -202,6 +256,19 @@
           />
           <span class="text-xs text-ops-peach w-8">{{ confidenceThreshold }}%</span>
         </label>
+        <label v-if="producerOptions.length" class="flex items-center gap-1.5 min-w-0">
+          <span class="text-xs text-ops-text-muted uppercase">Producer</span>
+          <select
+            v-model="producerId"
+            class="max-w-56 min-w-0 bg-ops-black border border-ops-plum/40 text-ops-peach text-xs rounded px-2 py-0.5"
+            title="Filter pending review items by the agent or model that produced them"
+          >
+            <option value="">All producers</option>
+            <option v-for="producer in producerOptions" :key="producer.id" :value="producer.id">
+              {{ producer.id }} ({{ producer.count }})
+            </option>
+          </select>
+        </label>
         <div class="ml-auto flex items-center gap-2 text-xs">
           <span class="text-ops-text-muted uppercase">Today</span>
           <span class="text-ops-peach font-bold">{{ dailyReviewedCount }}</span>
@@ -210,55 +277,41 @@
         </div>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2 mb-4 p-2 bg-ops-sky/10 border border-ops-sky/20 rounded">
-        <label class="flex flex-1 min-w-[18rem] items-center gap-2">
-          <span class="text-xs text-ops-text-muted uppercase whitespace-nowrap">Target ref</span>
-          <input
-            v-model="targetRefQuery"
-            type="search"
-            class="flex-1 min-w-0 bg-ops-black border border-ops-sky/40 text-ops-peach text-xs rounded px-2 py-1 font-mono"
-            placeholder="genealogy_review_packet:target-..."
-            autocomplete="off"
-          />
-        </label>
-        <span v-if="targetRefActive" class="text-xs text-ops-text-muted">
-          {{ targetRefMatchCount }} match{{ targetRefMatchCount === 1 ? '' : 'es' }}
-        </span>
-        <span v-if="targetRefLookupLoading" class="text-xs text-ops-sky">
-          loading target
-        </span>
-        <span v-else-if="targetRefLookupError" class="text-xs text-ops-orange">
-          {{ targetRefLookupError }}
-        </span>
-        <button
-          v-if="targetRefLinkAvailable"
-          type="button"
-          class="ops-btn ops-btn-sky text-xs"
-          title="Copy target review link"
-          @click="copyTargetRefLink"
-        >
-          Copy link
-        </button>
-        <button
-          v-if="targetRefActive"
-          type="button"
-          class="ops-btn ops-btn-plum text-xs"
-          @click="clearTargetRefFilter"
-        >
-          Clear
-        </button>
+        </div>
+      </details>
+
+      <div
+        v-if="agentStatsUnavailable || agentFeedbackUnavailable"
+        role="status"
+        class="ops-panel mb-4 px-3 py-2 text-sm"
+        :style="{ color: 'var(--desk-amber)' }"
+      >
+        Agent summary unavailable.
       </div>
 
-      <!-- Phase 5: keyboard shortcut hint -->
-      <div class="text-[10px] text-ops-text-muted mb-2 uppercase tracking-wide">
-        Shortcuts: <kbd>J</kbd>/<kbd>K</kbd> next/prev · <kbd>A</kbd> approve · <kbd>R</kbd> reject · <kbd>X</kbd> close detail
-      </div>
+      <section
+        v-if="activeCategory === 'genealogy' && !activeType && !pictureReviewMode"
+        class="genealogy-decision-summary"
+        aria-labelledby="genealogy-decision-summary-title"
+      >
+        <div class="genealogy-decision-summary-copy">
+          <span class="genealogy-decision-kicker">FT4 people and facts</span>
+          <strong id="genealogy-decision-summary-title">
+            {{ genealogyDecisionCount === 0
+              ? 'No person or fact decisions are waiting'
+              : `${genealogyDecisionCount} person or fact ${genealogyDecisionCount === 1 ? 'decision' : 'decisions'} waiting` }}
+          </strong>
+          <span>
+            PLOS sends an item here only when a proposed person, relationship, fact, source, or media change needs your judgment.
+          </span>
+        </div>
+      </section>
 
       <!-- Main Content — Master/detail layout when a genealogy item is open
            (Phase 1 of Genealogy Review UI redesign). Falls back to full-width
            when no detail is open so the existing card list keeps its layout. -->
       <div :class="detailUnifiedId ? 'grid grid-cols-1 lg:grid-cols-12 gap-4' : ''">
-        <div :class="detailUnifiedId ? 'lg:col-span-5 min-w-0' : ''">
+        <div :class="detailUnifiedId ? 'hidden lg:block lg:col-span-5 min-w-0' : ''">
           <!-- Batch Actions -->
           <div v-if="selectedItems.length > 0" class="mb-4 flex items-center gap-3 p-3 bg-ops-plum/30 rounded-lg">
             <span class="text-ops-peach">{{ selectedItems.length }} selected</span>
@@ -277,7 +330,7 @@
             <div class="text-5xl mb-4">0</div>
             <div>{{ emptyStateMessage }}</div>
             <button
-              v-if="hasMore && !showDiagnosticRows && !targetRefActive"
+              v-if="hasMore"
               type="button"
               class="ops-btn ops-btn-sky text-xs mt-4"
               :disabled="loadingMore"
@@ -544,14 +597,17 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import api from '@/utils/api'
+import { loadResearchHubData } from '@/utils/researchHubLoader'
 import DynamicReviewCard from '@/components/review/DynamicReviewCard.vue'
 import ReviewDetailPane from '@/components/review/ReviewDetailPane.vue'
+import { nextReviewStreamItem, sortReviewQueueItems } from '@/utils/reviewQueue'
 import { resolveSurfaceThemeStyle } from '@/utils/reviewSchemaStyles'
 
 // Props for embedded mode (inside Knowledge Hub)
 const props = defineProps({
   embedded: { type: Boolean, default: false }
 })
+const emit = defineEmits(['review-counts-updated'])
 const route = useRoute()
 const router = useRouter()
 
@@ -561,6 +617,8 @@ const reviewTypes = ref({})
 const typesByCategory = ref({})
 const reviewStats = ref({})
 const agentStats = ref({ active: 0, completed_24h: 0, failed_24h: 0, pending_reviews: 0 })
+const agentStatsUnavailable = ref(false)
+const agentFeedbackUnavailable = ref(false)
 // Item 1: per-agent reviewer-feedback rollup from agentStatus endpoint.
 // Same shape the morning digest surfaces — array sorted by acceptance desc.
 const reviewerFeedback = ref([])
@@ -581,17 +639,16 @@ function topRejectReason(r) {
   return keys.length ? keys[0] : null
 }
 const items = ref([])
+const itemsTotal = ref(0)
 // Phase 1 (Genealogy Review UI redesign): which item is currently open
 // in the side-by-side detail pane. Null = pane closed, list takes full width.
 const detailUnifiedId = ref(null)
 // Phase 5 (queue ergonomics): sort + threshold + per-day quota nudge.
-const sortMode = ref('confidence_desc')   // 'confidence_desc' | 'recent_first' | 'by_person'
+const sortMode = ref('review_priority')
 const confidenceThreshold = ref(0)        // 0..95 in 5% increments
+const producerId = ref('')
+const producerCounts = ref({})
 const dailyQuotaTarget = ref(20)
-const targetRefQuery = ref('')
-const targetRefLookupLoading = ref(false)
-const targetRefLookupMiss = ref(null)
-const targetRefLookupError = ref('')
 
 // F4 fix: build the storage key from LOCAL date components on each
 // access (not UTC, not via a Vue computed). The previous version used
@@ -625,9 +682,11 @@ const selectedItem = ref(null)
 const selectedItems = ref([])
 const inFlightDecisions = ref(new Set())
 const showAgentPanel = ref(false)
+const reviewToolsOpen = ref(false)
 const showExpired = ref(false)
-const showDiagnosticRows = ref(false)
 const initializingFromRoute = ref(true)
+const pictureReviewMode = ref(null)
+const pictureReviewTreeId = ref(null)
 
 // Pagination / infinite scroll
 const PAGE_SIZE = 25
@@ -699,6 +758,9 @@ const DETAIL_REVIEW_TYPES = new Set([
   'genealogy_merge',
   'change_proposal',
   'genealogy_review_packet',
+  'ai_model_update',
+  'privacy',
+  'scan_date_legacy_metadata',
   DEFAULT_OPERATOR_REVIEW_TYPE,
 ])
 const PREVIEW_REQUIRED_GENEALOGY_CHANGE_TYPES = new Set([
@@ -719,19 +781,48 @@ const normalizeRouteString = (value) => {
   return normalized === '' ? null : normalized
 }
 
-const normalizeTargetRef = (value) => {
-  const text = `${value ?? ''}`.trim()
-  if (text === '') return null
-  const full = text.match(/^genealogy_review_packet:target-[a-f0-9]{12}$/i)
-  if (full) return full[0].toLowerCase()
-  const short = text.match(/^target-[a-f0-9]{12}$/i)
-  return short ? `genealogy_review_packet:${short[0].toLowerCase()}` : null
+const normalizePositiveRouteInt = (value) => {
+  const parsed = Number.parseInt(`${value ?? ''}`, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
 }
 
-const itemTargetRef = (item) => {
-  return normalizeTargetRef(item?.target_ref)
-    || normalizeTargetRef(item?.review_focus?.target_ref)
-    || normalizeTargetRef(item?.details?.target_ref)
+const reviewItemTreeId = (item) => normalizePositiveRouteInt(
+  item?.tree_id
+    ?? item?.details?.tree_id
+    ?? item?.details?.filters?.tree_id
+    ?? item?.review_focus?.tree_id
+    ?? item?.details?.metadata?.tree_id
+)
+
+const reviewItemFindingType = (item) => `${
+  item?.finding_type
+    ?? item?.details?.finding_type
+    ?? item?.details?.posture?.finding_type
+    ?? item?.review_focus?.finding_type
+    ?? ''
+}`.trim()
+
+const isPhotoAuditHold = (item) => {
+  const hold = item?.details?.packet?.metadata?.audit_hold
+    ?? item?.details?.metadata?.audit_hold
+    ?? item?.packet?.metadata?.audit_hold
+  return hold && typeof hold === 'object' && !Array.isArray(hold) && Object.keys(hold).length > 0
+}
+
+const filterPictureReviewItems = (sourceItems) => {
+  if (!pictureReviewMode.value) return sourceItems
+
+  return sourceItems.filter((item) => {
+    if (pictureReviewTreeId.value && reviewItemTreeId(item) !== pictureReviewTreeId.value) {
+      return false
+    }
+
+    if (pictureReviewMode.value === 'matches') {
+      return reviewItemType(item) === 'face'
+    }
+
+    return isReviewPacket(item) && (reviewItemFindingType(item) === 'face_person_source_repair_plan' || isPhotoAuditHold(item))
+  })
 }
 
 const scrollItemIntoView = async (unifiedId) => {
@@ -746,9 +837,32 @@ const scrollItemIntoView = async (unifiedId) => {
 
 const reviewItemType = (item) => item?.source || item?.review_type || null
 
+const pictureReviewCount = () => Number(reviewStats.value?.face?.visible_total ?? reviewStats.value?.face?.total ?? 0)
+
+const switchPictureReviewMode = (mode) => {
+  if (mode !== 'matches') return
+
+  pictureReviewMode.value = mode
+  activeType.value = 'face'
+  activeCategory.value = 'faces'
+  selectedItem.value = null
+  detailUnifiedId.value = null
+
+  router.replace({
+    query: {
+      ...route.query,
+      picture_review: mode,
+      type: undefined,
+      category: undefined,
+      target_ref: undefined,
+      unified_id: undefined,
+    },
+  }).catch(() => {})
+}
+
 const canOpenDetailForItem = (item) => {
   const type = reviewItemType(item)
-  return Boolean(type && DETAIL_REVIEW_TYPES.has(type))
+  return Boolean(type && (DETAIL_REVIEW_TYPES.has(type) || reviewTypes.value[type]))
 }
 
 const reviewItemFromContext = (payload, unifiedId) => {
@@ -814,12 +928,20 @@ const focusLinkedItem = async () => {
       return
     }
 
+    if (!isActionReadyInboxItem(target)) {
+      return
+    }
+
     const existingIndex = items.value.findIndex((item) => item.unified_id === target.unified_id)
     if (existingIndex === -1) {
       items.value.unshift(target)
     } else {
       items.value.splice(existingIndex, 1, target)
     }
+  }
+
+  if (!isActionReadyInboxItem(target)) {
+    return
   }
 
   selectedItem.value = target
@@ -829,116 +951,22 @@ const focusLinkedItem = async () => {
   await scrollItemIntoView(unifiedId)
 }
 
-const focusTargetRefItem = async (item) => {
-  if (!item?.unified_id) return
-
-  selectedItem.value = item
-  if (isReviewPacket(item)) {
-    detailUnifiedId.value = item.unified_id
-  }
-  await scrollItemIntoView(item.unified_id)
-}
-
-const loadedTargetRefItem = (value) => {
-  if (!value) return null
-  return items.value.find(item => itemTargetRef(item) === value) || null
-}
-
-const upsertReviewItem = (item) => {
-  if (!item?.unified_id) return null
-
-  const existingIndex = items.value.findIndex(candidate => candidate.unified_id === item.unified_id)
-  if (existingIndex === -1) {
-    items.value.unshift(item)
-  } else {
-    items.value.splice(existingIndex, 1, item)
-  }
-
-  return items.value.find(candidate => candidate.unified_id === item.unified_id) || item
-}
-
-const ensureTargetRefLoaded = async () => {
-  const requested = targetRef.value
-  if (!requested) return
-
-  const existing = loadedTargetRefItem(requested)
-  if (existing) {
-    await focusTargetRefItem(existing)
-    return
-  }
-
-  if (targetRefLookupLoading.value || targetRefLookupMiss.value === requested) {
-    return
-  }
-
-  targetRefLookupLoading.value = true
-  targetRefLookupError.value = ''
-
-  try {
-    const response = await api.get('/research-hub/items/by-target-ref', {
-      params: { target_ref: requested },
-    })
-
-    if (targetRef.value !== requested) {
-      return
-    }
-
-    const item = response.item || response.data?.item || null
-    if (item && itemTargetRef(item) === requested) {
-      targetRefLookupMiss.value = null
-      const inserted = upsertReviewItem(item)
-      await focusTargetRefItem(inserted)
-      return
-    }
-
-    targetRefLookupMiss.value = requested
-    targetRefLookupError.value = 'Target not found'
-  } catch (error) {
-    if (targetRef.value !== requested) {
-      return
-    }
-    if (error?.response?.status === 404) {
-      targetRefLookupMiss.value = requested
-      targetRefLookupError.value = 'Target not found'
-    } else {
-      targetRefLookupError.value = 'Target lookup failed'
-    }
-  } finally {
-    targetRefLookupLoading.value = false
-    if (targetRef.value && targetRef.value !== requested) {
-      await ensureTargetRefLoaded()
-    }
-  }
-}
-
 // Computed
 const totalPending = computed(() => {
-  if (!EXCLUDED_CATEGORIES.length) return reviewStats.value._total || 0
   return Object.entries(reviewStats.value)
-    .filter(([key, s]) => key !== '_total' && !EXCLUDED_CATEGORIES.includes(s.category))
-    .reduce((sum, [, s]) => sum + (s.total || 0), 0)
+    .filter(([key, stat]) => key !== '_total' && stat?.inspection_only !== true && !EXCLUDED_CATEGORIES.includes(stat.category))
+    .reduce((sum, [, stat]) => sum + Number(stat.total || 0), 0)
 })
 
+// Review lists and Next contain only rows with a supported operator action.
 const emptyStateMessage = computed(() => {
-  if (targetRefActive.value) {
-    if (targetRefLookupLoading.value) {
-      return `Loading packet for ${targetRef.value}.`
-    }
-    if (targetRefLookupMiss.value === targetRef.value) {
-      return `No pending packet was found for ${targetRef.value}.`
-    }
-    return targetRef.value
-      ? `No loaded packet matches ${targetRef.value}.`
-      : 'Enter a full genealogy review packet target ref.'
-  }
-
   const requestedId = normalizeRouteString(route.query.unified_id)
   if (requestedId) {
     return `No pending review item is available for ${requestedId} with the current filters.`
   }
 
-  if (!showDiagnosticRows.value && hiddenDiagnosticCount.value > 0) {
-    return 'No action-ready rows are visible. Diagnostics are hidden from this approval inbox.'
+  if (pictureReviewMode.value === 'matches') {
+    return 'No picture matches are waiting for identity approval.'
   }
 
   if (activeCategory.value === 'genealogy') {
@@ -950,104 +978,54 @@ const emptyStateMessage = computed(() => {
 
 const filteredItems = computed(() => {
   let result = items.value.filter(item => !EXCLUDED_CATEGORIES.includes(item.category))
-  if (targetRefQuery.value.trim() !== '' && !targetRef.value) {
-    return []
-  }
-  if (targetRef.value) {
-    return result.filter(item => itemTargetRef(item) === targetRef.value)
-  }
   if (activeType.value) result = result.filter(item => item.source === activeType.value || item.review_type === activeType.value)
   if (activeCategory.value) result = result.filter(item => item.category === activeCategory.value)
-  if (!showDiagnosticRows.value) {
-    result = result.filter(item => isActionReadyInboxItem(item))
-  }
+  result = filterPictureReviewItems(result)
+  result = result.filter(item => isActionReadyInboxItem(item))
   // Phase 5: confidence threshold filter (NULL confidence always passes — system alerts etc.)
   if (confidenceThreshold.value > 0) {
     const min = confidenceThreshold.value / 100
     result = result.filter(item => item.confidence === null || item.confidence === undefined || (item.confidence ?? 1) >= min)
   }
-  // Phase 5: sort
-  const sorted = [...result]
-  if (sortMode.value === 'confidence_desc') {
-    sorted.sort((a, b) => (b.confidence ?? -1) - (a.confidence ?? -1))
-  } else if (sortMode.value === 'recent_first') {
-    sorted.sort((a, b) => (new Date(b.created_at).getTime() || 0) - (new Date(a.created_at).getTime() || 0))
-  } else if (sortMode.value === 'by_person') {
-    // Cluster items by person_id, then within each cluster by confidence desc.
-    sorted.sort((a, b) => {
-      const ap = a.person_id ?? 0, bp = b.person_id ?? 0
-      if (ap !== bp) return ap - bp
-      return (b.confidence ?? -1) - (a.confidence ?? -1)
-    })
-  }
-  return sorted
+  return sortReviewQueueItems(result, sortMode.value)
 })
 
-const hiddenDiagnosticCount = computed(() => {
-  if (showDiagnosticRows.value || targetRef.value) {
-    return 0
+const scopedPendingCount = computed(() => {
+  if (pictureReviewMode.value) {
+    return pictureReviewCount(pictureReviewMode.value)
+  }
+  if (activeType.value) {
+    const stat = reviewStats.value?.[activeType.value]
+    return stat?.inspection_only === true ? 0 : Number(stat?.visible_total ?? stat?.total ?? 0)
+  }
+  if (activeCategory.value) {
+    return getCategoryCount(activeCategory.value)
   }
 
-  let result = items.value.filter(item => !EXCLUDED_CATEGORIES.includes(item.category))
-  if (activeType.value) result = result.filter(item => item.source === activeType.value || item.review_type === activeType.value)
-  if (activeCategory.value) result = result.filter(item => item.category === activeCategory.value)
-
-  return result.filter(item => !isActionReadyInboxItem(item)).length
+  return totalPending.value
 })
 
-const targetRef = computed(() => normalizeTargetRef(targetRefQuery.value))
-const targetRefActive = computed(() => targetRefQuery.value.trim() !== '')
-const targetRefMatchCount = computed(() => {
-  if (!targetRef.value) return 0
-  return items.value.filter(item => itemTargetRef(item) === targetRef.value).length
-})
-const targetRefLinkAvailable = computed(() => Boolean(targetRef.value))
-const targetRefShareUrl = computed(() => {
-  if (!targetRef.value || typeof window === 'undefined') return ''
-  const url = new URL(window.location.pathname, window.location.origin)
-  url.searchParams.set('target_ref', targetRef.value)
-  return url.toString()
+const scopedPendingLabel = computed(() => 'pending')
+
+const reviewRunTitle = computed(() => {
+  if (pictureReviewMode.value === 'matches') return 'Picture match decisions'
+  if (activeType.value) return reviewStats.value?.[activeType.value]?.label || 'Selected review queue'
+  if (activeCategory.value) return reviewCategoryLabel(activeCategory.value)
+  return 'All review work'
 })
 
-const clearTargetRefFilter = () => {
-  targetRefQuery.value = ''
-  targetRefLookupMiss.value = null
-  targetRefLookupError.value = ''
-}
+const nextReviewItem = computed(() => filteredItems.value[0] || null)
 
-const copyTargetRefLink = async () => {
-  if (!targetRefShareUrl.value) {
-    showToast('Enter a valid target ref first', 'error')
-    return
+const reviewRunStatus = computed(() => {
+  if (loading.value) return 'Loading current review work.'
+  if (nextReviewItem.value) {
+    const title = `${nextReviewItem.value.title || 'Review item'}`.trim().slice(0, 160)
+    return detailUnifiedId.value === nextReviewItem.value.unified_id
+      ? `Open: ${title}`
+      : `Next: ${title}`
   }
-  if (!navigator?.clipboard?.writeText) {
-    showToast('Clipboard unavailable', 'error')
-    return
-  }
-
-  try {
-    await navigator.clipboard.writeText(targetRefShareUrl.value)
-    showToast('Target link copied')
-  } catch (error) {
-    showToast('Failed to copy target link', 'error')
-  }
-}
-
-const syncTargetRefQueryParam = () => {
-  if (!targetRefActive.value) {
-    if (route.query.target_ref !== undefined) {
-      router.replace({ query: { ...route.query, target_ref: undefined } }).catch(() => {})
-    }
-    return
-  }
-
-  const normalized = targetRef.value
-  if (!normalized || normalizeTargetRef(route.query.target_ref) === normalized) {
-    return
-  }
-
-  router.replace({ query: { ...route.query, target_ref: normalized } }).catch(() => {})
-}
+  return 'No item is waiting in this scope.'
+})
 
 // N60: Duplicate proposal warning — persons with >1 pending proposal
 const duplicatePersonIds = computed(() => {
@@ -1081,14 +1059,27 @@ const cleanSummary = (val) => {
 
 // Methods
 const getCategoryCount = (category) => {
-  return Object.values(reviewStats.value)
-    .filter(s => s.category === category)
-    .reduce((sum, s) => sum + (s.total || 0), 0)
+  return Object.entries(reviewStats.value)
+    .filter(([, stat]) => stat.category === category && stat?.inspection_only !== true)
+    .reduce((sum, [, stat]) => sum + Number(stat.total || 0), 0)
 }
+
+const genealogyDecisionCount = computed(() => getCategoryCount('genealogy'))
+const REVIEW_CATEGORY_LABELS = {
+  agent: 'AI changes',
+  faces: 'Picture matches',
+  files: 'Files',
+  genealogy: 'Genealogy facts',
+  privacy: 'Privacy',
+  research: 'Research',
+}
+
+const reviewCategoryLabel = (category) => REVIEW_CATEGORY_LABELS[category]
+  || `${category || 'Other'}`.replaceAll('_', ' ')
 
 const visibleTypeFilters = computed(() => {
   return Object.entries(reviewStats.value)
-    .filter(([key, stat]) => key !== '_total' && !EXCLUDED_CATEGORIES.includes(stat.category) && (stat.total || 0) > 0)
+    .filter(([key, stat]) => key !== '_total' && stat?.inspection_only !== true && !EXCLUDED_CATEGORIES.includes(stat.category) && (stat.total || 0) > 0)
     .map(([key, stat]) => ({
       key,
       label: stat.label || key.replace(/_/g, ' '),
@@ -1097,13 +1088,73 @@ const visibleTypeFilters = computed(() => {
     }))
 })
 
+const producerOptions = computed(() => Object.entries({
+  ...(producerId.value && !producerCounts.value?.[producerId.value] ? { [producerId.value]: 0 } : {}),
+  ...(producerCounts.value || {}),
+})
+  .map(([id, count]) => ({ id, count: Number(count || 0) }))
+  .filter((producer) => producer.id && (producer.count > 0 || producer.id === producerId.value))
+  .sort((left, right) => left.id.localeCompare(right.id, undefined, { sensitivity: 'base' })))
+
+const resetFocusedReview = () => {
+  selectedItem.value = null
+  selectedItems.value = []
+  detailUnifiedId.value = null
+}
+
+const clearReviewRouteFocus = (query = {}) => {
+  router.replace({
+    query: {
+      ...route.query,
+      picture_review: undefined,
+      unified_id: undefined,
+      target_ref: undefined,
+      ...query,
+    },
+  }).catch(() => {})
+}
+
+const selectReviewCategory = (category) => {
+  pictureReviewMode.value = null
+  pictureReviewTreeId.value = null
+  activeCategory.value = category
+  activeType.value = null
+  resetFocusedReview()
+  clearReviewRouteFocus({
+    category: category || undefined,
+    type: undefined,
+  })
+}
+
 const filterByType = (typeName) => {
   const type = reviewTypes.value[typeName]
+  pictureReviewMode.value = null
+  pictureReviewTreeId.value = null
   activeType.value = typeName
   activeCategory.value = type?.category || null
+  resetFocusedReview()
+  clearReviewRouteFocus({
+    category: undefined,
+    type: typeName,
+  })
 }
 
 const getStatCardStyle = (stat) => resolveSurfaceThemeStyle(stat?.color, 'ops-plum')
+
+function emitReviewCounts() {
+  const actionableStats = Object.values(reviewStats.value || {})
+    .filter(stat => stat && typeof stat === 'object' && stat.inspection_only !== true)
+
+  emit('review-counts-updated', {
+    total: actionableStats.reduce((sum, stat) => sum + Number(stat.total || 0), 0),
+    categories: actionableStats
+      .reduce((counts, stat) => {
+        const category = stat.category || 'uncategorized'
+        counts[category] = (counts[category] || 0) + Number(stat.total || 0)
+        return counts
+      }, {}),
+  })
+}
 
 const buildItemParams = (offset = 0) => {
   const params = { limit: PAGE_SIZE, offset }
@@ -1113,30 +1164,54 @@ const buildItemParams = (offset = 0) => {
     params.category = activeCategory.value
   }
   if (showExpired.value) params.include_expired = true
+  if (producerId.value) params.agent_id = producerId.value
 
   return params
 }
 
+let loadGeneration = 0
+
 const loadData = async () => {
+  const generation = ++loadGeneration
   loading.value = true
+  loadingMore.value = false
+  agentStatsUnavailable.value = false
+  agentFeedbackUnavailable.value = false
   try {
     const itemParams = buildItemParams(0)
-    // Item 1: also fetch agents/status to pick up reviewer_feedback rollup.
-    // Done in parallel — no extra latency. Failure is non-blocking.
-    const [statsResp, itemsResp, agentStatusResp] = await Promise.all([
-      api.get('/research-hub/stats'),
-      api.get('/research-hub/items', { params: itemParams }),
-      api.get('/research-hub/agents/status').catch(() => null),
-    ])
+    // Queue data owns the loading state. Slow optional summaries update on
+    // their own so they cannot keep an otherwise usable review queue blank.
+    await loadResearchHubData(api, itemParams, {
+      onStats: (statsResp) => {
+        reviewStats.value = statsResp.visible_reviews || statsResp.reviews || {}
+        agentStats.value = statsResp.agents || agentStats.value
+        agentStatsUnavailable.value = false
+        emitReviewCounts()
+      },
+      onStatsError: (error) => {
+        agentStatsUnavailable.value = true
+        console.warn('Failed to load research hub stats:', error)
+      },
+      onAgentStatus: (agentStatusResp) => {
+        reviewerFeedback.value = Array.isArray(agentStatusResp.reviewer_feedback)
+          ? agentStatusResp.reviewer_feedback
+          : []
+        agentFeedbackUnavailable.value = false
+      },
+      onAgentStatusError: (error) => {
+        agentFeedbackUnavailable.value = true
+        console.warn('Failed to load research hub agent status:', error)
+      },
+      onItems: (response) => {
+        items.value = response.items || []
+        itemsTotal.value = Number(response.total || 0)
+        producerCounts.value = response.producer_counts || {}
+        hasMore.value = response.has_more || false
+        reviewTypes.value = response.types || {}
+      },
+    }, () => generation === loadGeneration)
 
-    reviewStats.value = statsResp.reviews || {}
-    agentStats.value = statsResp.agents || agentStats.value
-    items.value = itemsResp.items || []
-    hasMore.value = itemsResp.has_more || false
-    reviewTypes.value = itemsResp.types || {}
-    reviewerFeedback.value = (agentStatusResp && Array.isArray(agentStatusResp.reviewer_feedback))
-      ? agentStatusResp.reviewer_feedback
-      : []
+    if (generation !== loadGeneration) return
 
     // Group types by category (excluding faces when embedded)
     const grouped = {}
@@ -1150,35 +1225,42 @@ const loadData = async () => {
 
     // Set up scroll observer after items render
     await nextTick()
+    if (generation !== loadGeneration) return
     setupScrollObserver()
     await focusLinkedItem()
-    await ensureTargetRefLoaded()
+    if (generation !== loadGeneration) return
+    await maybeOpenFirstScopedReview()
   } catch (e) {
-    console.error('Failed to load research hub data:', e)
+    if (generation === loadGeneration) {
+      console.error('Failed to load research hub data:', e)
+    }
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 }
 
 const loadMore = async () => {
   if (loadingMore.value || !hasMore.value) return
+  const generation = loadGeneration
   loadingMore.value = true
   try {
     const params = buildItemParams(items.value.length)
     const resp = await api.get('/research-hub/items', { params })
+    if (generation !== loadGeneration) return
     const newItems = resp.items || []
     if (newItems.length > 0) {
       items.value.push(...newItems)
     }
     hasMore.value = resp.has_more || false
+    itemsTotal.value = Number(resp.total || itemsTotal.value)
     // Re-observe after new items render
     await nextTick()
+    if (generation !== loadGeneration) return
     setupScrollObserver()
-    await ensureTargetRefLoaded()
   } catch (e) {
-    console.error('Failed to load more items:', e)
+    if (generation === loadGeneration) console.error('Failed to load more items:', e)
   } finally {
-    loadingMore.value = false
+    if (generation === loadGeneration) loadingMore.value = false
   }
 }
 
@@ -1219,31 +1301,76 @@ const selectItem = (item) => {
   }
 }
 
+const maybeOpenFirstScopedReview = async () => {
+  const first = filteredItems.value[0]
+  const shouldOpenPictureMatch = pictureReviewMode.value === 'matches'
+  const shouldOpenPurposeBuiltReview = Boolean(activeType.value && first && requiresDetailDecision(first))
+  if ((!shouldOpenPictureMatch && !shouldOpenPurposeBuiltReview) || detailUnifiedId.value) {
+    return
+  }
+
+  if (!first) return
+
+  selectItem(first)
+  await nextTick()
+}
+
+const openNextReview = async () => {
+  if (!nextReviewItem.value) {
+    reviewToolsOpen.value = true
+    return
+  }
+
+  selectItem(nextReviewItem.value)
+  await nextTick()
+  document.querySelector('.detail-pane')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 const closeDetailPane = () => {
   detailUnifiedId.value = null
 }
 
-const onDetailApprove = (payload) => {
+const finishTerminalDetailDecision = async (unifiedId) => {
+  const isQueueStream = detailUnifiedId.value === unifiedId
+    && !normalizeRouteString(route.query.unified_id)
+  let nextItem = isQueueStream
+    ? nextReviewStreamItem(filteredItems.value, unifiedId)
+    : null
+
+  items.value = items.value.filter(item => item.unified_id !== unifiedId)
+
+  if (!nextItem && isQueueStream && hasMore.value) {
+    await loadMore()
+    nextItem = filteredItems.value[0] || null
+  }
+
+  if (nextItem && items.value.some(item => item.unified_id === nextItem.unified_id)) {
+    selectItem(nextItem)
+    await scrollItemIntoView(nextItem.unified_id)
+    return
+  }
+
+  if (selectedItem.value?.unified_id === unifiedId) selectedItem.value = null
+  detailUnifiedId.value = null
+}
+
+const onDetailApprove = async (payload) => {
   const unifiedId = decisionPayloadUnifiedId(payload)
   if (!unifiedId) return
 
-  items.value = items.value.filter(i => i.unified_id !== unifiedId)
-  if (selectedItem.value?.unified_id === unifiedId) selectedItem.value = null
-  detailUnifiedId.value = null
+  await finishTerminalDetailDecision(unifiedId)
   bumpDailyReviewed()
   showToast(decisionSuccessMessage(payload?.result, null, 'Item approved'))
   updateStats()
 }
 
-const onDetailReject = (payload) => {
+const onDetailReject = async (payload) => {
   const unifiedId = decisionPayloadUnifiedId(payload)
   if (!unifiedId) return
 
-  items.value = items.value.filter(i => i.unified_id !== unifiedId)
-  if (selectedItem.value?.unified_id === unifiedId) selectedItem.value = null
-  detailUnifiedId.value = null
+  await finishTerminalDetailDecision(unifiedId)
   bumpDailyReviewed()
-  showToast('Item rejected')
+  showToast(decisionSuccessMessage(payload?.result, null, 'Item rejected'))
   updateStats()
 }
 
@@ -1276,16 +1403,14 @@ const decisionPayloadUnifiedId = (payload) => {
 }
 
 // Phase 3: per-field apply succeeded — close detail and refresh list.
-const onDetailApplied = ({ unifiedId, result }) => {
+const onDetailApplied = async ({ unifiedId, result }) => {
   // Remove from the list only when the row went to approved server-side.
   // Stays-pending (undecided > 0 or failed > 0) keeps the row visible so
   // the operator can return to it. Toast is built from the structured
   // result fields so the operator sees what actually happened
   // (F1+F2+F3 introduced applied/kept_on_file/undecided/failed counters).
   if (result?.final_status === 'approved') {
-    items.value = items.value.filter(i => i.unified_id !== unifiedId)
-    if (selectedItem.value?.unified_id === unifiedId) selectedItem.value = null
-    detailUnifiedId.value = null
+    await finishTerminalDetailDecision(unifiedId)
     bumpDailyReviewed()
     const parts = [`${result.applied ?? 0} applied`, `${result.rejected ?? 0} rejected`]
     if (result.kept_on_file) parts.push(`${result.kept_on_file} kept on-file`)
@@ -1338,9 +1463,9 @@ const finishDecision = (unifiedId) => {
 }
 
 const handleApprove = async (item) => {
-  if (isReviewPacket(item)) {
+  if (requiresDetailDecision(item)) {
     selectItem(item)
-    showToast('Open packet detail to review source, claim, and preview context before marking reviewed', 'info')
+    showToast(detailDecisionPrompt(item, 'approve'), 'info')
     return
   }
 
@@ -1381,16 +1506,81 @@ function isReviewPacket(item) {
   return item?.review_type === 'genealogy_review_packet' || item?.source === 'genealogy_review_packet'
 }
 
+function isAiModelUpdate(item) {
+  return item?.review_type === 'ai_model_update' || item?.source === 'ai_model_update'
+}
+
+function isPrivacyReview(item) {
+  return item?.review_type === 'privacy' || item?.source === 'privacy'
+}
+
+function isScanDateReview(item) {
+  return item?.review_type === 'scan_date_estimate' || item?.source === 'scan_date_estimate'
+}
+
+function isLegacyScanMetadata(item) {
+  return item?.review_type === 'scan_date_legacy_metadata' || item?.source === 'scan_date_legacy_metadata'
+}
+
+function isSkillAuditReview(item) {
+  return reviewItemType(item) === 'skill_optimization'
+    && (reviewItemFindingType(item) === 'skill_audit'
+      || item?.details?.schema === 'agent_skill_audit_review_queue.v2')
+}
+
+function requiresDetailDecision(item) {
+  return item?.ui_schema?.inspection_only === true || isReviewPacket(item) || isAiModelUpdate(item) || isPrivacyReview(item) || isScanDateReview(item) || isLegacyScanMetadata(item) || isSkillAuditReview(item)
+}
+
+function detailDecisionPrompt(item, action) {
+  if (item?.ui_schema?.inspection_only === true) return 'Inspect the source evidence; no change action is available'
+  if (isAiModelUpdate(item)) {
+    return action === 'reject'
+      ? 'Open the portfolio detail to review all actions and enter a rejection reason'
+      : 'Open the portfolio detail to review sources, risks, validation, and the bounded approval scope'
+  }
+
+  if (isPrivacyReview(item)) {
+    return action === 'reject'
+      ? 'Open the privacy request to choose a rejection reason with the broker target visible'
+      : 'Open the privacy request to review the broker target and authorize specific field categories'
+  }
+
+  if (isScanDateReview(item)) {
+    return action === 'reject'
+      ? 'Open the scan-date review to inspect the photo and choose a rejection reason'
+      : 'Open the scan-date review to inspect the photo, evidence, and catalog-only approval boundary'
+  }
+
+  if (isLegacyScanMetadata(item)) {
+    return 'Open the live metadata inspection; this item has no approve, reject, or correction action'
+  }
+
+  if (isSkillAuditReview(item)) {
+    return action === 'reject'
+      ? 'Open the audit detail to review the findings and confirm the acknowledgement-only rejection effect'
+      : 'Open the audit detail to review advisories and confirm that approval applies no skill changes'
+  }
+
+  return action === 'reject'
+    ? 'Open packet detail to reject or request clarification with packet context visible'
+    : 'Open packet detail to review source, claim, and preview context before marking reviewed'
+}
+
 function decisionSuccessMessage(result, item, fallback) {
   const message = typeof result?.message === 'string' ? result.message.trim() : ''
   if (message) return message
   if (item && isAckOnlyGenealogyFinding(item)) return 'Acknowledged; no accepted FT facts were changed.'
   if (item && isReviewPacket(item)) return 'Packet marked reviewed; no accepted FT facts were changed.'
+  if (item && isAiModelUpdate(item)) return 'Portfolio review approved for bounded validation only; no model or route changed.'
+  if (item && isPrivacyReview(item)) return 'Privacy request authorized for later submission; no external action occurred.'
+  if (item && isScanDateReview(item)) return 'Scan date reviewed; no image metadata was written.'
+  if (item && isSkillAuditReview(item)) return 'Skill audit acknowledged; no skill or sidecar settings changed.'
   return fallback
 }
 
 function isBatchSelectable(item) {
-  return item?.batch_enabled === true && !isReviewPacket(item) && !isApproveBlocked(item)
+  return item?.batch_enabled === true && !requiresDetailDecision(item) && !isApproveBlocked(item)
 }
 
 function approvalLabel(item) {
@@ -1402,6 +1592,10 @@ function approvalLabel(item) {
     return 'Approve capture row'
   }
 
+  if (reviewItemType(item) === 'face') {
+    return 'Approve & link'
+  }
+
   if (genealogyFindingApprovalBlockReason(item)) {
     return 'Needs preview'
   }
@@ -1409,6 +1603,11 @@ function approvalLabel(item) {
   if (isAckOnlyGenealogyFinding(item)) {
     return 'Acknowledge'
   }
+
+  if (isAiModelUpdate(item)) return 'Open portfolio review'
+  if (isPrivacyReview(item)) return 'Review request'
+  if (isScanDateReview(item)) return 'Review photo date'
+  if (isSkillAuditReview(item)) return 'Review audit'
 
   return isReviewPacket(item) ? 'Open packet' : 'Approve'
 }
@@ -1427,6 +1626,8 @@ function updatePacketStatus(item, packetStatus) {
 
 function packetValidationErrorCount(item) {
   if (!isReviewPacket(item)) return 0
+  const compactCount = Number.parseInt(`${item?.validation_error_count ?? ''}`, 10)
+  if (Number.isFinite(compactCount) && compactCount >= 0) return compactCount
   const errors = item?.details?.validation?.errors
   return Array.isArray(errors) ? errors.length : 0
 }
@@ -1485,6 +1686,10 @@ function packetApprovalBlockReason(item) {
   }
 
   const focus = item?.review_focus
+  if (focus && focus.operator_vetable === false) {
+    return focus.operator_blocker_label || 'No viewable source image, document, or external source link is attached.'
+  }
+
   if (focus && focus.approval_ready === false) {
     return 'Open the packet detail and resolve preview-only readiness before marking reviewed'
   }
@@ -1492,12 +1697,31 @@ function packetApprovalBlockReason(item) {
   return null
 }
 
+function packetOperatorVetable(item) {
+  const focus = item?.review_focus || {}
+  if (focus.operator_vetable === false) return false
+  if (focus.operator_vetable === true) return true
+  const visibleEvidenceCount = Number(focus.visible_evidence_count ?? 0)
+  return Number.isFinite(visibleEvidenceCount) && visibleEvidenceCount > 0
+}
+
 function isEvidenceCaptureReview(item) {
   return item?.review_type === DEFAULT_OPERATOR_REVIEW_TYPE || item?.source === DEFAULT_OPERATOR_REVIEW_TYPE
 }
 
 function isActionReadyInboxItem(item) {
+  if (item?.ui_schema?.inspection_only === true) return false
+
+  const actions = Array.isArray(item?.actions) ? item.actions : []
+  if (!actions.some(action => action === 'approve' || action === 'reject')) return false
+
   const reviewType = item?.review_type || item?.source || ''
+
+  if (isReviewPacket(item)) {
+    const focus = item?.review_focus || {}
+    if (focus.operator_review_surface !== 'review') return false
+    if (focus.preview_only === true && focus.canonical_mutation === false) return false
+  }
 
   if (isEvidenceCaptureReview(item)) {
     return approvalBlockReason(item) === null
@@ -1507,6 +1731,14 @@ function isActionReadyInboxItem(item) {
     return approvalBlockReason(item) === null
       && item?.review_focus?.approval_ready !== false
       && item?.review_focus?.preview_only === true
+      && packetOperatorVetable(item)
+  }
+
+  if (reviewType === 'face') {
+    const imageAvailable = Number(item?.image_available ?? 1)
+    return Boolean(item?.image_url)
+      && imageAvailable !== 0
+      && approvalBlockReason(item) === null
   }
 
   if (reviewType === 'genealogy_finding') {
@@ -1561,9 +1793,9 @@ function partialNameOnlyBlockReason(item) {
 }
 
 const handleReject = async (item) => {
-  if (isReviewPacket(item)) {
+  if (requiresDetailDecision(item)) {
     selectItem(item)
-    showToast('Open packet detail to reject or request clarification with packet context visible', 'info')
+    showToast(detailDecisionPrompt(item, 'reject'), 'info')
     return
   }
 
@@ -1777,12 +2009,15 @@ function selectableSelectedIds() {
 }
 
 const updateStats = async () => {
+  const generation = loadGeneration
   try {
     const resp = await api.get('/research-hub/stats')
-    reviewStats.value = resp.reviews || {}
+    if (generation !== loadGeneration) return
+    reviewStats.value = resp.visible_reviews || resp.reviews || {}
     agentStats.value = resp.agents || agentStats.value
+    emitReviewCounts()
   } catch (e) {
-    console.error('Stats update failed:', e)
+    if (generation === loadGeneration) console.error('Stats update failed:', e)
   }
 }
 
@@ -1920,31 +2155,40 @@ const closeRenameModal = () => {
   renameResults.value = []
 }
 
-// When category/type changes, reload from offset 0
-watch([activeCategory, activeType], async () => {
+// Server-backed queue facets must reload from offset 0 so pagination remains exact.
+watch([activeCategory, activeType, producerId], async () => {
   if (initializingFromRoute.value) {
     return
   }
 
+  const generation = ++loadGeneration
   items.value = []
+  itemsTotal.value = 0
   hasMore.value = false
+  loadingMore.value = false
   selectedItem.value = null
   selectedItems.value = []
+  detailUnifiedId.value = null
   loading.value = true
   try {
     const params = buildItemParams(0)
     const resp = await api.get('/research-hub/items', { params })
+    if (generation !== loadGeneration) return
     items.value = resp.items || []
+    itemsTotal.value = Number(resp.total || 0)
+    producerCounts.value = resp.producer_counts || {}
     hasMore.value = resp.has_more || false
     reviewTypes.value = resp.types || reviewTypes.value
     await nextTick()
+    if (generation !== loadGeneration) return
     setupScrollObserver()
     await focusLinkedItem()
-    await ensureTargetRefLoaded()
+    if (generation !== loadGeneration) return
+    await maybeOpenFirstScopedReview()
   } catch (e) {
-    console.error('Failed to reload items:', e)
+    if (generation === loadGeneration) console.error('Failed to reload items:', e)
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
 })
 
@@ -1955,50 +2199,25 @@ watch(
   }
 )
 
-watch(
-  () => route.query.target_ref,
-  (value) => {
-    targetRefQuery.value = normalizeRouteString(value) || ''
-  }
-)
-
-watch(targetRefQuery, syncTargetRefQueryParam)
-
-watch(
-  targetRef,
-  async (value, oldValue) => {
-    if (value !== oldValue) {
-      targetRefLookupMiss.value = null
-      targetRefLookupError.value = ''
-    }
-    if (value) {
-      await ensureTargetRefLoaded()
-    }
-  }
-)
-
 // Lifecycle
 onMounted(async () => {
   const requestedCategory = normalizeRouteString(route.query.category)
   const requestedType = normalizeRouteString(route.query.type)
+  const requestedPictureReview = normalizeRouteString(route.query.picture_review)
   const includeExpired = ['1', 'true', 'yes'].includes(`${route.query.include_expired ?? ''}`.toLowerCase())
-  const requestedTargetRef = normalizeRouteString(route.query.target_ref)
-  const requestedUnifiedId = normalizeRouteString(route.query.unified_id)
-
-  if (requestedType) {
+  if (requestedPictureReview === 'matches') {
+    pictureReviewMode.value = 'matches'
+    pictureReviewTreeId.value = normalizePositiveRouteInt(route.query.tree_id)
+    activeType.value = 'face'
+    activeCategory.value = 'faces'
+  } else if (requestedType) {
     activeType.value = requestedType
   } else if (requestedCategory) {
     activeCategory.value = requestedCategory
-  } else if (!requestedTargetRef && !requestedUnifiedId) {
-    activeType.value = DEFAULT_OPERATOR_REVIEW_TYPE
   }
 
   if (includeExpired) {
     showExpired.value = true
-  }
-
-  if (requestedTargetRef) {
-    targetRefQuery.value = requestedTargetRef
   }
 
   await loadData()
@@ -2061,11 +2280,235 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.review-run-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: .75rem;
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-accent);
+  border-radius: .25rem;
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-primary));
+  padding: .85rem 1rem;
+  color: var(--color-text-primary);
+}
+
+.review-run-copy {
+  min-width: 0;
+}
+
+.review-run-kicker {
+  color: var(--color-accent);
+  font-size: .65rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.review-run-copy h2 {
+  margin: .1rem 0;
+  color: var(--color-text-primary);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.review-run-status {
+  color: var(--color-text-secondary);
+  font-size: .75rem;
+  line-height: 1.4;
+}
+
+.review-run-counts {
+  display: flex;
+  align-items: stretch;
+  gap: .4rem;
+}
+
+.review-run-counts > div {
+  display: grid;
+  min-width: 3.75rem;
+  justify-items: center;
+  border-left: 1px solid var(--color-border);
+  padding: .1rem .55rem;
+}
+
+.review-run-counts strong {
+  color: var(--color-text-primary);
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.review-run-counts span {
+  color: var(--color-text-secondary);
+  font-size: .6rem;
+  text-transform: uppercase;
+}
+
+.review-next-button {
+  min-height: 2.5rem;
+  border: 1px solid var(--color-accent);
+  border-radius: .25rem;
+  background: var(--color-accent);
+  color: white;
+  padding: .55rem .9rem;
+  font-size: .78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.review-next-button:disabled {
+  cursor: wait;
+  opacity: .45;
+}
+
+.review-tools {
+  margin-bottom: .85rem;
+  border-block: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.review-tools > summary {
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  cursor: pointer;
+  padding: .55rem .25rem;
+  color: var(--color-accent);
+  font-size: .72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.review-tools > summary span:last-child {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: .65rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.review-tools-body {
+  padding-top: .75rem;
+}
+
+@media (max-width: 720px) {
+  .review-run-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .review-run-counts {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    justify-content: flex-start;
+    order: 3;
+  }
+
+  .review-next-button {
+    align-self: stretch;
+  }
+}
+
+@media (max-width: 430px) {
+  .review-run-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .review-run-counts,
+  .review-next-button {
+    grid-column: 1;
+  }
+
+  .review-next-button {
+    width: 100%;
+  }
+
+  .review-tools > summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: .15rem;
+  }
+
+  .review-tools > summary span:last-child {
+    text-align: left;
+  }
+}
+
+.picture-review-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .65rem;
+}
+
+.picture-review-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: min(100%, 22rem);
+  border: 1px solid var(--color-border);
+  border-radius: .25rem;
+  overflow: hidden;
+}
+
+.picture-review-switch button {
+  display: flex;
+  min-height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  gap: .5rem;
+  border: 0;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  padding: .4rem .65rem;
+  font-size: .75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.picture-review-switch button + button {
+  border-left: 1px solid var(--color-border);
+}
+
+.picture-review-switch button.active {
+  background: var(--color-accent);
+  color: white;
+}
+
+.picture-review-count {
+  display: inline-flex;
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  padding: 0 .3rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 639px) {
+  .picture-review-header-actions,
+  .picture-review-switch {
+    width: 100%;
+  }
+
+  .picture-review-header-actions > .ops-btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 /* Ops Console Header */
 .ops-header {
   display: flex;
   align-items: stretch;
-  background: var(--ops-black);
+  background: var(--color-bg-secondary);
   min-height: 56px;
   margin-bottom: 1rem;
 }
@@ -2098,8 +2541,8 @@ onBeforeUnmount(() => {
 .ops-title {
   font-size: 1.25rem;
   font-weight: 700;
-  color: var(--ops-black);
-  background: var(--ops-orange);
+  color: var(--color-text-primary);
+  background: var(--ops-warning);
   padding: 0.25rem 1rem;
   border-radius: 0 0 14px 0;
   position: relative;
@@ -2122,7 +2565,7 @@ onBeforeUnmount(() => {
 .ops-cap {
   width: 28px;
   height: 28px;
-  background: var(--ops-lilac);
+  background: var(--color-accent);
   border-radius: 0 0 0 14px;
   flex-shrink: 0;
 }
@@ -2144,14 +2587,14 @@ onBeforeUnmount(() => {
   padding: 0.75rem;
   border-radius: 8px;
   text-align: center;
-  color: var(--ops-black);
+  color: var(--color-text-primary);
 }
 
 /* Tabs */
 .ops-tab {
   padding: 0.5rem 1rem;
-  background: var(--ops-plum);
-  color: var(--ops-peach);
+  background: var(--color-accent);
+  color: white;
   border-radius: 0 12px 12px 0;
   font-size: 0.875rem;
   font-weight: 500;
@@ -2160,13 +2603,13 @@ onBeforeUnmount(() => {
 }
 
 .ops-tab:hover {
-  background: var(--ops-lilac);
-  color: var(--ops-black);
+  background: var(--color-accent);
+  color: white;
 }
 
 .ops-tab.active {
-  background: var(--ops-orange);
-  color: var(--ops-black);
+  background: var(--ops-warning);
+  color: white;
 }
 
 .type-filter-row {
@@ -2176,9 +2619,9 @@ onBeforeUnmount(() => {
   align-items: center;
   margin-bottom: 1rem;
   padding: 0.55rem;
-  border: 1px solid rgba(255, 204, 102, 0.16);
+  border: 1px solid var(--ops-warning);
   border-radius: 0 12px 12px 0;
-  background: linear-gradient(90deg, rgba(255, 153, 0, 0.12), rgba(99, 179, 237, 0.05));
+  background: var(--color-bg-hover);
 }
 
 .type-filter-chip {
@@ -2186,10 +2629,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 0.4rem;
   padding: 0.35rem 0.6rem;
-  border: 1px solid rgba(255, 204, 102, 0.24);
+  border: 1px solid var(--ops-warning);
   border-radius: 0 9px 9px 0;
-  background: rgba(0, 0, 0, 0.5);
-  color: var(--ops-peach);
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-primary));
+  color: var(--color-text-primary);
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -2198,7 +2641,7 @@ onBeforeUnmount(() => {
 }
 
 .type-filter-chip strong {
-  color: var(--ops-gold);
+  color: var(--ops-warning);
   font-weight: 900;
 }
 
@@ -2208,18 +2651,25 @@ onBeforeUnmount(() => {
 }
 
 .type-filter-chip.active {
-  background: var(--ops-gold);
-  color: var(--ops-black);
-  border-color: var(--ops-gold);
+  background: var(--ops-warning);
+  color: white;
+  border-color: var(--ops-warning);
 }
 
 .type-filter-chip.active strong {
-  color: var(--ops-black);
+  color: var(--color-text-primary);
+}
+
+@media (max-width: 640px) {
+  .review-content-shell {
+    padding-left: 0;
+    padding-right: 0;
+  }
 }
 
 /* Detail Panel */
 .ops-detail-panel {
-  background: var(--ops-plum);
+  background: var(--color-accent);
   border-radius: 0 24px 24px 0;
   overflow: hidden;
 }
@@ -2230,7 +2680,7 @@ onBeforeUnmount(() => {
   align-items: center;
   padding: 0.75rem 1rem;
   background: var(--ops-magenta);
-  color: var(--ops-black);
+  color: var(--color-text-primary);
 }
 
 .ops-panel-body {
@@ -2238,7 +2688,7 @@ onBeforeUnmount(() => {
 }
 
 .ops-confidence {
-  background: var(--ops-sky);
+  background: var(--color-accent);
   padding: 0.125rem 0.5rem;
   border-radius: 999px;
   font-size: 0.75rem;
@@ -2249,8 +2699,8 @@ onBeforeUnmount(() => {
 .ops-spinner {
   width: 48px;
   height: 48px;
-  border: 4px solid var(--ops-plum);
-  border-top-color: var(--ops-orange);
+  border: 4px solid var(--color-accent);
+  border-top-color: var(--ops-warning);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
@@ -2263,6 +2713,82 @@ onBeforeUnmount(() => {
   width: 24px;
   height: 24px;
   border-width: 3px;
+}
+
+.genealogy-decision-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+  background: var(--color-bg-tertiary);
+  padding: 0.85rem 1rem;
+}
+
+.genealogy-decision-summary-copy {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.genealogy-decision-summary-copy strong {
+  color: var(--color-text-primary);
+  font-size: 1rem;
+}
+
+.genealogy-decision-kicker {
+  color: var(--color-accent);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.genealogy-diagnostic-link {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 0.15rem 0.45rem;
+  flex: 0 0 auto;
+  min-width: 10rem;
+  border: 1px solid var(--ops-warning);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  padding: 0.55rem 0.7rem;
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.genealogy-diagnostic-link strong {
+  color: var(--ops-warning);
+  font-size: 1.1rem;
+}
+
+.genealogy-diagnostic-link span {
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.genealogy-diagnostic-link small {
+  grid-column: 1 / -1;
+  color: var(--color-text-secondary);
+  font-size: 0.67rem;
+}
+
+@media (max-width: 720px) {
+  .genealogy-decision-summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .genealogy-diagnostic-link {
+    width: 100%;
+  }
 }
 
 /* Transitions */
@@ -2292,7 +2818,7 @@ onBeforeUnmount(() => {
 .link-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--color-bg-tertiary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2300,7 +2826,7 @@ onBeforeUnmount(() => {
 }
 
 .link-modal {
-  background: var(--ops-black);
+  background: var(--color-bg-secondary);
   border: 2px solid var(--ops-magenta);
   border-radius: 0 24px 24px 0;
   width: 90%;
@@ -2317,7 +2843,7 @@ onBeforeUnmount(() => {
   align-items: center;
   padding: 0.75rem 1rem;
   background: var(--ops-magenta);
-  color: var(--ops-black);
+  color: var(--color-text-primary);
 }
 
 .link-modal-body {
@@ -2328,21 +2854,21 @@ onBeforeUnmount(() => {
 .link-search-input {
   width: 100%;
   padding: 0.625rem 0.75rem;
-  background: var(--ops-plum);
-  border: 1px solid var(--ops-lilac);
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent);
   border-radius: 0 12px 12px 0;
-  color: var(--ops-peach);
+  color: white;
   font-size: 0.875rem;
   outline: none;
   margin-bottom: 0.75rem;
 }
 
 .link-search-input:focus {
-  border-color: var(--ops-orange);
+  border-color: var(--ops-warning);
 }
 
 .link-search-input::placeholder {
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
 }
 
 .link-results {
@@ -2355,18 +2881,18 @@ onBeforeUnmount(() => {
 
 .link-result-item {
   padding: 0.625rem 0.75rem;
-  background: var(--ops-plum);
+  background: var(--color-accent);
   border-radius: 0 8px 8px 0;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .link-result-item:hover {
-  background: var(--ops-lilac);
+  background: var(--color-accent);
   transform: translateX(4px);
 }
 
 .link-result-item:hover .text-ops-peach {
-  color: var(--ops-black);
+  color: var(--color-text-primary);
 }
 </style>

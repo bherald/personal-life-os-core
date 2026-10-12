@@ -7,8 +7,7 @@ class RemediationExecutionService
     public function __construct(
         private readonly RemediationRegistryService $registry,
         private readonly AutoHealService $executor
-    ) {
-    }
+    ) {}
 
     /**
      * Execute the registered remediation for a finding type.
@@ -19,7 +18,7 @@ class RemediationExecutionService
     {
         $action = $this->registry->getActionForFinding($findingType);
 
-        if (!$action) {
+        if (! $action) {
             return [
                 'success' => false,
                 'status_code' => 404,
@@ -32,13 +31,13 @@ class RemediationExecutionService
             return [
                 'success' => false,
                 'status_code' => 403,
-                'message' => 'Destructive actions cannot be executed via the UI. Escalate to Claude Code.',
-                'error' => 'Destructive actions cannot be executed via the UI. Escalate to Claude Code.',
+                'message' => 'Destructive actions cannot be executed via the UI. Escalate to an operator-owned maintenance session.',
+                'error' => 'Destructive actions cannot be executed via the UI. Escalate to an operator-owned maintenance session.',
                 'action' => $action,
             ];
         }
 
-        if (!empty($action['requires_confirmation']) && !$confirmed) {
+        if (! empty($action['requires_confirmation']) && ! $confirmed) {
             return [
                 'success' => false,
                 'status_code' => 403,

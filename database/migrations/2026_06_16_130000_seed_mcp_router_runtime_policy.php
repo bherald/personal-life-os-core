@@ -13,6 +13,8 @@ return new class extends Migration
             'timeout_seconds' => 60,
             'log_calls' => true,
             'cache_catalog_ttl_seconds' => 3600,
+            'validate_tool_arguments' => true,
+            'reject_unknown_tool_arguments' => true,
             'tool_timeouts_seconds' => [
                 'puppeteer.puppeteer_navigate' => 60,
                 'puppeteer.puppeteer_evaluate' => 45,
@@ -30,6 +32,9 @@ return new class extends Migration
                 'log_calls' => 'Whether MCPRouter logs tool call metadata.',
                 'cache_catalog_ttl_seconds' => 'Cache TTL for the MCP tool catalog.',
                 'tool_timeouts_seconds' => 'Exact server.tool or server.* timeout overrides for external MCP tools.',
+                'validate_tool_arguments' => 'Validate every admitted invocation against its advertised JSON Schema before handler dispatch.',
+                'reject_unknown_tool_arguments' => 'Treat undeclared root arguments as out-of-scope and reject them before dispatch.',
+                'argument_logging' => 'Log argument names and a digest only; never log argument values.',
                 'ownership' => 'External MCP process timing is table-owned here; scheduled cadence and worker parallelism remain owned by scheduled_jobs.',
             ],
         ];
@@ -68,7 +73,7 @@ return new class extends Migration
             [
                 'config_value' => json_encode($policy, JSON_UNESCAPED_SLASHES),
                 'data_type' => 'json',
-                'description' => 'Runtime policy for MCPRouter tool timeouts, catalog cache, and logging.',
+                'description' => 'Runtime policy for MCPRouter timeouts, catalog caching, logging, and pre-dispatch invocation validation.',
                 'updated_at' => now(),
                 'created_at' => now(),
             ]

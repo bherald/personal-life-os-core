@@ -33,6 +33,26 @@ class PersonFaceAppearanceProfileService
 
     public function rebuildForPerson(int $personId): array
     {
+        $plan = $this->planForPerson($personId);
+
+        if ($plan['profiles'] === []) {
+            $deleted = $this->deleteProfilesForIdentityKeys(['person:'.$personId]);
+
+            return [
+                'profiles_written' => 0,
+                'links_written' => 0,
+                'identities_rebuilt' => 1,
+                'stale_profiles_deleted' => $deleted,
+                'skipped' => $plan['skipped'],
+            ];
+        }
+
+        return $this->storeProfileWritePlan($plan);
+    }
+
+    /** Read-only projection plan; verification is copied, never granted here. */
+    public function planForPerson(int $personId): array
+    {
         $rows = DB::select(
             "SELECT frf.id AS file_registry_face_id,
                     frf.file_registry_id,
@@ -43,6 +63,14 @@ class PersonFaceAppearanceProfileService
                     frf.cluster_id,
                     fr.date_taken,
                     fr.date_taken_source,
+                    fr.date_taken_precision,
+                    fr.date_taken_confidence,
+                    fr.date_taken_reasoning,
+                    fr.is_scan,
+                    fr.scan_date,
+                    fr.scan_context,
+                    fr.date_needs_review,
+                    fr.date_extracted_at,
                     gp.tree_id,
                     gp.birth_date,
                     NULLIF(TRIM(CONCAT(COALESCE(gp.given_name, ''), ' ', COALESCE(gp.surname, ''))), '') AS display_name
@@ -51,23 +79,19 @@ class PersonFaceAppearanceProfileService
              JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
              WHERE frf.genealogy_person_id = ?
                AND frf.hidden = 0
+               AND frf.source_current = 1
+               AND frf.superseded_at IS NULL
+               AND fr.status = 'active'
              ORDER BY frf.verified DESC, frf.confidence DESC, frf.id ASC",
             [$personId]
         );
 
-        if ($rows === []) {
-            $deleted = $this->deleteProfilesForIdentityKeys(['person:'.$personId]);
+        $faceIds = array_map(fn (object $row): int => (int) $row->file_registry_face_id, $rows);
 
-            return [
-                'profiles_written' => 0,
-                'links_written' => 0,
-                'identities_rebuilt' => 1,
-                'stale_profiles_deleted' => $deleted,
-                'skipped' => 0,
-            ];
-        }
-
-        return $this->rebuildFromRows($rows);
+        return [
+            ...$this->buildProfileWritePlan($rows, $this->loadFaceEmbeddingsByFaceIds($faceIds)),
+            'identity_keys' => ['person:'.$personId],
+        ];
     }
 
     public function rebuildForName(string $displayName): array
@@ -80,19 +104,24 @@ class PersonFaceAppearanceProfileService
      */
     public function rebuildForNameVariants(array $displayNames): array
     {
+        return $this->storeProfileWritePlan($this->planForNameVariants($displayNames));
+    }
+
+    public function planForName(string $displayName): array
+    {
+        return $this->planForNameVariants([$this->normalizeDisplayName($displayName)]);
+    }
+
+    /** Read-only projection plan preserving exact stored name variants. */
+    public function planForNameVariants(array $displayNames): array
+    {
         $displayNames = array_values(array_unique(array_filter(
             array_map(fn ($name): string => (string) $name, $displayNames),
             fn (string $name): bool => trim($name) !== ''
         )));
 
         if ($displayNames === []) {
-            return [
-                'profiles_written' => 0,
-                'links_written' => 0,
-                'identities_rebuilt' => 0,
-                'stale_profiles_deleted' => 0,
-                'skipped' => 0,
-            ];
+            return ['profiles' => [], 'skipped' => 0, 'identity_keys' => []];
         }
 
         $canonicalDisplayName = $this->normalizeDisplayName($displayNames[0]);
@@ -111,6 +140,14 @@ class PersonFaceAppearanceProfileService
                     frf.cluster_id,
                     fr.date_taken,
                     fr.date_taken_source,
+                    fr.date_taken_precision,
+                    fr.date_taken_confidence,
+                    fr.date_taken_reasoning,
+                    fr.is_scan,
+                    fr.scan_date,
+                    fr.scan_context,
+                    fr.date_needs_review,
+                    fr.date_extracted_at,
                     NULL AS birth_date,
                     ? AS display_name
              FROM file_registry_faces frf
@@ -118,23 +155,19 @@ class PersonFaceAppearanceProfileService
              WHERE frf.genealogy_person_id IS NULL
                AND frf.person_name IN ({$placeholders})
                AND frf.hidden = 0
+               AND frf.source_current = 1
+               AND frf.superseded_at IS NULL
+               AND fr.status = 'active'
              ORDER BY frf.verified DESC, frf.confidence DESC, frf.id ASC",
             array_merge([$canonicalDisplayName], $displayNames)
         );
 
-        if ($rows === []) {
-            $deleted = $this->deleteProfilesForIdentityKeys($identityKeys);
+        $faceIds = array_map(fn (object $row): int => (int) $row->file_registry_face_id, $rows);
 
-            return [
-                'profiles_written' => 0,
-                'links_written' => 0,
-                'identities_rebuilt' => count($identityKeys),
-                'stale_profiles_deleted' => $deleted,
-                'skipped' => 0,
-            ];
-        }
-
-        return $this->rebuildFromRows($rows);
+        return [
+            ...$this->buildProfileWritePlan($rows, $this->loadFaceEmbeddingsByFaceIds($faceIds)),
+            'identity_keys' => $identityKeys,
+        ];
     }
 
     /**
@@ -178,7 +211,9 @@ class PersonFaceAppearanceProfileService
 
             $birthDate = $this->nullableString($this->value($row, 'birth_date'));
             $dateTaken = $this->value($row, 'date_taken');
-            $ageAtPhoto = $this->deriveAgeAtPhoto($birthDate, $dateTaken);
+            $dateHold = $this->photoDateHoldReason($row);
+            $qualifiedDate = $dateHold === null ? $dateTaken : null;
+            $ageAtPhoto = $this->deriveAgeAtPhoto($birthDate, $qualifiedDate);
             $ageBand = $this->deriveAgeBand($ageAtPhoto);
             [$ageMin, $ageMax] = $this->ageBandRange($ageBand);
             $embedding = $embeddingByFaceId[$fileRegistryFaceId] ?? null;
@@ -186,9 +221,18 @@ class PersonFaceAppearanceProfileService
             $personClusterId = $this->nullableInt($this->value($embedding, 'person_cluster_id', $this->value($row, 'person_cluster_id', $this->value($row, 'cluster_id'))));
             $confidence = $this->nullableFloat($this->value($row, 'confidence', $this->value($embedding, 'quality_score')));
             $birthYear = $this->extractYear($birthDate);
-            $photoDate = $this->formatPhotoDate($dateTaken);
-            $evidenceSource = $this->ageEvidenceSource($birthDate, $dateTaken, $ageAtPhoto);
+            $photoDate = $this->formatPhotoDate($qualifiedDate);
+            $evidenceSource = $this->ageEvidenceSource($birthDate, $qualifiedDate, $ageAtPhoto);
+            if ($dateHold !== null && $birthDate !== null && trim($birthDate) !== '' && $dateTaken !== null) {
+                $evidenceSource = 'unqualified_photo_date';
+            }
             $verified = $this->truthy($this->value($row, 'verified')) ? 1 : 0;
+            $dateEvidence = ['date_taken' => $dateTaken instanceof DateTimeInterface ? $dateTaken->format('Y-m-d H:i:s') : $dateTaken];
+            foreach (['date_taken_source', 'date_taken_precision', 'date_taken_confidence', 'date_taken_reasoning', 'is_scan', 'scan_date', 'scan_context', 'date_needs_review', 'date_extracted_at'] as $field) {
+                $dateEvidence[$field] = $this->value($row, $field);
+            }
+            $dateEvidence['qualified_for_age'] = $dateHold === null;
+            $dateEvidence['hold_reason'] = $dateHold;
 
             $link = [
                 'file_registry_face_id' => $fileRegistryFaceId,
@@ -206,6 +250,7 @@ class PersonFaceAppearanceProfileService
                     'face_name' => $this->nullableString($this->value($row, 'person_name')),
                     'birth_date' => $birthDate,
                     'date_taken_source' => $this->nullableString($this->value($row, 'date_taken_source')),
+                    'photo_date_evidence' => $dateEvidence,
                 ], fn ($value): bool => $value !== null && $value !== ''),
             ];
 
@@ -279,13 +324,45 @@ class PersonFaceAppearanceProfileService
         ];
     }
 
+    /** Return existing owners outside a proposed projection scope without writing. */
+    public function conflictingProfileOwners(array $plan): array
+    {
+        $profiles = $plan['profiles'] ?? [];
+        $faceIds = array_values(array_unique(array_merge(...array_map(
+            fn (array $profile): array => array_column($profile['links'], 'file_registry_face_id'),
+            $profiles
+        ))));
+        if ($faceIds === []) {
+            return [];
+        }
+        $identityKeys = array_values(array_unique(array_merge(
+            $plan['identity_keys'] ?? [],
+            array_map(fn (array $profile): string => (string) $profile['identity_key'], $profiles)
+        )));
+        $facePlaceholders = implode(', ', array_fill(0, count($faceIds), '?'));
+        $identityPlaceholders = implode(', ', array_fill(0, count($identityKeys), '?'));
+        $otherOwners = DB::select(
+            "SELECT DISTINCT p.identity_key
+             FROM person_face_profile_faces links
+             JOIN person_face_appearance_profiles p ON p.id = links.profile_id
+             WHERE links.file_registry_face_id IN ({$facePlaceholders})
+               AND p.identity_key NOT IN ({$identityPlaceholders})
+             ORDER BY p.identity_key",
+            array_merge($faceIds, $identityKeys)
+        );
+
+        return array_map(fn (object $owner): string => $owner->identity_key, $otherOwners);
+    }
+
     /**
-     * @param  array{profiles:list<array<string,mixed>>,skipped:int}  $plan
+     * Explicit identity_keys can include an empty projection in a reviewed refresh scope.
+     *
+     * @param  array{profiles:list<array<string,mixed>>,skipped:int,identity_keys?:list<string>}  $plan
      */
     public function storeProfileWritePlan(array $plan): array
     {
         $profiles = $plan['profiles'] ?? [];
-        if ($profiles === []) {
+        if ($profiles === [] && empty($plan['identity_keys'])) {
             return [
                 'profiles_written' => 0,
                 'links_written' => 0,
@@ -295,16 +372,19 @@ class PersonFaceAppearanceProfileService
             ];
         }
 
-        $identityKeys = array_values(array_unique(array_map(
-            fn (array $profile): string => (string) $profile['identity_key'],
-            $profiles
+        $identityKeys = array_values(array_unique(array_merge(
+            $plan['identity_keys'] ?? [],
+            array_map(fn (array $profile): string => (string) $profile['identity_key'], $profiles)
         )));
 
         $profilesWritten = 0;
         $linksWritten = 0;
         $staleProfilesDeleted = 0;
 
-        DB::transaction(function () use ($profiles, $identityKeys, &$profilesWritten, &$linksWritten, &$staleProfilesDeleted): void {
+        DB::transaction(function () use ($plan, $profiles, $identityKeys, &$profilesWritten, &$linksWritten, &$staleProfilesDeleted): void {
+            if ($this->conflictingProfileOwners($plan) !== []) {
+                throw new \RuntimeException('Appearance profile links belong to identities outside this refresh plan; review the affected projection scope first.');
+            }
             $staleProfilesDeleted = $this->deleteProfilesForIdentityKeys($identityKeys);
 
             foreach ($profiles as $profile) {
@@ -497,7 +577,10 @@ class PersonFaceAppearanceProfileService
                             person_cluster_id,
                             quality_score
                      FROM face_embeddings
-                     WHERE file_registry_face_id IN ({$placeholders})",
+                     WHERE file_registry_face_id IN ({$placeholders})
+                       AND source_current = TRUE
+                       AND superseded_at IS NULL
+                     ORDER BY id ASC",
                     $chunk
                 );
 
@@ -558,6 +641,41 @@ class PersonFaceAppearanceProfileService
         $score -= ((int) $link['file_registry_face_id']) / 1000000000;
 
         return $score;
+    }
+
+    private function photoDateHoldReason(mixed $row): ?string
+    {
+        $date = $this->value($row, 'date_taken');
+        if ($date === null || $date === '') {
+            return 'photo_date_missing';
+        }
+        if ($this->value($row, 'date_taken_precision') !== 'exact') {
+            return 'photo_date_precision_unproven';
+        }
+        $source = $this->value($row, 'date_taken_source');
+        if (! in_array($source, config('file_registry.profile_refresh.qualified_photo_date_sources', []), true)) {
+            return 'photo_date_source_unqualified';
+        }
+        $confidence = $this->value($row, 'date_taken_confidence');
+        if (! is_numeric($confidence) || ! is_finite((float) $confidence) || (float) $confidence <= 0 || (float) $confidence > 1) {
+            return 'photo_date_confidence_unproven';
+        }
+        if (! in_array($this->value($row, 'date_needs_review'), [0, '0', false], true)) {
+            return 'photo_date_review_pending';
+        }
+        if (! in_array($source, config('file_registry.profile_refresh.operator_photo_date_sources', []), true)
+            && (! in_array($this->value($row, 'is_scan'), [0, '0', false], true)
+                || $this->nullableString($this->value($row, 'scan_date')) !== null
+                || $this->nullableString($this->value($row, 'scan_context')) !== null)) {
+            return 'photo_date_scan_ingest_unproven';
+        }
+        $raw = $date instanceof DateTimeInterface ? $date->format('Y-m-d H:i:s') : (string) $date;
+        if (! preg_match('/^(\d{4})-(\d{2})-(\d{2})(?:[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$/D', $raw, $parts)
+            || ! checkdate((int) $parts[2], (int) $parts[3], (int) $parts[1]) || $this->parsePhotoDate($date) === null) {
+            return 'photo_date_invalid';
+        }
+
+        return null;
     }
 
     private function ageEvidenceSource(?string $birthDate, mixed $dateTaken, ?int $ageAtPhoto): string

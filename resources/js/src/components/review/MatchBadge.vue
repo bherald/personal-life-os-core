@@ -51,11 +51,11 @@ const tooltip = computed(() => meta.value.tip)
 .match-badge-icon { font-size: 0.85rem; line-height: 1; }
 .match-badge-delta { opacity: 0.85; font-weight: 500; }
 
-.badge-same      { background: rgba(102, 102, 102, 0.30); color: #d4d4d4; }
-.badge-match     { background: rgba(0, 170, 0, 0.30);    color: #b5f5b5; }
-.badge-different { background: rgba(204, 136, 0, 0.30);  color: #ffd980; }
-.badge-new       { background: rgba(99, 179, 237, 0.30); color: #bfe1ff; }
-.badge-missing   { background: rgba(140, 110, 200, 0.30); color: #d4c2f0; }
-.badge-conflict  { background: rgba(204, 0, 0, 0.40);     color: #ffb5b5; }
-.badge-unknown   { background: rgba(128, 128, 128, 0.30); color: #cccccc; }
+.badge-same      { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.badge-match     { background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));    color: var(--ops-success); }
+.badge-different { background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));  color: var(--ops-warning); }
+.badge-new       { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.badge-missing   { background: var(--color-bg-tertiary); color: var(--color-text-secondary); }
+.badge-conflict  { background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));     color: var(--ops-danger); }
+.badge-unknown   { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
 </style>

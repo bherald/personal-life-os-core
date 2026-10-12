@@ -2,24 +2,30 @@
 
 namespace App\Engine;
 
+use App\Nodes\WeatherAPI;
 use App\Services\CodeReviewService;
 use App\Services\Genealogy\GenealogyMCPService;
 use App\Services\JoplinFilesService;
+use App\Services\McpExternalRuntimeAdmissionService;
+use App\Services\MCPToolInvocationValidatorService;
+use App\Services\MCPToolResultValidatorService;
 use App\Services\NextcloudContactsService;
 use App\Services\NextcloudService;
 use App\Services\OfflinePolicyService;
 use App\Services\RAGService;
 use App\Services\RepoDevMCPService;
+use App\Services\Review\ReviewLookupService;
 use App\Services\SearXNGMCPService;
 use App\Services\SystemConfigService;
 use App\Services\TimeService;
+use App\Services\UnifiedCli\CliMcpRouterContext;
 use App\Services\WebResearchService;
 use App\Services\WorkflowService;
+use App\Support\SensitiveTextTelemetry;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Process as ProcessFacade;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Process\Process;
 
@@ -27,7 +33,7 @@ use Symfony\Component\Process\Process;
  * MCP Router
  *
  * Routes tool calls to appropriate MCP servers (external or internal).
- * Supports both Ollama and Claude Code as clients.
+ * Supports Ollama and standards-compliant MCP clients.
  *
  * Architecture:
  * - External MCP servers: Communicate via stdio/JSON-RPC
@@ -36,23 +42,27 @@ use Symfony\Component\Process\Process;
  */
 class MCPRouter
 {
+    private const DYNAMIC_DISCOVERY_MAX_PAGES = 64;
+
+    private const DYNAMIC_DISCOVERY_MAX_TOOLS = 4096;
+
     private const RUNTIME_POLICY_CONFIG_KEY = 'mcp.router_runtime_policy';
+
+    private const COMMAND_TELEMETRY_SCOPE = 'mcp.external_runtime_command';
 
     private const DEFAULT_RUNTIME_POLICY = [
         'timeout_seconds' => 60,
         'log_calls' => true,
         'cache_catalog_ttl_seconds' => 3600,
+        'validate_tool_arguments' => true,
+        'reject_unknown_tool_arguments' => true,
+        'validate_external_tool_results' => true,
         'tool_timeouts_seconds' => [
             'puppeteer.puppeteer_navigate' => 60,
             'puppeteer.puppeteer_evaluate' => 45,
             'puppeteer.puppeteer_screenshot' => 45,
             'puppeteer.*' => 30,
             'web-research.*' => 45,
-            'prompt-compressor.compress_prompt' => 120,
-            'prompt-compressor.compress_file' => 120,
-            'prompt-compressor.compress_diff' => 120,
-            'prompt-compressor.context_retrieve' => 120,
-            'prompt-compressor.*' => 30,
         ],
     ];
 
@@ -64,12 +74,18 @@ class MCPRouter
 
     private int $cacheTtl;
 
+    private bool $validateToolArguments;
+
+    private bool $rejectUnknownToolArguments;
+
+    private bool $validateExternalToolResults;
+
     /** @var array<string,mixed> */
     private array $runtimePolicy;
 
-    public function __construct()
+    public function __construct(private readonly ?CliMcpRouterContext $cliContext = null)
     {
-        $this->config = config('mcp.servers', []);
+        $this->config = $cliContext?->servers() ?? config('mcp.servers', []);
         $defaultPolicy = $this->defaultRuntimePolicy();
         $this->runtimePolicy = $this->loadRuntimePolicy($defaultPolicy);
         $this->timeout = $this->positivePolicyInt(
@@ -84,6 +100,23 @@ class MCPRouter
             $this->runtimePolicy['cache_catalog_ttl_seconds'] ?? null,
             (int) $defaultPolicy['cache_catalog_ttl_seconds']
         );
+        $this->validateToolArguments = $this->policyBool(
+            $this->runtimePolicy['validate_tool_arguments'] ?? null,
+            (bool) $defaultPolicy['validate_tool_arguments']
+        );
+        $this->rejectUnknownToolArguments = $this->policyBool(
+            $this->runtimePolicy['reject_unknown_tool_arguments'] ?? null,
+            (bool) $defaultPolicy['reject_unknown_tool_arguments']
+        );
+        $this->validateExternalToolResults = $this->policyBool(
+            $this->runtimePolicy['validate_external_tool_results'] ?? null,
+            (bool) $defaultPolicy['validate_external_tool_results']
+        );
+        if ($cliContext !== null) {
+            $this->logCalls = false;
+            $this->validateToolArguments = true;
+            $this->rejectUnknownToolArguments = true;
+        }
     }
 
     /**
@@ -93,13 +126,14 @@ class MCPRouter
      */
     public function getAvailableTools(): array
     {
+        if ($this->cliContext !== null) {
+            $this->config = $this->cliContext->servers();
+        }
         // Mode-aware cache key. The catalog shape depends on whether
         // dynamic discovery is enabled, so a static-mode entry cached
         // first must not be returned after the flag flips to true (and
         // vice versa). Both variants are cleared by clearCache().
-        $cacheKey = $this->toolCatalogCacheKey();
-
-        return Cache::remember($cacheKey, $this->cacheTtl, function () {
+        $load = function (): array {
             $tools = [];
 
             foreach ($this->config as $serverName => $serverConfig) {
@@ -124,7 +158,13 @@ class MCPRouter
             }
 
             return $tools;
-        });
+        };
+
+        if ($this->cliContext !== null || $this->dynamicCatalogRequiresLiveDiscovery()) {
+            return $load();
+        }
+
+        return Cache::remember($this->toolCatalogCacheKey(), $this->cacheTtl, $load);
     }
 
     /**
@@ -143,7 +183,7 @@ class MCPRouter
         $tools = $this->getAvailableTools();
 
         try {
-            $policy = app(OfflinePolicyService::class);
+            $policy = $this->cliContext?->policy ?? app(OfflinePolicyService::class);
         } catch (\Throwable $e) {
             return $tools;
         }
@@ -200,6 +240,10 @@ class MCPRouter
     {
         $type = $serverConfig['type'] ?? 'external';
 
+        if ($this->cliContext !== null && $type !== 'internal') {
+            return []; // External CLI discovery uses the captured SDK transport.
+        }
+
         if ($type === 'internal') {
             return $this->discoverInternalTools($serverName, $serverConfig);
         }
@@ -212,8 +256,71 @@ class MCPRouter
      */
     private function discoverInternalTools(string $serverName, array $serverConfig): array
     {
+        if ($serverName === 'codex-skills') {
+            return [
+                ['name' => 'codex_skills_list', 'description' => 'List installed Codex skills by ID and description; optionally filter by query',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [
+                        'query' => ['type' => 'string', 'maxLength' => 100],
+                    ], 'additionalProperties' => false]],
+                ['name' => 'codex_skills_read', 'description' => 'Read SKILL.md or a UTF-8 support file inside one installed Codex skill',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [
+                        'skill_id' => ['type' => 'string', 'minLength' => 1],
+                        'file' => ['type' => 'string', 'description' => 'Skill-relative file, defaults to SKILL.md'],
+                    ], 'required' => ['skill_id'], 'additionalProperties' => false]],
+            ];
+        }
+        if ($serverName === 'lemma-pod') {
+            $catalog = json_decode(file_get_contents(base_path('resources/plos/lemma-pod-mcp-tools.json')),
+                true, flags: JSON_THROW_ON_ERROR);
+
+            $remote = array_map(static fn (array $tool): array => [
+                'name' => $tool['name'], 'description' => $tool['description'],
+                'parameters' => $tool['inputSchema'],
+            ], $catalog);
+
+            return [...$remote,
+                ['name' => 'lemma_message_send', 'description' => 'Send one private pod message from this Codex session to another session UUID with read-back',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [
+                        'to_session' => ['type' => 'string', 'format' => 'uuid'],
+                        'subject' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 160],
+                        'body' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 4000],
+                        'task_key' => ['type' => 'string', 'maxLength' => 160],
+                    ], 'required' => ['to_session', 'subject', 'body'], 'additionalProperties' => false]],
+                ['name' => 'lemma_message_inbox', 'description' => 'Read messages addressed to this exact Codex session',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [
+                        'unread_only' => ['type' => 'boolean'], 'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 50],
+                    ], 'additionalProperties' => false]],
+                ['name' => 'lemma_message_read', 'description' => 'Read and acknowledge one message addressed to this exact Codex session',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [
+                        'message_id' => ['type' => 'string', 'format' => 'uuid'],
+                    ], 'required' => ['message_id'], 'additionalProperties' => false]],
+                ['name' => 'lemma_task_claim', 'description' => 'Create-only claim for a shared task key, bound to this Codex session',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [
+                        'task_key' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 160],
+                        'summary' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 300],
+                    ], 'required' => ['task_key', 'summary'], 'additionalProperties' => false]],
+                ['name' => 'lemma_task_release', 'description' => 'Release a task claim owned by this exact Codex session',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [
+                        'task_key' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 160],
+                    ], 'required' => ['task_key'], 'additionalProperties' => false]],
+                ['name' => 'lemma_task_list', 'description' => 'List current shared task claims and their owning Codex session IDs',
+                    'parameters' => ['type' => 'object', 'properties' => (object) [], 'additionalProperties' => false]],
+            ];
+        }
         if ($serverName === 'plos') {
             return [
+                [
+                    'name' => 'plos_review_lookup',
+                    'description' => 'Read an exact Review Desk reference or known alias, including closed history; never approve or mutate',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'reference' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 255],
+                        ],
+                        'required' => ['reference'],
+                        'additionalProperties' => false,
+                    ],
+                ],
                 [
                     'name' => 'workflow_list',
                     'description' => 'List all workflows in the database',
@@ -243,6 +350,7 @@ class MCPRouter
                         'properties' => (object) [
                             'name' => ['type' => 'string', 'description' => 'Workflow name'],
                             'input' => ['type' => 'object', 'description' => 'Optional workflow input payload'],
+                            'trace_session_id' => ['type' => 'string', 'description' => 'Optional 1-100 character caller trace session ID'],
                         ],
                         'required' => ['name'],
                     ],
@@ -341,6 +449,19 @@ class MCPRouter
                     ],
                 ],
                 [
+                    'name' => 'context_map',
+                    'description' => 'Rank task-relevant repository files and PHP declarations without returning source bodies',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'task' => ['type' => 'string', 'description' => 'Development task used only for deterministic relevance ranking'],
+                            'path' => ['type' => 'string', 'description' => 'Optional repo-relative directory scope (default: .)'],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum ranked files to return (default: 20)'],
+                        ],
+                        'required' => ['task'],
+                    ],
+                ],
+                [
                     'name' => 'list_repo_directory',
                     'description' => 'List files and directories under a repo-relative path',
                     'parameters' => [
@@ -368,7 +489,7 @@ class MCPRouter
                 ],
                 [
                     'name' => 'write_repo_file',
-                    'description' => 'Write a text file inside the repository root',
+                    'description' => 'Write a text file inside the repository root and return an eligible recovery token plus post-edit diagnostics',
                     'parameters' => [
                         'type' => 'object',
                         'properties' => (object) [
@@ -381,7 +502,7 @@ class MCPRouter
                 ],
                 [
                     'name' => 'apply_repo_patch',
-                    'description' => 'Apply a unified diff inside the repository after repo path policy checks',
+                    'description' => 'Apply a unified diff after repo path checks and return an eligible recovery token plus post-edit diagnostics',
                     'parameters' => [
                         'type' => 'object',
                         'properties' => (object) [
@@ -389,6 +510,35 @@ class MCPRouter
                             'check_only' => ['type' => 'boolean', 'description' => 'Validate the patch without applying it'],
                         ],
                         'required' => ['patch'],
+                    ],
+                ],
+                [
+                    'name' => 'restore_repo_edit',
+                    'description' => 'Preview or restore one repo-dev edit with its single-use recovery token; refuses files changed after that edit',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'token' => ['type' => 'string', 'description' => 'Recovery token returned by write_repo_file or apply_repo_patch'],
+                            'check_only' => ['type' => 'boolean', 'description' => 'Check token, expiry, paths, and conflicts without restoring files'],
+                        ],
+                        'required' => ['token'],
+                    ],
+                ],
+                [
+                    'name' => 'summarize_repo_edits',
+                    'description' => 'Summarize the net content-free file and line changes across an ordered list of recovery-backed repo edits',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'tokens' => [
+                                'type' => 'array',
+                                'description' => 'Ordered recovery tokens returned by write_repo_file or apply_repo_patch',
+                                'items' => ['type' => 'string'],
+                                'minItems' => 1,
+                                'maxItems' => 50,
+                            ],
+                        ],
+                        'required' => ['tokens'],
                     ],
                 ],
                 [
@@ -456,6 +606,19 @@ class MCPRouter
                         'properties' => (object) [
                             'document_id' => ['type' => 'integer', 'description' => 'Document ID'],
                             'limit' => ['type' => 'integer', 'description' => 'Max results', 'default' => 5],
+                        ],
+                        'required' => ['document_id'],
+                    ],
+                ],
+                [
+                    'name' => 'rag_read',
+                    'description' => 'Read an exact character window from a RAG document returned by search. Use next_offset until has_more is false.',
+                    'parameters' => [
+                        'type' => 'object',
+                        'properties' => (object) [
+                            'document_id' => ['type' => 'integer', 'description' => 'Stable document ID from rag_search', 'minimum' => 1],
+                            'offset' => ['type' => 'integer', 'description' => 'Zero-based UTF-8 character offset', 'minimum' => 0, 'default' => 0],
+                            'max_chars' => ['type' => 'integer', 'description' => 'Exact window size (1-20000 characters)', 'minimum' => 1, 'maximum' => 20000, 'default' => 4000],
                         ],
                         'required' => ['document_id'],
                     ],
@@ -630,6 +793,18 @@ class MCPRouter
 
         if ($serverName === 'web-research') {
             return [
+                [
+                    'name' => 'weather_current',
+                    'description' => 'Get current observed US weather from the National Weather Service for latitude and longitude. Returns station, timestamp, source URL, raw measurements and units; no forecast substitution.',
+                    'parameters' => [
+                        'type' => 'object', 'additionalProperties' => false,
+                        'properties' => (object) [
+                            'latitude' => ['type' => 'number', 'minimum' => -90, 'maximum' => 90],
+                            'longitude' => ['type' => 'number', 'minimum' => -180, 'maximum' => 180],
+                        ],
+                        'required' => ['latitude', 'longitude'],
+                    ],
+                ],
                 [
                     'name' => 'web_search',
                     'description' => 'Search the web using privacy-respecting search engines (DuckDuckGo, Startpage, Searx). Returns search results with titles, URLs, and snippets.',
@@ -810,7 +985,7 @@ class MCPRouter
                 ],
                 [
                     'name' => 'tree_search',
-                    'description' => 'Search the genealogy database for persons, families, or sources by name/title.',
+                    'description' => 'Search the genealogy database for mixed persons, families, or sources by name/title. For a person-only request, prefer person_search.',
                     'parameters' => [
                         'type' => 'object',
                         'properties' => (object) [
@@ -824,14 +999,14 @@ class MCPRouter
                 ],
                 [
                     'name' => 'person_search',
-                    'description' => 'Search people within one genealogy tree, with an explicit living-person inclusion switch.',
+                    'description' => 'Search people within one genealogy tree, with an explicit living-person inclusion switch. Set limit to the count requested; use limit 1 when asked for one person.',
                     'parameters' => [
                         'type' => 'object',
                         'properties' => (object) [
                             'tree_id' => ['type' => 'integer', 'description' => 'Tree ID to search'],
                             'query' => ['type' => 'string', 'description' => 'Name, nickname, surname, or GEDCOM ID query'],
                             'include_living' => ['type' => 'boolean', 'description' => 'Include living people (default: true)', 'default' => true],
-                            'limit' => ['type' => 'integer', 'description' => 'Maximum people to return (default: 50, max: 100)', 'default' => 50],
+                            'limit' => ['type' => 'integer', 'description' => 'Maximum people to return (default: 1, max: 100)', 'default' => 1],
                         ],
                         'required' => ['tree_id', 'query'],
                     ],
@@ -2043,6 +2218,16 @@ class MCPRouter
      */
     private function discoverExternalTools(string $serverName, array $serverConfig): array
     {
+        $admission = $this->externalRuntimeAdmission($serverConfig);
+        if (! $admission['admitted']) {
+            Log::warning('External MCP runtime denied during catalog discovery', [
+                'server' => $serverName,
+                'reason_code' => $admission['reason_code'],
+            ]);
+
+            return [];
+        }
+
         $staticTools = $this->getStaticToolDefinitions($serverName);
 
         if (! (bool) config('mcp.dynamic_discovery_enabled', false)) {
@@ -2065,7 +2250,7 @@ class MCPRouter
      *   1. send initialize
      *   2. wait for the initialize response
      *   3. send notifications/initialized (no response expected)
-     *   4. send tools/list, read response
+     *   4. walk every bounded tools/list page
      *   5. close stdin only in the final cleanup
      *
      * Returns [] on any failure so the caller can fall back to static.
@@ -2180,13 +2365,6 @@ class MCPRouter
                 'method' => 'notifications/initialized',
             ];
 
-            $toolsRequest = [
-                'jsonrpc' => '2.0',
-                'id' => 2,
-                'method' => 'tools/list',
-                'params' => new \stdClass,
-            ];
-
             // Helper: drain pipe until we see a JSON-RPC frame matching $expectId
             // (or any well-formed JSON-RPC frame when $expectId is null, used for
             // the server's banner-then-response pattern). Accumulates partial
@@ -2254,10 +2432,84 @@ class MCPRouter
             fwrite($pipes[0], json_encode($initializedNotification)."\n");
             fflush($pipes[0]);
 
-            // Step 4: send tools/list and read its response
-            fwrite($pipes[0], json_encode($toolsRequest)."\n");
-            fflush($pipes[0]);
-            $toolsResponse = $readJsonFrame($pipes[1], 10, 2);
+            // Step 4: walk every advertised tools/list page. A partial dynamic
+            // catalog is less trustworthy than the reviewed static fallback,
+            // so malformed pages and unfinished bounded walks fail closed.
+            $tools = [];
+            $toolNames = [];
+            $seenCursors = [];
+            $cursor = null;
+
+            for ($page = 1; $page <= self::DYNAMIC_DISCOVERY_MAX_PAGES; $page++) {
+                $requestId = $page + 1;
+                $toolsRequest = [
+                    'jsonrpc' => '2.0',
+                    'id' => $requestId,
+                    'method' => 'tools/list',
+                    'params' => $cursor === null ? new \stdClass : ['cursor' => $cursor],
+                ];
+
+                fwrite($pipes[0], json_encode($toolsRequest)."\n");
+                fflush($pipes[0]);
+                $toolsResponse = $readJsonFrame($pipes[1], 10, $requestId);
+
+                if ($toolsResponse === '') {
+                    throw new Exception("No tools response from MCP server: {$serverName}");
+                }
+
+                $response = json_decode(trim($toolsResponse), true);
+                $pageTools = $response['result']['tools'] ?? null;
+                if (! is_array($response) || ! is_array($pageTools) || ! array_is_list($pageTools)) {
+                    throw new Exception("Invalid tools response from MCP server: {$serverName}");
+                }
+
+                foreach ($pageTools as $tool) {
+                    if (! is_array($tool)
+                        || ! is_string($tool['name'] ?? null)
+                        || trim($tool['name']) === ''
+                        || (isset($tool['description']) && ! is_string($tool['description']))
+                        || (isset($tool['inputSchema']) && ! is_array($tool['inputSchema']))
+                        || (isset($tool['outputSchema']) && ! is_array($tool['outputSchema']))) {
+                        throw new Exception("Invalid tool payload from MCP server: {$serverName}");
+                    }
+
+                    $toolName = trim($tool['name']);
+                    if (isset($toolNames[$toolName])) {
+                        throw new Exception("Duplicate tool name from MCP server: {$serverName}");
+                    }
+                    if (count($tools) >= self::DYNAMIC_DISCOVERY_MAX_TOOLS) {
+                        throw new Exception("Dynamic tool limit exceeded for MCP server: {$serverName}");
+                    }
+
+                    $toolNames[$toolName] = true;
+                    $tools[] = [
+                        'name' => $toolName,
+                        'description' => $tool['description'] ?? '',
+                        'parameters' => $tool['inputSchema'] ?? ['type' => 'object', 'properties' => []],
+                        'output_schema_advertised' => array_key_exists('outputSchema', $tool),
+                        'output_schema' => $tool['outputSchema'] ?? null,
+                    ];
+                }
+
+                $nextCursor = $response['result']['nextCursor'] ?? null;
+                if ($nextCursor !== null && ! is_string($nextCursor)) {
+                    throw new Exception("Invalid tools cursor from MCP server: {$serverName}");
+                }
+                if ($nextCursor === null || trim($nextCursor) === '') {
+                    $cursor = null;
+                    break;
+                }
+                if (isset($seenCursors[$nextCursor])) {
+                    throw new Exception("Repeated tools cursor from MCP server: {$serverName}");
+                }
+
+                $seenCursors[$nextCursor] = true;
+                $cursor = $nextCursor;
+            }
+
+            if ($cursor !== null) {
+                throw new Exception("Dynamic tools page limit exceeded for MCP server: {$serverName}");
+            }
 
             // Step 5: cleanup. stdin closes here (after the final response)
             // and ONLY here, so mid-request async server notifications do
@@ -2267,32 +2519,6 @@ class MCPRouter
             fclose($pipes[2]);
             proc_terminate($process);
             proc_close($process);
-
-            if (empty($toolsResponse)) {
-                Log::warning("No tools response from MCP server: {$serverName}");
-
-                return [];
-            }
-
-            // Parse JSON response
-            $response = json_decode(trim($toolsResponse), true);
-
-            if (! $response || ! isset($response['result']['tools'])) {
-                Log::warning("Invalid tools response from MCP server: {$serverName}", [
-                    'response' => $toolsResponse,
-                ]);
-
-                return [];
-            }
-
-            $tools = [];
-            foreach ($response['result']['tools'] as $tool) {
-                $tools[] = [
-                    'name' => $tool['name'] ?? 'unnamed',
-                    'description' => $tool['description'] ?? '',
-                    'parameters' => $tool['inputSchema'] ?? ['type' => 'object', 'properties' => []],
-                ];
-            }
 
             Log::info("Discovered {count} tools from MCP server: {$serverName}", [
                 'count' => count($tools),
@@ -2322,6 +2548,18 @@ class MCPRouter
         // Predefined tool schemas to avoid timeout issues with dynamic discovery
         // IMPORTANT: properties must be objects (stdClass), not arrays, for Ollama compatibility
         $definitions = [
+            'lemma-local' => array_map(static fn (array $tool): array => [
+                'name' => $tool['name'], 'description' => $tool['description'],
+                'parameters' => $tool['inputSchema'],
+            ], config('lemma_local.tools', [])),
+            'hister' => array_map(static fn (array $tool): array => [
+                'name' => $tool['name'], 'description' => $tool['description'],
+                'parameters' => $tool['inputSchema'],
+            ], config('hister.tools', [])),
+            'gortex' => array_map(static fn (array $tool): array => [
+                'name' => $tool['name'], 'description' => $tool['description'],
+                'parameters' => $tool['inputSchema'],
+            ], config('gortex.tools', [])),
             'nextcloud' => [
                 ['name' => 'createNote', 'description' => 'Create a new note in Nextcloud Notes', 'parameters' => ['type' => 'object', 'properties' => (object) ['title' => ['type' => 'string'], 'content' => ['type' => 'string']]]],
                 ['name' => 'searchNotes', 'description' => 'Search for notes by keyword', 'parameters' => ['type' => 'object', 'properties' => (object) ['query' => ['type' => 'string']]]],
@@ -2366,14 +2604,21 @@ class MCPRouter
                 ['name' => 'read_memory', 'description' => 'Read a Serena memory file', 'parameters' => ['type' => 'object', 'properties' => (object) ['memory_name' => ['type' => 'string']], 'required' => ['memory_name']]],
                 ['name' => 'write_memory', 'description' => 'Write or replace a Serena project memory file', 'parameters' => ['type' => 'object', 'properties' => (object) ['memory_name' => ['type' => 'string'], 'content' => ['type' => 'string']], 'required' => ['memory_name', 'content']]],
             ],
-            'prompt-compressor' => [
-                ['name' => 'prompt_token_count', 'description' => 'Estimate token, character, line, and word counts for text or an allowed local file.', 'parameters' => ['type' => 'object', 'properties' => (object) ['text' => ['type' => 'string'], 'path' => ['type' => 'string']]]],
-                ['name' => 'compress_prompt', 'description' => 'Compress pasted prompt/context using extractive scoring or local Ollama.', 'parameters' => ['type' => 'object', 'properties' => (object) ['text' => ['type' => 'string'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['text']]],
-                ['name' => 'compress_file', 'description' => 'Read an allowed local file and return compressed context.', 'parameters' => ['type' => 'object', 'properties' => (object) ['path' => ['type' => 'string'], 'max_bytes' => ['type' => 'number'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['path']]],
-                ['name' => 'compress_diff', 'description' => 'Compress a git diff into changed-file stats and relevant hunks.', 'parameters' => ['type' => 'object', 'properties' => (object) ['diff' => ['type' => 'string'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['diff']]],
-                ['name' => 'context_store', 'description' => 'Store large context outside chat and return a small id for later retrieval.', 'parameters' => ['type' => 'object', 'properties' => (object) ['text' => ['type' => 'string'], 'id' => ['type' => 'string'], 'metadata' => ['type' => 'string']], 'required' => ['text']]],
-                ['name' => 'context_retrieve', 'description' => 'Retrieve stored context by id and return compressed output.', 'parameters' => ['type' => 'object', 'properties' => (object) ['id' => ['type' => 'string'], 'target_tokens' => ['type' => 'number'], 'mode' => ['type' => 'string'], 'query' => ['type' => 'string'], 'method' => ['type' => 'string'], 'preserve_patterns' => ['type' => 'array'], 'include_stats' => ['type' => 'boolean']], 'required' => ['id']]],
-                ['name' => 'context_list', 'description' => 'List stored context ids and token estimates without returning full stored text.', 'parameters' => ['type' => 'object', 'properties' => new \stdClass]],
+            'codebase-memory' => [
+                ['name' => 'index_repository', 'description' => 'Index a repository into the local code graph cache', 'parameters' => ['type' => 'object', 'properties' => (object) ['repo_path' => ['type' => 'string'], 'project' => ['type' => 'string']], 'required' => ['repo_path']]],
+                ['name' => 'list_projects', 'description' => 'List indexed code graph projects with node and edge counts', 'parameters' => ['type' => 'object', 'properties' => new \stdClass]],
+                ['name' => 'delete_project', 'description' => 'Remove a project and all its code graph data', 'parameters' => ['type' => 'object', 'properties' => (object) ['project' => ['type' => 'string']], 'required' => ['project']]],
+                ['name' => 'index_status', 'description' => 'Check code graph indexing status for a project', 'parameters' => ['type' => 'object', 'properties' => (object) ['project' => ['type' => 'string'], 'repo_path' => ['type' => 'string']]]],
+                ['name' => 'search_graph', 'description' => 'Search the code graph by label, name pattern, file pattern, and degree filters', 'parameters' => ['type' => 'object', 'properties' => (object) ['name_pattern' => ['type' => 'string'], 'label' => ['type' => 'string'], 'file_pattern' => ['type' => 'string'], 'min_degree' => ['type' => 'integer'], 'max_degree' => ['type' => 'integer'], 'project' => ['type' => 'string'], 'limit' => ['type' => 'integer'], 'offset' => ['type' => 'integer']]]],
+                ['name' => 'trace_path', 'description' => 'Trace callers and callees for a function or method through the code graph', 'parameters' => ['type' => 'object', 'properties' => (object) ['function_name' => ['type' => 'string'], 'direction' => ['type' => 'string'], 'depth' => ['type' => 'integer'], 'project' => ['type' => 'string']], 'required' => ['function_name']]],
+                ['name' => 'detect_changes', 'description' => 'Map a git diff to affected symbols and risk classification', 'parameters' => ['type' => 'object', 'properties' => (object) ['repo_path' => ['type' => 'string'], 'base_ref' => ['type' => 'string'], 'head_ref' => ['type' => 'string'], 'project' => ['type' => 'string']]]],
+                ['name' => 'query_graph', 'description' => 'Execute a read-only Cypher-like query against the code graph', 'parameters' => ['type' => 'object', 'properties' => (object) ['query' => ['type' => 'string'], 'project' => ['type' => 'string']], 'required' => ['query']]],
+                ['name' => 'get_graph_schema', 'description' => 'Get node labels, edge types, property definitions, and relationship patterns', 'parameters' => ['type' => 'object', 'properties' => (object) ['project' => ['type' => 'string']]]],
+                ['name' => 'get_code_snippet', 'description' => 'Read source code for a function or method by qualified name', 'parameters' => ['type' => 'object', 'properties' => (object) ['qualified_name' => ['type' => 'string'], 'project' => ['type' => 'string']], 'required' => ['qualified_name']]],
+                ['name' => 'get_architecture', 'description' => 'Summarize languages, packages, routes, hotspots, clusters, and boundaries for a codebase', 'parameters' => ['type' => 'object', 'properties' => (object) ['project' => ['type' => 'string'], 'repo_path' => ['type' => 'string']]]],
+                ['name' => 'search_code', 'description' => 'Search indexed project files with graph-aware text search', 'parameters' => ['type' => 'object', 'properties' => (object) ['query' => ['type' => 'string'], 'file_pattern' => ['type' => 'string'], 'project' => ['type' => 'string'], 'limit' => ['type' => 'integer']], 'required' => ['query']]],
+                ['name' => 'manage_adr', 'description' => 'Create, list, update, or delete code graph architecture decision records', 'parameters' => ['type' => 'object', 'properties' => (object) ['action' => ['type' => 'string'], 'project' => ['type' => 'string'], 'id' => ['type' => 'string'], 'title' => ['type' => 'string'], 'content' => ['type' => 'string']], 'required' => ['action']]],
+                ['name' => 'ingest_traces', 'description' => 'Ingest runtime traces to validate code graph service-call edges', 'parameters' => ['type' => 'object', 'properties' => (object) ['project' => ['type' => 'string'], 'traces' => ['type' => 'array'], 'trace_file' => ['type' => 'string']]]],
             ],
             'nextcloud-files' => [
                 ['name' => 'test-connection', 'description' => 'Test connection to Nextcloud server', 'parameters' => ['type' => 'object', 'properties' => new \stdClass]],
@@ -2413,14 +2658,37 @@ class MCPRouter
      */
     public function callTool(string $server, string $tool, array $params = [], ?int $timeout = null): mixed
     {
+        // Local host lifecycle writes must use the CLI's session-bound,
+        // exact-action approval path. Generic router calls carry no such claim.
+        if ($server === 'lemma-local' && in_array($tool, ['lemma_start', 'lemma_stop'], true)) {
+            throw new Exception('Lemma lifecycle writes require an approved, claimed action in the PLOS operator CLI.');
+        }
+        if ($server === 'lemma-pod' && $this->cliContext === null) {
+            throw new Exception('Lemma pod MCP calls require the PLOS offline CLI session and its current permissions.');
+        }
+        if ($server === 'codex-skills' && $this->cliContext === null) {
+            throw new Exception('Codex skill reads require the PLOS offline CLI session and its current permissions.');
+        }
+        if ($this->cliContext !== null) {
+            $this->config = $this->cliContext->servers();
+            if (($this->config[$server]['type'] ?? null) !== 'internal') {
+                throw new Exception('External CLI MCP calls require the session-owned stdio transport.');
+            }
+        }
+        if ($server === 'prompt-compressor') {
+            throw new Exception('MCP server is unavailable: prompt-compressor is disabled by lossless AI prompt policy');
+        }
+
         // Use dynamic timeout if provided, otherwise use tool-specific defaults
         $effectiveTimeout = $timeout ?? $this->getToolTimeout($server, $tool);
 
         if ($this->logCalls) {
+            $argumentSummary = app(MCPToolInvocationValidatorService::class)->summarizeArguments($params);
             Log::info('MCP Tool Call', [
                 'server' => $server,
                 'tool' => $tool,
-                'params' => $params,
+                'argument_names' => $argumentSummary['names'],
+                'arguments_sha256' => $argumentSummary['sha256'],
                 'timeout' => $effectiveTimeout,
             ]);
         }
@@ -2451,16 +2719,166 @@ class MCPRouter
         }
 
         $type = $serverConfig['type'] ?? 'external';
-
-        if ($type === 'internal') {
-            return $this->callInternalTool($server, $tool, $params);
+        if ($type === 'external') {
+            $this->assertExternalRuntimeAdmitted($server, $serverConfig);
         }
 
-        return $this->callExternalTool($server, $serverConfig, $tool, $params, $effectiveTimeout);
+        $this->validateInvocationArguments($server, $tool, $params, $serverConfig);
+
+        if ($type === 'internal') {
+            return $this->cliContext === null ? $this->callInternalTool($server, $tool, $params)
+                : $this->cliContext->invoke($server, $tool, fn () => $this->callInternalTool($server, $tool, $params), $params);
+        }
+
+        $outputContract = $this->validateExternalToolResults
+            ? $this->toolOutputContract($server, $tool, $serverConfig)
+            : ['advertised' => false, 'schema' => null];
+        $this->validateExternalOutputContract($server, $tool, $outputContract);
+
+        return $this->callExternalTool(
+            $server,
+            $serverConfig,
+            $tool,
+            $params,
+            $effectiveTimeout,
+            $outputContract,
+        );
+    }
+
+    /**
+     * @param  array<string,mixed>  $params
+     * @param  array<string,mixed>  $serverConfig
+     */
+    private function validateInvocationArguments(string $server, string $tool, array $params, array $serverConfig): void
+    {
+        if (! $this->validateToolArguments) {
+            return;
+        }
+
+        $schema = $this->toolInvocationSchema($server, $tool, $serverConfig);
+        if ($schema === null) {
+            $argumentSummary = app(MCPToolInvocationValidatorService::class)->summarizeArguments($params);
+            Log::warning('MCP tool invocation rejected: advertised contract unavailable', [
+                'server' => $server,
+                'tool' => $tool,
+                'argument_names' => $argumentSummary['names'],
+                'arguments_sha256' => $argumentSummary['sha256'],
+            ]);
+
+            throw new Exception("MCP tool {$server}/{$tool} arguments rejected: tool_contract_unavailable");
+        }
+
+        $validation = app(MCPToolInvocationValidatorService::class)->validate(
+            $params,
+            $schema,
+            $this->rejectUnknownToolArguments,
+        );
+
+        if ($validation['valid']) {
+            return;
+        }
+
+        Log::warning('MCP tool invocation rejected by advertised schema', [
+            'server' => $server,
+            'tool' => $tool,
+            'codes' => $validation['codes'],
+            'fields' => $validation['fields'],
+            'schema_sha256' => $validation['schema_sha256'],
+            'arguments_sha256' => $validation['arguments_sha256'],
+        ]);
+
+        throw new Exception(sprintf(
+            'MCP tool %s/%s arguments rejected: %s%s',
+            $server,
+            $tool,
+            implode(',', $validation['codes']),
+            $validation['fields'] === [] ? '' : ' fields='.implode(',', $validation['fields']),
+        ));
+    }
+
+    /**
+     * @param  array<string,mixed>  $serverConfig
+     * @return array<string,mixed>|null
+     */
+    private function toolInvocationSchema(string $server, string $tool, array $serverConfig): ?array
+    {
+        $tools = $this->serverToolDefinitions($server, $serverConfig);
+
+        foreach ($tools as $definition) {
+            if (($definition['name'] ?? null) !== $tool) {
+                continue;
+            }
+
+            $schema = $definition['parameters'] ?? null;
+
+            return is_array($schema) ? $schema : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string,mixed>  $serverConfig
+     * @return array{advertised:bool,schema:array<string,mixed>|null}
+     */
+    private function toolOutputContract(string $server, string $tool, array $serverConfig): array
+    {
+        $tools = $this->serverToolDefinitions($server, $serverConfig);
+
+        foreach ($tools as $definition) {
+            if (($definition['name'] ?? null) !== $tool) {
+                continue;
+            }
+
+            $advertised = ($definition['output_schema_advertised'] ?? false) === true;
+            $schema = $definition['output_schema'] ?? null;
+
+            return [
+                'advertised' => $advertised,
+                'schema' => is_array($schema) ? $schema : null,
+            ];
+        }
+
+        return ['advertised' => false, 'schema' => null];
+    }
+
+    /** @param  array{advertised:bool,schema:array<string,mixed>|null}  $outputContract */
+    private function validateExternalOutputContract(string $server, string $tool, array $outputContract): void
+    {
+        if (($outputContract['advertised'] ?? false) !== true) {
+            return;
+        }
+
+        $schema = $outputContract['schema'] ?? null;
+        if (! is_array($schema)) {
+            throw new Exception("MCP tool {$server}/{$tool} output contract rejected: output_schema_invalid");
+        }
+
+        $validation = app(MCPToolResultValidatorService::class)->validateSchema($schema);
+        if ($validation['valid']) {
+            return;
+        }
+
+        Log::warning('MCP external tool output contract rejected before dispatch', [
+            'server' => $server,
+            'tool' => $tool,
+            'codes' => $validation['codes'],
+            'schema_sha256' => $validation['schema_sha256'],
+        ]);
+
+        throw new Exception(sprintf(
+            'MCP tool %s/%s output contract rejected: %s',
+            $server,
+            $tool,
+            implode(',', $validation['codes']),
+        ));
     }
 
     private function denyIfRegistryPolicyRefuses(string $server, string $tool): ?string
     {
+        if ($this->cliContext !== null) {
+            return $this->cliContext->allows($server, $tool) ? null : 'Current session MCP tool admission denied execution.';
+        }
         if (! Schema::hasTable('agent_tool_registry')) {
             return null;
         }
@@ -2545,16 +2963,23 @@ class MCPRouter
      * AND per-tool class — offline_review must refuse mutating tools even
      * on admitted servers.
      *
-     * Returns null when allowed, or the denial reason when refused. Null if
-     * the service cannot be resolved (no regression for tests that do not
-     * bind the service).
+     * Returns null when allowed, or the denial reason when refused. Policy
+     * resolution and evaluation failures are denials, never execution bypasses.
      */
     private function denyIfOfflinePolicyRefuses(string $server, string $tool = '', array $params = []): ?string
     {
         try {
-            $policy = app(OfflinePolicyService::class);
+            $policy = $this->cliContext?->policy ?? app(OfflinePolicyService::class);
         } catch (\Throwable $e) {
-            return null;
+            Log::error('MCPRouter: offline policy service unavailable - blocking MCP call', [
+                'server' => $server,
+                'tool' => $tool,
+                'error_type' => get_debug_type($e),
+            ]);
+
+            $label = $tool !== '' ? "MCP tool '{$server}.{$tool}'" : "MCP server '{$server}'";
+
+            return "{$label} blocked because offline policy service is unavailable";
         }
 
         try {
@@ -2582,6 +3007,9 @@ class MCPRouter
                 'confirm_genealogy_link',
             ];
             $context = array_intersect_key($params, array_flip($policyContextKeys));
+            if ($this->cliContext !== null) {
+                $context['_audit'] = false;
+            }
             $pathParamNames = $this->resolveLocalFsPathParams($server, $tool);
             foreach ($pathParamNames as $paramName) {
                 if (! empty($params[$paramName]) && is_string($params[$paramName])) {
@@ -2594,13 +3022,15 @@ class MCPRouter
                 ? $policy->evaluateMcpTool($server, $tool, $context)
                 : $policy->evaluateMcpServer($server);
         } catch (\Throwable $e) {
-            Log::warning('MCPRouter: offline policy evaluation failed — passing through', [
+            Log::error('MCPRouter: offline policy evaluation failed - blocking MCP call', [
                 'server' => $server,
                 'tool' => $tool,
-                'error' => $e->getMessage(),
+                'error_type' => get_debug_type($e),
             ]);
 
-            return null;
+            $label = $tool !== '' ? "MCP tool '{$server}.{$tool}'" : "MCP server '{$server}'";
+
+            return "{$label} blocked because offline policy evaluation failed";
         }
 
         if ($decision->allowed) {
@@ -2679,7 +3109,7 @@ class MCPRouter
      */
     private function loadRuntimePolicy(array $defaultPolicy): array
     {
-        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, $defaultPolicy);
+        $configured = ($this->cliContext?->settings ?? app(SystemConfigService::class))->get(self::RUNTIME_POLICY_CONFIG_KEY, $defaultPolicy);
         if (is_string($configured)) {
             $decoded = json_decode($configured, true);
             $configured = is_array($decoded) ? $decoded : [];
@@ -2746,6 +3176,10 @@ class MCPRouter
     private function callInternalTool(string $server, string $tool, array $params): mixed
     {
         if ($server === 'plos') {
+            if ($tool === 'plos_review_lookup') {
+                return app(ReviewLookupService::class)->lookup($params['reference']);
+            }
+
             return $this->callWorkflowTool($tool, $params);
         }
 
@@ -2797,7 +3231,7 @@ class MCPRouter
      */
     private function callWorkflowTool(string $tool, array $params): array
     {
-        $workflowService = app(WorkflowService::class);
+        $workflowService = $this->cliContext?->service('plos', WorkflowService::class) ?? app(WorkflowService::class);
 
         return match ($tool) {
             'workflow_list' => [
@@ -2807,7 +3241,11 @@ class MCPRouter
                 'workflow' => $workflowService->getWorkflowByName($params['name']),
             ],
             'workflow_run' => [
-                'execution' => $workflowService->executeWorkflow($params['name'], $params['input'] ?? []),
+                'execution' => $workflowService->executeWorkflow(
+                    $params['name'],
+                    $params['input'] ?? [],
+                    ['trace_session_id' => $params['trace_session_id'] ?? null]
+                ),
             ],
             'execution_list' => [
                 'executions' => $workflowService->getExecutionHistory(
@@ -2845,7 +3283,7 @@ class MCPRouter
      */
     private function callRAGTool(string $tool, array $params): array
     {
-        $ragService = app(RAGService::class);
+        $ragService = $this->cliContext?->service('rag', RAGService::class) ?? app(RAGService::class);
 
         return match ($tool) {
             'rag_search' => $this->formatRAGSearchResults(
@@ -2869,8 +3307,27 @@ class MCPRouter
                     $params['limit'] ?? 5
                 ),
             ],
+            'rag_read' => $this->readRAGDocument($ragService, $params),
             default => throw new Exception("Unknown RAG tool: {$tool}"),
         };
+    }
+
+    /**
+     * @param  array<string, mixed>  $params
+     * @return array<string, mixed>
+     */
+    private function readRAGDocument(RAGService $ragService, array $params): array
+    {
+        $document = $ragService->readDocumentWindow(
+            (int) $params['document_id'],
+            (int) ($params['offset'] ?? 0),
+            (int) ($params['max_chars'] ?? 4000),
+        );
+
+        return [
+            'found' => $document !== null,
+            'document' => $document,
+        ];
     }
 
     /**
@@ -2878,6 +3335,9 @@ class MCPRouter
      */
     private function formatRAGSearchResults(array $results): array
     {
+        if ($this->cliContext !== null) {
+            return ['documents' => $results, 'count' => count($results)];
+        }
         if (empty($results)) {
             return ['documents' => [], 'message' => 'No documents found in knowledge base'];
         }
@@ -2887,14 +3347,16 @@ class MCPRouter
             $doc = $result['document'];
             $similarity = round($result['similarity'] * 100, 1);
 
-            // Truncate content for context
+            // Keep search previews bounded; rag_read provides exact continuation.
             $content = $doc->content ?? '';
-            if (strlen($content) > 1500) {
-                $content = substr($content, 0, 1500).'... [truncated]';
+            if (mb_strlen($content, 'UTF-8') > 1500) {
+                $content = mb_substr($content, 0, 1500, 'UTF-8').'... [truncated]';
             }
 
             $formatted[] = [
                 'ref' => 'RAG-'.($index + 1),
+                'document_id' => (int) $doc->id,
+                'document_ref' => 'RAG-DOC-'.(int) $doc->id,
                 'title' => $doc->title ?? 'Untitled',
                 'type' => $doc->document_type ?? 'unknown',
                 'relevance' => "{$similarity}%",
@@ -2913,7 +3375,7 @@ class MCPRouter
      */
     private function callNextcloudTool(string $tool, array $params): array
     {
-        $nextcloudService = app(NextcloudService::class);
+        $nextcloudService = $this->cliContext?->service('nextcloud-calendar', NextcloudService::class) ?? app(NextcloudService::class);
 
         return match ($tool) {
             'get_calendar_events' => [
@@ -2935,7 +3397,7 @@ class MCPRouter
      */
     private function callNextcloudContactsTool(string $tool, array $params): array
     {
-        $contactsService = app(NextcloudContactsService::class);
+        $contactsService = $this->cliContext?->service('nextcloud-contacts', NextcloudContactsService::class) ?? app(NextcloudContactsService::class);
 
         return match ($tool) {
             'get_address_books' => [
@@ -2965,7 +3427,7 @@ class MCPRouter
      */
     private function callJoplinFilesTool(string $tool, array $params): array
     {
-        $joplinService = app(JoplinFilesService::class);
+        $joplinService = $this->cliContext?->service('joplin-files', JoplinFilesService::class) ?? app(JoplinFilesService::class);
 
         return match ($tool) {
             'joplin_search' => [
@@ -3002,7 +3464,7 @@ class MCPRouter
      */
     private function callTimeTool(string $tool, array $params): array
     {
-        $timeService = app(TimeService::class);
+        $timeService = $this->cliContext?->service('time', TimeService::class) ?? app(TimeService::class);
 
         return match ($tool) {
             'get_current_time' => $timeService->get_current_time($params),
@@ -3016,7 +3478,13 @@ class MCPRouter
      */
     private function callWebResearchTool(string $tool, array $params): array
     {
-        $webResearchService = app(WebResearchService::class);
+        if ($tool === 'weather_current') {
+            $weather = $this->cliContext?->service('web-research', WeatherAPI::class) ?? app(WeatherAPI::class);
+
+            return $weather->currentObservation($params['latitude'], $params['longitude']);
+        }
+
+        $webResearchService = $this->cliContext?->service('web-research', WebResearchService::class) ?? app(WebResearchService::class);
 
         return match ($tool) {
             'web_search' => $this->formatWebSearchResults(
@@ -3055,7 +3523,7 @@ class MCPRouter
      */
     private function callCodeReviewTool(string $tool, array $params): array
     {
-        $codeReviewService = app(CodeReviewService::class);
+        $codeReviewService = $this->cliContext?->service('code-review', CodeReviewService::class) ?? app(CodeReviewService::class);
 
         return match ($tool) {
             'code_review' => $codeReviewService->reviewCode(
@@ -3085,7 +3553,7 @@ class MCPRouter
      */
     private function callRepoDevTool(string $tool, array $params): array
     {
-        $repoDevService = app(RepoDevMCPService::class);
+        $repoDevService = $this->cliContext?->service('repo-dev', RepoDevMCPService::class) ?? app(RepoDevMCPService::class);
 
         return match ($tool) {
             'find_repo_files' => $repoDevService->findRepoFiles(
@@ -3097,6 +3565,11 @@ class MCPRouter
                 $params['query'],
                 $params['path'] ?? '.',
                 $params['limit'] ?? 50,
+            ),
+            'context_map' => $repoDevService->contextMap(
+                $params['task'],
+                $params['path'] ?? '.',
+                $params['limit'] ?? 20,
             ),
             'list_repo_directory' => $repoDevService->listRepoDirectory(
                 $params['path'] ?? '.',
@@ -3118,6 +3591,13 @@ class MCPRouter
                 $params['patch'],
                 (bool) ($params['check_only'] ?? false),
             ),
+            'restore_repo_edit' => $repoDevService->restoreRepoEdit(
+                $params['token'],
+                (bool) ($params['check_only'] ?? false),
+            ),
+            'summarize_repo_edits' => $repoDevService->summarizeRepoEdits(
+                $params['tokens'],
+            ),
             'run_verification' => $repoDevService->runVerification(
                 $params['runner'],
                 $params['target'] ?? null,
@@ -3137,7 +3617,7 @@ class MCPRouter
      */
     private function callSearXNGTool(string $tool, array $params): array
     {
-        $searxngService = app(SearXNGMCPService::class);
+        $searxngService = $this->cliContext?->service('searxng', SearXNGMCPService::class) ?? app(SearXNGMCPService::class);
 
         return match ($tool) {
             'searxng_search' => $searxngService->searxng_search(
@@ -3167,7 +3647,7 @@ class MCPRouter
      */
     private function callGenealogyTool(string $tool, array $params): array
     {
-        $service = app(GenealogyMCPService::class);
+        $service = $this->cliContext?->service('genealogy', GenealogyMCPService::class) ?? app(GenealogyMCPService::class);
 
         return match ($tool) {
             'gedcom_parse' => $service->gedcom_parse(
@@ -3205,7 +3685,7 @@ class MCPRouter
                 $params['tree_id'],
                 $params['query'],
                 $params['include_living'] ?? true,
-                $params['limit'] ?? 50
+                $params['limit'] ?? 1
             ),
             'person_research' => $service->person_research(
                 $params['person_id'],
@@ -3899,13 +4379,22 @@ class MCPRouter
      * 3. Send tool call request
      * 4. Parse and return result
      */
-    private function callExternalTool(string $serverName, array $serverConfig, string $tool, array $params, ?int $timeout = null): mixed
-    {
+    private function callExternalTool(
+        string $serverName,
+        array $serverConfig,
+        string $tool,
+        array $params,
+        ?int $timeout = null,
+        array $outputContract = ['advertised' => false, 'schema' => null],
+    ): mixed {
+        $this->assertExternalRuntimeAdmitted($serverName, $serverConfig);
+
         $timeout = $this->positivePolicyInt($timeout, $this->timeout);
         $command = $serverConfig['command'];
         $args = $serverConfig['args'] ?? [];
 
-        // Ensure PATH includes npm global bin directory for npx-based servers
+        // Keep operator-installed direct binaries available without permitting
+        // package-manager launchers to fetch or resolve code at invocation time.
         $npmGlobalBin = $this->resolveRuntimeEnvValue('HOME').'/.npm-global/bin';
         $systemPath = $this->resolveRuntimeEnvValue('PATH') ?: '/usr/bin:/bin:/usr/local/bin';
 
@@ -3924,11 +4413,17 @@ class MCPRouter
         $cmdParts = array_merge([$command], $args);
         $cmdString = implode(' ', array_map('escapeshellarg', $cmdParts));
 
-        // Debug: log the command being executed
+        // Retain command correlation without exposing arguments or PATH.
         if ($this->logCalls) {
-            Log::info("MCP Command: {$cmdString}", [
+            Log::info('MCP external runtime command prepared', [
                 'server' => $serverName,
-                'PATH' => $env['PATH'] ?? 'not set',
+                'executable' => basename((string) $command),
+                'argument_count' => count($args),
+                ...SensitiveTextTelemetry::content(
+                    $cmdString,
+                    self::COMMAND_TELEMETRY_SCOPE,
+                    'external_runtime_command',
+                ),
             ]);
         }
 
@@ -4168,6 +4663,7 @@ class MCPRouter
                                 if (! empty($trimmed) && $trimmed[0] === '{') {
                                     $decoded = json_decode($trimmed, true);
                                     if ($decoded && isset($decoded['id']) && $decoded['id'] == 2) {
+                                        $decodedObject = json_decode($trimmed, false);
                                         // Found our tool response
                                         fclose($pipes[1]);
                                         fclose($pipes[2]);
@@ -4178,7 +4674,13 @@ class MCPRouter
                                             throw new Exception('MCP tool error: '.($decoded['error']['message'] ?? 'Unknown error'));
                                         }
 
-                                        return $decoded['result'] ?? [];
+                                        return $this->validateExternalToolResult(
+                                            $serverName,
+                                            $tool,
+                                            $decoded['result'] ?? [],
+                                            $outputContract,
+                                            is_object($decodedObject) ? ($decodedObject->result ?? null) : null,
+                                        );
                                     }
                                 }
                             }
@@ -4218,15 +4720,84 @@ class MCPRouter
     }
 
     /**
+     * @param  array{advertised:bool,schema:array<string,mixed>|null}  $outputContract
+     */
+    private function validateExternalToolResult(
+        string $server,
+        string $tool,
+        mixed $result,
+        array $outputContract,
+        mixed $rawResult = null,
+    ): mixed {
+        if (($outputContract['advertised'] ?? false) !== true) {
+            return $result;
+        }
+
+        if (! is_array($result)) {
+            throw new Exception("MCP tool {$server}/{$tool} result rejected: result_not_object");
+        }
+
+        if (($result['isError'] ?? false) === true) {
+            return $result;
+        }
+
+        $schema = $outputContract['schema'] ?? null;
+        if (! is_array($schema)) {
+            throw new Exception("MCP tool {$server}/{$tool} result rejected: output_schema_invalid");
+        }
+
+        $rawStructuredContent = is_object($rawResult) && property_exists($rawResult, 'structuredContent')
+            ? $rawResult->structuredContent
+            : null;
+        $validation = app(MCPToolResultValidatorService::class)->validate(
+            $result,
+            $schema,
+            $rawStructuredContent,
+        );
+        if ($validation['valid']) {
+            return $result;
+        }
+
+        Log::warning('MCP external tool result rejected by advertised schema', [
+            'server' => $server,
+            'tool' => $tool,
+            'codes' => $validation['codes'],
+            'fields' => $validation['fields'],
+            'schema_sha256' => $validation['schema_sha256'],
+        ]);
+
+        throw new Exception(sprintf(
+            'MCP tool %s/%s result rejected: %s%s',
+            $server,
+            $tool,
+            implode(',', $validation['codes']),
+            $validation['fields'] === [] ? '' : ' fields='.implode(',', $validation['fields']),
+        ));
+    }
+
+    /**
      * Clear tool catalog cache (both static and dynamic mode variants).
      */
     public function clearCache(): void
     {
+        if ($this->cliContext !== null) {
+            $this->config = $this->cliContext->servers();
+
+            return;
+        }
         Cache::forget('mcp:tool_catalog');          // legacy fixed key
         Cache::forget('mcp:tool_catalog:static');   // dynamic_discovery_enabled=false
         Cache::forget('mcp:tool_catalog:dynamic');  // dynamic_discovery_enabled=true
         Cache::forget($this->toolCatalogCacheKey(false));
         Cache::forget($this->toolCatalogCacheKey(true));
+        foreach (array_keys($this->config) as $server) {
+            foreach (['static', 'dynamic'] as $mode) {
+                $serverConfig = $this->config[$server] ?? [];
+                $fingerprint = md5(json_encode($serverConfig, JSON_UNESCAPED_SLASHES) ?: '[]');
+                Cache::forget("mcp:tool_schemas:{$mode}:{$server}:{$fingerprint}");
+                Cache::forget($this->toolSchemaCacheKey($mode, $server, $serverConfig));
+            }
+        }
     }
 
     /**
@@ -4237,9 +4808,180 @@ class MCPRouter
     private function toolCatalogCacheKey(?bool $dynamicDiscoveryEnabled = null): string
     {
         $mode = ($dynamicDiscoveryEnabled ?? (bool) config('mcp.dynamic_discovery_enabled', false)) ? 'dynamic' : 'static';
-        $fingerprint = md5(json_encode($this->config, JSON_UNESCAPED_SLASHES) ?: '[]');
+        $identity = ['config' => $this->config];
+        if ($mode === 'dynamic') {
+            $identity['runtime'] = [];
+            foreach ($this->config as $server => $serverConfig) {
+                if (($serverConfig['enabled'] ?? false)
+                    && ($serverConfig['type'] ?? 'external') === 'external') {
+                    $identity['runtime'][$server] = $this->serverRuntimeIdentity($serverConfig);
+                }
+            }
+        }
+        $fingerprint = hash('sha256', json_encode($identity, JSON_UNESCAPED_SLASHES) ?: '[]');
 
         return "mcp:tool_catalog:{$mode}:{$fingerprint}";
+    }
+
+    /** @param array<string,mixed> $serverConfig */
+    private function serverToolDefinitions(string $server, array $serverConfig): array
+    {
+        if ($this->cliContext !== null) {
+            return $this->discoverServerTools($server, $serverConfig);
+        }
+        $mode = (bool) config('mcp.dynamic_discovery_enabled', false) ? 'dynamic' : 'static';
+        $load = fn (): array => $this->discoverServerTools($server, $serverConfig);
+
+        if ($mode === 'dynamic' && ! $this->dynamicServerCatalogCacheable($serverConfig)) {
+            return $load();
+        }
+
+        return Cache::remember(
+            $this->toolSchemaCacheKey($mode, $server, $serverConfig),
+            $this->cacheTtl,
+            $load,
+        );
+    }
+
+    /** @param array<string,mixed> $serverConfig */
+    private function toolSchemaCacheKey(string $mode, string $server, array $serverConfig): string
+    {
+        $identity = ['config' => $serverConfig];
+        if ($mode === 'dynamic') {
+            $identity['runtime'] = $this->serverRuntimeIdentity($serverConfig);
+        }
+        $fingerprint = hash('sha256', json_encode($identity, JSON_UNESCAPED_SLASHES) ?: '[]');
+
+        return "mcp:tool_schemas:{$mode}:{$server}:{$fingerprint}";
+    }
+
+    private function dynamicCatalogRequiresLiveDiscovery(): bool
+    {
+        if (! (bool) config('mcp.dynamic_discovery_enabled', false)) {
+            return false;
+        }
+
+        foreach ($this->config as $serverConfig) {
+            if (! ($serverConfig['enabled'] ?? false)
+                || ($serverConfig['type'] ?? 'external') !== 'external') {
+                continue;
+            }
+
+            if (! $this->dynamicServerCatalogCacheable($serverConfig)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<string,mixed> $serverConfig */
+    private function dynamicServerCatalogCacheable(array $serverConfig): bool
+    {
+        return $this->externalRuntimeAdmission($serverConfig)['admitted'];
+    }
+
+    /** @param array<string,mixed> $serverConfig @return array{admitted: bool, reason_code: string, pin_type: string} */
+    private function externalRuntimeAdmission(array $serverConfig): array
+    {
+        return app(McpExternalRuntimeAdmissionService::class)->inspect($serverConfig);
+    }
+
+    /** @param array<string,mixed> $serverConfig */
+    private function assertExternalRuntimeAdmitted(string $server, array $serverConfig): void
+    {
+        $admission = $this->externalRuntimeAdmission($serverConfig);
+        if (! $admission['admitted']) {
+            throw new Exception(sprintf(
+                'External MCP runtime not admitted: %s (%s)',
+                $server,
+                $admission['reason_code'],
+            ));
+        }
+    }
+
+    /** @param array<string,mixed> $serverConfig */
+    private function serverRuntimeIdentity(array $serverConfig): array
+    {
+        $command = trim((string) ($serverConfig['command'] ?? ''));
+        $identity = [
+            'command' => $this->runtimeFileIdentity(
+                $this->resolveRuntimeFilePath($command, $serverConfig, true)
+            ),
+            'file_arguments' => [],
+        ];
+
+        foreach ((array) ($serverConfig['args'] ?? []) as $index => $argument) {
+            if (! is_string($argument) || $argument === '' || str_starts_with($argument, '-')) {
+                continue;
+            }
+
+            $path = $this->resolveRuntimeFilePath($argument, $serverConfig, false);
+            if ($path !== null) {
+                $identity['file_arguments'][(string) $index] = $this->runtimeFileIdentity($path);
+            }
+        }
+
+        return $identity;
+    }
+
+    /** @param array<string,mixed> $serverConfig */
+    private function resolveRuntimeFilePath(string $candidate, array $serverConfig, bool $searchPath): ?string
+    {
+        if ($candidate === '') {
+            return null;
+        }
+
+        $home = $this->resolveRuntimeEnvValue('HOME');
+        if (str_starts_with($candidate, '~/') && $home !== '') {
+            $candidate = $home.substr($candidate, 1);
+        }
+
+        $paths = [];
+        if (str_starts_with($candidate, '/')) {
+            $paths[] = $candidate;
+        } else {
+            $paths[] = base_path($candidate);
+            if ($searchPath && ! str_contains($candidate, '/')) {
+                $configuredPath = (string) (($serverConfig['env']['PATH'] ?? null)
+                    ?: $this->resolveRuntimeEnvValue('PATH'));
+                foreach (explode(PATH_SEPARATOR, $configuredPath) as $directory) {
+                    if ($directory !== '') {
+                        $paths[] = rtrim($directory, '/').'/'.$candidate;
+                    }
+                }
+
+                if ($home !== '') {
+                    $paths[] = $home.'/.npm-global/bin/'.$candidate;
+                }
+            }
+        }
+
+        foreach (array_unique($paths) as $path) {
+            if (is_file($path) && is_readable($path)) {
+                return realpath($path) ?: $path;
+            }
+        }
+
+        return null;
+    }
+
+    private function runtimeFileIdentity(?string $path): array
+    {
+        if ($path === null) {
+            return ['available' => false];
+        }
+
+        $stat = @stat($path) ?: [];
+        $contentHash = @hash_file('sha256', $path);
+
+        return [
+            'available' => true,
+            'path_sha256' => hash('sha256', $path),
+            'content_sha256' => is_string($contentHash) ? $contentHash : null,
+            'size' => isset($stat['size']) ? (int) $stat['size'] : null,
+            'modified_at' => isset($stat['mtime']) ? (int) $stat['mtime'] : null,
+        ];
     }
 
     /**
@@ -4283,15 +5025,13 @@ class MCPRouter
             return $status;
         }
 
-        // For external servers, check if executable exists
-        $command = $serverConfig['command'];
-        $available = ProcessFacade::run(['which', $command])->successful();
+        $admission = $this->externalRuntimeAdmission($serverConfig);
+        $status['available'] = $admission['admitted'];
+        $status['runtime_pin_type'] = $admission['pin_type'];
+        $status['runtime_reason_code'] = $admission['reason_code'];
 
-        $status['available'] = $available;
-        $status['command'] = $command;
-
-        if (! $available) {
-            $status['error'] = "Command '{$command}' not found";
+        if (! $admission['admitted']) {
+            $status['error'] = 'External runtime not admitted';
         }
 
         return $status;

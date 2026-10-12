@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { mysqlRawQuery } from '../db/mysql.js';
+import { contextOfflineGedcom, isOfflineGenealogyDataError } from './offline-genealogy-gedcom.js';
 
 export const genealogyContextInput = z.object({
   tree_id: z.number().int().positive().describe('Genealogy tree ID'),
@@ -13,6 +14,18 @@ export const genealogyContextInput = z.object({
 export type GenealogyContextInput = z.infer<typeof genealogyContextInput>;
 
 export async function genealogyContext(input: GenealogyContextInput): Promise<string> {
+  try {
+    return await genealogyContextFromDatabase(input);
+  } catch (error) {
+    if (!isOfflineGenealogyDataError(error)) throw error;
+    const fallback = await contextOfflineGedcom(input);
+    if (fallback === null) throw error;
+
+    return JSON.stringify(fallback, null, 2);
+  }
+}
+
+async function genealogyContextFromDatabase(input: GenealogyContextInput): Promise<string> {
   const treeId = input.tree_id;
   const textLimit = input.text_limit;
   const result: Record<string, unknown> = { tree_id: treeId };
@@ -20,7 +33,8 @@ export async function genealogyContext(input: GenealogyContextInput): Promise<st
   if (input.person_ids?.length) {
     result.people = await mysqlRawQuery(
       `SELECT id, gedcom_id, given_name, surname, suffix, nickname, sex, birth_date, birth_place,
-              death_date, death_place, living, LEFT(COALESCE(notes,''), ?) AS notes
+              death_date, death_place, burial_date, burial_place, living,
+              LEFT(COALESCE(notes,''), ?) AS notes
          FROM genealogy_persons
         WHERE tree_id = ? AND id IN (?)
         ORDER BY id`,

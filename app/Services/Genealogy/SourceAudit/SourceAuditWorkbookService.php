@@ -6,6 +6,7 @@ use App\Services\Genealogy\GenealogyReviewPacketAdapterService;
 use App\Services\Genealogy\GenealogyReviewPacketMaterializationService;
 use App\Services\Genealogy\GenealogyTreeRootResolver;
 use App\Services\Review\ReviewTargetReferenceService;
+use App\Support\SpreadsheetSafeCsv;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
@@ -676,7 +677,7 @@ class SourceAuditWorkbookService
             'person_audit_id' => $this->auditId($treeId, 'P', $personId),
             'person_id' => $personId,
             'person_print_id' => $auditOnly || $private ? '' : $this->recordDisplayId($person->gedcom_id ?? null, 'I', $personId),
-            'person_url' => $auditOnly || $private ? '' : url('/genealogy?person='.$personId),
+            'person_url' => $auditOnly || $private ? '' : url('/genealogy?tree_id='.$treeId.'&person='.$personId),
             'document_tag' => $auditOnly || $private ? '' : $this->documentTag($person->gedcom_id ?? null, 'I', $personId),
             'gedcom_id' => (string) ($person->gedcom_id ?? ''),
             'sort_name' => $auditOnly ? '' : ($private ? '[private]' : $sortName),
@@ -749,10 +750,10 @@ class SourceAuditWorkbookService
             'family_sort_key' => $auditOnly ? '' : ($private ? '[private]' : $familySort['key']),
             'family_sort_year' => $this->extractYear($family->marriage_date ?? null),
             'husband_id' => $family->husband_id ? $this->auditId($treeId, 'P', (int) $family->husband_id) : '',
-            'husband_url' => $auditOnly || $private || ! $husband ? '' : url('/genealogy?person='.(int) $family->husband_id),
+            'husband_url' => $auditOnly || $private || ! $husband ? '' : url('/genealogy?tree_id='.$treeId.'&person='.(int) $family->husband_id),
             'husband_name' => $auditOnly || $private ? '' : ($husband ? $this->formatPersonNameWithYears($husband) : ''),
             'wife_id' => $family->wife_id ? $this->auditId($treeId, 'P', (int) $family->wife_id) : '',
-            'wife_url' => $auditOnly || $private || ! $wife ? '' : url('/genealogy?person='.(int) $family->wife_id),
+            'wife_url' => $auditOnly || $private || ! $wife ? '' : url('/genealogy?tree_id='.$treeId.'&person='.(int) $family->wife_id),
             'wife_name' => $auditOnly || $private ? '' : ($wife ? $this->formatPersonNameWithYears($wife) : ''),
             'marriage' => $auditOnly || $private ? '' : $this->datePlace($family->marriage_date ?? null, $family->marriage_place ?? null),
             'divorce' => $auditOnly || $private ? '' : $this->datePlace($family->divorce_date ?? null, $family->divorce_place ?? null),
@@ -1460,25 +1461,16 @@ class SourceAuditWorkbookService
 
     private function toCsv(array $rows, array $headers): string
     {
-        $handle = fopen('php://temp', 'r+');
-        if (! is_resource($handle)) {
-            throw new RuntimeException('Unable to open temporary CSV stream.');
-        }
-
-        fputcsv($handle, $headers);
-        foreach ($rows as $row) {
-            $line = [];
+        $normalizedRows = array_map(function (array $row) use ($headers): array {
+            $normalized = [];
             foreach ($headers as $header) {
-                $line[] = $this->csvCell($row[$header] ?? '');
+                $normalized[$header] = $this->cleanText($row[$header] ?? '');
             }
-            fputcsv($handle, $line);
-        }
 
-        rewind($handle);
-        $contents = stream_get_contents($handle);
-        fclose($handle);
+            return $normalized;
+        }, $rows);
 
-        return $contents === false ? '' : $contents;
+        return SpreadsheetSafeCsv::encode($headers, $normalizedRows);
     }
 
     private function headersFor(string $fileName): array
@@ -2079,16 +2071,6 @@ class SourceAuditWorkbookService
         $text = trim((string) ($value ?? ''));
         $text = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $text) ?? $text;
         $text = preg_replace('/\s+/u', ' ', $text) ?? $text;
-
-        return $text;
-    }
-
-    private function csvCell(mixed $value): string
-    {
-        $text = $this->cleanText($value);
-        if ($text !== '' && in_array($text[0], ['=', '+', '-', '@'], true)) {
-            return "'".$text;
-        }
 
         return $text;
     }

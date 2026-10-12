@@ -117,6 +117,8 @@ class OpsLlmHealthReconcileCommand extends Command
             'unhealthy' => (int) ($results['unhealthy'] ?? 0),
             'recovered' => (int) ($results['recovered'] ?? 0),
             'degraded' => (int) ($results['degraded'] ?? 0),
+            'unknown' => (int) ($results['unknown'] ?? 0),
+            'managed_idle' => (int) ($results['managed_idle'] ?? 0),
             'duration_ms' => $durationMs,
         ];
 
@@ -167,6 +169,8 @@ class OpsLlmHealthReconcileCommand extends Command
             'unhealthy' => 0,
             'recovered' => 0,
             'degraded' => 0,
+            'unknown' => 0,
+            'managed_idle' => 0,
             'duration_ms' => 0,
         ];
     }
@@ -176,7 +180,7 @@ class OpsLlmHealthReconcileCommand extends Command
      */
     private function status(array $summary): string
     {
-        if (($summary['unhealthy'] ?? 0) > 0) {
+        if (($summary['unhealthy'] ?? 0) > 0 || ($summary['unknown'] ?? 0) > 0) {
             return 'review_required';
         }
 
@@ -206,7 +210,11 @@ class OpsLlmHealthReconcileCommand extends Command
             $out[] = [
                 'instance_id' => (string) ($detail['instance_id'] ?? $instanceId),
                 'type' => (string) ($detail['type'] ?? 'unknown'),
-                'healthy' => (bool) ($detail['healthy'] ?? false),
+                'healthy' => $detail['healthy'] ?? null,
+                'state' => $detail['state'] ?? null,
+                'health_source' => $detail['health_source'] ?? 'endpoint_probe',
+                'health_persisted' => $detail['health_persisted'] ?? true,
+                'observed_at' => $detail['observed_at'] ?? null,
                 'recovered' => (bool) ($detail['recovered'] ?? false),
                 'degraded' => (bool) ($detail['degraded'] ?? false),
                 'response_ms' => isset($detail['response_ms']) ? (int) $detail['response_ms'] : null,

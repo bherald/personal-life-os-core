@@ -27,18 +27,18 @@ MODEL_NAME = 'BAAI/bge-base-en-v1.5'
 MAX_LENGTH = 512  # bge-base-en-v1.5 max sequence length
 
 
-def load_model():
+def load_model(local_files_only=False):
     """Load tokenizer and model. Downloads on first use."""
     import torch
     from transformers import AutoTokenizer, AutoModel
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModel.from_pretrained(MODEL_NAME)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, local_files_only=local_files_only)
+    model = AutoModel.from_pretrained(MODEL_NAME, local_files_only=local_files_only)
     model.eval()
     return tokenizer, model
 
 
-def generate_embedding(text, tokenizer, model):
+def generate_embedding(text, tokenizer, model, preserve_input=False):
     """Generate a 768-dim embedding for the given text."""
     import torch
 
@@ -47,10 +47,13 @@ def generate_embedding(text, tokenizer, model):
     encoded = tokenizer(
         text,
         padding=True,
-        truncation=True,
+        truncation=not preserve_input,
         max_length=MAX_LENGTH,
         return_tensors='pt',
     )
+
+    if preserve_input and encoded['input_ids'].shape[-1] > MAX_LENGTH:
+        raise ValueError('Embedding input exceeds the CPU model context; choose another model. Original input was not shortened.')
 
     with torch.no_grad():
         outputs = model(**encoded)
@@ -67,11 +70,13 @@ def generate_embedding(text, tokenizer, model):
 def main():
     parser = argparse.ArgumentParser(description='CPU embedding fallback')
     parser.add_argument('--text', help='Text to embed (alternative to stdin)')
+    parser.add_argument('--preserve-input', action='store_true', help='Keep original input and reject context overflow')
+    parser.add_argument('--local-files-only', action='store_true', help='Use the cached model without internet downloads')
     parser.add_argument('--check', action='store_true', help='Verify model loads and exit')
     args = parser.parse_args()
 
     try:
-        tokenizer, model = load_model()
+        tokenizer, model = load_model(local_files_only=args.local_files_only)
 
         if args.check:
             # Verify with a test embedding
@@ -84,8 +89,10 @@ def main():
             return
 
         # Get text from --text arg or stdin
-        if args.text:
+        if args.text is not None:
             text = args.text
+        elif args.preserve_input:
+            text = sys.stdin.buffer.read().decode('utf-8')
         else:
             text = sys.stdin.read().strip()
 
@@ -93,7 +100,7 @@ def main():
             print(json.dumps({'error': 'No text provided'}))
             sys.exit(1)
 
-        embedding = generate_embedding(text, tokenizer, model)
+        embedding = generate_embedding(text, tokenizer, model, preserve_input=args.preserve_input)
 
         print(json.dumps({
             'embedding': embedding,

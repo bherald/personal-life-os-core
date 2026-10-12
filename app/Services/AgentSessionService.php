@@ -2,9 +2,13 @@
 
 namespace App\Services;
 
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
+use RuntimeException;
 
 /**
  * Agent Session Service
@@ -27,6 +31,10 @@ class AgentSessionService
     private const MAX_MESSAGES_PER_SESSION = 100;
 
     private const DEFAULT_LIMIT = 50;
+
+    private const MAX_HISTORY_PAGE_LIMIT = 200;
+
+    private ?bool $durableHistoryAvailable = null;
 
     /**
      * Create a new agent session
@@ -169,68 +177,71 @@ class AgentSessionService
         string $content,
         array $messageMetadata = []
     ): bool {
-        $session = DB::selectOne(
-            'SELECT id, messages, message_count, total_tokens, status FROM agent_sessions WHERE session_id = ? LIMIT 1',
-            [$sessionId]
-        );
+        return DB::transaction(function () use ($sessionId, $role, $content, $messageMetadata): bool {
+            $session = DB::table('agent_sessions')
+                ->select('id', 'messages', 'message_count', 'total_tokens', 'status')
+                ->where('session_id', $sessionId)
+                ->lockForUpdate()
+                ->first();
 
-        if (! $session) {
-            Log::debug('AgentSession: Cannot add message - session not found', [
-                'session_id' => $sessionId,
-            ]);
+            if (! $session) {
+                Log::debug('AgentSession: Cannot add message - session not found', ['session_id' => $sessionId]);
 
-            return false;
-        }
+                return false;
+            }
 
-        if (($session->status ?? null) !== 'active') {
-            Log::debug('AgentSession: Skipping message append for inactive session', [
-                'session_id' => $sessionId,
-                'status' => $session->status,
-            ]);
+            if (($session->status ?? null) !== 'active') {
+                Log::debug('AgentSession: Skipping message append for inactive session', [
+                    'session_id' => $sessionId,
+                    'status' => $session->status,
+                ]);
 
-            return false;
-        }
+                return false;
+            }
 
-        $messages = json_decode($session->messages, true) ?? [];
+            $messages = json_decode((string) $session->messages, true) ?? [];
+            if (count($messages) >= self::MAX_MESSAGES_PER_SESSION
+                && (CliWorkflowExecutionScope::current() === null || $this->hasDurableHistory())) {
+                array_shift($messages);
+            }
 
-        // Enforce max messages limit (remove oldest if exceeded)
-        if (count($messages) >= self::MAX_MESSAGES_PER_SESSION) {
-            array_shift($messages);
-        }
+            $now = now();
+            $message = [
+                'role' => $role,
+                'content' => $content,
+                'timestamp' => $now->toIso8601String(),
+            ];
+            if ($messageMetadata !== []) {
+                $message['metadata'] = $messageMetadata;
+            }
+            $messages[] = $message;
 
-        // Add new message
-        $message = [
-            'role' => $role,
-            'content' => $content,
-            'timestamp' => now()->toIso8601String(),
-        ];
+            $tokenEstimate = (int) (strlen($content) / 1.5);
+            $newMessageCount = (int) $session->message_count + 1;
 
-        if (! empty($messageMetadata)) {
-            $message['metadata'] = $messageMetadata;
-        }
+            if ($this->hasDurableHistory()) {
+                DB::table('agent_session_messages')->insert([
+                    'agent_session_id' => (int) $session->id,
+                    'ordinal' => $newMessageCount,
+                    'role' => mb_substr($role, 0, 32),
+                    'content' => $content,
+                    'metadata' => $messageMetadata !== [] ? json_encode($messageMetadata, JSON_UNESCAPED_SLASHES) : null,
+                    'token_estimate' => $tokenEstimate,
+                    'occurred_at' => $now,
+                    'created_at' => $now,
+                ]);
+            }
 
-        $messages[] = $message;
-
-        // Estimate tokens (conservative: ~1.5 chars per token for multi-byte safety, per N84)
-        $tokenEstimate = (int) (strlen($content) / 1.5);
-        $newTotalTokens = $session->total_tokens + $tokenEstimate;
-        $newMessageCount = $session->message_count + 1;
-
-        $now = now();
-        $affected = DB::update('
-            UPDATE agent_sessions
-            SET messages = ?, message_count = ?, total_tokens = ?, last_activity_at = ?, updated_at = ?
-            WHERE id = ?
-        ', [
-            json_encode($messages),
-            $newMessageCount,
-            $newTotalTokens,
-            $now,
-            $now,
-            $session->id,
-        ]);
-
-        return $affected > 0;
+            return DB::table('agent_sessions')
+                ->where('id', $session->id)
+                ->update([
+                    'messages' => json_encode($messages, JSON_UNESCAPED_SLASHES),
+                    'message_count' => $newMessageCount,
+                    'total_tokens' => (int) $session->total_tokens + $tokenEstimate,
+                    'last_activity_at' => $now,
+                    'updated_at' => $now,
+                ]) > 0;
+        });
     }
 
     /**
@@ -263,6 +274,67 @@ class AgentSessionService
         }
 
         return $messages;
+    }
+
+    /**
+     * Read a stable, newest-first page from the lossless durable transcript.
+     * The returned head cursor excludes messages appended after the first page.
+     */
+    public function getMessageHistoryPage(string $sessionId, ?string $cursor = null, int $limit = self::DEFAULT_LIMIT): array
+    {
+        $limit = max(1, min($limit, self::MAX_HISTORY_PAGE_LIMIT));
+        $session = DB::table('agent_sessions')
+            ->select('id', 'message_count')
+            ->where('session_id', $sessionId)
+            ->first();
+
+        if (! $session || ! $this->hasDurableHistory()) {
+            return [
+                'session_id' => $sessionId,
+                'order' => 'newest_first',
+                'messages' => [],
+                'next_cursor' => null,
+                'history_head_cursor' => null,
+                'durable' => false,
+            ];
+        }
+
+        $maxOrdinal = (int) (DB::table('agent_session_messages')
+            ->where('agent_session_id', $session->id)
+            ->max('ordinal') ?? 0);
+        $upperOrdinal = $cursor === null
+            ? $maxOrdinal
+            : $this->decodeHistoryCursor($cursor, $sessionId);
+        $headCursor = $this->encodeHistoryCursor($sessionId, $upperOrdinal);
+
+        $rows = DB::table('agent_session_messages')
+            ->where('agent_session_id', $session->id)
+            ->where('ordinal', '<=', $upperOrdinal)
+            ->orderByDesc('ordinal')
+            ->limit($limit + 1)
+            ->get();
+
+        $hasMore = $rows->count() > $limit;
+        $rows = $rows->take($limit);
+        $messages = $rows->map(static fn (object $row): array => [
+            'ordinal' => (int) $row->ordinal,
+            'role' => $row->role,
+            'content' => $row->content,
+            'timestamp' => (string) $row->occurred_at,
+            'metadata' => $row->metadata ? (json_decode((string) $row->metadata, true) ?? []) : [],
+            'token_estimate' => (int) $row->token_estimate,
+        ])->values()->all();
+        $lastOrdinal = $messages !== [] ? (int) end($messages)['ordinal'] : 0;
+
+        return [
+            'session_id' => $sessionId,
+            'order' => 'newest_first',
+            'messages' => $messages,
+            'next_cursor' => $hasMore ? $this->encodeHistoryCursor($sessionId, $lastOrdinal - 1) : null,
+            'history_head_cursor' => $headCursor,
+            'durable' => true,
+            'message_count' => (int) $session->message_count,
+        ];
     }
 
     /**
@@ -666,10 +738,18 @@ class AgentSessionService
      */
     public function deleteSession(string $sessionId): bool
     {
-        $deleted = DB::delete(
-            'DELETE FROM agent_sessions WHERE session_id = ?',
-            [$sessionId]
-        );
+        $deleted = DB::transaction(function () use ($sessionId): int {
+            $session = DB::table('agent_sessions')->select('id')->where('session_id', $sessionId)->first();
+            if (! $session) {
+                return 0;
+            }
+
+            if ($this->hasDurableHistory()) {
+                DB::table('agent_session_messages')->where('agent_session_id', $session->id)->delete();
+            }
+
+            return DB::table('agent_sessions')->where('id', $session->id)->delete();
+        });
 
         if ($deleted > 0) {
             Log::info('AgentSession: Session deleted', ['session_id' => $sessionId]);
@@ -686,14 +766,27 @@ class AgentSessionService
      */
     public function clearMessages(string $sessionId): bool
     {
-        $now = now();
-        $affected = DB::update('
-            UPDATE agent_sessions
-            SET messages = ?, message_count = 0, total_tokens = 0, updated_at = ?
-            WHERE session_id = ?
-        ', [json_encode([]), $now, $sessionId]);
+        return DB::transaction(function () use ($sessionId): bool {
+            $session = DB::table('agent_sessions')
+                ->select('id')
+                ->where('session_id', $sessionId)
+                ->lockForUpdate()
+                ->first();
+            if (! $session) {
+                return false;
+            }
 
-        return $affected > 0;
+            if ($this->hasDurableHistory()) {
+                DB::table('agent_session_messages')->where('agent_session_id', $session->id)->delete();
+            }
+
+            return DB::table('agent_sessions')->where('id', $session->id)->update([
+                'messages' => json_encode([]),
+                'message_count' => 0,
+                'total_tokens' => 0,
+                'updated_at' => now(),
+            ]) > 0;
+        });
     }
 
     /**
@@ -705,7 +798,9 @@ class AgentSessionService
      */
     public function buildChatContext(string $sessionId, ?int $maxMessages = null): array
     {
-        $messages = $this->getMessages($sessionId, $maxMessages);
+        $messages = CliWorkflowExecutionScope::current() !== null
+            ? $this->completeChatMessages($sessionId)
+            : $this->getMessages($sessionId, $maxMessages);
 
         return array_map(function ($msg) {
             return [
@@ -713,6 +808,40 @@ class AgentSessionService
                 'content' => $msg['content'],
             ];
         }, $messages);
+    }
+
+    /** CLI prompts use the existing full transcript, never the bounded display cache. */
+    private function completeChatMessages(string $sessionId): array
+    {
+        return DB::transaction(function () use ($sessionId): array {
+            $session = DB::table('agent_sessions')->select('id', 'messages', 'message_count')
+                ->where('session_id', $sessionId)->lockForUpdate()->first();
+            if (! $session) {
+                return [];
+            }
+
+            $count = (int) $session->message_count;
+            if ($this->hasDurableHistory()) {
+                $rows = DB::table('agent_session_messages')->where('agent_session_id', $session->id)
+                    ->where('ordinal', '<=', $count)->orderBy('ordinal')->get();
+                if ($rows->count() === $count && $rows->every(
+                    static fn (object $row, int $index): bool => (int) $row->ordinal === $index + 1
+                )) {
+                    return $rows->map(static fn (object $row): array => [
+                        'role' => $row->role, 'content' => $row->content,
+                    ])->all();
+                }
+            }
+
+            // Older installations may have only the JSON transcript. It is usable
+            // only when it still contains every recorded message.
+            $messages = json_decode((string) $session->messages, true, flags: JSON_THROW_ON_ERROR);
+            if (is_array($messages) && array_is_list($messages) && count($messages) === $count) {
+                return $messages;
+            }
+
+            throw new RuntimeException('The supporting agent session history is incomplete. Restore its full transcript or explicitly start a new session; no shortened prompt was sent.');
+        });
     }
 
     /**
@@ -742,5 +871,77 @@ class AgentSessionService
             'created_at' => $session->created_at,
             'updated_at' => $session->updated_at,
         ];
+    }
+
+    private function encodeHistoryCursor(string $sessionId, int $ordinal): string
+    {
+        $payload = $this->base64UrlEncode(json_encode([
+            'v' => 1,
+            'session_id' => $sessionId,
+            'ordinal' => max(0, $ordinal),
+        ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        $signature = hash_hmac('sha256', $payload, $this->cursorSigningKey(), true);
+
+        return $payload.'.'.$this->base64UrlEncode($signature);
+    }
+
+    private function decodeHistoryCursor(string $cursor, string $sessionId): int
+    {
+        $parts = explode('.', $cursor, 2);
+        if (count($parts) !== 2) {
+            throw new InvalidArgumentException('Invalid agent session history cursor.');
+        }
+
+        [$payload, $providedSignature] = $parts;
+        $signature = $this->base64UrlDecode($providedSignature);
+        $expected = hash_hmac('sha256', $payload, $this->cursorSigningKey(), true);
+        $decodedPayload = $this->base64UrlDecode($payload);
+        $decoded = is_string($decodedPayload) ? json_decode($decodedPayload, true) : null;
+
+        if (! is_string($signature) || ! hash_equals($expected, $signature)
+            || ! is_array($decoded) || ($decoded['v'] ?? null) !== 1
+            || ($decoded['session_id'] ?? null) !== $sessionId
+            || ! is_int($decoded['ordinal'] ?? null) || $decoded['ordinal'] < 0) {
+            throw new InvalidArgumentException('Invalid agent session history cursor.');
+        }
+
+        return $decoded['ordinal'];
+    }
+
+    private function cursorSigningKey(): string
+    {
+        $key = (string) config('app.key', '');
+        if (str_starts_with($key, 'base64:')) {
+            $decoded = base64_decode(substr($key, 7), true);
+            if ($decoded !== false) {
+                return $decoded;
+            }
+        }
+
+        if ($key === '') {
+            throw new RuntimeException('Application key is required for agent session history cursors.');
+        }
+
+        return $key;
+    }
+
+    private function hasDurableHistory(): bool
+    {
+        return $this->durableHistoryAvailable ??= Schema::hasTable('agent_session_messages');
+    }
+
+    private function base64UrlEncode(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
+
+    private function base64UrlDecode(string $value): string|false
+    {
+        $padding = strlen($value) % 4;
+        if ($padding > 0) {
+            $value .= str_repeat('=', 4 - $padding);
+        }
+
+        return base64_decode(strtr($value, '-_', '+/'), true);
     }
 }

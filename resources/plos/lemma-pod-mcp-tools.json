@@ -1,0 +1,490 @@
+[
+  {
+    "name": "lemma_pod_tables",
+    "description": "List the pod's tables with their column schemas, or describe one table.\n\nOmit ``table_name`` to list every table (each with columns, types, PK, RLS\nflag). Pass ``table_name`` to describe just that one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "table_name": {
+          "default": null,
+          "description": "Omit to list all tables with their column schemas; pass a name to describe just that table.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "default": 100,
+          "description": "Max tables when listing.",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "title": "PodTablesRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_get_records",
+    "description": "Read records from a pod table.\n\nPass ``record_id`` to fetch a single record; omit it to list records with\noptional ``filters`` and ``sorts``.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "table_name": {
+          "type": "string"
+        },
+        "record_id": {
+          "default": null,
+          "description": "Fetch a single record by id; omit to list with filters/sorts.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filters": {
+          "items": {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "op": {
+                "default": "eq",
+                "description": "eq, ne, gt, gte, lt, lte, like, ilike, in. Use `in` with a list value for multi-value membership.",
+                "type": "string"
+              },
+              "value": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "title": "RecordFilter",
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sorts": {
+          "items": {
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "direction": {
+                "default": "asc",
+                "enum": [
+                  "asc",
+                  "desc"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "column"
+            ],
+            "title": "RecordSort",
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "table_name"
+      ],
+      "title": "PodGetRecordsRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_write_record",
+    "description": "Create, update, or delete a record in a pod table (requires record.write grant).\n\n- ``action=\"create\"`` — needs ``data`` (column -> value).\n- ``action=\"update\"`` — needs ``record_id`` and ``data``.\n- ``action=\"delete\"`` — needs ``record_id``.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "'create' a new record, 'update' an existing one, or 'delete' one.",
+          "enum": [
+            "create",
+            "update",
+            "delete"
+          ],
+          "type": "string"
+        },
+        "table_name": {
+          "type": "string"
+        },
+        "record_id": {
+          "default": null,
+          "description": "Target record id. Required for 'update' and 'delete'.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "data": {
+          "default": null,
+          "description": "Column -> value mapping, e.g. {\"title\": \"Q3 report\", \"amount\": 42}, or a JSON-encoded string of it. Required and non-empty for 'create' and 'update'.",
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "table_name"
+      ],
+      "title": "PodWriteRecordRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_query",
+    "description": "Run a read-only SQL query against the pod.\n\nReads across tables (joins, aggregates, subqueries) including RLS-enabled\ntables; rows of an RLS table are always scoped to the agent's user (the same\nper-user view its other record reads get). Only a single read-only SELECT is\nallowed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sql": {
+          "description": "A single read-only SELECT over the pod's tables. Joins/aggregates across tables are allowed, including RLS tables (rows scoped to you unless you administer the table). Mutations are rejected.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sql"
+      ],
+      "title": "QueryRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_list_files",
+    "description": "List pod files under a path.\n\n``recursive=false`` (default) lists the immediate files and folders in\n``path``. ``recursive=true`` returns a file tree rooted at ``path`` (folders\nplus a sample of files per directory). Without an absolute path, resolves\nagainst your default pod working directory (`/me/c/{date}/{slug}`).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "default": "/",
+          "description": "Folder path, e.g. `/me` or a shared folder like `/knowledge`. A relative path resolves against `/me/c/{date}/{slug}`.",
+          "type": "string"
+        },
+        "recursive": {
+          "default": false,
+          "description": "True returns a tree rooted at `path` instead of its children.",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Max entries when not recursive.",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "files_per_directory": {
+          "default": 20,
+          "description": "Sample files per directory when recursive.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "title": "PodListFilesRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_read_file",
+    "description": "Read a pod file's text.\n\nA file that has text of its own -- markdown, plain text, HTML, CSV, code,\nemail -- is returned exactly as it is. A file that has none, because it is a\nbinary document like a PDF or a DOCX, is returned as the markdown it was\nconverted into at upload.\n\nUse ``pod_view_document_pages`` to *see* pages rather than read them.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Pod file path. Absolute paths (e.g. `/knowledge/notes.txt`) are used as-is; a relative path resolves against `/me/c/{date}/{slug}`.",
+          "type": "string"
+        },
+        "page_start": {
+          "default": null,
+          "description": "Documents only: first page (1-based). Ignored for text files.",
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "page_end": {
+          "default": null,
+          "description": "Documents only: last page, inclusive. Defaults to page_start.",
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_chars": {
+          "default": 50000,
+          "maximum": 400000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "PodReadFileRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_write_file",
+    "description": "Write text content to a pod file, creating or overwriting it.\n\nWithout an absolute path, the file lands in your default pod working\ndirectory (`/me/c/{date}/{slug}`) — a stable, private location scoped to\nthis conversation. Writes under your own `/me/...` (including that default\nlocation) never need approval; writes to a shared pod path may.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Pod file path. A relative path resolves against `/me/c/{date}/{slug}` — write there unless a specific shared location is needed.",
+          "type": "string"
+        },
+        "content": {
+          "description": "UTF-8 text content to write.",
+          "type": "string"
+        },
+        "overwrite": {
+          "default": true,
+          "description": "If false, reject the write when the file exists.",
+          "type": "boolean"
+        },
+        "description": {
+          "default": null,
+          "description": "Optional file description.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "title": "PodWriteFileRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_view_document_pages",
+    "description": "Render PDF pages as images so you can *see* them (layout, tables, figures).\n\nPages are 1-based. Only PDFs can be rendered visually; for other document\ntypes use ``pod_read_file`` to read the page text.\n\nSet ``instructions`` to say what you need from the pages. If this agent's\nmodel reads images itself you get the page images inline; otherwise a vision\nmodel reads them and returns a description, so this tool works either way.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Path of a PDF document in the pod.",
+          "type": "string"
+        },
+        "page_start": {
+          "description": "First page (1-based) to render as an image.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "page_end": {
+          "default": null,
+          "description": "Last page (1-based, inclusive). Defaults to page_start.",
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instructions": {
+          "default": null,
+          "description": "What you need from these pages — 'transcribe the pricing table', 'describe the architecture diagram and its arrows'. Always set it: if this agent's model cannot read images itself, this is the question a vision model answers on your behalf.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "page_start"
+      ],
+      "title": "ViewDocumentPagesRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_get_file_url",
+    "description": "Get a URL for a pod file, to share a link or embed an image.\n\n``app`` (default) returns an in-app link for a signed-in member plus a\nshort-lived download url. ``public`` mints a signed link anyone can open —\nit expires and dies after ``max_hits`` downloads.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Absolute pod file path.",
+          "type": "string"
+        },
+        "url_type": {
+          "default": "app",
+          "description": "'app' = in-app link for a signed-in pod member. 'public' = hit-capped signed link anyone can open — use to send a file outside the pod.",
+          "enum": [
+            "app",
+            "public"
+          ],
+          "type": "string"
+        },
+        "expires_seconds": {
+          "default": null,
+          "description": "Link lifetime. Default ~1h for 'app', 24h for 'public' (max 7d).",
+          "anyOf": [
+            {
+              "maximum": 604800,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_hits": {
+          "default": null,
+          "description": "'public' only: downloads before the link dies (default 200).",
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "GetFileUrlRequest"
+    }
+  },
+  {
+    "name": "lemma_pod_search_files",
+    "description": "Semantic/keyword search across indexed pod files.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "limit": {
+          "default": 10,
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "method": {
+          "default": "HYBRID",
+          "enum": [
+            "VECTOR",
+            "TEXT",
+            "HYBRID"
+          ],
+          "type": "string"
+        },
+        "scope_path": {
+          "default": null,
+          "description": "Restrict search to this folder subtree.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "SearchFilesRequest"
+    }
+  }
+]

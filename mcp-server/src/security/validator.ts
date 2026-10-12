@@ -2,6 +2,10 @@ import { z } from 'zod';
 
 // Input validation schemas
 export const schemas = {
+  reviewLookup: z.object({
+    reference: z.string().regex(/^[^\x00-\x1f\x7f]*$/).trim().min(1).max(255)
+      .refine(reference => !reference.startsWith('-'), 'Invalid review reference'),
+  }).strict(),
   workflowList: z.object({
     active_only: z.boolean().optional(),
   }),
@@ -119,9 +123,11 @@ export const schemas = {
       birth_place: z.string().max(1000).optional(),
       death_date: z.string().max(50).optional(),
       death_place: z.string().max(1000).optional(),
+      burial_date: z.string().max(50).optional(),
+      burial_place: z.string().max(1000).optional(),
       notes_append: z.string().max(8000).optional(),
       living: z.boolean().optional(),
-    })).max(200).optional(),
+    }).strict()).max(200).optional(),
     families: z.array(z.object({
       id: z.number().int().positive().optional(),
       key: z.string().min(1).max(80).optional(),

@@ -7,7 +7,7 @@ use Carbon\CarbonInterface;
 
 class AgentReferenceBoundaryService
 {
-    public const VERSION = 'agent-reference-boundaries-2026-06-05';
+    public const VERSION = 'agent-reference-boundaries-2026-07-13';
 
     /**
      * @return array<string, array<string, mixed>>
@@ -19,8 +19,8 @@ class AgentReferenceBoundaryService
                 'id' => 'hermes_agent',
                 'name' => 'Hermes Agent',
                 'category' => 'developer_agent',
-                'posture' => 'white_room_reference',
-                'allowed_use' => 'watch_and_adapt_patterns',
+                'posture' => 'license_review_required_adoption_candidate',
+                'allowed_use' => 'review_license_then_adopt_or_adapt',
                 'adoption_state' => 'not_a_dependency',
                 'current_snapshot' => [
                     'version' => '0.15.2',
@@ -39,10 +39,6 @@ class AgentReferenceBoundaryService
                     'session search and trace evidence',
                 ],
                 'prohibited_use' => [
-                    'copy_source',
-                    'copy_prompts',
-                    'copy_skill_text',
-                    'copy_schemas',
                     'import_runtime_dependency',
                     'replace_laravel_control_plane',
                 ],
@@ -101,13 +97,14 @@ class AgentReferenceBoundaryService
                 'id' => 'laravel_pao',
                 'name' => 'Laravel PAO',
                 'category' => 'developer_tool',
-                'posture' => 'white_room_reference',
-                'allowed_use' => 'watch_and_use_dev_output_patterns',
+                'posture' => 'license_review_required_adoption_candidate',
+                'allowed_use' => 'review_license_then_use_dev_output_patterns',
                 'adoption_state' => 'dev_dependency_present',
                 'current_snapshot' => [
-                    'version' => '1.0.6',
-                    'release' => 'v1.0.6',
-                    'refreshed_at' => '2026-06-05',
+                    'version' => '1.1.2',
+                    'release' => 'v1.1.2',
+                    'revision' => '41b3c61ebeddce52a446afe6d21e0b02983fb2f6',
+                    'refreshed_at' => '2026-07-13',
                     'primary_sources' => [
                         'https://github.com/laravel/pao',
                         'https://github.com/laravel/agent-detector',
@@ -120,7 +117,6 @@ class AgentReferenceBoundaryService
                     'developer-loop clarity without product behavior change',
                 ],
                 'prohibited_use' => [
-                    'copy_source',
                     'widen_tool_permissions',
                     'replace_test_harness',
                     'expose_private_data',
@@ -133,14 +129,14 @@ class AgentReferenceBoundaryService
                 ],
                 'todo_lane' => 'TODO-015',
                 'todo_state' => 'watch',
-                'notes' => 'PAO is already locked as a dev dependency; use it only to improve local developer/agent verification output.',
+                'notes' => 'MIT PAO v1.1.2 is locked as a dev dependency for compact agent-readable verification output. The upgrade adds runtime-exit and fatal-hook result fixes, boolean environment handling, PHPStan guidance, Rector support, and explicit force/detection behavior without changing production runtime policy.',
             ],
             'microsoft_agent_framework' => [
                 'id' => 'microsoft_agent_framework',
                 'name' => 'Microsoft Agent Framework',
                 'category' => 'developer_agent',
-                'posture' => 'white_room_reference',
-                'allowed_use' => 'watch_and_adapt_patterns',
+                'posture' => 'license_review_required_adoption_candidate',
+                'allowed_use' => 'review_license_then_adopt_or_adapt',
                 'adoption_state' => 'not_a_dependency',
                 'current_snapshot' => [
                     'version' => 'python-1.6.0',
@@ -158,9 +154,6 @@ class AgentReferenceBoundaryService
                     'human checkpoint and observability design',
                 ],
                 'prohibited_use' => [
-                    'copy_source',
-                    'copy_prompts',
-                    'copy_schemas',
                     'import_runtime_dependency',
                     'replace_laravel_control_plane',
                     'widen_provider_routes',
@@ -197,8 +190,6 @@ class AgentReferenceBoundaryService
                     'diagnostics and remote-control governance',
                 ],
                 'prohibited_use' => [
-                    'copy_source',
-                    'copy_prompts',
                     'import_runtime_dependency',
                     'widen_mcp_tools',
                     'auto_execute_without_operator',
@@ -216,8 +207,8 @@ class AgentReferenceBoundaryService
                 'id' => 'cline',
                 'name' => 'Cline',
                 'category' => 'developer_agent',
-                'posture' => 'clean_room_reference_with_supply_chain_caution',
-                'allowed_use' => 'watch_permission_and_headless_patterns',
+                'posture' => 'license_review_required_adoption_candidate_with_supply_chain_caution',
+                'allowed_use' => 'review_license_and_release_provenance_then_adopt',
                 'adoption_state' => 'not_a_dependency',
                 'current_snapshot' => [
                     'version' => '3.85.0',
@@ -234,9 +225,6 @@ class AgentReferenceBoundaryService
                     'supply-chain incident lessons',
                 ],
                 'prohibited_use' => [
-                    'copy_source',
-                    'copy_prompts',
-                    'copy_ui_text',
                     'import_runtime_dependency',
                     'widen_tool_permissions',
                 ],
@@ -253,8 +241,8 @@ class AgentReferenceBoundaryService
                 'id' => 'goose',
                 'name' => 'Goose',
                 'category' => 'developer_agent',
-                'posture' => 'clean_room_reference',
-                'allowed_use' => 'watch_mcp_native_agent_patterns',
+                'posture' => 'license_review_required_adoption_candidate',
+                'allowed_use' => 'review_license_then_adopt_mcp_native_patterns',
                 'adoption_state' => 'not_a_dependency',
                 'current_snapshot' => [
                     'version' => null,
@@ -270,9 +258,6 @@ class AgentReferenceBoundaryService
                     'tool boundary and extension ergonomics',
                 ],
                 'prohibited_use' => [
-                    'copy_source',
-                    'copy_prompts',
-                    'copy_schemas',
                     'import_runtime_dependency',
                     'widen_mcp_tools',
                 ],
@@ -289,8 +274,8 @@ class AgentReferenceBoundaryService
                 'id' => 'opencode',
                 'name' => 'opencode',
                 'category' => 'developer_agent',
-                'posture' => 'clean_room_reference',
-                'allowed_use' => 'watch_terminal_agent_patterns',
+                'posture' => 'license_review_required_adoption_candidate',
+                'allowed_use' => 'review_license_then_adopt_terminal_agent_patterns',
                 'adoption_state' => 'not_a_dependency',
                 'current_snapshot' => [
                     'version' => null,
@@ -306,9 +291,6 @@ class AgentReferenceBoundaryService
                     'developer workflow evidence patterns',
                 ],
                 'prohibited_use' => [
-                    'copy_source',
-                    'copy_prompts',
-                    'copy_ui_text',
                     'import_runtime_dependency',
                     'widen_tool_permissions',
                 ],
@@ -362,10 +344,12 @@ class AgentReferenceBoundaryService
     {
         $rows = $this->report($referenceId)['references'];
         $lines = [
-            'Agent reference boundary guidance:',
-            '- Treat references as watch-only inputs to PLOS-owned design.',
-            '- Do not copy source, prompts, tests, docs, schemas, UI text, or leaked-architecture-derived wording.',
-            '- Do not add dependencies, provider routes, scheduled jobs, or runtime behavior from a reference without a new gated PLOS TODO lane.',
+            'Third-party adoption guidance:',
+            '- Direct source, prompt, test, schema, documentation, and research adoption is allowed when current license and provenance review confirms compatibility.',
+            '- Record the source URL, revision, license, copied or modified files, required notices, attribution, and material PLOS changes.',
+            '- Do not copy proprietary, unclear-license, private, or leaked-source-derived material; high-caution provenance rows remain reference-only.',
+            '- Dependencies, provider routes, scheduled jobs, and runtime behavior still require normal PLOS tests, privacy review, and operator gates.',
+            '- Current private PLOS product value takes priority over hypothetical public-export compatibility.',
         ];
 
         foreach ($rows as $row) {
@@ -413,24 +397,46 @@ class AgentReferenceBoundaryService
         $ageDays = $refreshedAt === null ? null : $refreshedAt->diffInDays($asOf->copy()->utc());
         $highCaution = str_contains((string) ($reference['posture'] ?? ''), 'high_caution');
         $refreshRequired = $refreshedAt === null || ($ageDays !== null && $ageDays > 14);
+        $adoptionPolicy = $highCaution
+            ? 'provenance_or_license_unclear_reference_only'
+            : 'direct_use_allowed_after_license_and_provenance_review';
+        $posture = $highCaution
+            ? 'high_caution_provenance_watch'
+            : 'license_review_required_adoption_candidate';
+        $prohibitedUse = $highCaution
+            ? $reference['prohibited_use']
+            : array_values(array_filter(
+                $reference['prohibited_use'],
+                static fn (mixed $rule): bool => ! is_string($rule) || ! str_starts_with($rule, 'copy_')
+            ));
+        if (! $highCaution) {
+            $prohibitedUse = array_values(array_unique(array_merge($prohibitedUse, [
+                'copy_without_license_review',
+                'omit_required_attribution_or_notices',
+                'use_unclear_or_incompatible_provenance',
+            ])));
+        }
 
         return [
             'id' => $reference['id'],
             'name' => $reference['name'],
             'category' => $reference['category'],
-            'posture' => $reference['posture'],
+            'posture' => $posture,
             'allowed_use' => $reference['allowed_use'],
             'adoption_state' => $reference['adoption_state'],
+            'adoption_policy' => $adoptionPolicy,
+            'license_review_required' => true,
             'status' => $refreshRequired ? 'refresh_due' : 'current',
             'high_caution' => $highCaution,
             'refresh_required' => $refreshRequired,
             'snapshot_version' => $snapshot['version'] ?? null,
             'snapshot_release' => $snapshot['release'] ?? null,
+            'snapshot_revision' => $snapshot['revision'] ?? null,
             'snapshot_refreshed_at' => $snapshot['refreshed_at'] ?? null,
             'snapshot_age_days' => $ageDays,
             'primary_sources' => $snapshot['primary_sources'] ?? [],
             'plos_targets' => $reference['plos_targets'],
-            'prohibited_use' => $reference['prohibited_use'],
+            'prohibited_use' => $prohibitedUse,
             'refresh_required_before' => $reference['refresh_required_before'],
             'todo_lane' => $reference['todo_lane'],
             'todo_state' => $reference['todo_state'],

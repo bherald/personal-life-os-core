@@ -207,7 +207,7 @@
             <div class="flex items-start justify-between">
               <div class="flex items-start space-x-3">
                 <!-- Type Icon -->
-                <div class="text-2xl flex-shrink-0">
+                <div class="text-2xl shrink-0">
                   {{ getSuggestionTypeIcon(suggestion.type) }}
                 </div>
 
@@ -333,7 +333,7 @@
           <div class="flex items-start justify-between">
             <div class="flex items-start space-x-3">
               <!-- Priority/Source Icon -->
-              <div class="text-2xl flex-shrink-0">
+              <div class="text-2xl shrink-0">
                 {{ getSourceIcon(draft.source) }}
               </div>
 
@@ -522,7 +522,7 @@
     </template>
 
     <!-- Draft Version History Modal -->
-    <div v-if="draftVersions.length > 0 && showVersionHistory" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+    <div v-if="draftVersions.length > 0 && showVersionHistory" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
       <div class="bg-black border-2 border-ops-lilac rounded-r-lg max-w-lg w-full mx-4 max-h-[70vh] overflow-y-auto ops-scroll">
         <div class="p-4 border-b-2 border-ops-plum flex justify-between items-center sticky top-0 bg-black">
           <h3 class="text-lg font-semibold text-ops-lilac uppercase tracking-wide">Draft Version History</h3>
@@ -552,7 +552,7 @@
     </div>
 
     <!-- Edit Modal -->
-    <div v-if="editingDraft" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+    <div v-if="editingDraft" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50">
       <div class="bg-black border-2 border-ops-orange rounded-r-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto ops-scroll">
         <div class="p-4 border-b-2 border-ops-plum flex items-center justify-between">
           <h3 class="text-lg font-semibold text-ops-peach uppercase tracking-wide">Edit Draft</h3>

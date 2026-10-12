@@ -351,38 +351,38 @@ onMounted(() => fetchNodes());
 .ops-input {
   flex: 1;
   background-color: var(--color-bg-secondary);
-  border: 2px solid var(--ops-plum);
+  border: 2px solid var(--color-accent);
   border-radius: 0 15px 15px 0;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   padding: 0.625rem 1rem;
-  font-family: 'Antonio', sans-serif;
+  font-family: inherit;
   font-size: 0.875rem;
   transition: border-color 0.15s ease;
 }
 
 .ops-input:focus {
   outline: none;
-  border-color: var(--ops-lilac);
+  border-color: var(--color-accent);
 }
 
 .ops-input::placeholder {
-  color: var(--ops-violet);
+  color: var(--color-accent);
 }
 
 .ops-select {
   background-color: var(--color-bg-secondary);
-  border: 2px solid var(--ops-plum);
+  border: 2px solid var(--color-accent);
   border-radius: 15px;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   padding: 0.625rem 1rem;
-  font-family: 'Antonio', sans-serif;
+  font-family: inherit;
   font-size: 0.875rem;
   cursor: pointer;
 }
 
 .ops-select:focus {
   outline: none;
-  border-color: var(--ops-lilac);
+  border-color: var(--color-accent);
 }
 
 .ops-node-count {
@@ -394,12 +394,12 @@ onMounted(() => fetchNodes());
 .ops-count-value {
   font-size: 1.5rem;
   font-weight: 700;
-  color: var(--ops-lilac);
+  color: var(--color-accent);
 }
 
 .ops-count-label {
   font-size: 0.75rem;
-  color: var(--ops-violet);
+  color: var(--color-accent);
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
@@ -415,7 +415,7 @@ onMounted(() => fetchNodes());
 
 .ops-loading-text {
   margin-top: 1.5rem;
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.875rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -436,13 +436,13 @@ onMounted(() => fetchNodes());
 .ops-empty-title {
   font-size: 1.25rem;
   font-weight: 700;
-  color: var(--ops-peach);
-  text-transform: uppercase;
+  color: var(--color-text-primary);
+  text-transform: none;
   margin-bottom: 0.5rem;
 }
 
 .ops-empty-text {
-  color: var(--ops-violet);
+  color: var(--color-accent);
   font-size: 0.875rem;
 }
 
@@ -460,13 +460,13 @@ onMounted(() => fetchNodes());
   overflow: hidden;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
-  border: 1px solid var(--ops-plum);
+  border: 1px solid var(--color-accent);
 }
 
 .ops-node-card:hover {
   transform: translateX(4px);
   box-shadow: -4px 0 20px rgba(0, 0, 0, 0.3);
-  border-color: var(--ops-lilac);
+  border-color: var(--color-accent);
 }
 
 .ops-node-type-bar {
@@ -492,7 +492,7 @@ onMounted(() => fetchNodes());
 .ops-node-name {
   font-size: 1rem;
   font-weight: 700;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin: 0;
@@ -508,12 +508,12 @@ onMounted(() => fetchNodes());
   flex-shrink: 0;
 }
 
-.ops-badge-grape { background-color: var(--ops-grape); color: var(--ops-black); }
-.ops-badge-gold { background-color: var(--ops-gold); color: var(--ops-black); }
-.ops-badge-lilac { background-color: var(--ops-lilac); color: var(--ops-black); }
+.ops-badge-grape { background-color: var(--color-accent); color: white; }
+.ops-badge-gold { background-color: var(--ops-warning); color: white; }
+.ops-badge-lilac { background-color: var(--color-accent); color: white; }
 
 .ops-node-description {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.8125rem;
   line-height: 1.4;
   margin: 0 0 auto;
@@ -526,12 +526,12 @@ onMounted(() => fetchNodes());
   align-items: center;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
-  border-top: 1px solid var(--ops-plum);
+  border-top: 1px solid var(--color-accent);
 }
 
 .ops-node-params {
   font-size: 0.6875rem;
-  color: var(--ops-violet);
+  color: var(--color-accent);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -539,22 +539,22 @@ onMounted(() => fetchNodes());
 .ops-node-action {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--ops-lilac);
+  color: var(--color-accent);
 }
 
 /* Background colors for type bars */
-.bg-grape { background-color: var(--ops-grape); }
-.bg-sky { background-color: var(--ops-sky); }
-.bg-green { background-color: var(--ops-green); }
-.bg-gold { background-color: var(--ops-gold); }
-.bg-orange { background-color: var(--ops-orange); }
-.bg-lilac { background-color: var(--ops-lilac); }
+.bg-grape { background-color: var(--color-accent); }
+.bg-sky { background-color: var(--color-accent); }
+.bg-green { background-color: var(--ops-success); }
+.bg-gold { background-color: var(--ops-warning); }
+.bg-orange { background-color: var(--ops-warning); }
+.bg-lilac { background-color: var(--color-accent); }
 
 /* Modal Styles */
 .ops-modal-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.85);
+  background-color: var(--color-bg-tertiary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -564,7 +564,7 @@ onMounted(() => fetchNodes());
 
 .ops-modal {
   background-color: var(--color-bg-primary);
-  border: 2px solid var(--ops-plum);
+  border: 2px solid var(--color-accent);
   border-radius: 0 25px 25px 0;
   max-width: 800px;
   width: 100%;
@@ -591,9 +591,9 @@ onMounted(() => fetchNodes());
 .ops-modal-title {
   font-size: 1.25rem;
   font-weight: 700;
-  color: var(--ops-black);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  color: var(--color-text-primary);
+  text-transform: none;
+  letter-spacing: normal;
   margin: 0;
 }
 
@@ -611,7 +611,7 @@ onMounted(() => fetchNodes());
 
 .ops-modal-footer {
   padding: 1rem 1.5rem;
-  border-top: 1px solid var(--ops-plum);
+  border-top: 1px solid var(--color-accent);
   display: flex;
   justify-content: flex-end;
 }
@@ -621,7 +621,7 @@ onMounted(() => fetchNodes());
   background-color: var(--color-bg-tertiary);
   border-radius: 0 12px 12px 0;
   padding: 0.75rem 1rem;
-  border-left: 4px solid var(--ops-plum);
+  border-left: 4px solid var(--color-accent);
 }
 
 .ops-param-card.required {
@@ -629,7 +629,7 @@ onMounted(() => fetchNodes());
 }
 
 .ops-param-card.optional {
-  border-left-color: var(--ops-sky);
+  border-left-color: var(--color-accent);
 }
 
 .ops-param-header {
@@ -643,25 +643,25 @@ onMounted(() => fetchNodes());
   font-family: monospace;
   font-size: 0.875rem;
   font-weight: 700;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
 }
 
 .ops-param-type {
   font-size: 0.6875rem;
-  color: var(--ops-violet);
+  color: var(--color-accent);
   background-color: var(--color-bg-secondary);
   padding: 0.125rem 0.5rem;
   border-radius: 6px;
 }
 
 .ops-param-desc {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.8125rem;
   margin: 0;
 }
 
 .ops-param-default {
-  color: var(--ops-violet);
+  color: var(--color-accent);
   font-size: 0.75rem;
   margin: 0.375rem 0 0;
 }
@@ -670,7 +670,7 @@ onMounted(() => fetchNodes());
   background-color: var(--color-bg-secondary);
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
-  color: var(--ops-sky);
+  color: var(--color-accent);
 }
 
 /* Output Items */
@@ -684,19 +684,19 @@ onMounted(() => fetchNodes());
   font-family: monospace;
   font-size: 0.875rem;
   font-weight: 600;
-  color: var(--ops-green);
+  color: var(--ops-success);
   flex-shrink: 0;
 }
 
 .ops-output-desc {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.8125rem;
 }
 
 .ops-class-name {
   font-family: monospace;
   font-size: 0.75rem;
-  color: var(--ops-sky);
+  color: var(--color-accent);
   word-break: break-all;
 }
 

@@ -1,0 +1,76 @@
+{
+  "schema": "plos.offline_controller.example_status.v1",
+  "fictional": true,
+  "host_operations_performed": false,
+  "contains_prompt_or_response_content": false,
+  "mutation_available": false,
+  "hosts": [
+    {
+      "host_id": "example-host-a",
+      "targets": [
+        {
+          "target": "example_chat_a",
+          "model": "example-chat-model",
+          "engine": "llama.cpp",
+          "policy_state": "staged",
+          "activation_allowed": false,
+          "task_present": false,
+          "task_state": "Missing",
+          "listener_count": 0,
+          "loopback_listener_count": 0,
+          "external_listener_count": 0,
+          "loopback_only": false,
+          "port": 11438
+        },
+        {
+          "target": "example_embed_a",
+          "model": "example-embed-model",
+          "engine": "ollama",
+          "policy_state": "staged",
+          "activation_allowed": false,
+          "task_present": false,
+          "task_state": "Missing",
+          "listener_count": 0,
+          "loopback_listener_count": 0,
+          "external_listener_count": 0,
+          "loopback_only": false,
+          "port": 11434
+        }
+      ]
+    },
+    {
+      "host_id": "example-host-b",
+      "targets": [
+        {
+          "target": "example_chat_b",
+          "model": "example-chat-model",
+          "engine": "llama.cpp",
+          "policy_state": "staged",
+          "activation_allowed": false,
+          "task_present": false,
+          "task_state": "Missing",
+          "listener_count": 0,
+          "loopback_listener_count": 0,
+          "external_listener_count": 0,
+          "loopback_only": false,
+          "port": 11438
+        },
+        {
+          "target": "example_embed_b",
+          "model": "example-embed-model",
+          "engine": "ollama",
+          "policy_state": "staged",
+          "activation_allowed": false,
+          "task_present": false,
+          "task_state": "Missing",
+          "listener_count": 0,
+          "loopback_listener_count": 0,
+          "external_listener_count": 0,
+          "loopback_only": false,
+          "port": 11434
+        }
+      ]
+    }
+  ],
+  "result": "example_only"
+}

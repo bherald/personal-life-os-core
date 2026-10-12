@@ -23,7 +23,7 @@
 return [
     'rows' => [
         ['name' => 'AIService', 'status' => 'real', 'notes' => 'Provider chain with circuit-breaker + fallback'],
-        ['name' => 'AIRouter', 'status' => 'real', 'notes' => 'Ollama/Claude CLI/external calls; token calibration logging live'],
+        ['name' => 'AIRouter', 'status' => 'real', 'notes' => 'Ollama and table-admitted external calls; token calibration logging live'],
         ['name' => 'LLMPoolManagerService', 'status' => 'real', 'notes' => 'Score-based selectInstance + routability + profile gates'],
         ['name' => 'ComputeRouterService', 'status' => 'real', 'notes' => 'Dynamic GPU/CPU routing with circuit state'],
         ['name' => 'AgentLoopService', 'status' => 'real', 'notes' => 'Hybrid/agentic/deterministic modes live'],

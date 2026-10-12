@@ -1,0 +1,533 @@
+{
+    "schema": "plos.cli.export-manifest.v1",
+    "source": "plos-production",
+    "related_tables": [
+        "agent_handoff_agents",
+        "agent_handoff_routing_rules",
+        "workflows",
+        "workflow_nodes",
+        "workflow_connections",
+        "workflow_node_configs",
+        "workflow_defaults",
+        "workflow_templates",
+        "workflow_variables",
+        "mcp_server_definitions"
+    ],
+    "relationships": [
+        {
+            "table": "agent_handoff_routing_rules",
+            "column": "target_agent_id",
+            "references_table": "agent_handoff_agents",
+            "references_column": "agent_id"
+        },
+        {
+            "table": "workflow_nodes",
+            "column": "workflow_id",
+            "references_table": "workflows",
+            "references_column": "id"
+        },
+        {
+            "table": "workflow_connections",
+            "column": "workflow_id",
+            "references_table": "workflows",
+            "references_column": "id"
+        },
+        {
+            "table": "workflow_connections",
+            "column": "source_node_id",
+            "references_table": "workflow_nodes",
+            "references_column": "id"
+        },
+        {
+            "table": "workflow_connections",
+            "column": "target_node_id",
+            "references_table": "workflow_nodes",
+            "references_column": "id"
+        },
+        {
+            "table": "workflow_node_configs",
+            "column": "workflow_node_id",
+            "references_table": "workflow_nodes",
+            "references_column": "id"
+        },
+        {
+            "table": "workflow_defaults",
+            "column": "workflow_id",
+            "references_table": "workflows",
+            "references_column": "id"
+        },
+        {
+            "table": "workflow_variables",
+            "column": "workflow_id",
+            "references_table": "workflows",
+            "references_column": "id"
+        }
+    ],
+    "tables": {
+        "llm_instances": {
+            "columns": [
+                "id",
+                "instance_id",
+                "instance_name",
+                "instance_type",
+                "base_url",
+                "port",
+                "api_key_env",
+                "priority",
+                "is_active",
+                "routability",
+                "gpu_target",
+                "host_affinity",
+                "compat_runtime_family",
+                "compat_backend",
+                "compat_status",
+                "is_healthy",
+                "health_score",
+                "capabilities",
+                "is_censored",
+                "allows_private_data",
+                "data_privacy_scope",
+                "privacy_reviewed_at",
+                "privacy_notes",
+                "supported_models",
+                "context_length",
+                "embedding_context_length",
+                "consecutive_failures",
+                "success_rate",
+                "circuit_state",
+                "circuit_opened_at",
+                "circuit_retry_at",
+                "quarantine_status",
+                "quarantined_at",
+                "quarantine_reason",
+                "quarantine_source",
+                "max_concurrent",
+                "rate_limit_rpm",
+                "rate_limit_tpm",
+                "cost_per_1k_input",
+                "cost_per_1k_output",
+                "cost_tier",
+                "config",
+                "notes",
+                "last_health_check",
+                "last_success_at",
+                "last_failure_at",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "ollama_models": {
+            "columns": [
+                "id",
+                "instance_id",
+                "model_name",
+                "display_name",
+                "profile",
+                "status",
+                "is_available",
+                "capabilities",
+                "use_cases",
+                "description",
+                "size_gb",
+                "context_length",
+                "vram_required_mb",
+                "success_rate",
+                "quality_rating",
+                "vetting_notes",
+                "vetted_at",
+                "vetted_by",
+                "first_seen_at",
+                "last_seen_at",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "llm_model_profiles": {
+            "columns": [
+                "id",
+                "profile_name",
+                "model_name",
+                "description",
+                "use_cases",
+                "enabled",
+                "status",
+                "quality_rating",
+                "capabilities",
+                "requires_override",
+                "vetted_at",
+                "metadata",
+                "notes",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "system_configs": {
+            "columns": [
+                "id",
+                "section",
+                "config_key",
+                "config_value",
+                "data_type",
+                "description",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "ollama_eval_runs": {
+            "dev_import": false,
+            "columns": [
+                "id",
+                "run_uuid",
+                "requested_provider",
+                "requested_model",
+                "requested_instance_id",
+                "actual_provider",
+                "actual_model",
+                "suite_id",
+                "suite_fingerprint",
+                "expected_case_count",
+                "evaluated_case_count",
+                "pass_rate",
+                "average_score_ratio",
+                "decision",
+                "promotion_eligible",
+                "target_consistent",
+                "duration_ms",
+                "created_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "compute_instances": {
+            "columns": [
+                "id",
+                "instance_id",
+                "host",
+                "ssh_user",
+                "is_local",
+                "gpu_model",
+                "gpu_vram_mb",
+                "python_path",
+                "scripts_path",
+                "capabilities",
+                "priority",
+                "health_score",
+                "circuit_state",
+                "circuit_opened_at",
+                "circuit_retry_at",
+                "max_concurrent",
+                "config",
+                "consecutive_failures",
+                "success_rate",
+                "shares_gpu_with_llm",
+                "is_active",
+                "is_healthy",
+                "last_health_check",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "guardrail_rules": {
+            "columns": [
+                "id",
+                "name",
+                "operation_pattern",
+                "action",
+                "conditions",
+                "reason",
+                "severity",
+                "agent_scope",
+                "priority",
+                "is_active",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "agent_tool_registry": {
+            "columns": [
+                "id",
+                "name",
+                "service_class",
+                "method",
+                "description",
+                "parameters",
+                "returns_description",
+                "permissions",
+                "risk_level",
+                "category",
+                "requires_confirmation",
+                "max_calls_per_run",
+                "mcp_server",
+                "mcp_tool",
+                "max_tokens_per_call",
+                "max_result_bytes",
+                "enabled",
+                "availability_status",
+                "last_checked_at",
+                "schema_generation",
+                "privacy_class",
+                "allows_private_data",
+                "source",
+                "proposed_by",
+                "approved_by",
+                "approved_at",
+                "notes",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "skill_versions": {
+            "columns": [
+                "id",
+                "skill_name",
+                "version",
+                "content_hash",
+                "frontmatter",
+                "body_text",
+                "full_content",
+                "change_summary",
+                "changed_by",
+                "is_active",
+                "tools_count",
+                "tool_phases_count",
+                "permissions",
+                "created_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "review_type_registry": {
+            "columns": [
+                "id",
+                "name",
+                "label",
+                "icon",
+                "category",
+                "source_table",
+                "source_connection",
+                "count_sql",
+                "fetch_sql",
+                "approve_sql",
+                "reject_sql",
+                "ignore_sql",
+                "field_mapping",
+                "ui_schema",
+                "vue_renderer",
+                "vue_detail_component",
+                "actions",
+                "requires_image",
+                "image_field",
+                "batch_enabled",
+                "actionability_state",
+                "actionability_min_confidence",
+                "actionability_pushover_allowed",
+                "service_class",
+                "approve_method",
+                "reject_method",
+                "display_order",
+                "color",
+                "enabled",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "recursion_config": {
+            "columns": [
+                "id",
+                "service_name",
+                "enabled",
+                "max_depth",
+                "max_tokens",
+                "max_time_seconds",
+                "max_cost_usd",
+                "novelty_threshold",
+                "repetition_threshold",
+                "decay_window",
+                "move_on_mode",
+                "strategies",
+                "sub_call_model_role",
+                "synthesis_model_role",
+                "disabled_reason",
+                "disabled_at",
+                "notes",
+                "updated_at",
+                "created_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "agent_handoff_agents": {
+            "columns": [
+                "id",
+                "agent_id",
+                "name",
+                "description",
+                "capabilities",
+                "max_concurrent_handoffs",
+                "timeout_seconds",
+                "is_active",
+                "metadata",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "agent_handoff_routing_rules": {
+            "columns": [
+                "id",
+                "name",
+                "task_pattern",
+                "target_agent_id",
+                "conditions",
+                "confidence",
+                "reason",
+                "priority",
+                "is_active",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "workflows": {
+            "columns": [
+                "id",
+                "name",
+                "description",
+                "schedule",
+                "active",
+                "current_version",
+                "error_handling",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "workflow_nodes": {
+            "columns": [
+                "id",
+                "workflow_id",
+                "node_type",
+                "node_order",
+                "timeout_seconds",
+                "compensation_handler",
+                "compensation_config",
+                "created_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "workflow_connections": {
+            "columns": [
+                "id",
+                "workflow_id",
+                "source_node_id",
+                "target_node_id",
+                "source_port",
+                "target_port",
+                "condition_expression",
+                "sort_order",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "workflow_node_configs": {
+            "columns": [
+                "id",
+                "workflow_node_id",
+                "config_key",
+                "config_value"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "workflow_defaults": {
+            "columns": [
+                "id",
+                "workflow_id",
+                "config_key",
+                "config_value"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "workflow_templates": {
+            "columns": [
+                "id",
+                "name",
+                "description",
+                "category",
+                "template_definition",
+                "template_nodes",
+                "default_config",
+                "created_at",
+                "updated_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "workflow_variables": {
+            "columns": [
+                "id",
+                "workflow_id",
+                "name",
+                "value",
+                "created_at"
+            ],
+            "order_by": [
+                "id"
+            ]
+        },
+        "mcp_server_definitions": {
+            "columns": [
+                "server_name",
+                "enabled",
+                "definition",
+                "source"
+            ],
+            "order_by": [
+                "server_name"
+            ],
+            "optional": true
+        }
+    }
+}

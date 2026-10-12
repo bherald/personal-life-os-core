@@ -16,6 +16,9 @@ return new class extends Migration
             'arbitration_lock_seconds' => 300,
             'request_flag_ttl_seconds' => 3600,
             'auto_disable_ttl_seconds' => 86400,
+            'max_speculative_queue' => 2,
+            'speculative_variance_threshold' => 1.0,
+            'speculative_min_uplift' => 10.0,
             'policy_notes' => [
                 'branch_timeout_seconds' => 'Horizon timeout for one speculative branch job.',
                 'branch_tries' => 'Retry attempts for one speculative branch job; speculative work remains best-effort by default.',
@@ -23,8 +26,11 @@ return new class extends Migration
                 'arbitration_lock_seconds' => 'Cache lock window used when the last branch triggers arbitration.',
                 'request_flag_ttl_seconds' => 'TTL for an agent request to run the next task speculatively.',
                 'auto_disable_ttl_seconds' => 'Cooldown when speculative execution is auto-disabled for low observed uplift.',
+                'max_speculative_queue' => 'Maximum ready jobs allowed on the speculative queue before new speculative launches are skipped.',
+                'speculative_variance_threshold' => 'Benchmark accuracy standard-deviation threshold that permits speculative launch.',
+                'speculative_min_uplift' => 'Minimum average quality uplift percent required to avoid auto-disable cooldown.',
                 'queue_owner' => 'Branch queue placement remains explicit in the job constructor as speculative.',
-                'launch_gates' => 'Variance/uplift thresholds and queue-depth gates remain owned by config/agents.php until a separate service-policy slice moves them.',
+                'launch_gates' => 'Queue-depth, benchmark-variance, and low-uplift gates are owned by this system_configs policy.',
                 'horizon_owner' => 'Speculative supervisor process count and queue timeout remain owned by Horizon configuration.',
             ],
         ];

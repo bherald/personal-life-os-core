@@ -1,4 +1,6 @@
 # Safety Card: genealogy-researcher
+
+Public installation scope: these are method and tool declarations, not an enabled schedule or grant of authority. Resolve the installation's registered task, tool, data and network policy before use. Reads require the configured scope; writes, result approval/skip, cleanup, sync, resets, external messages and execution require explicit human approval for the exact action. Keep credentials and private evidence local unless the installation operator explicitly approves that data class and destination. Preserve dry-runs, identity decisions, custody and denials. See `docs/public-methods/skills-and-mcp.md` for setup and qualification.
 **Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
@@ -19,8 +21,7 @@
 - Cannot access raw files outside the MASTER genealogy folder
 - Cannot run DNA analysis (no kit data loaded — DNA tools reserved for future enablement)
 - Research budget capped by timeout_minutes (44 min general job); dynamic per-person cap = floor(timeout × 0.70 / min_per_person)
-- FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, FindMyPast, and default MyHeritage automation are manual/browser-only sources; no automated API, OAuth, login, or scraping tools are available
-- Newspapers.com automation is private/personal-only and requires explicit local configuration
+- FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, FindMyPast, default MyHeritage, and Newspapers.com are provider-specific sources. Use configured APIs, private adapters, headed-browser capture, or review-first tasks only; do not plan credential, paywall, CAPTCHA, or prohibited-scraping bypass.
 - Negative results MUST be documented via log_research_search — silent skips prohibited
 - Local PLOS may use owned private/living FT data internally; export/publish/share workflows own privacy and redaction gates
 
@@ -50,12 +51,12 @@
 - LOW (negative result, no new evidence): log_research_search + update_hint_status(deferred); NO review submission
 - Healthy run (nothing found, nothing to propose): post_agent_message only; NEVER submit_for_review
 
-**Kill Switches:**
+**Operator-approved recovery options (review exact scope before execution):**
 - Disable specific run: `UPDATE scheduled_jobs SET enabled=0 WHERE name='genealogy_agent_research'`
 - Redis session lock: `DEL agent_session_lock:genealogy-researcher`
 - Disable all 4 genealogy jobs: IDs 82, 83, 84, 96 in scheduled_jobs table
 - Max 40 iterations hard stop per run (framework-enforced)
 
-**External Dependencies:** MySQL genealogy_* tables (prod only), PostgreSQL rag_documents, Ollama/external LLMs, NARA API, WikiTree API, Internet Archive, SearXNG (port 8888), Pushover. Manual/browser-only references with no automation: Fold3, FamilySearch, Ancestry, NEHGS/AmericanAncestors, FindMyPast, default MyHeritage. Private/personal-gated: Newspapers.com.
+**External Dependencies:** MySQL genealogy_* tables (prod only), PostgreSQL rag_documents, Ollama/external LLMs, NARA API, WikiTree API, Internet Archive, SearXNG (port 8888), Pushover. Provider-specific references: Fold3, FamilySearch, Ancestry, NEHGS/AmericanAncestors, FindMyPast, default MyHeritage, and Newspapers.com. Use configured adapters/capture routes only.
 
 **Human Authority Points:** All data changes require human review. Review type `genealogy_finding` never auto-approved. Proposals require confidence ≥ 0.50. Source additions must include a real URL or record ID — narrative text rejected.

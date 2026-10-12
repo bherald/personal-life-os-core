@@ -2,6 +2,8 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\FileRegistryService;
+use App\Services\NextcloudFileApiService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -230,7 +232,12 @@ class GenealogySourceService
         $results = $this->mergeRoundRobin($perProvider, $limit);
 
         return [
-            'success' => ! empty($results) || empty($errors),
+            // A provider can complete a valid no-hit search while another
+            // fails. Keep that observed negative result distinct from a total
+            // outage, and never imply that every repository was searched.
+            'success' => $results !== [] || $sourcesSearched !== [],
+            'search_scope' => 'listed_sources_only',
+            'exhaustive' => false,
             'query' => $query,
             'sources_searched' => $sourcesSearched,
             'total_results' => count($results),
@@ -973,14 +980,14 @@ class GenealogySourceService
         $startTime = microtime(true);
         $this->rateLimit('nara');
 
-        // Load API key from DB
+        // Load API key from env/config, falling back to legacy provider storage.
         $apiKey = $this->getNaraApiKey();
         if (! $apiKey) {
             Log::warning('GenealogySourceService: NARA API key not configured — skipping');
 
             return [
                 'success' => false,
-                'error' => 'NARA API key not configured in genealogy_research_providers',
+                'error' => 'NARA API key not configured',
                 'results' => [],
             ];
         }
@@ -1216,15 +1223,45 @@ class GenealogySourceService
     }
 
     /**
-     * Get NARA API key from genealogy_research_providers table.
+     * Get NARA API key from env/config first, then legacy provider storage.
      */
     protected function getNaraApiKey(): ?string
     {
         return Cache::remember('nara_api_key', 3600, function () {
-            $row = DB::selectOne("SELECT api_key FROM genealogy_research_providers WHERE provider_id = 'nara' AND is_active = 1");
+            $row = DB::selectOne("SELECT api_key, api_key_env FROM genealogy_research_providers WHERE provider_id = 'nara' AND is_active = 1");
 
-            return $row->api_key ?? null;
+            $envName = $row->api_key_env ?? 'NARA_API_KEY';
+            $configKey = $envName === 'NARA_API_KEY'
+                ? $this->cleanApiSecret(config('services.nara.api_key'))
+                : null;
+
+            return $configKey
+                ?? $this->resolveRuntimeEnvValue($envName)
+                ?? $this->cleanApiSecret($row->api_key ?? null);
         });
+    }
+
+    private function resolveRuntimeEnvValue(?string $key): ?string
+    {
+        $key = trim((string) $key);
+        if ($key === '') {
+            return null;
+        }
+
+        return $this->cleanApiSecret(getenv($key))
+            ?? $this->cleanApiSecret($_ENV[$key] ?? null)
+            ?? $this->cleanApiSecret($_SERVER[$key] ?? null);
+    }
+
+    private function cleanApiSecret(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $secret = trim((string) $value);
+
+        return $secret !== '' ? $secret : null;
     }
 
     /**
@@ -2116,7 +2153,7 @@ class GenealogySourceService
             );
             $nextcloudPath = $treeRoot.'/'.$this->normalizeTreeSubfolder($subfolder).'/'.$filename;
 
-            $nextcloudApi = app(\App\Services\NextcloudFileApiService::class);
+            $nextcloudApi = app(NextcloudFileApiService::class);
             $nextcloudApi->ensureDirectoryExists(dirname($nextcloudPath));
 
             $content = file_get_contents($fullPath);
@@ -2136,7 +2173,7 @@ class GenealogySourceService
             // Register in file_registry
             $registrationResult = null;
             try {
-                $fileRegistry = app(\App\Services\FileRegistryService::class);
+                $fileRegistry = app(FileRegistryService::class);
                 $registrationResult = $fileRegistry->registerFile($nextcloudPath, [
                     'compute_hash' => true,
                     'original_source' => 'nara',
@@ -2337,8 +2374,8 @@ class GenealogySourceService
             ],
             'nara' => [
                 'name' => 'National Archives (NARA)',
-                'configured' => true,
-                'auth_required' => false,
+                'configured' => (bool) $this->getNaraApiKey(),
+                'auth_required' => true,
                 'description' => 'U.S. federal records including military, immigration (FREE)',
             ],
             'findagrave' => [

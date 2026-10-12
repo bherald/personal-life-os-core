@@ -1,0 +1,3972 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index e217b70..ca93c94 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -394,7 +394,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
+ 
+ [[package]]
+ name = "app_test_support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -1897,7 +1897,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-core",
+@@ -1909,7 +1909,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-graph-store"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-state",
+@@ -1924,7 +1924,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-identity"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -1944,7 +1944,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-roles"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "codex-file-system",
+@@ -1957,7 +1957,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-analytics"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-app-server-protocol",
+  "codex-git-utils",
+@@ -1978,7 +1978,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-ansi-escape"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "ansi-to-tui",
+  "ratatui",
+@@ -1987,7 +1987,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-api"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_matches",
+@@ -2022,7 +2022,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -2124,7 +2124,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-app-server",
+  "codex-app-server-protocol",
+@@ -2151,7 +2151,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-daemon"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-app-server-protocol",
+@@ -2172,7 +2172,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-app-server-protocol-noop-macros",
+@@ -2206,11 +2206,11 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-protocol-noop-macros"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-app-server-test-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -2232,7 +2232,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-transport"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -2274,7 +2274,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-apply-patch"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_cmd",
+@@ -2294,7 +2294,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-arg0"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-apply-patch",
+@@ -2316,7 +2316,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-async-utils"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "tokio",
+@@ -2325,7 +2325,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-aws-auth"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "aws-config",
+  "aws-credential-types",
+@@ -2340,7 +2340,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-backend-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-api",
+@@ -2360,7 +2360,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-backend-openapi-models"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "serde",
+  "serde_json",
+@@ -2369,7 +2369,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-build-info"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-install-context",
+  "pretty_assertions",
+@@ -2381,7 +2381,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-bwrap"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "cc",
+  "libc",
+@@ -2390,7 +2390,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-chatgpt"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -2412,7 +2412,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cli"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -2502,7 +2502,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-http-client",
+  "eventsource-stream",
+@@ -2515,7 +2515,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-config"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "chrono",
+@@ -2540,7 +2540,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-tasks"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -2573,7 +2573,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-tasks-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -2588,7 +2588,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-tasks-mock-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-cloud-tasks-client",
+@@ -2597,7 +2597,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-code-mode-protocol",
+  "codex-http-client",
+@@ -2620,7 +2620,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode-host"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -2648,7 +2648,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "glob",
+@@ -2666,7 +2666,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode-runtime"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-code-mode-protocol",
+@@ -2684,11 +2684,11 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-collaboration-mode-templates"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-config"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -2737,7 +2737,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-config-schema"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -2746,7 +2746,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-connectors"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -2768,7 +2768,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-connectors-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-connectors",
+  "codex-core-plugins",
+@@ -2782,7 +2782,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-context-fragments"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-utils-string",
+@@ -2790,7 +2790,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-core"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -2924,7 +2924,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-core-api"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-analytics",
+  "codex-app-server-protocol",
+@@ -2947,7 +2947,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-core-plugins"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3003,7 +3003,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-diagnostics"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "libc",
+  "pretty_assertions",
+@@ -3011,7 +3011,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_cmd",
+@@ -3060,7 +3060,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec-server"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -3119,7 +3119,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec-server-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-file-system",
+@@ -3134,7 +3134,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec-server-test-support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-exec-server",
+@@ -3149,7 +3149,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-execpolicy"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -3167,7 +3167,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-experimental-api-macros"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -3176,7 +3176,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-extension-api"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "codex-context-fragments",
+@@ -3193,7 +3193,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-extension-items"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "pretty_assertions",
+@@ -3205,7 +3205,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-external-agent-migration"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-analytics",
+@@ -3235,7 +3235,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-features"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-otel",
+  "codex-protocol",
+@@ -3248,7 +3248,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-feedback"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "bytes",
+@@ -3270,7 +3270,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-file-search"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -3286,7 +3286,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-file-system"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "bytes",
+  "codex-protocol",
+@@ -3298,7 +3298,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-file-watcher"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "notify",
+  "pretty_assertions",
+@@ -3309,7 +3309,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-git-attribution"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-backend-client",
+  "codex-extension-api",
+@@ -3322,7 +3322,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-git-utils"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3348,7 +3348,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-goal-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3372,7 +3372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-guardian-context"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "pretty_assertions",
+@@ -3381,7 +3381,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-guardian-v2"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-analytics",
+@@ -3411,7 +3411,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-history"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-protocol",
+@@ -3423,7 +3423,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-history-notes-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-api",
+  "codex-client",
+@@ -3447,7 +3447,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-home"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-extension-api",
+  "codex-utils-absolute-path",
+@@ -3458,7 +3458,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-hooks"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "async-channel",
+@@ -3484,7 +3484,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-http-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "bytes",
+  "codex-utils-cargo-bin",
+@@ -3516,7 +3516,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-image-generation-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-api",
+@@ -3543,7 +3543,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-install-context"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "codex-utils-home-dir",
+@@ -3556,7 +3556,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-keyring-store"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "keyring",
+  "tracing",
+@@ -3564,7 +3564,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-linux-sandbox"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "clap",
+  "codex-core",
+@@ -3591,7 +3591,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-lmstudio"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-core",
+  "codex-http-client",
+@@ -3605,7 +3605,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-login"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -3648,7 +3648,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-mcp"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -3688,7 +3688,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-mcp-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -3719,7 +3719,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-mcp-server"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -3758,7 +3758,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-memories-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-core",
+  "codex-extension-api",
+@@ -3779,7 +3779,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-memories-read"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-shell-command",
+@@ -3789,7 +3789,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-memories-write"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3826,7 +3826,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-message-history"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "memchr",
+@@ -3840,7 +3840,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-model-provider"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-agent-identity",
+  "codex-api",
+@@ -3864,7 +3864,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-model-provider-info"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-api",
+  "codex-protocol",
+@@ -3881,7 +3881,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-models-manager"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-collaboration-mode-templates",
+@@ -3901,7 +3901,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-network-proxy"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -3939,7 +3939,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-ollama"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_matches",
+  "async-stream",
+@@ -3959,7 +3959,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-otel"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-api",
+@@ -3992,7 +3992,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-otel-trace-websocket"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -4003,7 +4003,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-plugin"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "codex-protocol",
+@@ -4017,7 +4017,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-process-hardening"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "libc",
+  "pretty_assertions",
+@@ -4025,7 +4025,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-prompts"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-context-fragments",
+@@ -4039,7 +4039,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chardetng",
+@@ -4083,7 +4083,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-queue-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-core",
+@@ -4104,7 +4104,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-realtime-webrtc"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-install-context",
+@@ -4117,7 +4117,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-response-debug-context"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-api",
+@@ -4128,7 +4128,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-responses-api-proxy"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -4145,7 +4145,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-rmcp-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -4191,7 +4191,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-rollout"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -4218,7 +4218,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-rollout-trace"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-code-mode",
+@@ -4234,7 +4234,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-sandboxing"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "appcontainer_common",
+@@ -4261,7 +4261,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-secrets"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "age",
+  "anyhow",
+@@ -4282,7 +4282,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-shell-command"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -4305,7 +4305,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-shell-escalation"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -4325,7 +4325,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-skills"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-shell-command",
+@@ -4342,7 +4342,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-skills-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_matches",
+  "codex-analytics",
+@@ -4379,7 +4379,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-state"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -4403,7 +4403,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-stdio-to-uds"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-uds",
+@@ -4415,7 +4415,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-terminal-detection"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "tracing",
+@@ -4423,7 +4423,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-test-binary-support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-arg0",
+  "tempfile",
+@@ -4431,7 +4431,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-thread-manager-sample"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -4442,7 +4442,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-thread-store"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-app-server-protocol",
+@@ -4472,7 +4472,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-tools"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "bitflags 2.13.1",
+  "codex-code-mode",
+@@ -4497,7 +4497,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-tui"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -4610,7 +4610,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-uds"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "async-io",
+  "pretty_assertions",
+@@ -4622,7 +4622,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-absolute-path"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "dirs",
+  "dunce",
+@@ -4636,14 +4636,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-approval-presets"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+ ]
+ 
+ [[package]]
+ name = "codex-utils-audio"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-protocol",
+@@ -4657,7 +4657,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-cache"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "lru",
+  "sha1 0.10.6",
+@@ -4666,7 +4666,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-cargo-bin"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_cmd",
+  "runfiles",
+@@ -4675,7 +4675,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-cli"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "clap",
+  "codex-protocol",
+@@ -4687,15 +4687,15 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-elapsed"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-utils-fuzzy-match"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-utils-git-discovery"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-git-utils",
+  "codex-utils-absolute-path",
+@@ -4708,7 +4708,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-home-dir"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "dirs",
+@@ -4718,7 +4718,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-image"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-utils-cache",
+@@ -4731,7 +4731,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-json-to-toml"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "serde_json",
+@@ -4740,7 +4740,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-oss"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-core",
+  "codex-lmstudio",
+@@ -4750,7 +4750,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-output-truncation"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-utils-string",
+@@ -4759,7 +4759,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-path"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "dunce",
+@@ -4769,7 +4769,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-path-uri"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-utils-absolute-path",
+@@ -4785,7 +4785,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-plugins"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-exec-server",
+  "codex-exec-server-protocol",
+@@ -4799,7 +4799,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-pty"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "filedescriptor",
+@@ -4815,7 +4815,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-readiness"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_matches",
+  "thiserror 2.0.18",
+@@ -4825,7 +4825,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-redacted-string"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "schemars 0.8.22",
+  "serde",
+@@ -4833,14 +4833,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-rustls-provider"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "rustls",
+ ]
+ 
+ [[package]]
+ name = "codex-utils-sandbox-summary"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-utils-absolute-path",
+@@ -4849,7 +4849,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-sleep-inhibitor"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "core-foundation 0.9.4",
+  "libc",
+@@ -4859,14 +4859,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-stream-parser"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+ ]
+ 
+ [[package]]
+ name = "codex-utils-string"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "regex-lite",
+@@ -4876,14 +4876,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-template"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+ ]
+ 
+ [[package]]
+ name = "codex-v8-poc"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "v8",
+@@ -4891,7 +4891,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-voice-host"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-install-context",
+@@ -4905,7 +4905,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-web-search-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-api",
+  "codex-core",
+@@ -4926,7 +4926,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-websocket-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-http-client",
+  "codex-utils-rustls-provider",
+@@ -4942,7 +4942,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-windows-sandbox"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -4968,7 +4968,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-workload-identity"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-http-client",
+  "pretty_assertions",
+@@ -4983,7 +4983,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-worktree"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-git-utils",
+@@ -5222,7 +5222,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "core_test_support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_cmd",
+@@ -9520,7 +9520,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "mcp_test_support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-login",
+diff --git a/codex-rs/app-server/src/extensions.rs b/codex-rs/app-server/src/extensions.rs
+index 929eab5..f4761eb 100644
+--- a/codex-rs/app-server/src/extensions.rs
++++ b/codex-rs/app-server/src/extensions.rs
+@@ -122,6 +122,9 @@ where
+         skill_providers,
+         codex_otel::global(),
+         |config: &Config| codex_skills_extension::SkillsExtensionConfig {
++            preserve_full_content: config
++                .features
++                .enabled(codex_features::Feature::PlosLosslessSkills),
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: config.bundled_skills_enabled(),
+diff --git a/codex-rs/cli/src/main.rs b/codex-rs/cli/src/main.rs
+index 71d0323..089cc0b 100644
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -1054,6 +1054,13 @@ async fn cli_main(
+         mut interactive,
+         subcommand,
+     } = MultitoolCli::parse();
++    if codex_tui::PLOS_FRONTEND
++        && (remote.remote.is_none() || !matches!(&subcommand, None | Some(Subcommand::Resume(_))))
++    {
++        anyhow::bail!(
++            "The PLOS frontend requires its app-server endpoint. Start it through the plos launcher."
++        );
++    }
+     // Fold --enable/--disable into config overrides so they flow to all subcommands.
+     let toggle_overrides = feature_toggles.to_overrides()?;
+     root_config_overrides.raw_overrides.extend(toggle_overrides);
+@@ -1287,7 +1294,7 @@ async fn cli_main(
+                     codex_app_server::run_main_with_transport_options(
+                         arg0_paths.clone(),
+                         root_config_overrides,
+-                        LoaderOverrides::default(),
++                        loader_overrides_for_profile(interactive.config_profile_v2.as_ref())?,
+                         strict_config,
+                         analytics_default_enabled,
+                         transport,
+@@ -1830,6 +1837,9 @@ fn profile_v2_for_subcommand<'a>(
+     };
+ 
+     match subcommand {
++        Subcommand::AppServer(AppServerCommand {
++            subcommand: None, ..
++        }) => Ok(Some(profile_v2)),
+         Subcommand::Agents(_)
+         | Subcommand::Exec(_)
+         | Subcommand::Review(_)
+@@ -1845,7 +1855,7 @@ fn profile_v2_for_subcommand<'a>(
+             subcommand: DebugSubcommand::PromptInput(_),
+         }) => Ok(Some(profile_v2)),
+         _ => anyhow::bail!(
+-            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`."
++            "--profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, `codex app-server` (runtime only), and `codex debug prompt-input`."
+         ),
+     }
+ }
+@@ -2267,6 +2277,7 @@ async fn run_debug_prompt_input_command(
+     );
+     codex_skills_extension::install(&mut extensions, |config: &Config| {
+         codex_skills_extension::SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: config.bundled_skills_enabled(),
+@@ -3153,6 +3164,24 @@ mod tests {
+ 
+     #[test]
+     fn profile_v2_is_allowed_for_runtime_subcommands() {
++        assert_eq!(
++            profile_v2_for_args(&["codex", "--profile", "work", "app-server"])
++                .expect("app-server runtime supports profile-v2")
++                .as_deref(),
++            Some("work")
++        );
++        assert!(
++            profile_v2_for_args(&[
++                "codex",
++                "--profile",
++                "work",
++                "app-server",
++                "generate-json-schema",
++                "--out",
++                "/tmp/schema"
++            ])
++            .is_err()
++        );
+         assert_eq!(
+             profile_v2_for_args(&["codex", "--profile", "work", "resume"])
+                 .expect("resume supports profile-v2")
+diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
+index bd7429e..5fab90b 100644
+--- a/codex-rs/core/src/context_manager/history.rs
++++ b/codex-rs/core/src/context_manager/history.rs
+@@ -261,12 +261,15 @@ impl ContextManager {
+             if let ResponseItem::FunctionCallOutput { output, .. }
+             | ResponseItem::CustomToolCallOutput { output, .. } = &mut processed.item
+             {
+-                // The override already includes the tool's serialization allowance.
+-                let policy = metadata
+-                    .and_then(|metadata| metadata.fallback_token_limit_override)
+-                    .map(TruncationPolicy::Tokens)
+-                    .unwrap_or(policy * 1.2);
+-                truncate_function_output_payload(output, policy, estimate_audio_token_count);
++                // Lossless PLOS history must also ignore a tool's fallback cap.
++                if policy != TruncationPolicy::Bytes(usize::MAX) {
++                    // The override already includes the tool's serialization allowance.
++                    let policy = metadata
++                        .and_then(|metadata| metadata.fallback_token_limit_override)
++                        .map(TruncationPolicy::Tokens)
++                        .unwrap_or(policy * 1.2);
++                    truncate_function_output_payload(output, policy, estimate_audio_token_count);
++                }
+             }
+             if let Some(review_history) = &mut self.review_history
+                 && !matches!(item, ResponseItem::Message { role, content, .. }
+diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
+index 7e732f7..44c8718 100644
+--- a/codex-rs/core/src/context_manager/history_tests.rs
++++ b/codex-rs/core/src/context_manager/history_tests.rs
+@@ -2724,3 +2724,30 @@ fn text_only_items_unchanged() {
+ 
+     assert_eq!(estimated, raw_len);
+ }
++
++#[test]
++fn plos_full_tool_history_ignores_fallback_caps_without_modifying_metadata() {
++    let envelope = ResponseItemEnvelope {
++        item: ResponseItem::FunctionCallOutput {
++            id: None,
++            call_id: Some("plos-full-output".to_string()),
++            name: None,
++            namespace: None,
++            output: FunctionCallOutputPayload {
++                body: FunctionCallOutputBody::Text("full output José 日本語\r\n".repeat(10000)),
++                success: Some(true),
++            },
++            internal_chat_message_metadata_passthrough: None,
++        },
++        metadata: Some(CodexHarnessMetadata {
++            fallback_token_limit_override: Some(1),
++            ..Default::default()
++        }),
++    };
++    let mut history = ContextManager::new();
++    history.record_annotated_items(
++        std::slice::from_ref(&envelope),
++        TruncationPolicy::Bytes(usize::MAX),
++    );
++    assert_eq!(history.annotated_items(), std::slice::from_ref(&envelope));
++}
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 9130036..6278ad6 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -3380,7 +3380,7 @@ impl Session {
+                 .note_recorded_items(&response_items);
+             state
+                 .history
+-                .record_annotated_items(&items, turn_context.model_info().truncation_policy.into());
++                .record_annotated_items(&items, turn_context.tool_output_policy());
+         }
+         for image in image_preparations {
+             self.services
+@@ -3663,10 +3663,7 @@ impl Session {
+         {
+             let mut state = self.state.lock().await;
+             state.current_time_reminder.note_recorded_items(items);
+-            state.record_items(
+-                items.iter(),
+-                turn_context.model_info().truncation_policy.into(),
+-            );
++            state.record_items(items.iter(), turn_context.tool_output_policy());
+         }
+         self.persist_rollout_items(&[
+             RolloutItem::InterAgentCommunicationMetadata {
+diff --git a/codex-rs/core/src/session/rollout_reconstruction.rs b/codex-rs/core/src/session/rollout_reconstruction.rs
+index 786e26c..b009dfb 100644
+--- a/codex-rs/core/src/session/rollout_reconstruction.rs
++++ b/codex-rs/core/src/session/rollout_reconstruction.rs
+@@ -353,14 +353,14 @@ impl Session {
+                 RolloutItem::ResponseItem(response_item) => {
+                     history.record_annotated_items(
+                         std::slice::from_ref(response_item),
+-                        turn_context.model_info().truncation_policy.into(),
++                        turn_context.tool_output_policy(),
+                     );
+                 }
+                 RolloutItem::InterAgentCommunication(communication) => {
+                     let response_item = communication.to_model_input_item();
+                     history.record_items(
+                         std::iter::once(&response_item),
+-                        turn_context.model_info().truncation_policy.into(),
++                        turn_context.tool_output_policy(),
+                     );
+                 }
+                 RolloutItem::InterAgentCommunicationMetadata { .. } => {}
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index f7c4268..e5e01fb 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -847,7 +847,15 @@ async fn build_skills_and_plugins(
+         fragments,
+         injected: injected_host_skills,
+         warnings: host_skill_warnings,
+-    } = skills_snapshot.load_skill_prompts(&mentioned_skills).await;
++    } = skills_snapshot
++        .load_skill_prompts_with_policy(
++            &mentioned_skills,
++            turn_context
++                .config
++                .features
++                .enabled(Feature::PlosLosslessSkills),
++        )
++        .await;
+     emit_explicit_skill_invocations(
+         sess,
+         turn_context,
+@@ -1226,6 +1234,19 @@ async fn run_auto_compact(
+     phase: CompactionPhase,
+ ) -> CodexResult<()> {
+     let turn_context = &step_context.turn;
++    if turn_context
++        .config
++        .features
++        .enabled(Feature::PlosManualCompaction)
++    {
++        let error = CodexErr::InvalidRequest(
++            "PLOS requires an operator decision before compaction: confirm /compact, choose another model, or start a new session with /clear. Original context was not compacted.".to_string(),
++        );
++        sess.track_turn_codex_error(turn_context.as_ref(), &error);
++        sess.send_event(turn_context, EventMsg::Error(error.to_error_event(None)))
++            .await;
++        return Err(error);
++    }
+     let _profile_guard = turn_context.turn_timing_state.begin_compaction();
+     if turn_context.config.features.enabled(Feature::TokenBudget) {
+         // Compaction is the reset request, so force a new context window
+diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
+index e5a371e..9ca933f 100644
+--- a/codex-rs/core/src/session/turn_context.rs
++++ b/codex-rs/core/src/session/turn_context.rs
+@@ -251,6 +251,21 @@ enum TurnMultiAgentRuntime {
+ }
+ 
+ impl TurnContext {
++    pub(crate) fn preserve_full_tool_output(&self) -> bool {
++        self.config
++            .features
++            .enabled(Feature::PlosLosslessToolOutput)
++    }
++
++    pub(crate) fn tool_output_policy(&self) -> codex_protocol::protocol::TruncationPolicy {
++        if self.preserve_full_tool_output() {
++            // This is the maximum representable buffer length, not a model budget.
++            codex_protocol::protocol::TruncationPolicy::Bytes(usize::MAX)
++        } else {
++            self.model_info().truncation_policy.into()
++        }
++    }
++
+     /// Legacy: returns the frozen initial-turn model metadata.
+     /// Step-scoped consumers should use their captured `StepContext::settings`.
+     pub(crate) fn model_info(&self) -> &Arc<ModelInfo> {
+diff --git a/codex-rs/core/src/tasks/user_shell.rs b/codex-rs/core/src/tasks/user_shell.rs
+index 7d72cde..64867a5 100644
+--- a/codex-rs/core/src/tasks/user_shell.rs
++++ b/codex-rs/core/src/tasks/user_shell.rs
+@@ -316,7 +316,7 @@ pub(crate) async fn execute_user_shell_command(
+                         duration: Some(output.duration),
+                         formatted_output: Some(format_exec_output_str(
+                             &output,
+-                            turn_context.model_info().truncation_policy.into(),
++                            turn_context.tool_output_policy(),
+                         )),
+                     }),
+                 )
+@@ -357,7 +357,7 @@ pub(crate) async fn execute_user_shell_command(
+                         duration: Some(exec_output.duration),
+                         formatted_output: Some(format_exec_output_str(
+                             &exec_output,
+-                            turn_context.model_info().truncation_policy.into(),
++                            turn_context.tool_output_policy(),
+                         )),
+                     }),
+                 )
+diff --git a/codex-rs/core/src/tools/context.rs b/codex-rs/core/src/tools/context.rs
+index 72f9481..24ecca1 100644
+--- a/codex-rs/core/src/tools/context.rs
++++ b/codex-rs/core/src/tools/context.rs
+@@ -4,6 +4,7 @@ use crate::session::step_context::StepContext;
+ use crate::session::turn_context::TurnContext;
+ use crate::turn_diff_tracker::TurnDiffTracker;
+ use crate::unified_exec::format_output_omission_marker;
++use crate::unified_exec::preserve_output_text;
+ use crate::unified_exec::resolve_max_tokens;
+ use codex_protocol::ResponseItemId;
+ use codex_protocol::mcp::CallToolResult;
+@@ -170,12 +171,16 @@ impl McpToolOutput {
+             }
+         }
+ 
+-        // History receives this budget in tokens. Code Mode keeps the raw result.
+-        truncate_function_output_payload(
+-            &mut payload,
+-            self.truncation_policy * 1.2,
+-            estimate_audio_token_count,
+-        );
++        // Preserve every content part in full-output mode, including empty
++        // text and media ordering. Approval/source policy is resolved upstream.
++        if self.truncation_policy != TruncationPolicy::Bytes(usize::MAX) {
++            // History receives this budget in tokens. Code Mode keeps the raw result.
++            truncate_function_output_payload(
++                &mut payload,
++                self.truncation_policy * 1.2,
++                estimate_audio_token_count,
++            );
++        }
+         payload
+     }
+ }
+@@ -434,6 +439,9 @@ impl ToolOutput for ExecCommandToolOutput {
+             original_token_count: self.original_token_count,
+             output: match self.max_output_tokens {
+                 Some(max_tokens) => self.truncated_output(max_tokens),
++                None if self.truncation_policy == TruncationPolicy::Bytes(usize::MAX) => {
++                    preserve_output_text(&self.raw_output)
++                }
+                 None => String::from_utf8_lossy(&self.raw_output).to_string(),
+             },
+         };
+@@ -446,6 +454,9 @@ impl ToolOutput for ExecCommandToolOutput {
+ 
+ impl ExecCommandToolOutput {
+     fn model_output_policy(&self) -> TruncationPolicy {
++        if self.truncation_policy == TruncationPolicy::Bytes(usize::MAX) {
++            return self.truncation_policy;
++        }
+         let requested_policy = TruncationPolicy::Tokens(resolve_max_tokens(self.max_output_tokens));
+         if requested_policy.byte_budget() < self.truncation_policy.byte_budget() {
+             requested_policy
+@@ -455,10 +466,19 @@ impl ExecCommandToolOutput {
+     }
+ 
+     pub(crate) fn truncated_output(&self, max_tokens: usize) -> String {
+-        self.truncated_output_with_policy(TruncationPolicy::Tokens(max_tokens))
++        self.truncated_output_with_policy(
++            if self.truncation_policy == TruncationPolicy::Bytes(usize::MAX) {
++                self.truncation_policy
++            } else {
++                TruncationPolicy::Tokens(max_tokens)
++            },
++        )
+     }
+ 
+     fn truncated_output_with_policy(&self, policy: TruncationPolicy) -> String {
++        if policy == TruncationPolicy::Bytes(usize::MAX) {
++            return preserve_output_text(&self.raw_output);
++        }
+         let text = String::from_utf8_lossy(&self.raw_output).to_string();
+         let Some(omitted_bytes) = self.output_omitted_bytes else {
+             return formatted_truncate_text(&text, policy);
+diff --git a/codex-rs/core/src/tools/events.rs b/codex-rs/core/src/tools/events.rs
+index 5fa91cc..847daa7 100644
+--- a/codex-rs/core/src/tools/events.rs
++++ b/codex-rs/core/src/tools/events.rs
+@@ -373,7 +373,7 @@ impl ToolEmitter {
+         output: &ExecToolCallOutput,
+         ctx: ToolEventCtx<'_>,
+     ) -> String {
+-        super::format_exec_output_for_model(output, ctx.turn.model_info().truncation_policy.into())
++        super::format_exec_output_for_model(output, ctx.turn.tool_output_policy())
+     }
+ 
+     pub async fn finish(
+@@ -519,10 +519,7 @@ async fn emit_exec_stage(
+                 aggregated_output: output.aggregated_output.text.clone(),
+                 exit_code: output.exit_code,
+                 duration: output.duration,
+-                formatted_output: format_exec_output_str(
+-                    &output,
+-                    ctx.turn.model_info().truncation_policy.into(),
+-                ),
++                formatted_output: format_exec_output_str(&output, ctx.turn.tool_output_policy()),
+                 status: if output.exit_code == 0 {
+                     ExecCommandStatus::Completed
+                 } else {
+diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
+index 9a6d56f..a7de820 100644
+--- a/codex-rs/core/src/tools/handlers/extension_tools.rs
++++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
+@@ -206,7 +206,7 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall<'_>
+         tool_name: invocation.tool_name.clone(),
+         model: invocation.turn.model_info().slug.clone(),
+         codex_turn_metadata,
+-        truncation_policy: invocation.turn.model_info().truncation_policy.into(),
++        truncation_policy: invocation.turn.tool_output_policy(),
+         source: extension_tool_call_source(invocation.source.clone()),
+         conversation_history,
+         turn_item_emitter: Arc::new(CoreTurnItemEmitter {
+@@ -429,7 +429,7 @@ mod tests {
+         let weak_turn = Arc::downgrade(&turn);
+         let turn_id = turn.sub_id.clone();
+         let model = turn.model_info().slug.clone();
+-        let truncation_policy = turn.model_info().truncation_policy.into();
++        let truncation_policy = turn.tool_output_policy();
+         let expected_sandbox_cwds = turn
+             .environments
+             .turn_environments()
+diff --git a/codex-rs/core/src/tools/handlers/mcp.rs b/codex-rs/core/src/tools/handlers/mcp.rs
+index 48e828f..1534aa9 100644
+--- a/codex-rs/core/src/tools/handlers/mcp.rs
++++ b/codex-rs/core/src/tools/handlers/mcp.rs
+@@ -219,11 +219,15 @@ impl McpHandler {
+         };
+ 
+         // Capture presentation policy from the same config snapshot used for execution.
+-        let truncation_policy = prepared_mcp_call
+-            .as_ref()
+-            .and_then(codex_mcp::PreparedMcpCall::output_token_limit)
+-            .map(TruncationPolicy::Tokens)
+-            .unwrap_or(turn.model_info().truncation_policy.into());
++        let truncation_policy = if turn.preserve_full_tool_output() {
++            turn.tool_output_policy()
++        } else {
++            prepared_mcp_call
++                .as_ref()
++                .and_then(codex_mcp::PreparedMcpCall::output_token_limit)
++                .map(TruncationPolicy::Tokens)
++                .unwrap_or(turn.tool_output_policy())
++        };
+         let started = Instant::now();
+         let result = handle_mcp_tool_call(
+             Arc::clone(&session),
+diff --git a/codex-rs/core/src/tools/handlers/mcp_resource.rs b/codex-rs/core/src/tools/handlers/mcp_resource.rs
+index 5e18ee4..a59a03e 100644
+--- a/codex-rs/core/src/tools/handlers/mcp_resource.rs
++++ b/codex-rs/core/src/tools/handlers/mcp_resource.rs
+@@ -289,9 +289,9 @@ where
+ {
+     emit_tool_call_begin(session, turn, call_id, invocation.clone()).await;
+     let start = Instant::now();
+-    let result = operation.await.and_then(|payload| {
+-        serialize_function_output(payload, turn.model_info().truncation_policy.into())
+-    });
++    let result = operation
++        .await
++        .and_then(|payload| serialize_function_output(payload, turn.tool_output_policy()));
+ 
+     match result {
+         Ok(output) => {
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+index 8b97ff0..eea846a 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+@@ -391,7 +391,7 @@ impl ExecCommandHandler {
+                 chunk_id: String::new(),
+                 wall_time: std::time::Duration::ZERO,
+                 raw_output: output.into_text().into_bytes(),
+-                truncation_policy: turn.model_info().truncation_policy.into(),
++                truncation_policy: turn.tool_output_policy(),
+                 max_output_tokens,
+                 process_id: None,
+                 exit_code: None,
+@@ -445,7 +445,7 @@ impl ExecCommandHandler {
+                     chunk_id: generate_chunk_id(),
+                     wall_time: output.duration,
+                     raw_output: output_text.into_bytes(),
+-                    truncation_policy: turn.model_info().truncation_policy.into(),
++                    truncation_policy: turn.tool_output_policy(),
+                     max_output_tokens,
+                     // Sandbox denial is terminal, so there is no live
+                     // process for write_stdin to resume.
+diff --git a/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs b/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs
+index 657da46..b2aa0fe 100644
+--- a/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs
++++ b/codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs
+@@ -91,7 +91,7 @@ impl WriteStdinHandler {
+                     input: &args.chars,
+                     yield_time_ms: args.yield_time_ms,
+                     max_output_tokens: args.max_output_tokens,
+-                    truncation_policy: turn.model_info().truncation_policy.into(),
++                    truncation_policy: turn.tool_output_policy(),
+                     interaction_event: Some(WriteStdinInteractionEvent {
+                         session: &session,
+                         turn: &turn,
+diff --git a/codex-rs/core/src/tools/runtimes/unified_exec.rs b/codex-rs/core/src/tools/runtimes/unified_exec.rs
+index aea36d9..4376242 100644
+--- a/codex-rs/core/src/tools/runtimes/unified_exec.rs
++++ b/codex-rs/core/src/tools/runtimes/unified_exec.rs
+@@ -481,6 +481,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
+                             req.tty,
+                             prepared.spawn_lifecycle,
+                             req.turn_environment.environment.as_ref(),
++                            ctx.step_context.turn.preserve_full_tool_output(),
+                         )
+                         .await
+                         .map_err(|err| match err {
+@@ -535,6 +536,7 @@ impl<'a> ToolRuntime<UnifiedExecRequest, UnifiedExecAttempt> for UnifiedExecRunt
+                 req.tty,
+                 Box::new(NoopSpawnLifecycle),
+                 req.turn_environment.environment.as_ref(),
++                ctx.step_context.turn.preserve_full_tool_output(),
+             )
+             .await?;
+         Ok(UnifiedExecAttempt {
+diff --git a/codex-rs/core/src/unified_exec/async_watcher.rs b/codex-rs/core/src/unified_exec/async_watcher.rs
+index 366f631..64c5c1c 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher.rs
+@@ -50,6 +50,7 @@ struct Emitter {
+ struct Buffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES> {
+     pending: Vec<u8>,
+     transcript: Arc<Mutex<HeadTailBuffer>>,
++    record_transcript: bool,
+     emitter: Emitter,
+ }
+ 
+@@ -62,6 +63,7 @@ pub(crate) fn start_streaming_output(
+     transcript: Arc<Mutex<HeadTailBuffer>>,
+ ) {
+     let mut receiver = process.output_receiver();
++    let record_transcript = process.output_handles().preserved_transcript.is_none();
+     let output_drained = process.output_drained_notify();
+     let exit_token = process.cancellation_token();
+     let OutputHandles {
+@@ -83,6 +85,7 @@ pub(crate) fn start_streaming_output(
+         let mut output: Buffer = Buffer {
+             pending: Vec::new(),
+             transcript,
++            record_transcript,
+             emitter,
+         };
+ 
+@@ -252,10 +255,13 @@ impl<const MAX_BYTES: usize> Buffer<MAX_BYTES> {
+         let Self {
+             pending,
+             transcript,
++            record_transcript,
+             emitter,
+         } = self;
+ 
+-        transcript.lock().await.push_chunk(&bytes);
++        if *record_transcript {
++            transcript.lock().await.push_chunk(&bytes);
++        }
+ 
+         // Reuse a producer chunk when it fits, retaining only an incomplete
+         // UTF-8 suffix for the next push.
+@@ -291,6 +297,7 @@ impl<const MAX_BYTES: usize> Buffer<MAX_BYTES> {
+         let Self {
+             pending,
+             transcript: _,
++            record_transcript: _,
+             mut emitter,
+         } = self;
+         debug_assert!(
+@@ -463,7 +470,12 @@ async fn resolve_aggregated_output(
+         return fallback;
+     }
+ 
+-    String::from_utf8_lossy(&guard.to_bytes_with_omission_marker()).to_string()
++    let bytes = guard.to_bytes_with_omission_marker();
++    if guard.preserves_all() {
++        super::preserve_output_text(&bytes)
++    } else {
++        String::from_utf8_lossy(&bytes).to_string()
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/codex-rs/core/src/unified_exec/async_watcher_tests.rs b/codex-rs/core/src/unified_exec/async_watcher_tests.rs
+index bffc5cf..2a67dea 100644
+--- a/codex-rs/core/src/unified_exec/async_watcher_tests.rs
++++ b/codex-rs/core/src/unified_exec/async_watcher_tests.rs
+@@ -48,8 +48,13 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
+         tty: false,
+     });
+     let process = Arc::new(
+-        UnifiedExecProcess::from_spawned(spawned, SandboxType::None, Box::new(NoopSpawnLifecycle))
+-            .await?,
++        UnifiedExecProcess::from_spawned(
++            spawned,
++            SandboxType::None,
++            Box::new(NoopSpawnLifecycle),
++            /*preserve_full_output*/ false,
++        )
++        .await?,
+     );
+     let (session, turn, rx_event) = make_session_and_context_with_rx().await;
+     let context = UnifiedExecContext::new(
+@@ -306,6 +311,7 @@ async fn streaming_output_bounds_invalid_bytes_and_keeps_the_full_transcript() {
+     let mut output = Buffer::<8> {
+         pending: Vec::new(),
+         transcript: Arc::clone(&transcript),
++        record_transcript: true,
+         emitter: Emitter {
+             remaining_deltas: 2,
+             session,
+@@ -342,3 +348,31 @@ async fn streaming_output_bounds_invalid_bytes_and_keeps_the_full_transcript() {
+         expected_transcript
+     );
+ }
++
++#[tokio::test]
++async fn plos_stream_subscriber_does_not_duplicate_or_replace_producer_output() {
++    let (session, turn, _rx_event) = make_session_and_context_with_rx().await;
++    let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::with_preservation(
++        /*preserve_all*/ true,
++    )));
++    let complete = b"complete producer output\0\xff with all original bytes";
++    transcript.lock().await.push_chunk(complete);
++    let mut output = Buffer::<8> {
++        pending: Vec::new(),
++        transcript: Arc::clone(&transcript),
++        record_transcript: false,
++        emitter: Emitter {
++            remaining_deltas: 0,
++            session,
++            turn,
++            call_id: "plos-preserved-output".to_string(),
++        },
++    };
++    // A late or lagging subscriber may see only part of the stream.
++    output.push(b"with all original bytes".to_vec()).await;
++    output.finish().await;
++    assert_eq!(
++        transcript.lock().await.to_bytes_with_omission_marker(),
++        complete
++    );
++}
+diff --git a/codex-rs/core/src/unified_exec/head_tail_buffer.rs b/codex-rs/core/src/unified_exec/head_tail_buffer.rs
+index 0c9df7c..d503679 100644
+--- a/codex-rs/core/src/unified_exec/head_tail_buffer.rs
++++ b/codex-rs/core/src/unified_exec/head_tail_buffer.rs
+@@ -1,7 +1,20 @@
+ use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+ use crate::unified_exec::format_output_omission_marker;
++use base64::Engine;
+ use std::collections::VecDeque;
+ 
++/// Preserve command bytes in the model/CLI text channel without replacement characters.
++pub(crate) fn preserve_output_text(bytes: &[u8]) -> String {
++    match std::str::from_utf8(bytes) {
++        Ok(text) => text.to_owned(),
++        Err(_) => format!(
++            "PLOS_BINARY_OUTPUT_BASE64 ({} bytes):\n{}",
++            bytes.len(),
++            base64::engine::general_purpose::STANDARD.encode(bytes)
++        ),
++    }
++}
++
+ /// A capped buffer that preserves a stable prefix ("head") and suffix ("tail"),
+ /// dropping the middle once it exceeds the configured maximum. The buffer is
+ /// symmetric meaning 50% of the capacity is allocated to the head and 50% is
+@@ -12,9 +25,27 @@ pub(crate) struct HeadTailBuffer<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MA
+     head: Vec<u8>,
+     tail: VecDeque<u8>,
+     omitted_bytes: usize,
++    preserve_all: bool,
+ }
+ 
+ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
++    pub(crate) fn with_preservation(preserve_all: bool) -> Self {
++        Self {
++            preserve_all,
++            ..Self::default()
++        }
++    }
++
++    pub(crate) fn preserves_all(&self) -> bool {
++        self.preserve_all
++    }
++
++    /// Drain retained bytes without resetting the producer's retention policy.
++    pub(crate) fn take(&mut self) -> Self {
++        let replacement = Self::with_preservation(self.preserve_all);
++        std::mem::replace(self, replacement)
++    }
++
+     const HEAD_BUDGET: usize = MAX_BYTES / 2;
+     const TAIL_BUDGET: usize = MAX_BYTES.saturating_sub(Self::HEAD_BUDGET);
+ 
+@@ -43,6 +74,10 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
+     /// remaining bytes are added to the tail, with older tail bytes being
+     /// dropped to preserve the tail budget.
+     pub(crate) fn push_chunk(&mut self, chunk: &[u8]) {
++        if self.preserve_all {
++            self.head.extend_from_slice(chunk);
++            return;
++        }
+         let chunk = self.fill_head(chunk);
+         self.push_tail(chunk);
+     }
+@@ -53,6 +88,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
+             head,
+             tail: _,
+             omitted_bytes: _,
++            preserve_all: _,
+         } = self;
+ 
+         let remaining_head = Self::HEAD_BUDGET.saturating_sub(head.len());
+@@ -70,6 +106,7 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
+             head: _,
+             tail,
+             omitted_bytes,
++            preserve_all: _,
+         } = self;
+ 
+         let remaining_tail = Self::TAIL_BUDGET.saturating_sub(tail.len());
+@@ -126,10 +163,21 @@ impl<const MAX_BYTES: usize> HeadTailBuffer<MAX_BYTES> {
+     /// Append a later buffer with the same budget. This preserves the summary
+     /// of the original concatenated output, including its omission count.
+     pub(crate) fn push_buffer(&mut self, buffer: Self) {
++        if self.preserve_all || buffer.preserve_all {
++            // Preserve destination policy, including when a bounded consumer
++            // receives a full producer buffer. Never hide prior omissions.
++            self.omitted_bytes = self.omitted_bytes.saturating_add(buffer.omitted_bytes);
++            self.push_chunk(&buffer.head);
++            let (first, second) = buffer.tail.as_slices();
++            self.push_chunk(first);
++            self.push_chunk(second);
++            return;
++        }
+         let Self {
+             head,
+             tail,
+             omitted_bytes,
++            preserve_all: _,
+         } = buffer;
+ 
+         self.omitted_bytes = self.omitted_bytes.saturating_add(omitted_bytes);
+diff --git a/codex-rs/core/src/unified_exec/head_tail_buffer_tests.rs b/codex-rs/core/src/unified_exec/head_tail_buffer_tests.rs
+index db1defb..4fc24b4 100644
+--- a/codex-rs/core/src/unified_exec/head_tail_buffer_tests.rs
++++ b/codex-rs/core/src/unified_exec/head_tail_buffer_tests.rs
+@@ -89,3 +89,47 @@ fn empty_and_tiny_chunks_have_bounded_metadata() {
+     assert_eq!(buf.retained_bytes(), 10);
+     assert_eq!(buf.omitted_bytes(), 2);
+ }
++
++#[test]
++fn plos_preservation_keeps_binary_bytes_across_drains_and_merges() {
++    let expected: Vec<u8> = (0..=255).cycle().take(8193).collect();
++    let mut producer = HeadTailBuffer::<10>::with_preservation(/*preserve_all*/ true);
++    let mut collected = HeadTailBuffer::<10>::with_preservation(/*preserve_all*/ true);
++    for chunk in expected.chunks(127) {
++        producer.push_chunk(chunk);
++        collected.push_buffer(producer.take());
++        assert!(producer.preserves_all());
++        assert_eq!(producer.retained_bytes(), 0);
++    }
++    assert_eq!(collected.to_bytes_with_omission_marker(), expected);
++    assert_eq!(collected.omitted_bytes(), 0);
++    assert_eq!(collected.total_bytes(), expected.len());
++}
++
++#[test]
++fn plos_full_source_does_not_expand_a_bounded_consumer() {
++    let mut producer = HeadTailBuffer::<10>::with_preservation(/*preserve_all*/ true);
++    producer.push_chunk(b"0123456789abcdef");
++    let mut collected = HeadTailBuffer::<10>::default();
++    collected.push_buffer(producer);
++    let mut expected = HeadTailBuffer::<10>::default();
++    expected.push_chunk(b"0123456789abcdef");
++    assert_eq!(collected, expected);
++}
++
++#[test]
++fn plos_output_text_round_trips_binary_and_preserves_valid_utf8() {
++    use base64::Engine;
++    let bytes = (0..=255).cycle().take(76800).collect::<Vec<u8>>();
++    let encoded = super::preserve_output_text(&bytes);
++    let (header, payload) = encoded.split_once('\n').expect("binary header");
++    assert_eq!(header, "PLOS_BINARY_OUTPUT_BASE64 (76800 bytes):");
++    assert_eq!(
++        base64::engine::general_purpose::STANDARD
++            .decode(payload)
++            .unwrap(),
++        bytes
++    );
++    let text = "  José 日本語\r\n\t END  ";
++    assert_eq!(super::preserve_output_text(text.as_bytes()), text);
++}
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index 8dc8f35..d291b7e 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -50,6 +50,7 @@ use codex_core_plugins::PluginMetricsSidecar;
+ mod async_watcher;
+ mod errors;
+ mod head_tail_buffer;
++pub(crate) use head_tail_buffer::preserve_output_text;
+ mod oneshot;
+ mod process;
+ mod process_manager;
+diff --git a/codex-rs/core/src/unified_exec/mod_tests.rs b/codex-rs/core/src/unified_exec/mod_tests.rs
+index dc32b21..5504066 100644
+--- a/codex-rs/core/src/unified_exec/mod_tests.rs
++++ b/codex-rs/core/src/unified_exec/mod_tests.rs
+@@ -120,6 +120,7 @@ async fn exec_command_with_tty(
+                     .expect("turn environment")
+                     .environment
+                     .as_ref(),
++                turn.preserve_full_tool_output(),
+             )
+             .await?,
+     );
+@@ -298,15 +299,18 @@ async fn blocking_terminate_unified_process(
+ ) -> anyhow::Result<Arc<UnifiedExecProcess>> {
+     let (wake_tx, _wake_rx) = watch::channel(0);
+     Ok(Arc::new(
+-        UnifiedExecProcess::from_exec_server_started(StartedExecProcess {
+-            process: Arc::new(BlockingTerminateExecProcess {
+-                process_id: process_id.to_string().into(),
+-                terminate_started,
+-                allow_terminate,
+-                wake_tx,
+-            }),
+-            sandbox_type: Some(codex_sandboxing::SandboxType::None),
+-        })
++        UnifiedExecProcess::from_exec_server_started(
++            StartedExecProcess {
++                process: Arc::new(BlockingTerminateExecProcess {
++                    process_id: process_id.to_string().into(),
++                    terminate_started,
++                    allow_terminate,
++                    wake_tx,
++                }),
++                sandbox_type: Some(codex_sandboxing::SandboxType::None),
++            },
++            /*preserve_full_output*/ false,
++        )
+         .await?,
+     ))
+ }
+@@ -777,6 +781,7 @@ async fn completed_pipe_commands_preserve_exit_code() -> anyhow::Result<()> {
+             /*tty*/ false,
+             Box::new(NoopSpawnLifecycle),
+             &environment,
++            /*preserve_full_output*/ false,
+         )
+         .await?;
+ 
+@@ -819,6 +824,7 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
+             /*tty*/ true,
+             Box::new(NoopSpawnLifecycle),
+             remote_test_env.environment(),
++            /*preserve_full_output*/ false,
+         )
+         .await?;
+ 
+@@ -874,6 +880,7 @@ async fn remote_exec_server_rejects_inherited_fd_launches() -> anyhow::Result<()
+                 .expect("turn environment")
+                 .environment
+                 .as_ref(),
++            /*preserve_full_output*/ false,
+         )
+         .await
+         .expect_err("expected inherited fd rejection");
+diff --git a/codex-rs/core/src/unified_exec/process.rs b/codex-rs/core/src/unified_exec/process.rs
+index 81946e4..86b6f7d 100644
+--- a/codex-rs/core/src/unified_exec/process.rs
++++ b/codex-rs/core/src/unified_exec/process.rs
+@@ -61,12 +61,23 @@ impl SpawnLifecycle for NoopSpawnLifecycle {}
+ #[derive(Clone)]
+ pub(crate) struct OutputHandles<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
+     pub(crate) output_buffer: Arc<Mutex<HeadTailBuffer<MAX_BYTES>>>,
++    /// Complete producer-owned output, independent of lossy UI subscriptions.
++    pub(crate) preserved_transcript: Option<Arc<Mutex<HeadTailBuffer<MAX_BYTES>>>>,
+     pub(crate) output_notify: Arc<Notify>,
+     pub(crate) output_closed: Arc<AtomicBool>,
+     pub(crate) output_closed_notify: Arc<Notify>,
+     pub(crate) cancellation_token: CancellationToken,
+ }
+ 
++impl<const MAX_BYTES: usize> OutputHandles<MAX_BYTES> {
++    pub(super) async fn record_output(&self, chunk: &[u8]) {
++        if let Some(transcript) = &self.preserved_transcript {
++            transcript.lock().await.push_chunk(chunk);
++        }
++        self.output_buffer.lock().await.push_chunk(chunk);
++    }
++}
++
+ struct OutputTaskGuard {
+     output_closed: Arc<AtomicBool>,
+     output_closed_notify: Arc<Notify>,
+@@ -116,9 +127,17 @@ impl UnifiedExecProcess {
+         process_handle: ProcessHandle,
+         sandbox_type: SandboxType,
+         spawn_lifecycle: Option<SpawnLifecycleHandle>,
++        preserve_full_output: bool,
+     ) -> Self {
+         let output = OutputHandles {
+-            output_buffer: Arc::new(Mutex::new(HeadTailBuffer::default())),
++            preserved_transcript: preserve_full_output.then(|| {
++                Arc::new(Mutex::new(HeadTailBuffer::with_preservation(
++                    /*preserve_all*/ true,
++                )))
++            }),
++            output_buffer: Arc::new(Mutex::new(HeadTailBuffer::with_preservation(
++                preserve_full_output,
++            ))),
+             output_notify: Arc::new(Notify::new()),
+             output_closed: Arc::new(AtomicBool::new(false)),
+             output_closed_notify: Arc::new(Notify::new()),
+@@ -340,6 +359,7 @@ impl UnifiedExecProcess {
+         spawned: SpawnedPty,
+         sandbox_type: SandboxType,
+         spawn_lifecycle: SpawnLifecycleHandle,
++        preserve_full_output: bool,
+     ) -> Result<Self, UnifiedExecError> {
+         let SpawnedPty {
+             session: process_handle,
+@@ -347,17 +367,26 @@ impl UnifiedExecProcess {
+             stderr_rx,
+             mut exit_rx,
+         } = spawned;
+-        let output_rx = codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx);
+         let mut managed = Self::new(
+             ProcessHandle::Local(Box::new(process_handle)),
+             sandbox_type,
+             Some(spawn_lifecycle),
++            preserve_full_output,
+         );
+-        managed.output_task = Some(Self::spawn_local_output_task(
+-            output_rx,
+-            managed.output_handles().clone(),
+-            managed.output_tx.clone(),
+-        ));
++        managed.output_task = Some(if preserve_full_output {
++            Self::spawn_preserved_pipe_output_task(
++                stdout_rx,
++                stderr_rx,
++                managed.output_handles().clone(),
++                managed.output_tx.clone(),
++            )
++        } else {
++            Self::spawn_local_output_task(
++                codex_utils_pty::combine_output_receivers(stdout_rx, stderr_rx),
++                managed.output_handles().clone(),
++                managed.output_tx.clone(),
++            )
++        });
+ 
+         match exit_rx.try_recv() {
+             Ok(exit_code) => {
+@@ -395,12 +424,18 @@ impl UnifiedExecProcess {
+ 
+     pub(super) async fn from_exec_server_started(
+         started: StartedExecProcess,
++        preserve_full_output: bool,
+     ) -> Result<Self, UnifiedExecError> {
+         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
+         // Older peers do not report this field. In that case, skip local
+         // classification rather than attributing a violation to a guessed backend.
+         let sandbox_type = started.sandbox_type.unwrap_or(SandboxType::None);
+-        let mut managed = Self::new(process_handle, sandbox_type, /*spawn_lifecycle*/ None);
++        let mut managed = Self::new(
++            process_handle,
++            sandbox_type,
++            /*spawn_lifecycle*/ None,
++            preserve_full_output,
++        );
+         let output_handles = managed.output_handles().clone();
+         managed.output_task = Some(Self::spawn_exec_server_output_task(
+             started,
+@@ -437,12 +472,12 @@ impl UnifiedExecProcess {
+         state_tx: watch::Sender<ProcessState>,
+     ) -> JoinHandle<()> {
+         let OutputHandles {
+-            output_buffer,
+             output_notify,
+             output_closed,
+             output_closed_notify,
+             cancellation_token,
+-        } = output_handles;
++            ..
++        } = output_handles.clone();
+         let process = started.process;
+         let mut events = process.subscribe_events();
+         tokio::spawn(async move {
+@@ -513,9 +548,7 @@ impl UnifiedExecProcess {
+                     } = response;
+                     for chunk in chunks.into_iter().filter(|chunk| chunk.seq > last_seq) {
+                         let bytes = chunk.chunk.into_inner();
+-                        let mut guard = output_buffer.lock().await;
+-                        guard.push_chunk(&bytes);
+-                        drop(guard);
++                        output_handles.record_output(&bytes).await;
+                         let _ = output_tx.send(bytes);
+                         output_notify.notify_waiters();
+                     }
+@@ -556,9 +589,7 @@ impl UnifiedExecProcess {
+                         }
+                         last_seq = chunk.seq;
+                         let bytes = chunk.chunk.into_inner();
+-                        let mut guard = output_buffer.lock().await;
+-                        guard.push_chunk(&bytes);
+-                        drop(guard);
++                        output_handles.record_output(&bytes).await;
+                         let _ = output_tx.send(bytes);
+                         output_notify.notify_waiters();
+                     }
+@@ -597,18 +628,56 @@ impl UnifiedExecProcess {
+         })
+     }
+ 
++    /// Read the owned pipes directly with backpressure. A lossy intermediate
++    /// broadcast queue must not discard bytes before the preserving buffer.
++    fn spawn_preserved_pipe_output_task(
++        mut stdout_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
++        mut stderr_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
++        output: OutputHandles,
++        output_tx: broadcast::Sender<Vec<u8>>,
++    ) -> JoinHandle<()> {
++        tokio::spawn(async move {
++            let _output_task_guard = OutputTaskGuard {
++                output_closed: Arc::clone(&output.output_closed),
++                output_closed_notify: Arc::clone(&output.output_closed_notify),
++            };
++            let mut stdout_open = true;
++            let mut stderr_open = true;
++            loop {
++                let chunk = tokio::select! {
++                    chunk = stdout_rx.recv(), if stdout_open => {
++                        stdout_open = chunk.is_some();
++                        chunk
++                    },
++                    chunk = stderr_rx.recv(), if stderr_open => {
++                        stderr_open = chunk.is_some();
++                        chunk
++                    },
++                    else => break,
++                };
++                if let Some(chunk) = chunk {
++                    output.record_output(&chunk).await;
++                    let _ = output_tx.send(chunk);
++                    output.output_notify.notify_waiters();
++                }
++            }
++            output.output_closed.store(true, Ordering::Release);
++            output.output_closed_notify.notify_waiters();
++            output.output_notify.notify_waiters();
++        })
++    }
++
+     fn spawn_local_output_task(
+         mut receiver: tokio::sync::broadcast::Receiver<Vec<u8>>,
+         output_handles: OutputHandles,
+         output_tx: broadcast::Sender<Vec<u8>>,
+     ) -> JoinHandle<()> {
+         let OutputHandles {
+-            output_buffer,
+             output_notify,
+             output_closed,
+             output_closed_notify,
+             ..
+-        } = output_handles;
++        } = output_handles.clone();
+         tokio::spawn(async move {
+             let _output_task_guard = OutputTaskGuard {
+                 output_closed: Arc::clone(&output_closed),
+@@ -617,9 +686,7 @@ impl UnifiedExecProcess {
+             loop {
+                 match receiver.recv().await {
+                     Ok(chunk) => {
+-                        let mut guard = output_buffer.lock().await;
+-                        guard.push_chunk(&chunk);
+-                        drop(guard);
++                        output_handles.record_output(&chunk).await;
+                         let _ = output_tx.send(chunk);
+                         output_notify.notify_waiters();
+                     }
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index 2121857..5b0371d 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -518,7 +518,11 @@ impl UnifiedExecProcessManager {
+             )
+         });
+ 
+-        let transcript = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
++        let transcript = process
++            .output_handles()
++            .preserved_transcript
++            .clone()
++            .unwrap_or_else(|| Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default())));
+         let event_ctx = ToolEventCtx::new(
+             context.session.as_ref(),
+             context.step_context.turn.as_ref(),
+@@ -624,7 +628,11 @@ impl UnifiedExecProcessManager {
+         .unwrap_or(usize::MAX);
+         let output_omitted_bytes = NonZeroUsize::new(collected_output.omitted_bytes());
+         let collected = collected_output.to_bytes_with_omission_marker();
+-        let text = String::from_utf8_lossy(&collected).to_string();
++        let text = if context.step_context.turn.preserve_full_tool_output() {
++            super::preserve_output_text(&collected)
++        } else {
++            String::from_utf8_lossy(&collected).to_string()
++        };
+         let chunk_id = generate_chunk_id();
+         if deferred_network_approval
+             .as_ref()
+@@ -784,12 +792,7 @@ impl UnifiedExecProcessManager {
+             chunk_id,
+             wall_time,
+             raw_output: collected,
+-            truncation_policy: context
+-                .step_context
+-                .turn
+-                .model_info()
+-                .truncation_policy
+-                .into(),
++            truncation_policy: context.step_context.turn.tool_output_policy(),
+             max_output_tokens: request.max_output_tokens,
+             process_id: response_process_id,
+             exit_code,
+@@ -1188,6 +1191,7 @@ impl UnifiedExecProcessManager {
+         tty: bool,
+         spawn_lifecycle: SpawnLifecycleHandle,
+         environment: &codex_exec_server::Environment,
++        preserve_full_output: bool,
+     ) -> Result<UnifiedExecProcess, ToolError> {
+         let mut request = if environment.is_remote() || shell_snapshot.is_some() {
+             attempt.env_for_exec_server(command, options)
+@@ -1213,6 +1217,7 @@ impl UnifiedExecProcessManager {
+             tty,
+             spawn_lifecycle,
+             environment,
++            preserve_full_output,
+         )
+         .await
+         .map_err(|err| match err {
+@@ -1236,6 +1241,7 @@ impl UnifiedExecProcessManager {
+         tty: bool,
+         mut spawn_lifecycle: SpawnLifecycleHandle,
+         environment: &codex_exec_server::Environment,
++        preserve_full_output: bool,
+     ) -> Result<UnifiedExecProcess, UnifiedExecError> {
+         let inherited_fds = spawn_lifecycle.inherited_fds();
+ 
+@@ -1263,7 +1269,8 @@ impl UnifiedExecProcessManager {
+             }
+             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
+             spawn_lifecycle.after_spawn();
+-            return UnifiedExecProcess::from_exec_server_started(started).await;
++            return UnifiedExecProcess::from_exec_server_started(started, preserve_full_output)
++                .await;
+         }
+ 
+         // TODO(anp): Keep PathUri through the local PTY/process launch boundary.
+@@ -1336,7 +1343,13 @@ impl UnifiedExecProcessManager {
+         spawn_lifecycle.after_spawn();
+         let spawned =
+             spawn_result.map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
+-        UnifiedExecProcess::from_spawned(spawned, request.sandbox, spawn_lifecycle).await
++        UnifiedExecProcess::from_spawned(
++            spawned,
++            request.sandbox,
++            spawn_lifecycle,
++            preserve_full_output,
++        )
++        .await
+     }
+ 
+     pub(super) async fn open_session_with_sandbox(
+@@ -1468,8 +1481,10 @@ impl UnifiedExecProcessManager {
+             output_closed,
+             output_closed_notify,
+             cancellation_token,
++            ..
+         } = output;
+-        let mut collected = HeadTailBuffer::default();
++        let mut collected =
++            HeadTailBuffer::with_preservation(output_buffer.lock().await.preserves_all());
+         let mut exit_signal_received = cancellation_token.is_cancelled();
+         let mut post_exit_deadline: Option<Instant> = None;
+         loop {
+@@ -1484,7 +1499,7 @@ impl UnifiedExecProcessManager {
+             let mut wait_for_output = None;
+             {
+                 let mut guard = output_buffer.lock().await;
+-                drained_output = std::mem::take(&mut *guard);
++                drained_output = guard.take();
+                 has_drained_output =
+                     drained_output.retained_bytes() > 0 || drained_output.omitted_bytes() > 0;
+                 if !has_drained_output {
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+index 523e7eb..84cb194 100644
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -313,6 +313,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
+     let output_closed_notify = Arc::new(Notify::new());
+     let cancellation_token = CancellationToken::new();
+     let output = OutputHandles {
++        preserved_transcript: None,
+         output_buffer: Arc::clone(&output_buffer),
+         output_notify: Arc::clone(&output_notify),
+         output_closed: Arc::clone(&output_closed),
+@@ -370,6 +371,7 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
+     let cancellation_token = CancellationToken::new();
+     cancellation_token.cancel();
+     let output = OutputHandles {
++        preserved_transcript: None,
+         output_buffer,
+         output_notify,
+         output_closed,
+@@ -627,3 +629,44 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
+         (None, MAX_UNIFIED_EXEC_PROCESSES)
+     );
+ }
++
++#[tokio::test]
++async fn plos_producer_transcript_survives_polling_without_a_stream_subscriber() {
++    let transcript = Arc::new(tokio::sync::Mutex::new(
++        HeadTailBuffer::<10>::with_preservation(/*preserve_all*/ true),
++    ));
++    let output = OutputHandles {
++        output_buffer: Arc::new(tokio::sync::Mutex::new(
++            HeadTailBuffer::<10>::with_preservation(/*preserve_all*/ true),
++        )),
++        preserved_transcript: Some(Arc::clone(&transcript)),
++        output_notify: Arc::new(Notify::new()),
++        output_closed: Arc::new(AtomicBool::new(false)),
++        output_closed_notify: Arc::new(Notify::new()),
++        cancellation_token: CancellationToken::new(),
++    };
++    let first = b"first\0\xff output beyond the buffer cap";
++    let second = b"second\0\xfe output beyond the buffer cap";
++    output.record_output(first).await;
++    let initial = UnifiedExecProcessManager::collect_output_until_deadline(
++        &output,
++        /*pause_state*/ None,
++        Instant::now() + Duration::from_millis(10),
++    )
++    .await;
++    assert_eq!(initial.to_bytes_with_omission_marker(), first);
++    output.record_output(second).await;
++    output.output_closed.store(true, Ordering::Release);
++    output.cancellation_token.cancel();
++    let later = UnifiedExecProcessManager::collect_output_until_deadline(
++        &output,
++        /*pause_state*/ None,
++        Instant::now() + Duration::from_millis(10),
++    )
++    .await;
++    assert_eq!(later.to_bytes_with_omission_marker(), second);
++    assert_eq!(
++        transcript.lock().await.to_bytes_with_omission_marker(),
++        [first.as_slice(), second.as_slice()].concat()
++    );
++}
+diff --git a/codex-rs/core/src/unified_exec/process_tests.rs b/codex-rs/core/src/unified_exec/process_tests.rs
+index e7f99e3..0bf2f72 100644
+--- a/codex-rs/core/src/unified_exec/process_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_tests.rs
+@@ -104,7 +104,7 @@ pub(super) async fn remote_process(
+         sandbox_type: Some(sandbox_type),
+     };
+ 
+-    UnifiedExecProcess::from_exec_server_started(started)
++    UnifiedExecProcess::from_exec_server_started(started, /*preserve_full_output*/ false)
+         .await
+         .expect("remote process should start")
+ }
+diff --git a/codex-rs/core/src/user_shell_command.rs b/codex-rs/core/src/user_shell_command.rs
+index 02f52e0..ebb2225 100644
+--- a/codex-rs/core/src/user_shell_command.rs
++++ b/codex-rs/core/src/user_shell_command.rs
+@@ -11,10 +11,7 @@ fn user_shell_command_fragment(
+     exec_output: &ExecToolCallOutput,
+     turn_context: &TurnContext,
+ ) -> UserShellCommand {
+-    let output = format_exec_output_str(
+-        exec_output,
+-        turn_context.model_info().truncation_policy.into(),
+-    );
++    let output = format_exec_output_str(exec_output, turn_context.tool_output_policy());
+     UserShellCommand::new(command, exec_output.exit_code, exec_output.duration, output)
+ }
+ 
+diff --git a/codex-rs/core/tests/suite/model_visible_layout.rs b/codex-rs/core/tests/suite/model_visible_layout.rs
+index af2f353..1933726 100644
+--- a/codex-rs/core/tests/suite/model_visible_layout.rs
++++ b/codex-rs/core/tests/suite/model_visible_layout.rs
+@@ -87,6 +87,7 @@ struct RecordedTurnInputEnvironment {
+ fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
+     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+     install(&mut extensions, |config: &Config| SkillsExtensionConfig {
++        preserve_full_content: false,
+         include_instructions: config.include_skill_instructions,
+         max_context_tokens: config.skill_max_context_tokens,
+         bundled_skills_enabled: config.bundled_skills_enabled(),
+diff --git a/codex-rs/core/tests/suite/plugins.rs b/codex-rs/core/tests/suite/plugins.rs
+index d549c62..a287012 100644
+--- a/codex-rs/core/tests/suite/plugins.rs
++++ b/codex-rs/core/tests/suite/plugins.rs
+@@ -83,6 +83,7 @@ const REMOTE_PLUGIN_CONFIG_NAME: &str = "sample@openai-curated-remote";
+ fn skills_extensions() -> Arc<ExtensionRegistry<Config>> {
+     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+     install(&mut extensions, |config: &Config| SkillsExtensionConfig {
++        preserve_full_content: false,
+         include_instructions: config.include_skill_instructions,
+         max_context_tokens: config.skill_max_context_tokens,
+         bundled_skills_enabled: config.bundled_skills_enabled(),
+diff --git a/codex-rs/core/tests/suite/skills.rs b/codex-rs/core/tests/suite/skills.rs
+index 896ccc7..90e658f 100644
+--- a/codex-rs/core/tests/suite/skills.rs
++++ b/codex-rs/core/tests/suite/skills.rs
+@@ -203,6 +203,7 @@ async fn user_turn_selects_symlinked_skill_by_advertised_discovery_path() -> Res
+     let skill_body = "instructions from the canonical linked skill";
+     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+     install(&mut extensions, |config: &Config| SkillsExtensionConfig {
++        preserve_full_content: false,
+         include_instructions: config.include_skill_instructions,
+         max_context_tokens: config.skill_max_context_tokens,
+         bundled_skills_enabled: false,
+diff --git a/codex-rs/core/tests/suite/skills_extension.rs b/codex-rs/core/tests/suite/skills_extension.rs
+index 0d461cb..ad5f5b7 100644
+--- a/codex-rs/core/tests/suite/skills_extension.rs
++++ b/codex-rs/core/tests/suite/skills_extension.rs
+@@ -291,6 +291,7 @@ fn catalog_extensions(
+     }
+     install_with_providers(&mut extensions, providers, |config: &Config| {
+         SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -568,6 +569,7 @@ async fn capability_sections_render_in_order_with_host_repo_and_plugin_skills()
+ 
+     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+     install(&mut extensions, |config: &Config| SkillsExtensionConfig {
++        preserve_full_content: false,
+         include_instructions: config.include_skill_instructions,
+         max_context_tokens: config.skill_max_context_tokens,
+         bundled_skills_enabled: config.bundled_skills_enabled(),
+@@ -985,6 +987,7 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
+         SkillProviders::new()
+             .with_orchestrator_provider(Arc::new(OrchestratorSkillProvider::new())),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -1349,6 +1352,7 @@ async fn production_turn_aliases_discovered_singleton_orchestrator_root() -> Res
+         SkillProviders::new()
+             .with_orchestrator_provider(Arc::new(OrchestratorSkillProvider::new())),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -1529,6 +1533,7 @@ async fn opted_in_executor_provider_skips_host_discovery_but_injects_discovered_
+             ),
+         )),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -1755,6 +1760,7 @@ async fn executor_only_provider_preserves_structured_repo_skill_without_discover
+             ),
+         )),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -1899,6 +1905,7 @@ async fn executor_skill_tool_reads_references_under_current_permissions(
+             ),
+         )),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -2201,6 +2208,7 @@ async fn explicit_executor_skill_prompt_rejects_oversized_resource() -> Result<(
+                 ),
+             )),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -2431,6 +2439,7 @@ async fn production_turn_aliases_combined_skill_catalogs_under_shared_budget() -
+             }))
+             .with_host_provider(Arc::new(HostSkillProvider::new())),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -2532,6 +2541,7 @@ async fn production_turn_scales_extension_catalog_from_resolved_model_window() -
+                 }),
+             )),
+             |config: &Config| SkillsExtensionConfig {
++                preserve_full_content: false,
+                 include_instructions: config.include_skill_instructions,
+                 max_context_tokens: config.skill_max_context_tokens,
+                 bundled_skills_enabled: false,
+@@ -2852,6 +2862,7 @@ async fn production_turn_uses_provider_host_catalog_and_core_snapshot_injection(
+             main_prompt_contents: Some(provider_contents.to_string()),
+         })),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -2972,6 +2983,7 @@ async fn production_turn_suppresses_only_the_superseded_host_skill_prompt() -> R
+             }),
+         )),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -3234,6 +3246,7 @@ async fn production_turn_keeps_orchestrator_world_state_incremental_across_turns
+         SkillProviders::new()
+             .with_orchestrator_provider(Arc::new(CatalogSkillProvider { catalog })),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+@@ -3500,6 +3513,7 @@ async fn production_turn_fairly_shortens_extension_catalog_descriptions() -> Res
+             }),
+         )),
+         |config: &Config| SkillsExtensionConfig {
++            preserve_full_content: false,
+             include_instructions: config.include_skill_instructions,
+             max_context_tokens: config.skill_max_context_tokens,
+             bundled_skills_enabled: false,
+diff --git a/codex-rs/core/tests/suite/token_budget.rs b/codex-rs/core/tests/suite/token_budget.rs
+index 0e259ed..6f4bebb 100644
+--- a/codex-rs/core/tests/suite/token_budget.rs
++++ b/codex-rs/core/tests/suite/token_budget.rs
+@@ -1519,6 +1519,7 @@ async fn new_context_tool_skips_auto_compact_fallback() -> Result<()> {
+     .await;
+     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+     install(&mut extensions, |config: &Config| SkillsExtensionConfig {
++        preserve_full_content: false,
+         include_instructions: config.include_skill_instructions,
+         max_context_tokens: config.skill_max_context_tokens,
+         bundled_skills_enabled: config.bundled_skills_enabled(),
+diff --git a/codex-rs/ext/skills/src/config.rs b/codex-rs/ext/skills/src/config.rs
+index fe98df9..5fa2ccd 100644
+--- a/codex-rs/ext/skills/src/config.rs
++++ b/codex-rs/ext/skills/src/config.rs
+@@ -5,6 +5,8 @@ use std::num::NonZeroUsize;
+ pub struct SkillsExtensionConfig {
+     /// Whether the available-skills catalog is included in model context.
+     pub include_instructions: bool,
++    /// Preserve complete enabled skill metadata and selected prompt bodies.
++    pub preserve_full_content: bool,
+     /// Optional token budget override for the available-skills catalog.
+     pub max_context_tokens: Option<NonZeroUsize>,
+     /// Whether bundled skills are eligible for discovery.
+diff --git a/codex-rs/ext/skills/src/extension.rs b/codex-rs/ext/skills/src/extension.rs
+index e2400b9..f50ec85 100644
+--- a/codex-rs/ext/skills/src/extension.rs
++++ b/codex-rs/ext/skills/src/extension.rs
+@@ -53,8 +53,8 @@ use crate::render::MAX_SKILL_PATH_BYTES;
+ use crate::render::SkillCatalogRenderPolicy;
+ use crate::render::SkillMetadataBudget;
+ use crate::render::SkillRenderReport;
++use crate::render::budget_for_config;
+ use crate::render::render_available_skills;
+-use crate::render::skill_metadata_budget;
+ use crate::render::truncate_main_prompt_contents;
+ use crate::render::truncate_utf8_to_bytes;
+ use crate::render_observability::CatalogSurface;
+@@ -231,7 +231,7 @@ where
+                 &catalog,
+                 include_usage,
+                 SkillCatalogRenderPolicy::ExtensionCompatible,
+-                skill_metadata_budget(/*context_window*/ None, config.max_context_tokens),
++                budget_for_config(/*context_window*/ None, &config),
+             );
+             if let Some(message) = rendered.warning_message {
+                 self.emit_warning(thread_store.level_id(), /*turn_id*/ None, message);
+@@ -432,8 +432,7 @@ where
+                 let context_window = model_info
+                     .as_deref()
+                     .and_then(ModelInfo::resolved_context_window);
+-                let metadata_budget =
+-                    skill_metadata_budget(context_window, config.max_context_tokens);
++                let metadata_budget = budget_for_config(context_window, &config);
+                 let rendered = render_catalog(
+                     extension_metrics.as_deref(),
+                     CatalogSurface::TurnInput,
+@@ -465,8 +464,11 @@ where
+                     .await
+                 {
+                     Ok(read_result) => {
+-                        let (contents, truncated) =
+-                            truncate_main_prompt_contents(read_result.contents.as_str());
++                        let (contents, truncated) = if config.preserve_full_content {
++                            (read_result.contents.clone(), false)
++                        } else {
++                            truncate_main_prompt_contents(read_result.contents.as_str())
++                        };
+                         if truncated {
+                             let warning = format!(
+                                 "Skill `{}` exceeded the main prompt context limit and was truncated.",
+@@ -480,12 +482,17 @@ where
+                             warnings.push(warning);
+                         }
+                         let fragment = SkillInstructions {
+-                            name: truncate_utf8_to_bytes(&entry.name, MAX_SKILL_NAME_BYTES).0,
+-                            path: truncate_utf8_to_bytes(
+-                                entry.rendered_path(),
+-                                MAX_SKILL_PATH_BYTES,
+-                            )
+-                            .0,
++                            name: if config.preserve_full_content {
++                                entry.name.clone()
++                            } else {
++                                truncate_utf8_to_bytes(&entry.name, MAX_SKILL_NAME_BYTES).0
++                            },
++                            path: if config.preserve_full_content {
++                                entry.rendered_path().to_string()
++                            } else {
++                                truncate_utf8_to_bytes(entry.rendered_path(), MAX_SKILL_PATH_BYTES)
++                                    .0
++                            },
+                             contents,
+                             resource_access: (!entry.prompt_visible)
+                                 .then_some(&entry.authority)
+diff --git a/codex-rs/ext/skills/src/host_prompt.rs b/codex-rs/ext/skills/src/host_prompt.rs
+index 28dc95d..ab4c67f 100644
+--- a/codex-rs/ext/skills/src/host_prompt.rs
++++ b/codex-rs/ext/skills/src/host_prompt.rs
+@@ -67,6 +67,15 @@ impl HostSkillsSnapshot {
+         fields(selected_skill_count = selected_skills.len())
+     )]
+     pub async fn load_skill_prompts(&self, selected_skills: &[SkillMetadata]) -> HostSkillPrompts {
++        self.load_skill_prompts_with_policy(selected_skills, false)
++            .await
++    }
++
++    pub async fn load_skill_prompts_with_policy(
++        &self,
++        selected_skills: &[SkillMetadata],
++        preserve_full_content: bool,
++    ) -> HostSkillPrompts {
+         let mut prompts = HostSkillPrompts {
+             fragments: Vec::with_capacity(selected_skills.len()),
+             injected: Vec::with_capacity(selected_skills.len()),
+@@ -76,11 +85,12 @@ impl HostSkillsSnapshot {
+         for skill in selected_skills {
+             match self.read_skill_text(skill).await {
+                 Ok(contents) => {
+-                    let (contents, truncated) = if self.outcome().is_agent_plugin_skill(skill) {
+-                        truncate_main_prompt_contents(&contents)
+-                    } else {
+-                        (contents, false)
+-                    };
++                    let (contents, truncated) =
++                        if !preserve_full_content && self.outcome().is_agent_plugin_skill(skill) {
++                            truncate_main_prompt_contents(&contents)
++                        } else {
++                            (contents, false)
++                        };
+                     if truncated {
+                         prompts.warnings.push(format!(
+                             "Skill `{}` exceeded the main prompt context limit and was truncated.",
+diff --git a/codex-rs/ext/skills/src/render.rs b/codex-rs/ext/skills/src/render.rs
+index 7deb844..e7420d5 100644
+--- a/codex-rs/ext/skills/src/render.rs
++++ b/codex-rs/ext/skills/src/render.rs
+@@ -76,6 +76,7 @@ impl SkillCatalogRenderPolicy {
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub(crate) enum SkillMetadataBudget {
++    Unbounded,
+     Tokens(usize),
+     Characters(usize),
+ }
+@@ -124,6 +125,17 @@ impl SkillRenderReport {
+     }
+ }
+ 
++pub(crate) fn budget_for_config(
++    context_window: Option<i64>,
++    config: &crate::SkillsExtensionConfig,
++) -> SkillMetadataBudget {
++    if config.preserve_full_content {
++        SkillMetadataBudget::Unbounded
++    } else {
++        skill_metadata_budget(context_window, config.max_context_tokens)
++    }
++}
++
+ pub(crate) fn skill_metadata_budget(
+     context_window: Option<i64>,
+     max_context_tokens: Option<NonZeroUsize>,
+@@ -156,7 +168,7 @@ fn metadata_line_cost(budget: SkillMetadataBudget, line: &str) -> usize {
+     let line = format!("{line}\n");
+     match budget {
+         SkillMetadataBudget::Tokens(_) => approx_token_count(&line),
+-        SkillMetadataBudget::Characters(_) => line.chars().count(),
++        SkillMetadataBudget::Characters(_) | SkillMetadataBudget::Unbounded => line.chars().count(),
+     }
+ }
+ 
+@@ -164,6 +176,7 @@ impl SkillMetadataBudget {
+     pub(crate) fn limit(self) -> usize {
+         match self {
+             Self::Tokens(limit) | Self::Characters(limit) => limit,
++            Self::Unbounded => usize::MAX,
+         }
+     }
+ 
+@@ -173,14 +186,14 @@ impl SkillMetadataBudget {
+                 bytes.saturating_add(APPROX_BYTES_PER_TOKEN.saturating_sub(1))
+                     / APPROX_BYTES_PER_TOKEN
+             }
+-            Self::Characters(_) => chars,
++            Self::Characters(_) | Self::Unbounded => chars,
+         }
+     }
+ 
+     fn cost(self, text: &str) -> usize {
+         match self {
+             Self::Tokens(_) => approx_token_count(text),
+-            Self::Characters(_) => text.chars().count(),
++            Self::Characters(_) | Self::Unbounded => text.chars().count(),
+         }
+     }
+ }
+@@ -505,6 +518,27 @@ pub(crate) fn render_available_skills(
+         return None;
+     }
+ 
++    if budget == SkillMetadataBudget::Unbounded {
++        let count = entries.len();
++        return Some(AvailableSkillsRender {
++            prompt_kind: SkillPromptKind::Unaliased,
++            skill_root_lines: Vec::new(),
++            skill_lines: entries
++                .iter()
++                .map(|entry| {
++                    let mut line = SkillLine::new(entry, policy);
++                    line.description = Cow::Borrowed(entry.description.as_str());
++                    line.render_full()
++                })
++                .collect(),
++            preserve_empty_fragment: policy == SkillCatalogRenderPolicy::CoreCompatible,
++            report: SkillRenderReport {
++                total_count: count,
++                included_count: count,
++                ..Default::default()
++            },
++        });
++    }
+     let absolute = render_catalog(
+         entries
+             .iter()
+@@ -570,7 +604,7 @@ pub(crate) fn render_combined_available_skills(
+     .into_iter()
+     .filter(|nonempty| *nonempty)
+     .count();
+-    if nonempty_catalog_count <= 1 {
++    if budget == SkillMetadataBudget::Unbounded || nonempty_catalog_count <= 1 {
+         return RenderedSkillCatalogs {
+             executor: render_available_skills(
+                 executor_catalog,
+@@ -827,6 +861,7 @@ fn build_aliased_combined_catalog(
+     let adjusted_budget = match budget {
+         SkillMetadataBudget::Tokens(_) => SkillMetadataBudget::Tokens(adjusted_limit),
+         SkillMetadataBudget::Characters(_) => SkillMetadataBudget::Characters(adjusted_limit),
++        SkillMetadataBudget::Unbounded => SkillMetadataBudget::Unbounded,
+     };
+     Some(render_combined_lines(
+         executor,
+@@ -1035,6 +1070,7 @@ fn build_aliased_catalog(
+     let adjusted_budget = match budget {
+         SkillMetadataBudget::Tokens(_) => SkillMetadataBudget::Tokens(adjusted_limit),
+         SkillMetadataBudget::Characters(_) => SkillMetadataBudget::Characters(adjusted_limit),
++        SkillMetadataBudget::Unbounded => SkillMetadataBudget::Unbounded,
+     };
+     Some(render_catalog(
+         catalog.skills,
+diff --git a/codex-rs/ext/skills/src/render_tests.rs b/codex-rs/ext/skills/src/render_tests.rs
+index 06e40f4..1febb6e 100644
+--- a/codex-rs/ext/skills/src/render_tests.rs
++++ b/codex-rs/ext/skills/src/render_tests.rs
+@@ -1144,3 +1144,27 @@ fn substantial_description_shortening_warning_starts_above_threshold() {
+         Some(SKILL_DESCRIPTION_TRUNCATED_WARNING.to_string())
+     );
+ }
++
++#[test]
++fn plos_unbounded_catalog_preserves_complete_descriptions_across_all_authorities() {
++    let description = format!("  {} exact catalog tail  ", "José 日本語 ".repeat(500));
++    let catalog = SkillCatalog {
++        entries: vec![entry("full-skill", &description, Some("short substitute"))],
++        warnings: Vec::new(),
++    };
++    let rendered = render_combined_available_skills(
++        &catalog,
++        &catalog,
++        &catalog,
++        SkillMetadataBudget::Unbounded,
++        false,
++    );
++    for result in [rendered.executor, rendered.orchestrator, rendered.host] {
++        let result = result.expect("complete catalog");
++        assert_eq!(result.report.omitted_count, 0);
++        assert_eq!(result.report.truncated_description_chars, 0);
++        let fragment = result.into_fragment(false).expect("complete fragment");
++        assert!(fragment.body().contains(&description));
++        assert!(!fragment.body().contains("short substitute"));
++    }
++}
+diff --git a/codex-rs/ext/skills/src/world_state_catalogs.rs b/codex-rs/ext/skills/src/world_state_catalogs.rs
+index c30266f..1d49088 100644
+--- a/codex-rs/ext/skills/src/world_state_catalogs.rs
++++ b/codex-rs/ext/skills/src/world_state_catalogs.rs
+@@ -16,8 +16,8 @@ use crate::provider::attribute_executor_plugins;
+ use crate::render::AvailableSkillsRender;
+ use crate::render::RenderedSkillCatalogs;
+ use crate::render::SkillMetadataBudget;
++use crate::render::budget_for_config;
+ use crate::render::render_combined_available_skills;
+-use crate::render::skill_metadata_budget;
+ use crate::render_observability::CatalogSurface;
+ use crate::render_observability::record_catalog_render;
+ use crate::sources::SkillProviders;
+@@ -109,7 +109,7 @@ impl<'a> CatalogContext<'a> {
+         let context_window = model_info
+             .as_deref()
+             .and_then(ModelInfo::resolved_context_window);
+-        let metadata_budget = skill_metadata_budget(context_window, config.max_context_tokens);
++        let metadata_budget = budget_for_config(context_window, &config);
+         let emitted_warnings = input
+             .turn_store
+             .get_or_init(EmittedCatalogBudgetWarnings::default);
+diff --git a/codex-rs/ext/skills/tests/skills_extension.rs b/codex-rs/ext/skills/tests/skills_extension.rs
+index cf6857b..813f871 100644
+--- a/codex-rs/ext/skills/tests/skills_extension.rs
++++ b/codex-rs/ext/skills/tests/skills_extension.rs
+@@ -2627,6 +2627,7 @@ fn default_config() -> TestConfig {
+ 
+ fn skills_extension_config(config: &TestConfig) -> SkillsExtensionConfig {
+     SkillsExtensionConfig {
++        preserve_full_content: false,
+         include_instructions: config.include_instructions,
+         max_context_tokens: None,
+         bundled_skills_enabled: config.bundled_skills_enabled,
+diff --git a/codex-rs/features/src/lib.rs b/codex-rs/features/src/lib.rs
+index fdeae5c..1fe0ecb 100644
+--- a/codex-rs/features/src/lib.rs
++++ b/codex-rs/features/src/lib.rs
+@@ -337,6 +337,12 @@ pub enum Feature {
+     RealtimeConversation,
+     /// Prevent idle system sleep while a turn is actively running.
+     PreventIdleSleep,
++    /// Require an explicit operator request before changing conversation context.
++    PlosManualCompaction,
++    /// Preserve complete selected skill instructions and catalog descriptions.
++    PlosLosslessSkills,
++    /// Preserve complete native tool output without model-budget shortening.
++    PlosLosslessToolOutput,
+     /// Enable remote compaction v2 over the normal Responses API.
+     RemoteCompactionV2,
+     /// Include retained images in the remote compaction context budget.
+@@ -1679,6 +1685,24 @@ pub const FEATURES: &[FeatureSpec] = &[
+         stage: Stage::Removed,
+         default_enabled: false,
+     },
++    FeatureSpec {
++        id: Feature::PlosLosslessToolOutput,
++        key: "plos_lossless_tool_output",
++        stage: Stage::Stable,
++        default_enabled: false,
++    },
++    FeatureSpec {
++        id: Feature::PlosLosslessSkills,
++        key: "plos_lossless_skills",
++        stage: Stage::Stable,
++        default_enabled: false,
++    },
++    FeatureSpec {
++        id: Feature::PlosManualCompaction,
++        key: "plos_manual_compaction",
++        stage: Stage::Stable,
++        default_enabled: false,
++    },
+     FeatureSpec {
+         id: Feature::RemoteCompactionV2,
+         key: "remote_compaction_v2",
+diff --git a/codex-rs/mcp-server/src/message_processor.rs b/codex-rs/mcp-server/src/message_processor.rs
+index 25c5faa..b1407eb 100644
+--- a/codex-rs/mcp-server/src/message_processor.rs
++++ b/codex-rs/mcp-server/src/message_processor.rs
+@@ -87,6 +87,7 @@ impl MessageProcessor {
+             skill_providers,
+             codex_otel::global(),
+             |config: &Config| codex_skills_extension::SkillsExtensionConfig {
++                preserve_full_content: false,
+                 include_instructions: config.include_skill_instructions,
+                 max_context_tokens: config.skill_max_context_tokens,
+                 bundled_skills_enabled: config.bundled_skills_enabled(),
+diff --git a/codex-rs/tui/Cargo.toml b/codex-rs/tui/Cargo.toml
+index 7de0ba5..4743b68 100644
+--- a/codex-rs/tui/Cargo.toml
++++ b/codex-rs/tui/Cargo.toml
+@@ -5,6 +5,9 @@ edition.workspace = true
+ license.workspace = true
+ autobins = false
+ 
++[features]
++plos = []
++
+ [[bin]]
+ name = "codex-tui"
+ path = "src/main.rs"
+diff --git a/codex-rs/tui/src/app.rs b/codex-rs/tui/src/app.rs
+index a8650e7..f210616 100644
+--- a/codex-rs/tui/src/app.rs
++++ b/codex-rs/tui/src/app.rs
+@@ -883,7 +883,11 @@ impl App {
+                     // each pasted line break becomes one LF and existing LFs stay unchanged.
+                     // [tui-textarea]: https://github.com/rhysd/tui-textarea/blob/4d18622eeac13b309e0ff6a55a46ac6706da68cf/src/textarea.rs#L782-L783
+                     // [iTerm2]: https://github.com/gnachman/iTerm2/blob/5d0c0d9f68523cbd0494dad5422998964a2ecd8d/sources/iTermPasteHelper.m#L206-L216
+-                    let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
++                    let pasted = if crate::PLOS_FRONTEND {
++                        pasted
++                    } else {
++                        pasted.replace("\r\n", "\n").replace('\r', "\n")
++                    };
+                     self.chat_widget.handle_paste(pasted);
+                     if self.reconnect.offline
+                         && self.reconnect.presentation
+diff --git a/codex-rs/tui/src/app/event_dispatch.rs b/codex-rs/tui/src/app/event_dispatch.rs
+index d2ea7c5..643342e 100644
+--- a/codex-rs/tui/src/app/event_dispatch.rs
++++ b/codex-rs/tui/src/app/event_dispatch.rs
+@@ -567,6 +567,56 @@ impl App {
+             AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
+                 self.begin_thread_switch_history_replay_buffer();
+             }
++            AppEvent::PlosCommandsRequest { thread_id } => {
++                if self.chat_widget.thread_id() == Some(thread_id) {
++                    let generation = crate::bottom_pane::slash_commands::begin_plos_command_refresh();
++                    let request_id = app_server.next_request_id();
++                    if let codex_app_server_client::AppServerRequestHandle::Remote(handle) = app_server.request_handle() {
++                        let tx = self.app_event_tx.clone();
++                        tokio::spawn(async move {
++                            let request = codex_app_server_protocol::JSONRPCRequest { id: request_id,
++                                method: "plos/commands".to_string(), trace: None,
++                                params: Some(serde_json::json!({"threadId": thread_id.to_string()})) };
++                            let commands = match handle.request_json_rpc(request).await {
++                                Ok(Ok(value)) => serde_json::from_value(value["commands"].clone()).unwrap_or_default(),
++                                _ => Vec::new(),
++                            };
++                            tx.send(AppEvent::PlosCommandsResult { thread_id, generation, commands });
++                        });
++                    }
++                }
++            }
++            AppEvent::PlosCommandsResult { thread_id, generation, commands } => {
++                if self.chat_widget.thread_id() == Some(thread_id) {
++                    crate::bottom_pane::slash_commands::set_plos_commands(generation, commands);
++                }
++            }
++            AppEvent::PlosProcessControl { thread_id, command } => {
++                let request_id = app_server.next_request_id();
++                if let codex_app_server_client::AppServerRequestHandle::Remote(handle) = app_server.request_handle() {
++                    let tx = self.app_event_tx.clone();
++                    tokio::spawn(async move {
++                        let request = codex_app_server_protocol::JSONRPCRequest {
++                            id: request_id,
++                            method: "plos/process".to_string(),
++                            params: Some(serde_json::json!({"threadId": thread_id.to_string(), "command": command})),
++                            trace: None,
++                        };
++                        let message = match handle.request_json_rpc(request).await {
++                            Ok(Ok(value)) => serde_json::to_string_pretty(&value).unwrap_or_else(|error| error.to_string()),
++                            Ok(Err(error)) => error.message,
++                            Err(error) => format!("Process control outcome unavailable: {error}. No action was replayed."),
++                        };
++                        tx.send(AppEvent::PlosProcessResult { thread_id, message });
++                    });
++                } else {
++                    self.chat_widget.add_error_message("PLOS process controls require the PLOS remote backend.".to_string());
++                }
++            }
++            AppEvent::PlosProcessResult { thread_id, message } => {
++                let text = format!("PLOS process control — session {thread_id}\n{message}");
++                self.insert_history_cell(tui, Box::new(history_cell::new_info_event(text, None)));
++            }
+             AppEvent::InsertHistoryCell(cell) => {
+                 self.insert_history_cell(tui, cell);
+             }
+diff --git a/codex-rs/tui/src/app/exit_summary.rs b/codex-rs/tui/src/app/exit_summary.rs
+index 39b0238..af8dd67 100644
+--- a/codex-rs/tui/src/app/exit_summary.rs
++++ b/codex-rs/tui/src/app/exit_summary.rs
+@@ -88,6 +88,11 @@ impl AppExitInfo {
+             }
+         };
+         let mut lines = Vec::new();
++        if crate::PLOS_FRONTEND {
++            lines.push("PLOS terminal closed. Start PLOS again and choose /resume to reopen saved history.".to_string());
++            lines.push("Review interrupted command outcomes before retrying; reopening history does not replay actions.".to_string());
++            return lines;
++        }
+         if let Some(disconnect) = self.disconnect_info
+             && let Some(thread_id) = self.thread_id
+         {
+diff --git a/codex-rs/tui/src/app_event.rs b/codex-rs/tui/src/app_event.rs
+index 1592aef..69dc069 100644
+--- a/codex-rs/tui/src/app_event.rs
++++ b/codex-rs/tui/src/app_event.rs
+@@ -222,6 +222,22 @@ pub(crate) struct AgentsOverviewThreadRefresh {
+ #[allow(clippy::large_enum_variant)]
+ #[derive(Debug, IntoStaticStr)]
+ pub(crate) enum AppEvent {
++    PlosCommandsRequest {
++        thread_id: ThreadId,
++    },
++    PlosCommandsResult {
++        thread_id: ThreadId,
++        generation: u64,
++        commands: Vec<crate::bottom_pane::slash_commands::PlosCommand>,
++    },
++    PlosProcessControl {
++        thread_id: ThreadId,
++        command: String,
++    },
++    PlosProcessResult {
++        thread_id: ThreadId,
++        message: String,
++    },
+     /// Open the daemon-wide overview of recent and locally retained root sessions.
+     OpenAgentsOverview,
+     /// Update the daemon-wide overview after a background thread listing finishes.
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer.rs b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+index 953f2e9..ccc2f51 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+@@ -1215,8 +1215,12 @@ impl ChatComposer {
+     /// In all cases, clears any paste-burst Enter suppression state so a real paste cannot affect
+     /// the next user Enter key, then syncs popup state.
+     pub fn handle_paste(&mut self, pasted: String) -> bool {
+-        let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
+-        let pasted = sanitize_user_text(pasted.into());
++        let pasted = if crate::PLOS_FRONTEND {
++            std::borrow::Cow::Owned(pasted)
++        } else {
++            let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
++            sanitize_user_text(pasted.into())
++        };
+         if let Some(query) = self.draft.textarea.vim_query_mut() {
+             query.editor.insert_str(&pasted);
+             return true;
+@@ -3066,10 +3070,13 @@ impl ChatComposer {
+         let expanded_input = text.clone();
+ 
+         // If there is neither text nor attachments, suppress submission entirely.
+-        text = text.trim().to_string();
+-        text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
++        if !crate::PLOS_FRONTEND {
++            text = text.trim().to_string();
++            text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
++        }
+ 
+-        if slash_validation == SlashValidation::Immediate
++        if !crate::PLOS_FRONTEND
++            && slash_validation == SlashValidation::Immediate
+             && let SubmissionValidation::UnknownCommand(name) = self
+                 .slash_input()
+                 .validate_submission(&text, input_starts_with_space)
+@@ -3215,6 +3222,69 @@ impl ChatComposer {
+         if let Some(result) = self.handle_parent_owned_submission() {
+             return result;
+         }
++        // PLOS owns slash commands, including model, engine and policy changes.
++        // Pass exact submitted text to its server instead of expanding prompts.
++        if crate::PLOS_FRONTEND {
++            if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
++                self.handle_paste(pasted);
++            }
++            if let Some((text, text_elements)) = self.prepare_submission_text(true) {
++                if text == "/quit" || text == "/exit" {
++                    return (InputResult::Command(SlashCommand::Quit), true);
++                }
++                let native_session_command = match text.as_str() {
++                    "/new" => Some(SlashCommand::New),
++                    "/clear" => Some(SlashCommand::Clear),
++                    "/resume" => Some(SlashCommand::Resume),
++                    "/skills" => Some(SlashCommand::Skills),
++                    "/process" => Some(SlashCommand::Process),
++                    "/mcp" => Some(SlashCommand::Mcp),
++                    _ => None,
++                };
++                if let Some(command) = native_session_command {
++                    return (InputResult::Command(command), true);
++                }
++                if text == "/mcp verbose" {
++                    return (
++                        InputResult::CommandWithArgs(
++                            SlashCommand::Mcp,
++                            "verbose".to_string(),
++                            Vec::new(),
++                        ),
++                        true,
++                    );
++                }
++                for (prefix, command) in [
++                    ("/new ", SlashCommand::New),
++                    ("/clear ", SlashCommand::Clear),
++                    ("/process ", SlashCommand::Process),
++                ] {
++                    if let Some(name) = text.strip_prefix(prefix) {
++                        return (
++                            InputResult::CommandWithArgs(command, name.to_string(), Vec::new()),
++                            true,
++                        );
++                    }
++                }
++                return (
++                    if should_queue {
++                        InputResult::Queued {
++                            text,
++                            text_elements,
++                            action: QueuedInputAction::Literal,
++                            pending_pastes: Vec::new(),
++                        }
++                    } else {
++                        InputResult::Submitted {
++                            text,
++                            text_elements,
++                        }
++                    },
++                    true,
++                );
++            }
++            return (InputResult::None, true);
++        }
+         if should_queue {
+             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
+                 self.handle_paste(pasted);
+@@ -9472,6 +9542,9 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "model")
+                 }
++                Some(CommandItem::Plos(_)) => {
++                    panic!("Unexpected PLOS command in stock command test")
++                }
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected model command, got service tier {command:?}")
+                 }
+@@ -9554,6 +9627,9 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "resume")
+                 }
++                Some(CommandItem::Plos(_)) => {
++                    panic!("Unexpected PLOS command in stock command test")
++                }
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected resume command, got service tier {command:?}")
+                 }
+@@ -9608,6 +9684,9 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "pets")
+                 }
++                Some(CommandItem::Plos(_)) => {
++                    panic!("Unexpected PLOS command in stock command test")
++                }
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected pets command, got service tier {command:?}")
+                 }
+@@ -9662,6 +9741,9 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "btw")
+                 }
++                Some(CommandItem::Plos(_)) => {
++                    panic!("Unexpected PLOS command in stock command test")
++                }
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected btw command, got service tier {command:?}")
+                 }
+@@ -9716,6 +9798,9 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "side")
+                 }
++                Some(CommandItem::Plos(_)) => {
++                    panic!("Unexpected PLOS command in stock command test")
++                }
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected side command, got service tier {command:?}")
+                 }
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs b/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
+index 81734f2..dac4560 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
+@@ -343,6 +343,21 @@ impl ChatComposer {
+                 ..
+             } => {
+                 if let Some(sel) = popup.selected_item() {
++                    if let CommandItem::Plos(command) = &sel {
++                        if command.disabled {
++                            self.app_event_tx
++                                .send(crate::app_event::AppEvent::InsertHistoryCell(Box::new(
++                                    crate::history_cell::new_error_event(command.detail.clone()),
++                                )));
++                            return (InputResult::None, true);
++                        }
++                        let original = self.draft.textarea.text().to_string();
++                        let head_end = original.find(char::is_whitespace).unwrap_or(original.len());
++                        let completed = format!("/{}{}", command.name, &original[head_end..]);
++                        self.draft.textarea.set_text_clearing_elements(&completed);
++                        self.draft.textarea.set_cursor(completed.len());
++                        return self.handle_key_event_without_popup(key_event);
++                    }
+                     if self.blocks_direct_input {
+                         let command_is_allowed = match &sel {
+                             CommandItem::Builtin(cmd) => {
+@@ -350,7 +365,7 @@ impl ChatComposer {
+                                     |(_, args, _)| parent_owned_command_is_allowed(*cmd, args),
+                                 )
+                             }
+-                            CommandItem::ServiceTier(_) => false,
++                            CommandItem::ServiceTier(_) | CommandItem::Plos(_) => false,
+                         };
+                         if !command_is_allowed {
+                             return (InputResult::ParentOwnedInputBlocked, true);
+@@ -374,6 +389,7 @@ impl ChatComposer {
+                             CommandItem::ServiceTier(command) => {
+                                 InputResult::ServiceTierCommand(command)
+                             }
++                            CommandItem::Plos(_) => unreachable!("PLOS selection handled above"),
+                         },
+                         true,
+                     );
+diff --git a/codex-rs/tui/src/bottom_pane/command_popup.rs b/codex-rs/tui/src/bottom_pane/command_popup.rs
+index f613e5e..8e6b19b 100644
+--- a/codex-rs/tui/src/bottom_pane/command_popup.rs
++++ b/codex-rs/tui/src/bottom_pane/command_popup.rs
+@@ -31,6 +31,7 @@ const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
+ pub(crate) enum CommandItem {
+     Builtin(SlashCommand),
+     ServiceTier(ServiceTierCommand),
++    Plos(super::slash_commands::PlosCommand),
+ }
+ 
+ pub(crate) struct CommandPopup {
+@@ -74,15 +75,24 @@ impl CommandPopup {
+         service_tier_commands: Vec<ServiceTierCommand>,
+     ) -> Self {
+         // Keep built-in availability in sync with the composer.
+-        let commands = commands_for_input(flags.into(), &service_tier_commands)
+-            .into_iter()
+-            .filter_map(|command| match command {
+-                SlashCommandItem::Builtin(cmd) => (!cmd.command().starts_with("debug")
+-                    && cmd != SlashCommand::Apps)
+-                    .then_some(CommandItem::Builtin(cmd)),
+-                SlashCommandItem::ServiceTier(command) => Some(CommandItem::ServiceTier(command)),
+-            })
+-            .collect();
++        let mut commands: Vec<CommandItem> =
++            commands_for_input(flags.into(), &service_tier_commands)
++                .into_iter()
++                .filter_map(|command| match command {
++                    SlashCommandItem::Builtin(cmd) => (!cmd.command().starts_with("debug")
++                        && cmd != SlashCommand::Apps)
++                        .then_some(CommandItem::Builtin(cmd)),
++                    SlashCommandItem::ServiceTier(command) => {
++                        Some(CommandItem::ServiceTier(command))
++                    }
++                })
++                .collect();
++        if crate::PLOS_FRONTEND {
++            commands = super::slash_commands::plos_commands()
++                .into_iter()
++                .map(CommandItem::Plos)
++                .collect();
++        }
+         Self {
+             command_filter: String::new(),
+             commands,
+@@ -95,6 +105,12 @@ impl CommandPopup {
+     /// *first* '/' on the *first* line becomes the active filter that is used
+     /// to narrow down the list of available commands.
+     pub(crate) fn on_composer_text_change(&mut self, text: String) {
++        if crate::PLOS_FRONTEND {
++            self.commands = super::slash_commands::plos_commands()
++                .into_iter()
++                .map(CommandItem::Plos)
++                .collect();
++        }
+         let first_line = text.lines().next().unwrap_or("");
+         let previous_filter = self.command_filter.clone();
+ 
+@@ -214,8 +230,13 @@ impl CommandPopup {
+                     description: Some(description),
+                     category_tag: None,
+                     wrap_indent: None,
+-                    is_disabled: false,
+-                    disabled_reason: None,
++                    is_disabled: matches!(&item, CommandItem::Plos(command) if command.disabled),
++                    disabled_reason: match &item {
++                        CommandItem::Plos(command) if command.disabled => {
++                            Some(command.detail.clone())
++                        }
++                        _ => None,
++                    },
+                 }
+             })
+             .collect()
+@@ -250,6 +271,7 @@ impl CommandItem {
+         match self {
+             Self::Builtin(cmd) => cmd.command(),
+             Self::ServiceTier(command) => &command.name,
++            Self::Plos(command) => &command.name,
+         }
+     }
+ 
+@@ -257,6 +279,7 @@ impl CommandItem {
+         match self {
+             Self::Builtin(cmd) => cmd.description(),
+             Self::ServiceTier(command) => &command.description,
++            Self::Plos(command) => &command.description,
+         }
+     }
+ }
+@@ -295,7 +318,7 @@ mod tests {
+         let matches = popup.filtered_items();
+         let has_init = matches.iter().any(|item| match item {
+             CommandItem::Builtin(cmd) => cmd.command() == "init",
+-            CommandItem::ServiceTier(_) => false,
++            CommandItem::ServiceTier(_) | CommandItem::Plos(_) => false,
+         });
+         assert!(
+             has_init,
+@@ -313,6 +336,7 @@ mod tests {
+         let selected = popup.selected_item();
+         match selected {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "init"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected init command, got service tier {command:?}")
+             }
+@@ -327,6 +351,7 @@ mod tests {
+         let matches = popup.filtered_items();
+         match matches.first() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "model"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected model command, got service tier {command:?}")
+             }
+@@ -350,6 +375,7 @@ mod tests {
+         popup.on_composer_text_change("/fa".to_string());
+ 
+         match popup.selected_item() {
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => assert_eq!(
+                 command,
+                 ServiceTierCommand {
+@@ -378,6 +404,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert_eq!(
+@@ -441,6 +468,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert!(
+@@ -516,6 +544,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert!(
+@@ -544,6 +573,7 @@ mod tests {
+ 
+         match popup.selected_item() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "plan"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected plan command, got service tier {command:?}")
+             }
+@@ -575,6 +605,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert!(
+@@ -603,6 +634,7 @@ mod tests {
+ 
+         match popup.selected_item() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "personality"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected personality command, got service tier {command:?}")
+             }
+@@ -619,6 +651,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+ 
+diff --git a/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs b/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs
+index e3146db..caec66d 100644
+--- a/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs
++++ b/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs
+@@ -65,7 +65,12 @@ impl SkillsToggleView {
+         let mut header = ColumnRenderable::new();
+         header.push(Line::from("Enable/Disable Skills".bold()));
+         header.push(Line::from(
+-            "Turn skills on or off. Your changes are saved automatically.".dim(),
++            (if crate::PLOS_FRONTEND {
++                "Turn skills on or off for this session. Saving startup defaults is optional."
++            } else {
++                "Turn skills on or off. Your changes are saved automatically."
++            })
++            .dim(),
+         ));
+ 
+         let mut view = Self {
+diff --git a/codex-rs/tui/src/bottom_pane/slash_commands.rs b/codex-rs/tui/src/bottom_pane/slash_commands.rs
+index 52b980e..1c3a682 100644
+--- a/codex-rs/tui/src/bottom_pane/slash_commands.rs
++++ b/codex-rs/tui/src/bottom_pane/slash_commands.rs
+@@ -10,6 +10,46 @@ use codex_utils_fuzzy_match::fuzzy_match;
+ use crate::slash_command::SlashCommand;
+ use crate::slash_command::built_in_slash_commands;
+ 
++#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
++pub(crate) struct PlosCommand {
++    pub name: String,
++    pub description: String,
++    pub usage: String,
++    pub detail: String,
++    #[serde(default)]
++    pub disabled: bool,
++}
++
++static PLOS_COMMANDS: std::sync::RwLock<(u64, Vec<PlosCommand>)> =
++    std::sync::RwLock::new((0, Vec::new()));
++pub(crate) fn begin_plos_command_refresh() -> u64 {
++    let mut state = PLOS_COMMANDS.write().unwrap_or_else(|e| e.into_inner());
++    state.0 += 1;
++    state.1.clear();
++    state.0
++}
++pub(crate) fn set_plos_commands(generation: u64, commands: Vec<PlosCommand>) {
++    let mut state = PLOS_COMMANDS.write().unwrap_or_else(|e| e.into_inner());
++    if state.0 == generation {
++        state.1 = commands;
++    }
++}
++pub(crate) fn plos_commands() -> Vec<PlosCommand> {
++    let mut commands = PLOS_COMMANDS
++        .read()
++        .unwrap_or_else(|e| e.into_inner())
++        .1
++        .clone();
++    for (name, _) in built_in_slash_commands() {
++        if !commands.iter().any(|command| command.name == name) {
++            commands.push(PlosCommand { name: name.to_string(), usage: String::new(), disabled: true,
++                description: "Unavailable: no PLOS command binding loaded".to_string(),
++                detail: "This native command has no PLOS binding in the current catalog. Use /help for implemented commands.".to_string() });
++        }
++    }
++    commands
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(crate) struct ServiceTierCommand {
+     pub(crate) id: String,
+@@ -151,6 +191,11 @@ pub(crate) fn has_slash_command_prefix(
+     flags: BuiltinCommandFlags,
+     service_tier_commands: &[ServiceTierCommand],
+ ) -> bool {
++    if crate::PLOS_FRONTEND {
++        return plos_commands()
++            .iter()
++            .any(|command| fuzzy_match(&command.name, name).is_some());
++    }
+     commands_for_input(flags, service_tier_commands)
+         .into_iter()
+         .any(|command| fuzzy_match(command.command(), name).is_some())
+diff --git a/codex-rs/tui/src/chatwidget/input_submission.rs b/codex-rs/tui/src/chatwidget/input_submission.rs
+index 8a4133e..b6fa74e 100644
+--- a/codex-rs/tui/src/chatwidget/input_submission.rs
++++ b/codex-rs/tui/src/chatwidget/input_submission.rs
+@@ -178,7 +178,8 @@ impl ChatWidget {
+         let mut items: Vec<UserInput> = Vec::new();
+ 
+         // Special-case: "!cmd" executes a local shell command instead of sending to the model.
+-        if shell_escape_policy == ShellEscapePolicy::Allow
++        if !crate::PLOS_FRONTEND
++            && shell_escape_policy == ShellEscapePolicy::Allow
+             && let Some(stripped) = text.strip_prefix('!')
+         {
+             let app_command = match self.submit_shell_command_with_history(stripped, &text) {
+diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
+index 48083eb..0087d9d 100644
+--- a/codex-rs/tui/src/chatwidget/protocol.rs
++++ b/codex-rs/tui/src/chatwidget/protocol.rs
+@@ -67,6 +67,13 @@ impl ChatWidget {
+                 }
+             }
+             ServerNotification::TurnCompleted(notification) => {
++                if crate::PLOS_FRONTEND
++                    && replay_kind.is_none()
++                    && let Some(thread_id) = self.thread_id()
++                {
++                    self.app_event_tx
++                        .send(AppEvent::PlosCommandsRequest { thread_id });
++                }
+                 self.handle_turn_completed_notification(notification, replay_kind);
+             }
+             ServerNotification::ItemStarted(notification) => {
+diff --git a/codex-rs/tui/src/chatwidget/session_flow.rs b/codex-rs/tui/src/chatwidget/session_flow.rs
+index ce996c7..25b93d1 100644
+--- a/codex-rs/tui/src/chatwidget/session_flow.rs
++++ b/codex-rs/tui/src/chatwidget/session_flow.rs
+@@ -22,6 +22,11 @@ impl ChatWidget {
+         let connector_scope_changed = previous_thread_id != Some(session.thread_id)
+             || self.config.cwd.as_path() != session.cwd.as_path();
+         self.thread_id = Some(session.thread_id);
++        if crate::PLOS_FRONTEND {
++            self.app_event_tx.send(AppEvent::PlosCommandsRequest {
++                thread_id: session.thread_id,
++            });
++        }
+         self.bottom_pane
+             .set_queue_submissions(/*queue_submissions*/ false);
+         if previous_thread_id != self.thread_id {
+diff --git a/codex-rs/tui/src/chatwidget/skills.rs b/codex-rs/tui/src/chatwidget/skills.rs
+index 77fa911..55cbb5e 100644
+--- a/codex-rs/tui/src/chatwidget/skills.rs
++++ b/codex-rs/tui/src/chatwidget/skills.rs
+@@ -50,7 +50,11 @@ impl ChatWidget {
+ 
+         self.bottom_pane.show_selection_view(SelectionViewParams {
+             title: Some("Skills".to_string()),
+-            subtitle: Some("Choose an action".to_string()),
++            subtitle: Some(if crate::PLOS_FRONTEND {
++                "Session settings; inspect /config and optionally /save-default KEY".to_string()
++            } else {
++                "Choose an action".to_string()
++            }),
+             footer_hint: Some(standard_popup_hint_line()),
+             items,
+             ..Default::default()
+diff --git a/codex-rs/tui/src/chatwidget/slash_dispatch.rs b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+index 7f2028f..347cdd9 100644
+--- a/codex-rs/tui/src/chatwidget/slash_dispatch.rs
++++ b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+@@ -144,7 +144,35 @@ impl ChatWidget {
+             || (cmd == SlashCommand::Export && self.input_queue.suppress_queue_autosend)
+     }
+ 
++    fn plos_process_control(&mut self, command: String) {
++        if let Some(thread_id) = self.thread_id() {
++            self.app_event_tx
++                .send(AppEvent::PlosProcessControl { thread_id, command });
++        } else {
++            self.add_error_message("Start or resume a PLOS session first.".to_string());
++        }
++    }
++
+     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
++        if crate::PLOS_FRONTEND && cmd == SlashCommand::Process {
++            self.plos_process_control("help".to_string());
++            return;
++        }
++        if crate::PLOS_FRONTEND
++            && !matches!(
++                cmd,
++                SlashCommand::Quit
++                    | SlashCommand::Exit
++                    | SlashCommand::New
++                    | SlashCommand::Clear
++                    | SlashCommand::Resume
++                    | SlashCommand::Skills
++                    | SlashCommand::Mcp
++            )
++        {
++            self.submit_user_message(format!("/{}", cmd.command()).into());
++            return;
++        }
+         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
+             return;
+         }
+@@ -506,6 +534,7 @@ impl ChatWidget {
+             SlashCommand::Pets => {
+                 self.open_pets_picker();
+             }
++            SlashCommand::Process => {}
+             SlashCommand::Ps => {
+                 self.add_ps_output();
+             }
+@@ -585,6 +614,17 @@ impl ChatWidget {
+         args: String,
+         text_elements: Vec<TextElement>,
+     ) {
++        if crate::PLOS_FRONTEND && cmd == SlashCommand::Process {
++            self.plos_process_control(args);
++            return;
++        }
++        if crate::PLOS_FRONTEND
++            && !matches!(cmd, SlashCommand::New | SlashCommand::Clear)
++            && !(matches!(cmd, SlashCommand::Mcp) && args == "verbose")
++        {
++            self.submit_user_message(format!("/{} {}", cmd.command(), args).into());
++            return;
++        }
+         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
+             return;
+         }
+@@ -1138,6 +1178,7 @@ impl ChatWidget {
+             | SlashCommand::Usage
+             | SlashCommand::DebugConfig
+             | SlashCommand::Ps
++            | SlashCommand::Process
+             | SlashCommand::Stop
+             | SlashCommand::MemoryDrop
+             | SlashCommand::MemoryUpdate
+diff --git a/codex-rs/tui/src/history_cell/session.rs b/codex-rs/tui/src/history_cell/session.rs
+index 03df014..4ec80a6 100644
+--- a/codex-rs/tui/src/history_cell/session.rs
++++ b/codex-rs/tui/src/history_cell/session.rs
+@@ -179,6 +179,21 @@ pub(crate) fn new_session_info(
+             ]),
+         ];
+ 
++        let help_lines = if crate::PLOS_FRONTEND {
++            vec![
++                "  Describe a task or type / to browse PLOS commands."
++                    .dim()
++                    .into(),
++                "  /help COMMAND shows full arguments and current requirements."
++                    .dim()
++                    .into(),
++                "  /models searches registered models; /status shows this session."
++                    .dim()
++                    .into(),
++            ]
++        } else {
++            help_lines
++        };
+         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
+     } else {
+         if config.show_tooltips
+diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
+index 36852ab..8e3fb2d 100644
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -22,6 +22,8 @@ use additional_dirs::add_dir_warning_message;
+ use app::App;
+ pub use app::AppExitInfo;
+ pub use app::DisconnectInfo;
++/// PLOS builds are presentation clients; the PLOS server owns all execution.
++pub const PLOS_FRONTEND: bool = cfg!(feature = "plos");
+ pub use app::ExitReason;
+ pub use app::ResumableThread;
+ use app_server_session::AppServerSession;
+@@ -890,6 +892,11 @@ async fn cloud_config_bundle_for_app_server_target(
+     bootstrap_config: &ConfigTomlLoadResult,
+     codex_home: &Path,
+ ) -> std::io::Result<CloudConfigBundleLoader> {
++    if PLOS_FRONTEND {
++        // PLOS owns its table-backed policy; startup must work with no internet
++        // and must not contact OpenAI using any credentials from the host.
++        return Ok(CloudConfigBundleLoader::default());
++    }
+     cloud_config_bundle_loader_for_storage(
+         app_server_target
+             .auth_config_for_cloud_loader(bootstrap_auth_config(codex_home, bootstrap_config)?),
+diff --git a/codex-rs/tui/src/slash_command.rs b/codex-rs/tui/src/slash_command.rs
+index aab133f..ac496ce 100644
+--- a/codex-rs/tui/src/slash_command.rs
++++ b/codex-rs/tui/src/slash_command.rs
+@@ -69,6 +69,7 @@ pub enum SlashCommand {
+     Feedback,
+     Rollout,
+     Ps,
++    Process,
+     #[strum(to_string = "stop", serialize = "clean")]
+     Stop,
+     Clear,
+@@ -119,6 +120,9 @@ impl SlashCommand {
+             SlashCommand::Theme => "choose a syntax highlighting theme",
+             SlashCommand::Pets => "choose or hide the terminal pet",
+             SlashCommand::Ps => "list background terminals",
++            SlashCommand::Process => {
++                "control PLOS processes: list, send, input, output, cancel, resize, confirm"
++            }
+             SlashCommand::Stop => "stop all background terminals",
+             SlashCommand::MemoryDrop => "DO NOT USE",
+             SlashCommand::MemoryUpdate => "DO NOT USE",
+@@ -163,7 +167,8 @@ impl SlashCommand {
+     pub fn supports_inline_args(self) -> bool {
+         matches!(
+             self,
+-            SlashCommand::Review
++            SlashCommand::Process
++                | SlashCommand::Review
+                 | SlashCommand::Rename
+                 | SlashCommand::New
+                 | SlashCommand::Clear
+@@ -244,6 +249,7 @@ impl SlashCommand {
+             | SlashCommand::Usage
+             | SlashCommand::DebugConfig
+             | SlashCommand::Ps
++            | SlashCommand::Process
+             | SlashCommand::Stop
+             | SlashCommand::App
+             | SlashCommand::Goal
+@@ -280,7 +286,9 @@ impl SlashCommand {
+ /// Return all built-in commands in a Vec paired with their command string.
+ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
+     SlashCommand::iter()
+-        .filter(|command| command.is_visible())
++        .filter(|command| {
++            command.is_visible() && (crate::PLOS_FRONTEND || *command != SlashCommand::Process)
++        })
+         .map(|c| (c.command(), c))
+         .collect()
+ }

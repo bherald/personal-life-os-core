@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\AIService;
 use App\Services\ContentExtractionService;
 use App\Services\Genealogy\Support\GenealogyDocumentExtensions;
@@ -393,6 +394,9 @@ class GenealogyMediaEnrichmentService
             ];
 
         } catch (\Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             $this->markStatus($mediaId, 'failed', substr($e->getMessage(), 0, 500));
             Log::error('GenealogyMediaEnrichmentService: pipeline failed', [
                 'media_id' => $mediaId,
@@ -513,8 +517,18 @@ class GenealogyMediaEnrichmentService
         // where ContentExtractionService couldn't pull text.
         $docType = $media['media_type'] ?? 'document';
         $prompt = $this->buildExtractionPrompt($docType, $media['title'] ?? '', $media['ai_description'] ?? '', $media);
+        $imageBytes = @file_get_contents($localPath);
 
-        $result = $this->ai()->processImage($prompt, $localPath, [
+        if (! is_string($imageBytes) || $imageBytes === '') {
+            Log::warning('GenealogyMediaEnrichmentService: image read failed before vision extraction', [
+                'media_id' => $media['id'] ?? null,
+                'path' => $localPath,
+            ]);
+
+            return [];
+        }
+
+        $result = $this->ai()->processImage($imageBytes, $prompt, [
             'temperature' => 0.1,
             'max_tokens' => 1500,
             'model_role' => 'quality',

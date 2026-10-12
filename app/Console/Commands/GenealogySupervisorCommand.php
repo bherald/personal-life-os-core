@@ -35,8 +35,7 @@ class GenealogySupervisorCommand extends Command
     public function __construct(
         private ScheduledJobService $scheduledJobService,
         private SystemConfigService $systemConfigService
-    )
-    {
+    ) {
         parent::__construct();
     }
 
@@ -209,8 +208,26 @@ class GenealogySupervisorCommand extends Command
             ];
         }
 
+        if (! (bool) ($job->enabled ?? true)) {
+            return [
+                'job_found' => true,
+                'resolved_max' => 0,
+                'running' => max(0, (int) ($job->running_count ?? 0)),
+                'pending' => $pending,
+                'slots_available' => 0,
+                'requested' => 0,
+                'started' => 0,
+                'errors' => 0,
+            ];
+        }
+
         $resolvedMax = max(1, $this->scheduledJobService->resolveMaxParallel($job));
         $running = max(0, (int) ($job->running_count ?? 0));
+        // The normal scheduler's single background path marks status running
+        // before the child exists, but does not increment running_count.
+        if ($resolvedMax === 1 && ($job->last_run_status ?? null) === 'running') {
+            $running = max(1, $running);
+        }
         $slotsAvailable = max(0, min($resolvedMax - $running, $pending));
         $requested = min($maxWorkers, $slotsAvailable);
 
@@ -245,20 +262,14 @@ class GenealogySupervisorCommand extends Command
             $pid = $this->startWorkerProcess((int) $job->id, $workerId);
 
             if ($pid > 0) {
-                $this->scheduledJobService->registerWorkerPid((int) $job->id, $pid, $runId);
+                $this->scheduledJobService->registerWorkerPid((int) $job->id, $pid, $runId, $workerId);
                 $started++;
 
                 continue;
             }
 
             $errors++;
-            $this->scheduledJobService->markJobCompleted(
-                (int) $job->id,
-                $runId,
-                false,
-                'Genealogy supervisor failed to spawn research worker process.',
-                0.0
-            );
+            Log::notice('Genealogy supervisor: Worker launch held', ['reason_code' => 'scheduled_worker_handoff_unproven']);
         }
 
         return [
@@ -397,8 +408,7 @@ class GenealogySupervisorCommand extends Command
         array $supervisorPolicy,
         array $supervisorPolicySources,
         array $supervisorPolicyWarnings
-    ): array
-    {
+    ): array {
         $weakFindings = (int) ($reviewBacklog['triage']['weak_source_add_findings'] ?? 0);
         $softCap = $reviewBacklog['soft_cap'];
         $throttleActive = $softCap !== null && $weakFindings >= $softCap;
@@ -415,6 +425,9 @@ class GenealogySupervisorCommand extends Command
         }
         if ((int) ($reviewBacklog['triage']['source_backed_packets'] ?? 0) > 0) {
             $recommendations[] = 'Prioritize source-backed review packets before increasing worker autonomy.';
+        }
+        if ((int) ($reviewBacklog['triage']['evidence_capture_pending'] ?? 0) > 0) {
+            $recommendations[] = 'Drain approved evidence capture before accepting URL-only source links as complete.';
         }
         if ((int) ($reviewBacklog['triage']['operator_actionable_findings'] ?? 0) > 0) {
             $recommendations[] = 'Keep operator-actionable findings visible; do not auto-apply canonical facts or source links.';
@@ -439,6 +452,7 @@ class GenealogySupervisorCommand extends Command
                 'queue_refill',
                 'bounded_worker_starts',
                 'media_rag_indexing',
+                'guarded_source_media_capture',
                 'review_backlog_classification',
                 'below_threshold_source_add_cleanup',
             ],
@@ -447,6 +461,7 @@ class GenealogySupervisorCommand extends Command
                 'canonical_source_link_writeback',
                 'relationship_changes',
                 'face_or_photo_identity',
+                'visible_chrome_or_manual_download',
                 'derivative_packet_acceptance',
             ],
             'quality_thresholds' => [

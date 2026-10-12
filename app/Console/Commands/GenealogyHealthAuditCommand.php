@@ -164,8 +164,9 @@ class GenealogyHealthAuditCommand extends Command
      */
     private function knownTreeIds(): array
     {
+        $treeIds = [];
         if (Schema::hasTable('genealogy_trees') && Schema::hasColumn('genealogy_trees', 'id')) {
-            return DB::table('genealogy_trees')
+            $treeIds = DB::table('genealogy_trees')
                 ->orderBy('id')
                 ->pluck('id')
                 ->map(static fn ($id): int => (int) $id)
@@ -175,7 +176,7 @@ class GenealogyHealthAuditCommand extends Command
         }
 
         if (Schema::hasTable('genealogy_persons') && Schema::hasColumn('genealogy_persons', 'tree_id')) {
-            return DB::table('genealogy_persons')
+            $treeIds = array_merge($treeIds, DB::table('genealogy_persons')
                 ->select('tree_id')
                 ->distinct()
                 ->orderBy('tree_id')
@@ -183,10 +184,10 @@ class GenealogyHealthAuditCommand extends Command
                 ->map(static fn ($id): int => (int) $id)
                 ->filter(static fn (int $id): bool => $id > 0)
                 ->values()
-                ->all();
+                ->all());
         }
 
-        return [];
+        return array_values(array_unique($treeIds));
     }
 
     private function aggregateSummary(array $trees): array

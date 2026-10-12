@@ -3,9 +3,11 @@
 namespace App\Services;
 
 use App\Support\PgVector;
+use App\Support\SensitiveTextTelemetry;
+use App\Support\VectorMath;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * SemanticCache - Intelligent Prompt Caching with Similarity Matching
@@ -60,14 +62,15 @@ class SemanticCache
     public function setAIService(AIService $aiService): self
     {
         $this->aiService = $aiService;
+
         return $this;
     }
 
     /**
      * Get cached response or null if not found
      *
-     * @param string $prompt The prompt to look up
-     * @param array $context Optional context that affects caching
+     * @param  string  $prompt  The prompt to look up
+     * @param  array  $context  Optional context that affects caching
      * @return array|null Cached response or null
      */
     public function get(string $prompt, array $context = []): ?array
@@ -79,35 +82,39 @@ class SemanticCache
         if ($exactMatch !== null) {
             $this->recordHit('exact');
             Log::debug('SemanticCache: Exact hit', [
-                'prompt' => substr($prompt, 0, 50),
+                ...SensitiveTextTelemetry::query($prompt, 'semantic_cache'),
             ]);
+
             return $exactMatch;
         }
 
-        // Step 2: Try semantic match (slower, embedding-based)
-        if ($this->semanticEnabled && $this->aiService) {
+        // Step 2: Legacy semantic callers retain their existing behavior.
+        // v2 generation identity cannot authorize an unscoped embedding request.
+        if ($this->semanticEnabled && $this->aiService && ($context['schema'] ?? null) !== 'plos.ai_generation_cache.v2') {
             $semanticMatch = $this->findSemanticMatch($prompt, $context);
 
             if ($semanticMatch !== null) {
                 $this->recordHit('semantic');
                 Log::debug('SemanticCache: Semantic hit', [
-                    'prompt' => substr($prompt, 0, 50),
+                    ...SensitiveTextTelemetry::query($prompt, 'semantic_cache'),
                     'similarity' => $semanticMatch['similarity'],
                 ]);
+
                 return $semanticMatch['response'];
             }
         }
 
         $this->recordMiss();
+
         return null;
     }
 
     /**
      * Store response in cache
      *
-     * @param string $prompt The prompt
-     * @param array $response The AI response
-     * @param array $context Optional context
+     * @param  string  $prompt  The prompt
+     * @param  array  $response  The AI response
+     * @param  array  $context  Optional context
      */
     public function put(string $prompt, array $response, array $context = []): void
     {
@@ -116,12 +123,12 @@ class SemanticCache
         Cache::put($exactKey, $response, $this->ttl);
 
         // Store for semantic matching (with embedding)
-        if ($this->semanticEnabled && $this->aiService) {
+        if ($this->semanticEnabled && $this->aiService && ($context['schema'] ?? null) !== 'plos.ai_generation_cache.v2') {
             $this->storeSemanticEntry($prompt, $response, $context);
         }
 
         Log::debug('SemanticCache: Stored', [
-            'prompt' => substr($prompt, 0, 50),
+            ...SensitiveTextTelemetry::query($prompt, 'semantic_cache'),
             'semantic' => $this->semanticEnabled,
         ]);
     }
@@ -129,7 +136,7 @@ class SemanticCache
     /**
      * Invalidate cache entries matching a pattern
      *
-     * @param string $pattern Pattern to match (supports *)
+     * @param  string  $pattern  Pattern to match (supports *)
      */
     public function invalidate(string $pattern = '*'): int
     {
@@ -155,7 +162,7 @@ class SemanticCache
         $contextHash = md5(json_encode($context));
         $promptHash = hash('xxh3', $prompt); // Fast hash
 
-        return self::CACHE_PREFIX . 'exact_' . $promptHash . '_' . $contextHash;
+        return self::CACHE_PREFIX.'exact_'.$promptHash.'_'.$contextHash;
     }
 
     /**
@@ -167,7 +174,7 @@ class SemanticCache
         try {
             $result = $this->aiService->generateEmbedding($prompt);
 
-            if (!$result['success'] || empty($result['embedding'])) {
+            if (! $result['success'] || empty($result['embedding'])) {
                 return null;
             }
 
@@ -184,6 +191,7 @@ class SemanticCache
             return $this->findViaRedis($queryEmbedding, $context);
         } catch (\Exception $e) {
             Log::warning('SemanticCache: Semantic match failed', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -206,13 +214,13 @@ class SemanticCache
                 LIMIT 1
             ", [$embeddingStr, $contextHash, $embeddingStr]);
 
-            if (!$row || $row->similarity < $this->similarityThreshold) {
+            if (! $row || $row->similarity < $this->similarityThreshold) {
                 return null;
             }
 
             // Update hit count
             DB::connection('pgsql_rag')->update(
-                "UPDATE ai_semantic_cache SET hit_count = hit_count + 1, last_accessed_at = NOW() WHERE id = ?",
+                'UPDATE ai_semantic_cache SET hit_count = hit_count + 1, last_accessed_at = NOW() WHERE id = ?',
                 [$row->id]
             );
 
@@ -225,6 +233,7 @@ class SemanticCache
         } catch (\Exception $e) {
             // pgvector table may not exist yet — fall through to Redis
             Log::debug('SemanticCache: pgvector lookup failed, using Redis fallback', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -244,7 +253,7 @@ class SemanticCache
         $contextHash = md5(json_encode($context));
 
         foreach ($entries as $entry) {
-            if (!empty($context) && ($entry['context_hash'] ?? '') !== $contextHash) {
+            if (! empty($context) && ($entry['context_hash'] ?? '') !== $contextHash) {
                 continue;
             }
 
@@ -272,7 +281,7 @@ class SemanticCache
         try {
             $result = $this->aiService->generateEmbedding($prompt);
 
-            if (!$result['success'] || empty($result['embedding'])) {
+            if (! $result['success'] || empty($result['embedding'])) {
                 return;
             }
 
@@ -284,10 +293,10 @@ class SemanticCache
             // Store in pgvector (persistent, HNSW-indexed)
             try {
                 $embeddingStr = PgVector::literal($embedding);
-                DB::connection('pgsql_rag')->insert("
+                DB::connection('pgsql_rag')->insert('
                     INSERT INTO ai_semantic_cache (prompt_hash, context_hash, embedding, response, prompt_preview, created_at)
                     VALUES (?, ?, ?::vector, ?::jsonb, ?, NOW())
-                ", [$promptHash, $contextHash, $embeddingStr, json_encode($response), $promptPreview]);
+                ', [$promptHash, $contextHash, $embeddingStr, json_encode($response), $promptPreview]);
             } catch (\Exception $e) {
                 Log::debug('SemanticCache: pgvector store failed, using Redis only', ['error' => $e->getMessage()]);
             }
@@ -311,11 +320,11 @@ class SemanticCache
      */
     private function getSemanticIndex(): array
     {
-        $index = Cache::get(self::CACHE_PREFIX . 'semantic_index', []);
+        $index = Cache::get(self::CACHE_PREFIX.'semantic_index', []);
 
         // Remove expired entries
         $now = time();
-        $filtered = array_filter($index, function($entry) use ($now) {
+        $filtered = array_filter($index, function ($entry) use ($now) {
             return ($entry['created_at'] ?? 0) + $this->ttl > $now;
         });
 
@@ -328,7 +337,7 @@ class SemanticCache
      */
     private function addToSemanticIndex(array $entry): void
     {
-        $index = Cache::get(self::CACHE_PREFIX . 'semantic_index', []);
+        $index = Cache::get(self::CACHE_PREFIX.'semantic_index', []);
 
         // Add new entry
         $index[] = $entry;
@@ -338,7 +347,7 @@ class SemanticCache
             $index = array_slice($index, -$this->maxSearchEntries);
         }
 
-        Cache::put(self::CACHE_PREFIX . 'semantic_index', $index, $this->ttl * 2);
+        Cache::put(self::CACHE_PREFIX.'semantic_index', $index, $this->ttl * 2);
     }
 
     /**
@@ -346,7 +355,7 @@ class SemanticCache
      */
     private function clearSemanticIndex(): void
     {
-        Cache::forget(self::CACHE_PREFIX . 'semantic_index');
+        Cache::forget(self::CACHE_PREFIX.'semantic_index');
     }
 
     /**
@@ -354,7 +363,7 @@ class SemanticCache
      */
     private function cosineSimilarity(array $a, array $b): float
     {
-        return \App\Support\VectorMath::cosineSimilarity($a, $b);
+        return VectorMath::cosineSimilarity($a, $b);
     }
 
     /**
@@ -405,8 +414,8 @@ class SemanticCache
         $total = $stats['hits'] + $stats['misses'];
 
         return array_merge($stats, [
-            'hit_rate' => $total > 0 ? round($stats['hits'] / $total * 100, 2) . '%' : 'N/A',
-            'semantic_hit_rate' => $stats['hits'] > 0 ? round($stats['semantic_hits'] / $stats['hits'] * 100, 2) . '%' : 'N/A',
+            'hit_rate' => $total > 0 ? round($stats['hits'] / $total * 100, 2).'%' : 'N/A',
+            'semantic_hit_rate' => $stats['hits'] > 0 ? round($stats['semantic_hits'] / $stats['hits'] * 100, 2).'%' : 'N/A',
             'total_requests' => $total,
             'index_size' => count($this->getSemanticIndex()),
             'config' => [
@@ -420,7 +429,7 @@ class SemanticCache
     /**
      * Estimate cost savings based on cache stats
      *
-     * @param float $costPerRequest Estimated cost per AI request
+     * @param  float  $costPerRequest  Estimated cost per AI request
      * @return array Cost savings estimate
      */
     public function estimateSavings(float $costPerRequest = 0.01): array

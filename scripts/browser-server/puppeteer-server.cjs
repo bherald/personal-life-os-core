@@ -14,6 +14,7 @@
  * - Downloads disabled
  * - Strict CSP headers
  * - Request interception for malicious content blocking
+ * - Bearer authentication plus loopback Host/Origin validation
  *
  * Usage:
  *   node puppeteer-server.js [port]
@@ -37,10 +38,23 @@ const http = require('http');
 const puppeteer = require('puppeteer');
 const fs = require('fs');
 const path = require('path');
-const url = require('url');
+const {
+    DEFAULT_MAX_CONTENT_WINDOW_CHARS,
+    contentWindow,
+    isDomainAllowed,
+    navigationScopeForTarget,
+    normalizeDomain,
+    parseJsonBody,
+    requestPolicyError,
+    requireAutomationToken,
+    resolvePublicNavigationTarget,
+    safeOutputName,
+    sendJson,
+} = require('./security-policy.cjs');
 
 const PORT = parseInt(process.argv[2]) || 9222;
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || '/tmp/puppeteer-screenshots';
+const AUTH_TOKEN = requireAutomationToken();
 
 // Security: Domain allowlist for data brokers
 // Only these domains (and their subdomains) can be navigated to
@@ -97,38 +111,15 @@ let browser = null;
 let page = null;
 let lastActivity = Date.now();
 let sessionCount = 0;
+let activeNavigationScope = null;
+let blockedNavigationUrl = null;
+let blockedNavigationError = null;
 
 // Auto-restart browser if idle for too long (15 minutes - reduced for security)
 const IDLE_TIMEOUT = 15 * 60 * 1000;
 
 // Max sessions before forced browser restart (security: prevent state leakage)
 const MAX_SESSIONS_BEFORE_RESTART = 10;
-
-/**
- * Check if domain is in allowlist
- */
-function isDomainAllowed(targetUrl) {
-    try {
-        const parsed = new URL(targetUrl);
-        const hostname = parsed.hostname.toLowerCase();
-
-        // Check exact match
-        if (ALLOWED_DOMAINS.has(hostname)) {
-            return true;
-        }
-
-        // Check if it's a subdomain of an allowed domain
-        for (const allowed of ALLOWED_DOMAINS) {
-            if (hostname.endsWith('.' + allowed)) {
-                return true;
-            }
-        }
-
-        return false;
-    } catch (e) {
-        return false;
-    }
-}
 
 /**
  * Check if URL has blocked file extension
@@ -164,7 +155,7 @@ async function getBrowser(forceNew = false) {
         browser = null;
     }
 
-    if (!browser || !browser.isConnected()) {
+    if (!browser || !browser.connected) {
         console.log('[Puppeteer] Launching browser (security-hardened)...');
 
         // Check if running as root (sandbox won't work)
@@ -174,8 +165,7 @@ async function getBrowser(forceNew = false) {
             headless: 'new',
             args: [
                 // Security: Only disable sandbox if running as root
-                ...(isRoot ? ['--no-sandbox'] : []),
-                '--disable-setuid-sandbox',
+                ...(isRoot ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
                 '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas',
                 '--disable-gpu',
@@ -189,7 +179,6 @@ async function getBrowser(forceNew = false) {
                 '--safebrowsing-disable-auto-update',
                 '--disable-default-apps',
                 '--no-first-run',
-                '--disable-popup-blocking', // Need popups for some opt-out flows
                 '--disable-web-security=false', // Keep web security ON
                 '--disable-features=TranslateUI',
                 '--disable-ipc-flooding-protection',
@@ -237,32 +226,64 @@ async function getPage(freshSession = false) {
         // Security: Enable request interception to block malicious content
         await page.setRequestInterception(true);
 
-        page.on('request', (request) => {
+        const createdPage = page;
+        page.on('request', async (request) => {
             const requestUrl = request.url();
             const resourceType = request.resourceType();
 
-            // Block downloads and executable content
-            if (hasBlockedExtension(requestUrl)) {
-                console.log(`[Puppeteer] Security: Blocked download - ${requestUrl}`);
-                request.abort('blockedbyclient');
-                return;
-            }
+            try {
+                const isTopLevelDocument = request.frame() === createdPage.mainFrame()
+                    && (request.isNavigationRequest() || resourceType === 'document');
+                if (isTopLevelDocument) {
+                    if (activeNavigationScope && !isDomainAllowed(requestUrl, activeNavigationScope)) {
+                        blockedNavigationUrl = requestUrl;
+                        blockedNavigationError = 'Top-level navigation left the operation domain scope';
+                        console.log(`[Puppeteer] Security: Blocked top-level navigation outside operation scope - ${requestUrl}`);
+                        await request.abort('blockedbyclient');
+                        return;
+                    }
 
-            // Block data: URLs (potential XSS vector)
-            if (requestUrl.startsWith('data:') && resourceType !== 'image') {
-                console.log(`[Puppeteer] Security: Blocked data URL - ${resourceType}`);
-                request.abort('blockedbyclient');
-                return;
-            }
+                    const dnsPolicy = await resolvePublicNavigationTarget(requestUrl);
+                    if (!dnsPolicy.allowed) {
+                        blockedNavigationUrl = requestUrl;
+                        blockedNavigationError = 'Top-level hostname did not resolve exclusively to public addresses';
+                        console.log(`[Puppeteer] Security: Blocked top-level navigation by DNS policy - ${dnsPolicy.reason}`);
+                        await request.abort('blockedbyclient');
+                        return;
+                    }
+                }
 
-            // Block blob: URLs for non-images
-            if (requestUrl.startsWith('blob:') && resourceType !== 'image') {
-                console.log(`[Puppeteer] Security: Blocked blob URL - ${resourceType}`);
-                request.abort('blockedbyclient');
-                return;
-            }
+                // Block downloads and executable content
+                if (hasBlockedExtension(requestUrl)) {
+                    console.log(`[Puppeteer] Security: Blocked download - ${requestUrl}`);
+                    await request.abort('blockedbyclient');
+                    return;
+                }
 
-            request.continue();
+                // Block data: URLs (potential XSS vector)
+                if (requestUrl.startsWith('data:') && resourceType !== 'image') {
+                    console.log(`[Puppeteer] Security: Blocked data URL - ${resourceType}`);
+                    await request.abort('blockedbyclient');
+                    return;
+                }
+
+                // Block blob: URLs for non-images
+                if (requestUrl.startsWith('blob:') && resourceType !== 'image') {
+                    console.log(`[Puppeteer] Security: Blocked blob URL - ${resourceType}`);
+                    await request.abort('blockedbyclient');
+                    return;
+                }
+
+                await request.continue();
+            } catch (error) {
+                console.log(`[Puppeteer] Security: Request policy failed closed - ${error.message}`);
+                await request.abort('blockedbyclient').catch(() => {});
+            }
+        });
+
+        page.on('popup', popup => {
+            console.log(`[Puppeteer] Security: Blocked popup - ${popup.url()}`);
+            popup.close().catch(() => {});
         });
 
         // Security: Block file downloads
@@ -291,32 +312,6 @@ async function getPage(freshSession = false) {
 }
 
 /**
- * Parse JSON body from request
- */
-function parseBody(req) {
-    return new Promise((resolve, reject) => {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', () => {
-            try {
-                resolve(body ? JSON.parse(body) : {});
-            } catch (e) {
-                reject(new Error('Invalid JSON'));
-            }
-        });
-        req.on('error', reject);
-    });
-}
-
-/**
- * Send JSON response
- */
-function sendJson(res, status, data) {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
-}
-
-/**
  * Handle requests
  */
 async function handleRequest(req, res) {
@@ -324,12 +319,17 @@ async function handleRequest(req, res) {
     const method = req.method;
 
     try {
+        const policyError = requestPolicyError(req, PORT, AUTH_TOKEN);
+        if (policyError) {
+            return sendJson(res, policyError.status, { error: policyError.error });
+        }
+
         // Health check
         if (url === '/health' && method === 'GET') {
             const isRoot = process.getuid && process.getuid() === 0;
             return sendJson(res, 200, {
                 status: 'ok',
-                browser: browser?.isConnected() ? 'connected' : 'disconnected',
+                browser: browser?.connected ? 'connected' : 'disconnected',
                 page: page && !page.isClosed() ? 'active' : 'none',
                 uptime: process.uptime(),
                 lastActivity: new Date(lastActivity).toISOString(),
@@ -340,6 +340,20 @@ async function handleRequest(req, res) {
                     sessionCount: sessionCount,
                     maxSessionsBeforeRestart: MAX_SESSIONS_BEFORE_RESTART,
                     requestInterception: true,
+                    topLevelNavigationAllowlist: true,
+                    documentRequestsScoped: true,
+                    ipLiteralAndLocalhostTargetsBlocked: true,
+                    topLevelDnsPublicAddressesRequired: true,
+                    dnsResolutionFailClosed: true,
+                    popupsBlocked: true,
+                    freshSessionPerNavigation: true,
+                    credentialApiEnabled: false,
+                    contentWindowing: true,
+                    maxContentWindowChars: DEFAULT_MAX_CONTENT_WINDOW_CHARS,
+                    authRequired: true,
+                    hostProtection: true,
+                    originProtection: true,
+                    maxRequestBodyBytes: 1024 * 1024,
                 },
             });
         }
@@ -354,7 +368,7 @@ async function handleRequest(req, res) {
             return;
         }
 
-        const body = await parseBody(req);
+        const body = await parseJsonBody(req);
 
         // Navigate to URL (with domain validation)
         if (url === '/navigate' && method === 'POST') {
@@ -364,13 +378,21 @@ async function handleRequest(req, res) {
                 return sendJson(res, 400, { error: 'url is required' });
             }
 
-            // Security: Validate domain is in allowlist
-            if (!bypassAllowlist && !isDomainAllowed(targetUrl)) {
+            const navigationScope = navigationScopeForTarget(targetUrl, ALLOWED_DOMAINS, bypassAllowlist);
+            if (!navigationScope) {
                 console.log(`[Puppeteer] Security: Blocked navigation to non-allowlisted domain - ${targetUrl}`);
                 return sendJson(res, 403, {
                     error: 'Domain not in allowlist',
                     domain: new URL(targetUrl).hostname,
                     hint: 'Add domain via POST /allowlist or pass bypassAllowlist:true for trusted URLs',
+                });
+            }
+
+            const dnsPolicy = await resolvePublicNavigationTarget(targetUrl);
+            if (!dnsPolicy.allowed) {
+                return sendJson(res, 403, {
+                    error: 'Target hostname did not resolve exclusively to public addresses',
+                    reason: dnsPolicy.reason,
                 });
             }
 
@@ -384,15 +406,35 @@ async function handleRequest(req, res) {
             }
 
             // Security: Use fresh session for each navigation to prevent state leakage
+            activeNavigationScope = navigationScope;
+            blockedNavigationUrl = null;
+            blockedNavigationError = null;
             const p = await getPage(freshSession);
             console.log(`[Puppeteer] Navigating to: ${targetUrl} (fresh session: ${freshSession})`);
 
-            await p.goto(targetUrl, {
-                waitUntil,
-                timeout
-            });
+            try {
+                await p.goto(targetUrl, {
+                    waitUntil,
+                    timeout
+                });
+            } catch (error) {
+                if (blockedNavigationUrl) {
+                    return sendJson(res, 403, {
+                        error: blockedNavigationError,
+                        blockedUrl: blockedNavigationUrl,
+                    });
+                }
+                throw error;
+            }
 
             const pageUrl = p.url();
+            if (!isDomainAllowed(pageUrl, navigationScope)) {
+                await p.goto('about:blank').catch(() => {});
+                return sendJson(res, 403, {
+                    error: 'Final navigation URL left the operation domain scope',
+                    blockedUrl: pageUrl,
+                });
+            }
             const title = await p.title();
 
             return sendJson(res, 200, {
@@ -408,7 +450,7 @@ async function handleRequest(req, res) {
             const { name, selector, fullPage = false, encoding = 'base64' } = body;
 
             const p = await getPage();
-            const filename = name || `screenshot-${Date.now()}`;
+            const filename = safeOutputName(name, `screenshot-${Date.now()}`);
             const filepath = path.join(SCREENSHOT_DIR, `${filename}.png`);
 
             let screenshotOptions = {
@@ -498,10 +540,8 @@ async function handleRequest(req, res) {
                 return sendJson(res, 400, { error: 'domain is required' });
             }
 
-            const normalizedDomain = domain.toLowerCase().trim();
-
-            // Validate domain format
-            if (!/^[a-z0-9][a-z0-9.-]*[a-z0-9]$/.test(normalizedDomain)) {
+            const normalizedDomain = normalizeDomain(domain);
+            if (!normalizedDomain) {
                 return sendJson(res, 400, { error: 'Invalid domain format' });
             }
 
@@ -522,7 +562,7 @@ async function handleRequest(req, res) {
 
         // Get page content
         if (url === '/content' && method === 'POST') {
-            const { type = 'html' } = body;
+            const { type = 'html', offset = 0, limit = DEFAULT_MAX_CONTENT_WINDOW_CHARS } = body;
 
             const p = await getPage();
             let content;
@@ -535,7 +575,8 @@ async function handleRequest(req, res) {
 
             return sendJson(res, 200, {
                 success: true,
-                content,
+                ...contentWindow(content, offset, limit),
+                untrustedPageContent: true,
                 url: p.url(),
             });
         }
@@ -629,25 +670,8 @@ async function handleRequest(req, res) {
                 await page.close();
                 page = null;
             }
-            return sendJson(res, 200, { success: true });
-        }
-
-        // Get cookies
-        if (url === '/cookies' && method === 'GET') {
-            const p = await getPage();
-            const cookies = await p.cookies();
-            return sendJson(res, 200, { success: true, cookies });
-        }
-
-        // Set cookies
-        if (url === '/cookies' && method === 'POST') {
-            const { cookies } = body;
-            if (!cookies || !Array.isArray(cookies)) {
-                return sendJson(res, 400, { error: 'cookies array is required' });
-            }
-
-            const p = await getPage();
-            await p.setCookie(...cookies);
+            activeNavigationScope = null;
+            blockedNavigationUrl = null;
             return sendJson(res, 200, { success: true });
         }
 
@@ -656,7 +680,7 @@ async function handleRequest(req, res) {
 
     } catch (error) {
         console.error('[Puppeteer] Error:', error.message);
-        return sendJson(res, 500, {
+        return sendJson(res, error.statusCode || 500, {
             error: error.message,
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
         });
@@ -689,6 +713,8 @@ setInterval(async () => {
             await page.close();
             page = null;
         }
+        activeNavigationScope = null;
+        blockedNavigationUrl = null;
         if (browser) {
             await browser.close();
             browser = null;

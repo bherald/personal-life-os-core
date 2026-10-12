@@ -3,9 +3,9 @@
 namespace App\Services;
 
 use App\Support\PgVector;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * HyDE (Hypothetical Document Embeddings) Query Expansion Service
@@ -42,9 +42,9 @@ class HyDEService
     /**
      * Search using HyDE query expansion
      *
-     * @param string $query User's original query
-     * @param int $k Number of results to return
-     * @param string|null $documentType Optional filter by document type
+     * @param  string  $query  User's original query
+     * @param  int  $k  Number of results to return
+     * @param  string|null  $documentType  Optional filter by document type
      * @return array Search results with similarity scores
      */
     public function search(string $query, int $k = 5, ?string $documentType = null): array
@@ -57,7 +57,7 @@ class HyDEService
 
             if (empty($hypotheticalDoc)) {
                 Log::warning('HyDE: Failed to generate hypothetical document, falling back to original query', [
-                    'query' => substr($query, 0, 100),
+                    'query_chars' => mb_strlen($query),
                 ]);
                 // Fall back to embedding the original query
                 $hypotheticalDoc = $query;
@@ -66,8 +66,8 @@ class HyDEService
             // Step 2: Embed the hypothetical document (NOT the query)
             $result = $this->aiService->generateEmbedding($hypotheticalDoc);
 
-            if (!$result['success']) {
-                throw new Exception("HyDE embedding failed: " . ($result['error'] ?? 'unknown error'));
+            if (! $result['success']) {
+                throw new Exception('HyDE embedding failed: '.($result['error'] ?? 'unknown error'));
             }
 
             $embedding = $result['embedding'];
@@ -100,10 +100,10 @@ class HyDEService
                 ];
             }, $documents);
 
-            $durationMs = (int)((microtime(true) - $startTime) * 1000);
+            $durationMs = (int) ((microtime(true) - $startTime) * 1000);
 
             Log::info('HyDE search completed', [
-                'query' => substr($query, 0, 100),
+                'query_chars' => mb_strlen($query),
                 'hypothetical_length' => strlen($hypotheticalDoc),
                 'results_count' => count($results),
                 'top_similarity' => $results[0]['similarity'] ?? 0,
@@ -114,8 +114,8 @@ class HyDEService
 
         } catch (Exception $e) {
             Log::error('HyDE search failed', [
-                'error' => $e->getMessage(),
-                'query' => substr($query, 0, 100),
+                'error_type' => $e::class,
+                'query_chars' => mb_strlen($query),
             ]);
             throw $e;
         }
@@ -124,7 +124,7 @@ class HyDEService
     /**
      * Generate a hypothetical document that would answer the query
      *
-     * @param string $query User's original query
+     * @param  string  $query  User's original query
      * @return string Hypothetical answer document (~500 chars)
      */
     public function generateHypotheticalDocument(string $query): string
@@ -145,19 +145,19 @@ PROMPT;
             'suppressAlert' => true,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             Log::warning('HyDE: LLM generation failed', [
-                'error' => $result['error'] ?? 'unknown',
-                'query' => substr($query, 0, 100),
+                'error_type' => 'generation_failed',
+                'query_chars' => mb_strlen($query),
             ]);
+
             return '';
         }
 
         $hypothetical = trim($result['response'] ?? '');
 
         Log::debug('HyDE: Generated hypothetical document', [
-            'query' => substr($query, 0, 100),
-            'hypothetical_preview' => substr($hypothetical, 0, 200),
+            'query_chars' => mb_strlen($query),
             'length' => strlen($hypothetical),
         ]);
 
@@ -176,7 +176,7 @@ PROMPT;
      * - Highly specialized domains the LLM doesn't know
      * - Very short queries (likely keyword searches)
      *
-     * @param string $query User's query
+     * @param  string  $query  User's query
      * @return bool Whether HyDE should be used
      */
     public function shouldUseHyde(string $query): bool
@@ -199,7 +199,7 @@ PROMPT;
         // This overrides the length check since questions are inherently conceptual
         $questionWords = ['what', 'why', 'how', 'explain', 'describe', 'compare', 'when', 'where', 'which'];
         foreach ($questionWords as $word) {
-            if (str_starts_with($lowerQuery, $word . ' ') || str_contains($lowerQuery, " $word ")) {
+            if (str_starts_with($lowerQuery, $word.' ') || str_contains($lowerQuery, " $word ")) {
                 return true;
             }
         }

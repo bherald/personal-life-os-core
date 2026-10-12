@@ -11,9 +11,11 @@ class CodexExecSmokeCommand extends Command
         {--json : Emit machine-readable JSON}
         {--execute : Actually invoke codex exec. Default is dry-run only}
         {--role=coding : Model role to resolve from llm_instances.config}
+        {--profile= : Codex config profile to layer with --profile}
         {--model= : Explicit Codex model override}
         {--effort= : Explicit Codex reasoning effort override}
         {--cwd= : Working directory override, must be under configured cwd_roots}
+        {--schema= : Allowlisted JSON Schema file for fail-closed final-response validation}
         {--timeout= : Timeout override in seconds; default comes from llm_instances.config.default_timeout_seconds}
         {--prompt=Return exactly: PLOS Codex connector smoke ok : Smoke prompt}';
 
@@ -37,9 +39,11 @@ class CodexExecSmokeCommand extends Command
         $config = [
             'dry_run' => ! (bool) $this->option('execute'),
             'model_role' => (string) $this->option('role'),
+            'codex_profile' => $this->option('profile') ?: null,
             'model_override' => $this->option('model') ?: null,
             'codex_reasoning_effort' => $this->option('effort') ?: null,
             'cwd' => $this->option('cwd') ?: null,
+            'output_schema' => $this->option('schema') ?: null,
             'prompt_preview' => $prompt,
         ];
         if ($timeout !== null) {
@@ -88,6 +92,7 @@ class CodexExecSmokeCommand extends Command
                 'writes_review_queue' => false,
             ],
             'prompt_hash' => hash('sha256', $prompt),
+            'profile' => $result['profile'] ?? null,
             'model' => $result['model'] ?? null,
             'reasoning_effort' => $result['reasoning_effort'] ?? null,
             'sandbox' => $result['sandbox'] ?? null,
@@ -105,6 +110,10 @@ class CodexExecSmokeCommand extends Command
 
         if (isset($result['command'])) {
             $payload['command'] = $result['command'];
+        }
+
+        if (isset($result['diagnostics']) && is_array($result['diagnostics'])) {
+            $payload['diagnostics'] = $result['diagnostics'];
         }
 
         return $payload;

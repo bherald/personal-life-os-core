@@ -27,6 +27,7 @@ class GenealogyIngestDocuments extends Command
                             {--limit=100    : Max new records to create per run}
                             {--dry-run      : Show eligible files without importing}
                             {--stage        : Preview packet/document staging for the selected scope}
+                            {--inventory-only : With --stage, list packets without extraction, AI preview, or reference-copy planning}
                             {--packet-label= : Force one packet label for the staged scope}
                             {--preview-packet= : Preview one staged packet by label; defaults to the first staged packet}
                             {--copy-preview : Evaluate reference-copy actions for the selected staged packet without writing}
@@ -60,6 +61,13 @@ class GenealogyIngestDocuments extends Command
         $dryRun = $this->option('dry-run');
         $aiClassify = $this->option('ai-classify');
         $resumeRun = trim((string) $this->option('resume-run'));
+        if ($this->option('inventory-only') && (! $this->option('stage') || $resumeRun !== ''
+            || $this->option('preview-packet') || $this->option('copy-preview') || $this->option('apply-copies')
+            || $aiClassify || $this->option('status') || $this->option('report') || $this->option('list-trees'))) {
+            $this->error('--inventory-only requires --stage without preview, copy, AI, resume, or reporting options.');
+
+            return Command::FAILURE;
+        }
 
         if ($this->option('status')) {
             return $this->showStatus($ingester, $treeId);
@@ -207,6 +215,13 @@ class GenealogyIngestDocuments extends Command
 
                 return Command::FAILURE;
             }
+        }
+
+        if ($this->option('inventory-only')) {
+            $this->line(json_encode($result + ['inventory_only' => true, 'preview_performed' => false,
+                'saved_run' => (bool) $this->option('save-run')], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+
+            return ! empty($result['partial_scan']) ? Command::FAILURE : Command::SUCCESS;
         }
 
         $this->table(['Metric', 'Value'], [

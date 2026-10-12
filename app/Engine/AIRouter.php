@@ -4,37 +4,38 @@ namespace App\Engine;
 
 use App\DTOs\TrustEnvelope;
 use App\Exceptions\AI\AIExceptionFactory;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Exceptions\AI\RateLimitException;
 use App\Exceptions\AI\TransientException;
+use App\Exceptions\ModelHostControllerUnavailableException;
+use App\Services\AIService;
 use App\Services\CircuitBreaker;
-use App\Services\LLMPoolManagerService;
+use App\Services\LlmCircuitBreakerPolicyService;
+use App\Services\ModelHostControllerResourcePolicyService;
+use App\Services\ModelHostControllerTransportSupervisor;
+use App\Services\OllamaProgressClient;
+use App\Services\OllamaStructuredOutputSchemaService;
+use App\Services\PipelineHttpClientFactory;
 use App\Services\RetryService;
 use App\Services\SystemConfigService;
 use App\Services\TimeoutManager;
 use App\Services\TrustBoundaryFormatterService;
+use App\Support\AI\PoolExecutionReceipt;
+use App\Support\AI\StreamTextStepJoiner;
 use Exception;
-use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Process as ProcessFacade;
 
 /**
- * AI Router - Intelligent routing between Ollama (offline-first) and Claude Agent SDK (fallback)
+ * Low-level transport router for Ollama and OpenAI-compatible providers.
  *
  * Features:
  * - Direct Ollama integration (bypasses AnythingLLM overhead)
- * - Automatic fallback to Claude Agent SDK Proxy when an operator-configured Claude provider is available
- * - Agent SDK provides full MCP tool access when Ollama is unavailable
  * - Embedding generation for RAG
- * - Offline-first design with local-only fallback
+ * - OpenAI-compatible local_llm sidecars and admitted external APIs
  * - Performance optimized
- *
- * Fallback Chain:
- * 1. Ollama (local GPU server) - primary
- * 2. Claude Agent SDK Proxy (localhost:8770) - fallback with MCP tools
- * 3. Claude CLI (--print mode) - simple text fallback
  */
 class AIRouter
 {
@@ -65,7 +66,7 @@ class AIRouter
 
     private ?TrustBoundaryFormatterService $trustBoundaryFormatter = null;
 
-    private string $agentProxyUrl;
+    private ?LlmCircuitBreakerPolicyService $circuitBreakerPolicy = null;
 
     /** @var array<string,mixed>|null */
     private ?array $runtimePolicy = null;
@@ -83,7 +84,6 @@ class AIRouter
         $this->defaultMaxTokens = $this->runtimePolicyInt('default_max_tokens');
         $this->embeddingCharLimit = $this->runtimePolicyInt('embedding_char_limit');
         $this->mcpRouter = new MCPRouter;
-        $this->agentProxyUrl = config('services.claude.agent_proxy_url', 'http://127.0.0.1:8770');
     }
 
     private function loadPrimaryOllamaConfig(): array
@@ -117,6 +117,11 @@ class AIRouter
     private function trustBoundaryFormatter(): TrustBoundaryFormatterService
     {
         return $this->trustBoundaryFormatter ??= app(TrustBoundaryFormatterService::class);
+    }
+
+    private function circuitBreakerPolicy(): LlmCircuitBreakerPolicyService
+    {
+        return $this->circuitBreakerPolicy ??= app(LlmCircuitBreakerPolicyService::class);
     }
 
     private function runtimePolicyInt(string $key): int
@@ -182,6 +187,12 @@ class AIRouter
         return $wrapped."\n\n[{$instruction}]";
     }
 
+    /** Effective defaults shared by generation and cache identity, never logged. */
+    public function generationCacheDefaults(array $config): array
+    {
+        return ['system_prompt' => $this->resolveSystemPrompt($config), 'max_tokens' => $this->defaultMaxTokens];
+    }
+
     /**
      * Resolve system prompt with fallback chain
      *
@@ -217,7 +228,7 @@ class AIRouter
     /**
      * Build a tool-aware system prompt that informs the LLM about available capabilities
      *
-     * This helps both Ollama (with direct tool access) and Claude CLI (guidance mode)
+     * This helps Ollama with direct tool access and guidance-mode clients.
      * understand what tools are available and when to use them.
      *
      * @param  string  $basePrompt  The base system prompt
@@ -288,7 +299,7 @@ class AIRouter
      * This improves tool calling reliability by limiting tools to relevant ones.
      * llama3.1 works much better with ~5-10 tools than 60.
      */
-    protected function detectRelevantToolServers(string $prompt): array
+    public function detectRelevantToolServers(string $prompt): array
     {
         $lower = strtolower($prompt);
         $servers = [];
@@ -543,7 +554,7 @@ class AIRouter
     }
 
     /**
-     * Process text with AI - tries Ollama first, falls back to Claude
+     * Process text with a selected AI provider.
      */
     public function processWithAI(string $prompt, array $config = []): string
     {
@@ -557,7 +568,6 @@ class AIRouter
         $temperature = $config['temperature'] ?? 0.1;
         $maxTokens = $config['max_tokens'] ?? $this->defaultMaxTokens;
         $systemPrompt = $this->resolveSystemPrompt($config);
-        $allowClaudeFallback = empty($config['disable_claude_fallback']);
 
         // Support timeout override from node config (ai_timeout or timeout)
         $timeout = $config['ai_timeout'] ?? $config['timeout'] ?? $this->timeout;
@@ -566,50 +576,27 @@ class AIRouter
         }
 
         // Support per-instance URL and model override from AIService multi-instance routing
-        $instanceUrl = $config['ollama_url'] ?? null;
-        $instanceModel = $config['ollama_model'] ?? null;
+        $instanceUrl = $config['ollama_url'] ?? $config['instance_url'] ?? null;
+        $instanceModel = $config['ollama_model'] ?? $config['instance_model'] ?? null;
 
         // External API mode — called directly by AIService with full provider config
         if ($mode === 'external_api') {
             return $this->callOpenAICompatible($prompt, $config);
         }
 
-        // Extract role-resolved model from AIService (null = let Claude CLI use its default)
-        $claudeModel = $config['claude_model'] ?? null;
-
         try {
             if ($mode === 'local' || $mode === 'auto') {
                 return $this->callOllama($prompt, $temperature, $maxTokens, $systemPrompt, $timeout, $instanceUrl, $instanceModel, $config);
             }
         } catch (Exception $e) {
-            if ($mode === 'auto') {
-                // Fallback to the optional Claude CLI when operator-configured.
-                if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
-                    Log::info('Ollama failed, falling back to Claude Code CLI', [
-                        'error' => $e->getMessage(),
-                    ]);
-
-                    return $this->callClaudeCLI($prompt, $systemPrompt, $claudeModel, $timeout);
-                }
-                if (! $allowClaudeFallback) {
-                    throw new Exception('Ollama failed and Claude CLI fallback is disabled by provider table policy: '.$e->getMessage());
-                }
-                // No Claude CLI available - fail
-                throw new Exception('Ollama failed and Claude CLI not available: '.$e->getMessage());
-            }
             throw $e;
         }
 
-        // For explicit 'claude' mode - use CLI only
-        if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
-            return $this->callClaudeCLI($prompt, $systemPrompt, $claudeModel, $timeout);
-        }
-
-        throw new Exception($allowClaudeFallback ? 'Claude CLI not available' : 'Claude CLI disabled by provider table policy');
+        throw new Exception("Unsupported AI mode: {$mode}");
     }
 
     /**
-     * Process an image with AI vision model - tries Ollama llava first, falls back to Claude CLI
+     * Process an image with a local Ollama vision model.
      *
      * @param  string  $imageContent  Binary image content OR file path
      * @param  string  $prompt  The prompt/question about the image
@@ -622,7 +609,6 @@ class AIRouter
         $temperature = $config['temperature'] ?? 0.3;
         $maxTokens = $config['max_tokens'] ?? $this->defaultMaxTokens;
         $timeout = $config['timeout'] ?? $this->timeout;
-        $allowClaudeFallback = empty($config['disable_claude_fallback']);
 
         // Per-instance routing: AIService passes instance_url/instance_model when
         // it has selected a specific Ollama instance from the pool (e.g. the 4070
@@ -645,46 +631,32 @@ class AIRouter
         // Encode image to base64
         $base64Image = base64_encode($imageContent);
 
-        // Extract role-resolved model from AIService (null = let Claude CLI use its default)
-        $claudeModel = $config['claude_model'] ?? null;
-
         try {
             if ($mode === 'local' || $mode === 'auto') {
-                return $this->callOllamaVision($base64Image, $prompt, $temperature, $maxTokens, $timeout, $instanceUrl, $instanceModel);
+                return $this->callOllamaVision($base64Image, $prompt, $temperature, $maxTokens, $timeout, $instanceUrl, $instanceModel, $config);
             }
         } catch (Exception $e) {
-            if ($mode === 'auto') {
-                // Fallback to Claude CLI with image file (native multimodal support)
-                if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
-                    Log::info('Ollama vision failed, falling back to Claude Code CLI', [
-                        'error' => $e->getMessage(),
-                    ]);
-
-                    return $this->callClaudeCLIWithImage($imageContent, $prompt, $imagePath, $claudeModel);
-                }
-                if (! $allowClaudeFallback) {
-                    throw new Exception('Ollama vision failed and Claude CLI fallback is disabled by provider table policy: '.$e->getMessage());
-                }
-                throw new Exception('Ollama vision failed and Claude CLI not available: '.$e->getMessage());
-            }
             throw $e;
         }
 
-        // For explicit 'claude' mode - use CLI only
-        if ($allowClaudeFallback && $this->isClaudeCLIAvailable()) {
-            return $this->callClaudeCLIWithImage($imageContent, $prompt, $imagePath, $claudeModel);
-        }
-
-        throw new Exception($allowClaudeFallback ? 'Claude CLI not available for vision processing' : 'Claude CLI disabled by provider table policy for vision processing');
+        throw new Exception("Unsupported vision AI mode: {$mode}");
     }
 
     /**
      * Call Ollama vision model (llava) with base64-encoded image
      */
-    private function callOllamaVision(string $base64Image, string $prompt, float $temperature, int $maxTokens, int $timeout, ?string $instanceUrl = null, ?string $instanceModel = null): string
+    private function callOllamaVision(string $base64Image, string $prompt, float $temperature, int $maxTokens, int $timeout, ?string $instanceUrl = null, ?string $instanceModel = null, array $config = []): string
     {
         $targetUrl = $instanceUrl ?? $this->ollamaUrl;
         $targetModel = $instanceModel ?? $this->visionModel;
+        $payload = self::ollamaGenerationSettings($targetModel, $temperature, $maxTokens, $config)
+            + ['prompt' => $prompt, 'images' => [$base64Image]];
+        // This endpoint consumes a single JSON response, while keeping the exact role options.
+        $payload['stream'] = false;
+        if (! AIService::hasManagedInferenceContract() && $this->controllerManaged("{$targetUrl}/api/generate")) {
+            return app(ModelHostControllerTransportSupervisor::class)->run('ollama_generate', "{$targetUrl}/api/generate", $payload,
+                fn () => $this->callOllamaVision($base64Image, $prompt, $temperature, $maxTokens, $timeout, $instanceUrl, $instanceModel, $config));
+        }
 
         Log::info('Calling Ollama vision model', [
             'model' => $targetModel,
@@ -697,35 +669,31 @@ class AIRouter
         // This prevents timeout on first request while model loads
         // llava:7b typically takes 50-150 seconds to load from disk (depends on Ollama's
         // memory management - it may need to unload llama3.1 first)
-        if (! $this->ensureVisionModelLoaded(180, $instanceUrl, $targetModel)) {
+        if (! AIService::hasManagedInferenceContract() && ! $this->ensureVisionModelLoaded(180, $instanceUrl, $targetModel, PoolExecutionReceipt::fromConfig($config))) {
             throw new Exception('Vision model failed to load within timeout');
         }
 
         // Use Guzzle directly - Laravel's Http facade doesn't handle long timeouts properly
-        $client = new Client([
+        $client = PipelineHttpClientFactory::make([
             'timeout' => $timeout,
             'connect_timeout' => 10,
         ]);
 
-        $response = $client->post("{$targetUrl}/api/generate", [
-            'json' => [
-                'model' => $targetModel,
-                'prompt' => $prompt,
-                'images' => [$base64Image],
-                'think' => false,
-                'temperature' => $temperature,
-                'stream' => false,
-                'options' => [
-                    'num_predict' => $maxTokens,
-                ],
-            ],
-        ]);
+        $this->assertControllerTransport('ollama_generate', "{$targetUrl}/api/generate", $payload);
+        $receipt = PoolExecutionReceipt::fromConfig($config);
+        $options = AIService::inferenceProgressOptions(['json' => $payload]);
+        if ($receipt !== null) {
+            $options = $receipt->transportOptions($options);
+            $receipt->beforeSend('ollama_generate', "{$targetUrl}/api/generate", $targetModel);
+        }
+        $response = $client->request('POST', "{$targetUrl}/api/generate", $options);
 
         if ($response->getStatusCode() !== 200) {
             throw new Exception('Ollama vision API failed: '.$response->getStatusCode());
         }
 
         $data = json_decode($response->getBody()->getContents(), true);
+        $receipt?->ollamaTerminal(is_array($data) ? $data : []);
         $result = $data['response'] ?? null;
 
         if (! $result) {
@@ -737,202 +705,6 @@ class AIRouter
         ]);
 
         return $result;
-    }
-
-    /**
-     * Call Claude CLI with image file (native multimodal support)
-     *
-     * Claude Code CLI supports images natively - we save to a temp file if needed
-     * and pass the file path as part of the prompt.
-     */
-    private function callClaudeCLIWithImage(string $imageContent, string $prompt, ?string $imagePath = null, ?string $model = null): string
-    {
-        // Offline kill switch: same policy as the text path.
-        if ($this->isOfflineModeEnabled()) {
-            throw new Exception('Claude CLI vision blocked: routing.offline_mode is enabled. Local Ollama vision only.');
-        }
-
-        // Pre-flight: check OAuth token before wasting time on a dead token
-        $tokenStatus = app(LLMPoolManagerService::class)->checkClaudeTokenExpiry();
-        if ($tokenStatus === 'expired') {
-            throw new Exception('Claude CLI authentication failed: OAuth token expired. Run: claude login');
-        }
-
-        $claudePath = config('services.anthropic.cli_path', 'claude');
-        $tempFile = null;
-        $process = null;
-        $pipes = [];
-
-        // Use app storage for temp files instead of /tmp/ — avoids permission issues
-        // when Claude CLI needs to read the file via its Read tool
-        $tempDir = storage_path('app/tmp');
-        if (! is_dir($tempDir)) {
-            mkdir($tempDir, 0755, true);
-        }
-
-        // If no original file path, save to temp file
-        if (! $imagePath) {
-            // imageContent may be base64-encoded (from AIService::processImage callers)
-            // or raw binary. Detect and decode if needed so the file is a valid image.
-            $rawContent = $imageContent;
-            if (! $this->isBinaryImageData($rawContent)) {
-                $decoded = base64_decode($rawContent, true);
-                if ($decoded !== false && $this->isBinaryImageData($decoded)) {
-                    $rawContent = $decoded;
-                }
-            }
-
-            $extension = $this->detectImageExtension($rawContent);
-            $imagePath = $tempDir.'/claude_img_'.uniqid().'.'.$extension;
-            file_put_contents($imagePath, $rawContent);
-            $tempFile = $imagePath; // Mark for cleanup
-        }
-
-        try {
-            // Claude CLI in --print mode processes stdin as text only. When the prompt
-            // references a file path, Claude needs its Read tool to access that file.
-            // --permission-mode bypassPermissions: allows Read tool without interactive
-            //   permission prompts (required for headless backend usage)
-            // --allowedTools "Read": restricts tool use to only Read (no writes/edits)
-            $imagePrompt = "Read and analyze this image file: {$imagePath}\n\n{$prompt}";
-
-            $command = [$claudePath, '--print'];
-            if ($model) {
-                $command[] = '--model';
-                $command[] = $model;
-            }
-            $command[] = '--permission-mode';
-            $command[] = 'bypassPermissions';
-            $command[] = '--allowedTools';
-            $command[] = 'Read';
-
-            $descriptorspec = [
-                0 => ['pipe', 'r'],
-                1 => ['pipe', 'w'],
-                2 => ['pipe', 'w'],
-            ];
-
-            Log::debug('Claude CLI vision: Starting process', [
-                'image_path' => $imagePath,
-                'prompt_length' => strlen($prompt),
-            ]);
-
-            // Ensure OAuth token reaches Claude CLI subprocess (same as callClaudeCLI)
-            $env = null;
-            $oauthToken = config('services.anthropic.cli_oauth_token');
-            if ($oauthToken) {
-                $env = array_merge($this->getProcessEnvironment(), ['CLAUDE_CODE_OAUTH_TOKEN' => $oauthToken]);
-            }
-
-            $process = proc_open($command, $descriptorspec, $pipes, null, $env);
-
-            if (! is_resource($process)) {
-                throw new Exception('Failed to start Claude CLI process');
-            }
-
-            fwrite($pipes[0], $imagePrompt);
-            fclose($pipes[0]);
-
-            // Drain both pipes under a hard deadline so a busy stderr stream cannot
-            // block the child and cause a false timeout.
-            $visionTimeout = $this->runtimePolicyInt('vision_cli_timeout_seconds');
-            stream_set_blocking($pipes[1], false);
-            stream_set_blocking($pipes[2], false);
-            $deadline = microtime(true) + $visionTimeout;
-            $stdout = '';
-            $stderr = '';
-            $timedOut = false;
-
-            while (true) {
-                $remaining = $deadline - microtime(true);
-                if ($remaining <= 0) {
-                    $timedOut = true;
-                    break;
-                }
-                $seconds = (int) floor($remaining);
-                $micros = (int) max(0, ($remaining - $seconds) * 1_000_000);
-                $read = [$pipes[1], $pipes[2]];
-                $write = $except = [];
-                $changed = stream_select($read, $write, $except, $seconds, $micros);
-                if ($changed === false) {
-                    break;
-                }
-                if ($changed === 0) {
-                    $timedOut = true;
-                    break;
-                }
-                foreach ($read as $pipe) {
-                    $chunk = fread($pipe, 65536);
-                    if ($chunk === false || $chunk === '') {
-                        continue;
-                    }
-                    if ($pipe === $pipes[1]) {
-                        $stdout .= $chunk;
-                    } else {
-                        $stderr .= $chunk;
-                    }
-                }
-
-                $status = proc_get_status($process);
-                if (! (($status['running'] ?? false) === true) && feof($pipes[1]) && feof($pipes[2])) {
-                    break;
-                }
-            }
-
-            // On timeout, kill child FIRST — stream_get_contents on stderr blocks if process alive
-            if ($timedOut) {
-                proc_terminate($process, SIGKILL);
-                usleep(100_000);
-                fclose($pipes[1]);
-                fclose($pipes[2]);
-                proc_close($process);
-                $process = null;
-                throw new Exception("Claude CLI vision timed out after {$visionTimeout}s");
-            }
-
-            $stdout .= stream_get_contents($pipes[1]) ?: '';
-            $stderr = stream_get_contents($pipes[2]);
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-
-            $returnCode = proc_close($process);
-            $process = null;
-
-            if ($returnCode !== 0) {
-                $errorMsg = ! empty($stderr) ? $stderr : 'Unknown error';
-                throw new Exception('Claude CLI vision failed (exit code '.$returnCode.'): '.$errorMsg);
-            }
-
-            if (empty($stdout)) {
-                throw new Exception('Claude CLI returned empty response for image');
-            }
-
-            Log::info('Claude CLI vision completed', [
-                'response_length' => strlen($stdout),
-            ]);
-
-            return trim($stdout);
-
-        } finally {
-            foreach ($pipes as $pipe) {
-                if (is_resource($pipe)) {
-                    fclose($pipe);
-                }
-            }
-
-            if (is_resource($process)) {
-                $status = proc_get_status($process);
-                if (($status['running'] ?? false) === true) {
-                    proc_terminate($process, SIGKILL);
-                }
-                proc_close($process);
-            }
-
-            // Clean up temp file if we created one
-            if ($tempFile && file_exists($tempFile)) {
-                @unlink($tempFile);
-            }
-        }
     }
 
     /**
@@ -990,11 +762,9 @@ class AIRouter
                 }
             }
 
-            // Vision model not found in Ollama, but Claude CLI may support it
-            return $this->isClaudeCLIAvailable();
+            return false;
         } catch (Exception $e) {
-            // If Ollama check fails, still return true if Claude CLI is available
-            return $this->isClaudeCLIAvailable();
+            return false;
         }
     }
 
@@ -1033,9 +803,13 @@ class AIRouter
      * @param  int  $timeoutSeconds  Maximum time to wait for model to load
      * @return bool True if model is loaded and ready
      */
-    public function ensureModelLoaded(string $modelName, int $timeoutSeconds = 60, ?string $instanceUrl = null): bool
+    public function ensureModelLoaded(string $modelName, int $timeoutSeconds = 60, ?string $instanceUrl = null, ?PoolExecutionReceipt $receipt = null): bool
     {
         $targetUrl = $instanceUrl ?? $this->ollamaUrl;
+        if ($this->controllerManaged("{$targetUrl}/api/generate")) {
+            // The owning controller activates models; this helper may only observe them.
+            return $this->isModelLoaded($modelName, $targetUrl);
+        }
 
         // Check if already loaded
         if ($this->isModelLoaded($modelName, $targetUrl)) {
@@ -1058,12 +832,12 @@ class AIRouter
 
             // Use Guzzle directly - Laravel's Http facade doesn't properly handle
             // long timeouts for slow model loading operations
-            $client = new Client([
+            $client = PipelineHttpClientFactory::make([
                 'timeout' => $loadTimeout,
                 'connect_timeout' => 10,
             ]);
 
-            $response = $client->post("{$targetUrl}/api/generate", [
+            $options = [
                 'json' => [
                     'model' => $modelName,
                     'prompt' => 'hi',
@@ -1073,11 +847,20 @@ class AIRouter
                         'num_predict' => 1, // Minimal output
                     ],
                 ],
-            ]);
+            ];
+            if ($receipt !== null) {
+                $options = $receipt->transportOptions($options);
+                $receipt->beforeSend('ollama_generate', "{$targetUrl}/api/generate", $modelName);
+            }
+            $response = $client->request('POST', "{$targetUrl}/api/generate", $options);
 
             // If the request succeeded, the model is loaded and responded
             // Don't trust /api/ps - Ollama may unload immediately after
             if ($response->getStatusCode() === 200) {
+                if ($receipt !== null) {
+                    $data = json_decode($response->getBody()->getContents(), true, flags: JSON_THROW_ON_ERROR);
+                    $receipt->ollamaTerminal(is_array($data) ? $data : []);
+                }
                 $elapsed = time() - $startTime;
                 Log::info('Model loaded and ready', [
                     'model' => $modelName,
@@ -1087,6 +870,7 @@ class AIRouter
                 return true;
             }
 
+            $receipt?->stopReplayAfterFailure();
             // Request failed but didn't timeout - model issue
             Log::warning('Model load request failed', [
                 'model' => $modelName,
@@ -1096,6 +880,7 @@ class AIRouter
             return false;
 
         } catch (RequestException $e) {
+            $receipt?->stopReplayAfterFailure($e);
             $elapsed = time() - $startTime;
             Log::warning('Model load request error', [
                 'model' => $modelName,
@@ -1105,6 +890,7 @@ class AIRouter
 
             return false;
         } catch (Exception $e) {
+            $receipt?->stopReplayAfterFailure($e);
             $elapsed = time() - $startTime;
             Log::warning('Model load failed', [
                 'model' => $modelName,
@@ -1122,11 +908,11 @@ class AIRouter
      * @param  int  $timeoutSeconds  Maximum time to wait
      * @return bool True if vision model is ready
      */
-    public function ensureVisionModelLoaded(int $timeoutSeconds = 60, ?string $instanceUrl = null, ?string $instanceModel = null): bool
+    public function ensureVisionModelLoaded(int $timeoutSeconds = 60, ?string $instanceUrl = null, ?string $instanceModel = null, ?PoolExecutionReceipt $receipt = null): bool
     {
         $targetModel = $instanceModel ?? $this->visionModel;
 
-        return $this->ensureModelLoaded($targetModel, $timeoutSeconds, $instanceUrl);
+        return $this->ensureModelLoaded($targetModel, $timeoutSeconds, $instanceUrl, $receipt);
     }
 
     /**
@@ -1155,15 +941,24 @@ class AIRouter
     /**
      * Generate text embedding vector for RAG
      */
-    public function generateEmbedding(string $text, ?string $instanceUrl = null, ?int $charLimit = null, ?int $timeoutSeconds = null): array
+    public function generateEmbedding(string $text, ?string $instanceUrl = null, ?int $charLimit = null, ?int $timeoutSeconds = null, ?string $modelOverride = null, bool $preserveInput = false): array
     {
         try {
-            // Sanitize text to prevent UTF-8 encoding errors
-            $text = $this->sanitizeUtf8($text);
+            $url = $instanceUrl ?? $this->ollamaUrl;
+            $managed = $this->controllerManaged($url.'/api/embed');
+            $preserveInput = $preserveInput || $managed;
+            // Managed requests preserve original bytes and reject invalid input.
+            if ($preserveInput) {
+                if (! mb_check_encoding($text, 'UTF-8')) {
+                    throw new InferenceAdmissionException('Embedding input must be valid UTF-8; original bytes were not modified.');
+                }
+            } else {
+                $text = $this->sanitizeUtf8($text);
+            }
 
             // Hard safety net: truncate to embedding model context limit
             $embeddingCharLimit = $charLimit ?? $this->embeddingCharLimit;
-            if (strlen($text) > $embeddingCharLimit) {
+            if (! $preserveInput && strlen($text) > $embeddingCharLimit) {
                 $text = substr($text, 0, $embeddingCharLimit);
                 $lastSpace = strrpos($text, ' ');
                 if ($lastSpace !== false && $lastSpace > $embeddingCharLimit * 0.8) {
@@ -1171,32 +966,34 @@ class AIRouter
                 }
             }
 
-            // Use instance-specific URL if provided (for multi-instance pool routing)
-            $url = $instanceUrl ?? $this->ollamaUrl;
-
             // Embeddings are fast (~100ms) — use short timeout, not the text generation timeout.
             // Text gen timeout ($this->timeout) is 180-300s which causes blocking stalls.
             $embeddingTimeout = $timeoutSeconds ?? (int) config('services.ollama.embedding_timeout', 10);
-            $response = Http::withOptions([
-                'timeout' => $embeddingTimeout,
-                'connect_timeout' => 5,
-            ])
-                ->post("{$url}/api/embeddings", [
-                    'model' => $this->embeddingModel,
-                    'prompt' => $text,
-                ]);
-
-            if (! $response->successful()) {
-                throw new Exception('Ollama embedding failed: '.$response->body());
+            // /api/embed explicitly rejects context overflow with truncate=false.
+            // Keep the legacy endpoint for callers that have not requested preservation.
+            $endpoint = $preserveInput ? '/api/embed' : '/api/embeddings';
+            $payload = ['model' => $modelOverride ?? $this->embeddingModel]
+                + ($preserveInput ? ['input' => $text, 'truncate' => false] : ['prompt' => $text]);
+            $supervisor = app(ModelHostControllerTransportSupervisor::class);
+            if ($managed) {
+                $endpoint = '/api/embed';
+                $payload = $supervisor->embeddingPayload($url.$endpoint, $payload['model'], $text);
             }
 
-            $embedding = $response->json('embedding');
+            return $supervisor->run('ollama_embeddings', $url.$endpoint, $payload, function () use ($url, $endpoint, $payload, $embeddingTimeout): array {
+                $this->assertControllerTransport('ollama_embeddings', $url.$endpoint, $payload);
+                $response = AIService::maintainInferenceHttp(Http::withOptions([
+                    'timeout' => $embeddingTimeout,
+                    'connect_timeout' => 5,
+                ]))->post($url.$endpoint, $payload);
+                if (! $response->successful()) {
+                    throw new Exception('Ollama embedding request failed.');
+                }
+                $embedding = $response->json($endpoint === '/api/embed' ? 'embeddings.0' : 'embedding');
+                $this->assertEmbeddingVector($embedding);
 
-            if (! is_array($embedding) || empty($embedding)) {
-                throw new Exception('Invalid embedding response from Ollama');
-            }
-
-            return $embedding;
+                return $embedding;
+            });
         } catch (Exception $e) {
             // Context length overflows are handled by AIService chunked fallback — log as debug
             $level = str_contains($e->getMessage(), 'context length') ? 'debug' : 'error';
@@ -1220,9 +1017,15 @@ class AIRouter
      */
     public function generateExternalEmbedding(string $text, array $providerConfig): array
     {
-        $text = $this->sanitizeUtf8($text);
-
         $baseUrl = rtrim($providerConfig['base_url'], '/');
+        if (! empty($providerConfig['preserve_input']) || $this->controllerManaged($baseUrl.'/embeddings')) {
+            if (! mb_check_encoding($text, 'UTF-8')) {
+                throw new InferenceAdmissionException('Embedding input must be valid UTF-8; original bytes were not modified.');
+            }
+        } else {
+            $text = $this->sanitizeUtf8($text);
+        }
+
         $apiKey = $providerConfig['api_key'] ?? '';
         $model = $providerConfig['embedding_model'];
         $extraHeaders = $providerConfig['extra_headers'] ?? [];
@@ -1243,45 +1046,98 @@ class AIRouter
             $body['dimensions'] = (int) $dimensions;
         }
 
-        $response = Http::withHeaders($headers)
-            ->timeout(30)
-            ->connectTimeout(5)
-            ->post("{$baseUrl}/embeddings", $body);
+        return app(ModelHostControllerTransportSupervisor::class)->run('openai_embeddings', "{$baseUrl}/embeddings", $body, function () use ($baseUrl, $headers, $body, $providerConfig, $model, $dimensions): array {
+            $this->assertControllerTransport('openai_embeddings', "{$baseUrl}/embeddings", $body);
+            $response = AIService::maintainInferenceHttp(Http::withHeaders($headers)
+                ->timeout(30)
+                ->connectTimeout(5))
+                ->post("{$baseUrl}/embeddings", $body);
 
-        if ($response->status() === 429) {
-            $retryAfter = $response->header('Retry-After');
-            throw new RateLimitException(
-                "Embedding rate limited by {$baseUrl}".($retryAfter ? " (retry after {$retryAfter}s)" : ''),
-                $providerConfig['instance_id'] ?? 'external_embedding',
-                $model,
-                429,
-                $retryAfter ? (int) $retryAfter * 1000 : 30000
-            );
+            if ($response->status() === 429) {
+                $retryAfter = $response->header('Retry-After');
+                $retryAfterSeconds = $this->circuitBreakerPolicy()->retryAfterSeconds($retryAfter);
+                throw new RateLimitException(
+                    "Embedding rate limited by {$baseUrl} (retry after {$retryAfterSeconds}s)",
+                    $providerConfig['instance_id'] ?? 'external_embedding',
+                    $model,
+                    429,
+                    $retryAfterSeconds * 1000
+                );
+            }
+
+            if (! $response->successful()) {
+                throw AIExceptionFactory::fromHttpResponse(
+                    $response,
+                    $providerConfig['instance_id'] ?? 'external_embedding',
+                    $model
+                );
+            }
+
+            $data = $response->json();
+
+            // Standard OpenAI embeddings response: data[0].embedding
+            $embedding = $data['data'][0]['embedding'] ?? null;
+
+            $this->assertEmbeddingVector($embedding, $dimensions);
+
+            return $embedding;
+        });
+    }
+
+    private function assertEmbeddingVector(mixed $embedding, ?int $dimensions = null): void
+    {
+        if (! is_array($embedding) || ! array_is_list($embedding) || $embedding === []
+            || ($dimensions !== null && count($embedding) !== $dimensions)) {
+            throw new Exception('Embedding response has an invalid shape.');
         }
-
-        if (! $response->successful()) {
-            throw AIExceptionFactory::fromHttpResponse(
-                $response,
-                $providerConfig['instance_id'] ?? 'external_embedding',
-                $model
-            );
+        foreach ($embedding as $value) {
+            if ((! is_int($value) && ! is_float($value)) || ! is_finite((float) $value)) {
+                throw new Exception('Embedding response contains a non-finite or non-numeric value.');
+            }
         }
-
-        $data = $response->json();
-
-        // Standard OpenAI embeddings response: data[0].embedding
-        $embedding = $data['data'][0]['embedding'] ?? null;
-
-        if (! is_array($embedding) || empty($embedding)) {
-            throw new Exception('Invalid embedding response from '.$baseUrl.': '.substr(json_encode($data), 0, 200));
-        }
-
-        return $embedding;
     }
 
     /**
      * Call Ollama directly with fault tolerance (offline-first, fast)
      */
+    /** Content-free settings shared by capacity preparation and the actual send. */
+    public static function ollamaGenerationSettings(string $model, float $temperature, int $maxTokens, array $config): array
+    {
+        if (array_key_exists('ollama_keep_alive', $config)
+            && (! is_int($config['ollama_keep_alive']) || $config['ollama_keep_alive'] < 0)) {
+            throw new \InvalidArgumentException('Ollama keep_alive must be a non-negative integer number of seconds.');
+        }
+        $settings = [
+            'model' => $model,
+            'think' => $config['ollama_think'] ?? false,
+            'temperature' => $temperature,
+            'stream' => filter_var($config['_monitor_ollama_progress'] ?? false, FILTER_VALIDATE_BOOLEAN),
+            'options' => array_merge([
+                'num_predict' => $maxTokens, 'temperature' => $temperature,
+                'top_p' => 0.9, 'num_ctx' => (int) ($config['num_ctx'] ?? 4096),
+            ], is_array($config['ollama_options'] ?? null) ? $config['ollama_options'] : []),
+        ];
+        if (array_key_exists('ollama_keep_alive', $config)) {
+            $settings['keep_alive'] = $config['ollama_keep_alive'];
+        }
+        $schema = is_string($config['ollama_output_schema'] ?? null) ? trim($config['ollama_output_schema']) : '';
+        if ($schema !== '') {
+            $settings['format'] = app(OllamaStructuredOutputSchemaService::class)->resolve($schema);
+        }
+
+        return $settings;
+    }
+
+    public static function openAITextSettings(string $model, int $maxTokens, float $temperature, ?array $responseFormat = null): array
+    {
+        $settings = ['model' => $model, 'max_tokens' => $maxTokens, 'temperature' => $temperature];
+        if ($responseFormat !== null) {
+            $settings['response_format'] = $responseFormat;
+        }
+
+        return $settings;
+    }
+
     private function callOllama(string $prompt, float $temperature, int $maxTokens, string $systemPrompt = '', ?int $timeout = null, ?string $instanceUrl = null, ?string $instanceModel = null, array $config = []): string
     {
         // Defence-in-depth: sanitize here too in case callOllama is invoked directly
@@ -1299,15 +1155,22 @@ class AIRouter
         // Use adaptive timeout if available, otherwise provided or default
         $requestTimeout = $timeoutManager->getTimeout('ai_processing', $timeout ?? $this->timeout);
 
+        $settings = self::ollamaGenerationSettings($targetModel, $temperature, $maxTokens, $config);
+        if (! AIService::hasManagedInferenceContract() && app(ModelHostControllerResourcePolicyService::class)->managedProvider("{$targetUrl}/api/generate") !== null) {
+            return app(ModelHostControllerTransportSupervisor::class)->run(
+                'ollama_generate', "{$targetUrl}/api/generate", $settings,
+                fn () => $this->callOllama($prompt, $temperature, $maxTokens, $systemPrompt, $timeout, $instanceUrl, $instanceModel, $config));
+        }
+        AIService::assertInferenceTransport('ollama_generate', "{$targetUrl}/api/generate", $settings);
         $startTime = microtime(true);
 
         try {
             // Circuit breaker protection — use instance-specific key when routing to specific instance
             $circuitKey = $instanceUrl ? 'ollama_api_'.md5($instanceUrl) : 'ollama_api';
-            $response = $circuitBreaker->call($circuitKey, function () use ($retryService, $prompt, $temperature, $maxTokens, $systemPrompt, $requestTimeout, $targetUrl, $targetModel, $config) {
+            $response = $circuitBreaker->call($circuitKey, function () use ($retryService, $prompt, $systemPrompt, $requestTimeout, $targetUrl, $config, $settings) {
                 // Retry logic with fixed backoff (AI calls are expensive)
                 return $retryService->retry(
-                    operation: function () use ($prompt, $temperature, $maxTokens, $systemPrompt, $requestTimeout, $targetUrl, $targetModel, $config) {
+                    operation: function () use ($prompt, $systemPrompt, $requestTimeout, $targetUrl, $config, $settings) {
                         // Override PHP's default_socket_timeout
                         $originalSocketTimeout = ini_get('default_socket_timeout');
                         ini_set('default_socket_timeout', (string) $requestTimeout);
@@ -1325,48 +1188,64 @@ class AIRouter
                             ? "System: {$systemPrompt}\n\nUser: {$userPrompt}"
                             : $userPrompt;
 
-                        $options = array_merge(
-                            [
-                                'num_predict' => $maxTokens,
-                                'top_p' => 0.9,
-                                'num_ctx' => (int) ($config['num_ctx'] ?? 4096),
-                            ],
-                            is_array($config['ollama_options'] ?? null) ? $config['ollama_options'] : []
-                        );
-                        $think = $config['ollama_think'] ?? false;
+                        $schemaId = is_string($config['ollama_output_schema'] ?? null)
+                            ? trim($config['ollama_output_schema']) : '';
+                        $requestPayload = [...$settings, 'prompt' => $fullPrompt];
 
-                        // Use Guzzle timeout options - CURLOPT constants need to be in 'curl' array
-                        $response = Http::withOptions([
-                            'http_version' => '1.1',
-                            'timeout' => $requestTimeout,        // Total request timeout in seconds
-                            'connect_timeout' => 5,              // Fast connect timeout to fail fast
-                        ])
-                            ->post("{$targetUrl}/api/generate", [
-                                'model' => $targetModel,
-                                'prompt' => $fullPrompt,
-                                'think' => $think,
-                                'temperature' => $temperature,
-                                'stream' => false,
-                                'options' => $options,
-                            ]);
+                        try {
+                            if ($settings['stream']) {
+                                $monitored = app(OllamaProgressClient::class)->generate(
+                                    $targetUrl,
+                                    $requestPayload,
+                                    [
+                                        '_pool_execution_receipt' => PoolExecutionReceipt::fromConfig($config),
+                                        'connect_timeout_seconds' => 5,
+                                        'idle_timeout_seconds' => $config['ollama_progress_idle_timeout_seconds'] ?? 600,
+                                        'absolute_timeout_seconds' => $config['ollama_absolute_timeout_seconds'] ?? 0,
+                                        'log_interval_seconds' => $config['ollama_progress_log_interval_seconds'] ?? 30,
+                                    ]
+                                );
+                                $result = $monitored['response'];
+                            } else {
+                                $receipt = PoolExecutionReceipt::fromConfig($config);
+                                $request = AIService::maintainInferenceHttp(Http::withOptions([
+                                    'http_version' => '1.1',
+                                    'timeout' => $requestTimeout,
+                                    'connect_timeout' => 5,
+                                ]));
+                                if ($receipt !== null) {
+                                    $request = $receipt->transportHttp($request);
+                                    $receipt->beforeSend('ollama_generate', "{$targetUrl}/api/generate", (string) $requestPayload['model']);
+                                }
+                                $response = $request->post("{$targetUrl}/api/generate", $requestPayload);
 
-                        // Restore original socket timeout
-                        ini_set('default_socket_timeout', $originalSocketTimeout);
+                                if (! $response->successful()) {
+                                    throw AIExceptionFactory::fromHttpResponse($response, 'ollama', $this->ollamaModel);
+                                }
 
-                        if (! $response->successful()) {
-                            throw AIExceptionFactory::fromHttpResponse($response, 'ollama', $this->ollamaModel);
+                                $data = $response->json();
+                                $receipt?->ollamaTerminal(is_array($data) ? $data : []);
+                                $result = $data['response'] ?? throw new Exception('Invalid Ollama response format');
+                            }
+                        } finally {
+                            ini_set('default_socket_timeout', $originalSocketTimeout);
                         }
 
-                        $data = $response->json();
-                        $result = $data['response'] ?? throw new Exception('Invalid Ollama response format');
                         $result = $this->stripOllamaThinkingLeak($result);
+
+                        if ($schemaId !== ''
+                            && ! app(OllamaStructuredOutputSchemaService::class)->validateResponse($schemaId, $result)
+                            && ($config['_structured_output_eval_probe_admitted'] ?? false) !== true) {
+                            throw new Exception("Ollama structured output failed local schema validation: {$schemaId}");
+                        }
 
                         return $result;
                     },
-                    maxAttempts: 2,  // Only retry once for AI (expensive)
+                    maxAttempts: AIService::inferenceReplayAllowed() ? 2 : 1,
                     backoffStrategy: 'fixed',
                     baseDelay: 2000, // 2s fixed delay
-                    shouldRetry: function (Exception $e) {
+                    shouldRetry: function (Exception $e) use ($config) {
+                        PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure($e);
                         // Use typed exception for retry decisions
                         if ($e instanceof TransientException) {
                             return $e->isRetryable();
@@ -1376,6 +1255,8 @@ class AIRouter
 
                         return str_contains($message, 'timeout') ||
                                str_contains($message, 'timed out') ||
+                               str_contains($message, 'operation too slow') ||
+                               str_contains($message, 'incomplete ollama monitored generation stream') ||
                                str_contains($message, 'connection refused') ||
                                str_contains($message, 'connection reset') ||
                                str_contains($message, 'could not connect') ||
@@ -1391,14 +1272,21 @@ class AIRouter
 
             return $response;
 
+        } catch (InferenceAdmissionException $e) {
+            throw $e;
         } catch (Exception $e) {
             // Record failed execution
             $duration = microtime(true) - $startTime;
             $timeoutManager->recordExecution('ai_processing', $duration, false);
 
-            // Re-throw to trigger fallback to Claude
+            // Re-throw to trigger the configured fallback chain.
             throw $e;
         }
+    }
+
+    private function enabled(mixed $value): bool
+    {
+        return filter_var($value, FILTER_VALIDATE_BOOLEAN);
     }
 
     /**
@@ -1435,17 +1323,43 @@ class AIRouter
         $systemPrompt = $providerConfig['system_prompt'] ?? '';
         $requestTimeout = $providerConfig['timeout'] ?? 120;
         $extraHeaders = $providerConfig['extra_headers'] ?? [];
+        $schemaId = is_string($providerConfig['structured_output_schema_id'] ?? null)
+            ? trim($providerConfig['structured_output_schema_id'])
+            : '';
+        $structuredOutputTransport = $providerConfig['structured_output_transport'] ?? null;
+        $responseFormat = null;
+        if ($schemaId !== '') {
+            if ($structuredOutputTransport !== 'openai_json_schema') {
+                throw new Exception('OpenAI-compatible structured output transport is not admitted');
+            }
+            $responseFormat = [
+                'type' => 'json_schema',
+                'json_schema' => [
+                    'name' => $schemaId,
+                    'strict' => true,
+                    'schema' => app(OllamaStructuredOutputSchemaService::class)->resolve($schemaId),
+                ],
+            ];
+        }
 
+        $settings = self::openAITextSettings($model, $maxTokens, $temperature, $responseFormat);
+        if (! AIService::hasManagedInferenceContract()
+            && app(ModelHostControllerResourcePolicyService::class)->managedProvider("{$baseUrl}/chat/completions") !== null) {
+            return app(ModelHostControllerTransportSupervisor::class)->run(
+                'openai_chat_completions', "{$baseUrl}/chat/completions", $settings,
+                fn () => $this->callOpenAICompatible($prompt, $providerConfig));
+        }
+        AIService::assertInferenceTransport('openai_chat_completions', "{$baseUrl}/chat/completions", $settings);
         $circuitKey = 'external_api_'.md5($baseUrl);
         $startTime = microtime(true);
 
         try {
             $response = $circuitBreaker->call($circuitKey, function () use (
-                $retryService, $baseUrl, $apiKey, $model, $maxTokens, $temperature,
-                $systemPrompt, $prompt, $requestTimeout, $extraHeaders
+                $retryService, $baseUrl, $apiKey, $model,
+                $systemPrompt, $prompt, $requestTimeout, $extraHeaders, $schemaId, $settings
             ) {
                 return $retryService->retry(
-                    operation: function () use ($baseUrl, $apiKey, $model, $maxTokens, $temperature, $systemPrompt, $prompt, $requestTimeout, $extraHeaders) {
+                    operation: function () use ($baseUrl, $apiKey, $model, $systemPrompt, $prompt, $requestTimeout, $extraHeaders, $schemaId, $settings) {
                         $messages = [];
                         if (! empty($systemPrompt)) {
                             $messages[] = ['role' => 'system', 'content' => $systemPrompt];
@@ -1458,24 +1372,22 @@ class AIRouter
                         }
                         $headers = array_merge($headers, $extraHeaders);
 
-                        $response = Http::withHeaders($headers)
+                        $requestBody = [...$settings, 'messages' => $messages];
+
+                        $response = AIService::maintainInferenceHttp(Http::withHeaders($headers)
                             ->timeout($requestTimeout)
-                            ->connectTimeout(10)
-                            ->post("{$baseUrl}/chat/completions", [
-                                'model' => $model,
-                                'messages' => $messages,
-                                'max_tokens' => $maxTokens,
-                                'temperature' => $temperature,
-                            ]);
+                            ->connectTimeout(10))
+                            ->post("{$baseUrl}/chat/completions", $requestBody);
 
                         if ($response->status() === 429) {
                             $retryAfter = $response->header('Retry-After');
+                            $retryAfterSeconds = $this->circuitBreakerPolicy()->retryAfterSeconds($retryAfter);
                             throw new RateLimitException(
-                                "Rate limited by {$baseUrl}".($retryAfter ? " (retry after {$retryAfter}s)" : ''),
+                                "Rate limited by {$baseUrl} (retry after {$retryAfterSeconds}s)",
                                 'external_api',
                                 $model,
                                 429,
-                                $retryAfter ? (int) $retryAfter * 1000 : 30000
+                                $retryAfterSeconds * 1000
                             );
                         }
 
@@ -1493,9 +1405,15 @@ class AIRouter
                             throw new Exception('Invalid response format from '.$baseUrl);
                         }
 
-                        return $this->normalizeOpenAICompatibleContent($content);
+                        $normalized = $this->normalizeOpenAICompatibleContent($content);
+                        if ($schemaId !== ''
+                            && ! app(OllamaStructuredOutputSchemaService::class)->validateResponse($schemaId, $normalized)) {
+                            throw new Exception('OpenAI-compatible response failed local structured-output validation');
+                        }
+
+                        return $normalized;
                     },
-                    maxAttempts: 2,
+                    maxAttempts: AIService::inferenceReplayAllowed() ? 2 : 1,
                     backoffStrategy: 'exponential',
                     baseDelay: 1000,
                     shouldRetry: function (Exception $e) {
@@ -1518,6 +1436,8 @@ class AIRouter
 
             return $response;
 
+        } catch (InferenceAdmissionException $e) {
+            throw $e;
         } catch (Exception $e) {
             $duration = microtime(true) - $startTime;
             $timeoutManager->recordExecution('external_api', $duration, false);
@@ -1560,6 +1480,16 @@ class AIRouter
             }
         }
 
+        $payload = ['model' => $model, 'max_tokens' => $maxTokens, 'temperature' => $temperature,
+            'messages' => [['role' => 'user', 'content' => [
+                ['type' => 'text', 'text' => $prompt],
+                ['type' => 'image_url', 'image_url' => ['url' => "data:{$mimeType};base64,{$base64Image}"]],
+            ]]]];
+        if (! AIService::hasManagedInferenceContract() && $this->controllerManaged("{$baseUrl}/chat/completions")) {
+            return app(ModelHostControllerTransportSupervisor::class)->run('openai_chat_completions', "{$baseUrl}/chat/completions", $payload,
+                fn () => $this->callOpenAICompatibleVision($base64Image, $prompt, $providerConfig));
+        }
+
         try {
             $response = $circuitBreaker->call($circuitKey, function () use (
                 $retryService, $baseUrl, $apiKey, $model, $maxTokens, $temperature,
@@ -1584,24 +1514,22 @@ class AIRouter
                             'Content-Type' => 'application/json',
                         ], $extraHeaders);
 
-                        $response = Http::withHeaders($headers)
-                            ->timeout($requestTimeout)
-                            ->connectTimeout(10)
-                            ->post("{$baseUrl}/chat/completions", [
-                                'model' => $model,
-                                'messages' => $messages,
-                                'max_tokens' => $maxTokens,
-                                'temperature' => $temperature,
-                            ]);
+                        $payload = ['model' => $model, 'messages' => $messages,
+                            'max_tokens' => $maxTokens, 'temperature' => $temperature];
+                        $this->assertControllerTransport('openai_chat_completions', "{$baseUrl}/chat/completions", $payload);
+                        $response = AIService::maintainInferenceHttp(Http::withHeaders($headers)
+                            ->timeout($requestTimeout)->connectTimeout(10))
+                            ->post("{$baseUrl}/chat/completions", $payload);
 
                         if ($response->status() === 429) {
                             $retryAfter = $response->header('Retry-After');
+                            $retryAfterSeconds = $this->circuitBreakerPolicy()->retryAfterSeconds($retryAfter);
                             throw new RateLimitException(
-                                "Rate limited by {$baseUrl}".($retryAfter ? " (retry after {$retryAfter}s)" : ''),
+                                "Rate limited by {$baseUrl} (retry after {$retryAfterSeconds}s)",
                                 'external_vision',
                                 $model,
                                 429,
-                                $retryAfter ? (int) $retryAfter * 1000 : 30000
+                                $retryAfterSeconds * 1000
                             );
                         }
 
@@ -1620,7 +1548,7 @@ class AIRouter
 
                         return $this->normalizeOpenAICompatibleContent($content);
                     },
-                    maxAttempts: 2,
+                    maxAttempts: AIService::inferenceReplayAllowed() ? 2 : 1,
                     backoffStrategy: 'exponential',
                     baseDelay: 1000,
                     shouldRetry: function (Exception $e) {
@@ -1651,213 +1579,6 @@ class AIRouter
     }
 
     /**
-     * Call the optional Claude Code CLI (operator-configured Anthropic/Claude provider).
-     * Uses proc_open with stdin to handle large prompts without shell escaping issues
-     */
-    private function callClaudeCLI(string $prompt, string $systemPrompt = '', ?string $model = null, int $timeout = 120): string
-    {
-        // Offline kill switch: refuse cloud calls even when the CLI binary is
-        // present on the host. Throws rather than silently returning empty so
-        // the caller's existing exception path (log + alert + fallback) fires.
-        if ($this->isOfflineModeEnabled()) {
-            throw new Exception('Claude CLI blocked: routing.offline_mode is enabled. Local Ollama only.');
-        }
-
-        $process = null;
-        $pipes = [];
-
-        // Pre-flight: check OAuth token before wasting a slot + timeout on a dead token
-        $poolManager = app(LLMPoolManagerService::class);
-        $tokenStatus = $poolManager->checkClaudeTokenExpiry();
-        if ($tokenStatus === 'expired') {
-            throw new Exception('Claude CLI authentication failed: OAuth token expired. Run: claude login');
-        }
-
-        try {
-            $claudePath = config('services.anthropic.cli_path', 'claude');
-
-            $command = [$claudePath, '--print'];
-            if ($model) {
-                $command[] = '--model';
-                $command[] = $model;
-            }
-            if ($systemPrompt !== '') {
-                $command[] = '--system-prompt';
-                $command[] = $systemPrompt;
-            }
-
-            // Use proc_open to pipe prompt via stdin (handles large content safely)
-            $descriptorspec = [
-                0 => ['pipe', 'r'],  // stdin
-                1 => ['pipe', 'w'],  // stdout
-                2 => ['pipe', 'w'],  // stderr
-            ];
-
-            // Ensure OAuth token reaches Claude CLI subprocess even under systemd
-            // (systemd services don't inherit .bashrc exports)
-            $env = null;
-            $oauthToken = config('services.anthropic.cli_oauth_token');
-            if ($oauthToken) {
-                $env = array_merge($this->getProcessEnvironment(), ['CLAUDE_CODE_OAUTH_TOKEN' => $oauthToken]);
-            }
-
-            $process = proc_open($command, $descriptorspec, $pipes, null, $env);
-
-            if (! is_resource($process)) {
-                throw new Exception('Failed to start Claude CLI process');
-            }
-
-            // Write prompt to stdin and close
-            fwrite($pipes[0], $prompt);
-            fclose($pipes[0]);
-
-            // Drain both pipes with a wall-clock deadline. If stderr is not consumed,
-            // the child can block on a full pipe and look like a hung process.
-            stream_set_blocking($pipes[1], false);
-            stream_set_blocking($pipes[2], false);
-            $deadline = microtime(true) + $timeout;
-            $timedOut = false;
-            $stdout = '';
-            $stderr = '';
-
-            while (true) {
-                $remaining = $deadline - microtime(true);
-                if ($remaining <= 0) {
-                    $timedOut = true;
-                    break;
-                }
-
-                $seconds = (int) floor($remaining);
-                $micros = (int) max(0, ($remaining - $seconds) * 1_000_000);
-                $read = [$pipes[1], $pipes[2]];
-                $write = $except = [];
-                $changed = stream_select($read, $write, $except, $seconds, $micros);
-
-                if ($changed === false) {
-                    break; // stream_select error — bail out
-                }
-
-                if ($changed === 0) {
-                    // Deadline elapsed with no data
-                    $timedOut = true;
-                    break;
-                }
-
-                foreach ($read as $pipe) {
-                    $chunk = fread($pipe, 65536);
-                    if ($chunk === false || $chunk === '') {
-                        continue;
-                    }
-                    if ($pipe === $pipes[1]) {
-                        $stdout .= $chunk;
-                    } else {
-                        $stderr .= $chunk;
-                    }
-                }
-
-                $status = proc_get_status($process);
-                if (! (($status['running'] ?? false) === true) && feof($pipes[1]) && feof($pipes[2])) {
-                    break;
-                }
-            }
-
-            // On timeout, kill the child FIRST — before reading stderr.
-            // stream_get_contents on stderr blocks if the process is still alive.
-            if ($timedOut) {
-                proc_terminate($process, SIGKILL);
-                usleep(100_000); // 100ms for process to die
-                fclose($pipes[1]);
-                fclose($pipes[2]);
-                proc_close($process);
-                $process = null;
-                throw new Exception("Claude CLI timed out after {$timeout}s");
-            }
-
-            $stdout .= stream_get_contents($pipes[1]) ?: '';
-            $stderr .= stream_get_contents($pipes[2]) ?: '';
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-
-            // Get exit code
-            $returnCode = proc_close($process);
-            $process = null;
-
-            if ($returnCode !== 0) {
-                // Combine stderr + stdout for error detection (Claude CLI may report errors in either)
-                $combinedOutput = trim(($stderr ?: '').' '.($stdout ?: ''));
-                $errorMsg = ! empty($stderr) ? trim($stderr) : (! empty($stdout) ? trim($stdout) : null);
-
-                // When both stdout and stderr are empty, diagnose the root cause instead of "Unknown error"
-                if ($errorMsg === null) {
-                    $tokenStatus = app(LLMPoolManagerService::class)->checkClaudeTokenExpiry();
-                    if ($tokenStatus === 'expired') {
-                        throw new Exception('Claude CLI authentication failed: OAuth token expired (exit code '.$returnCode.'). Run: claude login');
-                    }
-                    $errorMsg = 'Unknown error (exit code '.$returnCode.', empty stdout+stderr — possible auth/network hang)';
-                    Log::error('AIRouter: Claude CLI exited with no output', [
-                        'exit_code' => $returnCode,
-                        'token_status' => $tokenStatus,
-                        'timeout_budget' => $timeout,
-                    ]);
-                }
-
-                // Detect rate limit / daily cap: the Claude CLI emits "You've hit your limit"
-                // or similar when daily cap is reached — must be classified as rate limit,
-                // not permanent failure, to avoid opening circuit breaker
-                $lowerCombined = strtolower($combinedOutput);
-                if (str_contains($lowerCombined, "you've hit your limit")
-                    || str_contains($lowerCombined, 'you have hit your limit')
-                    || str_contains($lowerCombined, 'rate limit')
-                    || str_contains($lowerCombined, 'usage limit')
-                    || str_contains($lowerCombined, 'daily limit')
-                    || str_contains($lowerCombined, 'weekly limit')
-                    || str_contains($lowerCombined, 'too many requests')
-                ) {
-                    throw new Exception('Claude CLI rate limit: '.$errorMsg);
-                }
-
-                throw new Exception('Claude CLI failed (exit code '.$returnCode.'): '.$errorMsg);
-            }
-
-            if (empty($stdout)) {
-                throw new Exception('Claude CLI returned empty response');
-            }
-
-            // Detect auth errors that Claude CLI reports via stdout with exit code 0
-            if (str_contains($stdout, 'OAuth token has expired') || str_contains($stdout, 'authentication_error')) {
-                throw new Exception('Claude CLI authentication failed: OAuth token expired. Run: claude login');
-            }
-
-            // Detect rate limit reported via stdout with exit code 0
-            $lowerStdout = strtolower($stdout);
-            if (str_contains($lowerStdout, "you've hit your limit")
-                || str_contains($lowerStdout, 'you have hit your limit')
-                || str_contains($lowerStdout, 'usage limit')
-                || str_contains($lowerStdout, 'daily limit')
-                || str_contains($lowerStdout, 'weekly limit')
-            ) {
-                throw new Exception('Claude CLI rate limit: '.trim($stdout));
-            }
-
-            return trim($stdout);
-        } finally {
-            foreach ($pipes as $pipe) {
-                if (is_resource($pipe)) {
-                    fclose($pipe);
-                }
-            }
-
-            if (is_resource($process)) {
-                $status = proc_get_status($process);
-                if (($status['running'] ?? false) === true) {
-                    proc_terminate($process, SIGKILL);
-                }
-                proc_close($process);
-            }
-        }
-    }
-
-    /**
      * Check if Ollama is available (for health checks)
      */
     public function isOllamaAvailable(): bool
@@ -1872,19 +1593,9 @@ class AIRouter
     }
 
     /**
-     * Check if Claude CLI is available (for health checks)
-     */
-    public function isClaudeCLIAvailable(): bool
-    {
-        $claudePath = config('services.anthropic.cli_path', 'claude');
-
-        return ProcessFacade::run(['which', $claudePath])->successful();
-    }
-
-    /**
      * Is PLOS running in fail-closed offline mode?
      *
-     * INTERNET offline only. Blocks Claude CLI and all external cloud LLM APIs.
+     * INTERNET offline only. Blocks all external cloud LLM APIs.
      * LAN services (Nextcloud, local DB/Redis/Ollama, local MCP, queue workers)
      * stay online — offline mode closes the cloud escape hatch, nothing else.
      *
@@ -1908,96 +1619,6 @@ class AIRouter
             ]);
 
             return true;
-        }
-    }
-
-    /**
-     * Check if any Claude service is available (CLI or API)
-     */
-    public function isClaudeAvailable(): bool
-    {
-        return $this->isClaudeCLIAvailable() || ! empty(config('services.anthropic.api_key'));
-    }
-
-    /**
-     * Check if Claude Agent SDK Proxy is available
-     */
-    public function isAgentProxyAvailable(): bool
-    {
-        try {
-            $response = Http::connectTimeout(5)->timeout(3)->get("{$this->agentProxyUrl}/health");
-            if ($response->successful()) {
-                $data = $response->json();
-
-                return ($data['status'] ?? '') === 'ok' && ($data['claudeAvailable'] ?? false);
-            }
-
-            return false;
-        } catch (Exception $e) {
-            return false;
-        }
-    }
-
-    /**
-     * Call Claude Agent SDK Proxy for tool-enabled AI processing
-     *
-     * This provides full MCP tool access via Claude Code when Ollama is unavailable.
-     *
-     * @param  string  $prompt  User prompt
-     * @param  array  $config  Configuration options
-     * @return string AI response
-     */
-    public function callAgentProxy(string $prompt, array $config = []): string
-    {
-        $endpoint = $config['use_plos_context'] ?? false
-            ? "{$this->agentProxyUrl}/query-plos"
-            : "{$this->agentProxyUrl}/query-tools";
-
-        $payload = [
-            'prompt' => $prompt,
-            'system_prompt' => $config['system_prompt'] ?? null,
-            'model' => $config['model'] ?? null,  // e.g., 'sonnet', 'opus'
-            'timeout' => ($config['timeout'] ?? (int) config('services.claude.agent_proxy_timeout', 120)) * 1000, // Convert to ms
-            'output_format' => $config['output_format'] ?? 'text',
-        ];
-
-        // Add tools if specified
-        if (! empty($config['tools'])) {
-            $payload['tools'] = $config['tools'];
-        }
-
-        // Add PLOS-specific tools if using PLOS context
-        if ($config['use_plos_context'] ?? false) {
-            $payload['plos_tools'] = $config['plos_tools'] ?? ['plos', 'rag', 'web-research'];
-        }
-
-        // For automated workflows, skip permission prompts
-        if ($config['skip_permissions'] ?? false) {
-            $payload['dangerously_skip_permissions'] = true;
-        }
-
-        try {
-            $response = Http::connectTimeout(5)->timeout($config['timeout'] ?? 120)
-                ->post($endpoint, $payload);
-
-            if (! $response->successful()) {
-                throw new Exception('Agent proxy request failed: '.$response->status());
-            }
-
-            $data = $response->json();
-
-            if (! ($data['success'] ?? false)) {
-                throw new Exception('Agent proxy error: '.($data['error'] ?? 'Unknown error'));
-            }
-
-            return $data['content'] ?? '';
-
-        } catch (Exception $e) {
-            Log::error('Agent proxy call failed', [
-                'error' => $e->getMessage(),
-                'endpoint' => $endpoint,
-            ]);
-            throw $e;
         }
     }
 
@@ -2079,17 +1700,21 @@ class AIRouter
 
                 // Call Ollama with tools
                 $toolTimeout = (int) config('services.ollama.tool_timeout', 180);
-                $response = Http::connectTimeout(5)->timeout($toolTimeout)
-                    ->post("{$targetUrl}/api/chat", [
-                        'model' => $targetModel,
-                        'messages' => $messages,
-                        'tools' => $tools,
-                        'temperature' => $temperature,
-                        'stream' => false,
-                        'options' => [
-                            'num_predict' => $maxTokens,
-                        ],
-                    ]);
+                $payload = [
+                    'model' => $targetModel,
+                    'messages' => $messages,
+                    'tools' => $tools,
+                    'temperature' => $temperature,
+                    'stream' => false,
+                    'options' => $this->toolRequestOptions($config, $maxTokens),
+                ];
+                $receipt = PoolExecutionReceipt::fromConfig($config);
+                $request = AIService::maintainInferenceHttp(Http::connectTimeout(5)->timeout($toolTimeout));
+                if ($receipt !== null) {
+                    $request = $receipt->transportHttp($request);
+                }
+                $response = $this->controllerRequest('ollama_chat', "{$targetUrl}/api/chat", $payload,
+                    fn () => $request->post("{$targetUrl}/api/chat", $payload), $receipt);
 
                 if (! $response->successful()) {
                     $error = $response->body();
@@ -2131,10 +1756,21 @@ class AIRouter
                 }
                 $messages[] = $message;
 
+                $toolCalls = $message['tool_calls'] ?? [];
+                if (empty($toolCalls)) {
+                    $plainTextToolCall = $this->plainTextToolCallFromContent((string) ($message['content'] ?? ''), $tools);
+                    if ($plainTextToolCall !== null) {
+                        $toolCalls = [$plainTextToolCall];
+                        Log::info('Treating plain-text Ollama tool name as a tool call', [
+                            'function' => $plainTextToolCall['function']['name'] ?? null,
+                        ]);
+                    }
+                }
+
                 // Check if there are tool calls
-                if (isset($message['tool_calls']) && ! empty($message['tool_calls'])) {
+                if (! empty($toolCalls)) {
                     // Execute each tool call
-                    foreach ($message['tool_calls'] as $toolCall) {
+                    foreach ($toolCalls as $toolCall) {
                         $functionName = $toolCall['function']['name'] ?? '';
                         $arguments = $toolCall['function']['arguments'] ?? [];
 
@@ -2168,6 +1804,7 @@ class AIRouter
                             ];
 
                         } catch (Exception $e) {
+                            PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure($e);
                             Log::error('MCP tool execution failed', [
                                 'server' => $server,
                                 'tool' => $tool,
@@ -2195,39 +1832,32 @@ class AIRouter
 
                 // If extraction returned sentinel, retry without tools
                 if ($content === '__RETRY_WITHOUT_TOOLS__') {
+                    if ($this->controllerManaged("{$targetUrl}/api/chat")) {
+                        throw new InferenceAdmissionException('Managed tool response was invalid; no replacement request was sent.');
+                    }
                     Log::info('Retrying query without tools due to malformed tool response');
+
+                    PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure();
 
                     return $this->processWithAI($prompt, $config);
                 }
 
                 return $content;
 
+            } catch (InferenceAdmissionException|ModelHostControllerUnavailableException $e) {
+                throw $e;
             } catch (Exception $e) {
+                PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure($e);
                 Log::error('Tool calling iteration failed', [
                     'iteration' => $iterations,
                     'error' => $e->getMessage(),
                 ]);
 
-                // Fallback chain: Ollama failed → try Agent SDK Proxy → simple CLI
+                // Fall back to simple text generation without tools.
                 if ($iterations === 1) {
-                    // Try Agent SDK Proxy first (has MCP tool access) only when
-                    // caller explicitly permits Claude-family fallback.
-                    if (empty($config['disable_claude_fallback']) && $this->isAgentProxyAvailable()) {
-                        Log::info('Ollama tool calling failed, falling back to Claude Agent SDK Proxy');
-                        try {
-                            return $this->callAgentProxy($prompt, array_merge($config, [
-                                'use_plos_context' => true,
-                                'skip_permissions' => true,
-                            ]));
-                        } catch (Exception $proxyError) {
-                            Log::warning('Agent SDK Proxy also failed', [
-                                'error' => $proxyError->getMessage(),
-                            ]);
-                        }
-                    }
-
-                    // Last resort: simple text generation (no tools)
                     Log::info('Falling back to simple AI processing (no tools)');
+
+                    PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure();
 
                     return $this->processWithAI($prompt, $config);
                 }
@@ -2237,6 +1867,185 @@ class AIRouter
         }
 
         return "Maximum tool calling iterations reached ($maxIterations)";
+    }
+
+    /**
+     * Some local Ollama models echo the selected function name as plain text
+     * instead of returning a structured tool_calls array. Accept only an exact
+     * match against the already-filtered advertised tool catalog.
+     *
+     * @param  array<int,array<string,mixed>>  $tools
+     * @return array{function:array{name:string,arguments:array<string,mixed>|\stdClass}}|null
+     */
+    private function plainTextToolCallFromContent(string $content, array $tools): ?array
+    {
+        $parsed = $this->extractPlainTextToolCall($content);
+        if ($parsed === null) {
+            return null;
+        }
+
+        foreach ($tools as $tool) {
+            $advertised = $tool['function']['name'] ?? null;
+            if (is_string($advertised) && hash_equals($advertised, $parsed['name'])) {
+                return [
+                    'function' => [
+                        'name' => $advertised,
+                        'arguments' => $this->normalizePlainTextToolArguments($parsed['arguments']),
+                    ],
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{name:string,arguments:mixed}|null
+     */
+    private function extractPlainTextToolCall(string $content): ?array
+    {
+        $content = $this->stripJsonCodeFence(trim($content));
+        if ($content === '') {
+            return null;
+        }
+
+        $decoded = json_decode($content, true);
+        if (json_last_error() === JSON_ERROR_NONE) {
+            if (is_string($decoded)) {
+                return $this->extractPlainTextToolCall($decoded);
+            }
+
+            if (is_array($decoded)) {
+                $functionName = $this->extractToolNameFromDecodedToolCall($decoded);
+                if ($functionName !== null) {
+                    return [
+                        'name' => $functionName,
+                        'arguments' => $this->extractArgumentsFromDecodedToolCall($decoded),
+                    ];
+                }
+            }
+        }
+
+        $functionName = $this->extractPlainTextFunctionName($content);
+        if ($functionName === null) {
+            return null;
+        }
+
+        return [
+            'name' => $functionName,
+            'arguments' => new \stdClass,
+        ];
+    }
+
+    private function stripJsonCodeFence(string $content): string
+    {
+        if (preg_match('/^```(?:json)?\s*(.*?)\s*```$/is', $content, $matches) === 1) {
+            return trim((string) ($matches[1] ?? ''));
+        }
+
+        return $content;
+    }
+
+    /**
+     * @param  array<string,mixed>  $decoded
+     */
+    private function extractToolNameFromDecodedToolCall(array $decoded): ?string
+    {
+        foreach (['name', 'tool', 'tool_name', 'function', 'action'] as $key) {
+            $candidate = $decoded[$key] ?? null;
+            if (is_string($candidate)) {
+                $functionName = $this->extractPlainTextFunctionName($candidate);
+                if ($functionName !== null) {
+                    return $functionName;
+                }
+            }
+        }
+
+        foreach (['function', 'tool_call', 'toolCall'] as $key) {
+            $candidate = $decoded[$key] ?? null;
+            if (! is_array($candidate)) {
+                continue;
+            }
+
+            $functionName = $this->extractToolNameFromDecodedToolCall($candidate);
+            if ($functionName !== null) {
+                return $functionName;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string,mixed>  $decoded
+     */
+    private function extractArgumentsFromDecodedToolCall(array $decoded): mixed
+    {
+        foreach (['arguments', 'args', 'parameters', 'params', 'input'] as $key) {
+            if (array_key_exists($key, $decoded)) {
+                return $decoded[$key];
+            }
+        }
+
+        foreach (['function', 'tool_call', 'toolCall'] as $key) {
+            $candidate = $decoded[$key] ?? null;
+            if (! is_array($candidate)) {
+                continue;
+            }
+
+            $arguments = $this->extractArgumentsFromDecodedToolCall($candidate);
+            if ($arguments !== null) {
+                return $arguments;
+            }
+        }
+
+        return new \stdClass;
+    }
+
+    /**
+     * @return array<string,mixed>|\stdClass
+     */
+    private function normalizePlainTextToolArguments(mixed $arguments): array|\stdClass
+    {
+        if ($arguments instanceof \stdClass) {
+            return $arguments;
+        }
+
+        if (is_array($arguments)) {
+            return $arguments === [] ? new \stdClass : $arguments;
+        }
+
+        if (is_string($arguments)) {
+            $decoded = json_decode($arguments, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                return $decoded === [] ? new \stdClass : $decoded;
+            }
+        }
+
+        return new \stdClass;
+    }
+
+    private function extractPlainTextFunctionName(string $content): ?string
+    {
+        $content = trim($this->stripJsonCodeFence($content));
+        $content = trim($content, " \t\n\r\0\x0B\"'");
+        if ($content === '') {
+            return null;
+        }
+
+        if (preg_match('/^`+([A-Za-z0-9_.-]+_[A-Za-z0-9_.-]+)`+$/', $content, $matches) === 1) {
+            return $matches[1];
+        }
+
+        if (preg_match('/^<function=([A-Za-z0-9_.-]+_[A-Za-z0-9_.-]+)>$/', $content, $matches) === 1) {
+            return $matches[1];
+        }
+
+        if (preg_match('/^[A-Za-z0-9_.-]+_[A-Za-z0-9_.-]+$/', $content) === 1) {
+            return $content;
+        }
+
+        return null;
     }
 
     /**
@@ -2298,85 +2107,35 @@ class AIRouter
         }
         $messages[] = ['role' => 'user', 'content' => $prompt];
 
+        $settings = ['model' => $streamModel, 'tools' => $tools, 'temperature' => $temperature,
+            'stream' => true, 'options' => $this->toolRequestOptions($config, $maxTokens)];
         $iterations = 0;
+        $textStepJoiner = new StreamTextStepJoiner;
         while ($iterations < $maxIterations) {
             $iterations++;
 
             try {
-                // Call Ollama with streaming enabled using Guzzle directly
-                $client = new Client;
-                $response = $client->post("{$targetUrl}/api/chat", [
-                    'json' => [
-                        'model' => $streamModel,
-                        'messages' => $messages,
-                        'tools' => $tools,
-                        'temperature' => $temperature,
-                        'stream' => true, // Enable streaming
-                        'options' => [
-                            'num_predict' => $maxTokens,
-                        ],
-                    ],
-                    'stream' => true, // Enable Guzzle streaming
-                    'timeout' => (int) config('services.ollama.streaming_timeout', 240),
-                ]);
-
-                if ($response->getStatusCode() !== 200) {
-                    Log::error('Ollama streaming failed', [
-                        'status' => $response->getStatusCode(),
-                    ]);
-                    yield json_encode(['type' => 'error', 'content' => 'AI request failed'])."\n";
-
-                    return;
-                }
-
-                // Get the stream body
-                $stream = $response->getBody();
-                $buffer = '';
-
                 $fullMessage = '';
                 $assistantMessage = null;
                 $toolCalls = [];
-
-                // Read stream line by line
-                while (! $stream->eof()) {
-                    $char = $stream->read(1);
-                    if ($char === "\n") {
-                        $line = trim($buffer);
-                        $buffer = '';
-
-                        if (empty($line)) {
-                            continue;
+                foreach ($this->streamOllamaChatRequest("{$targetUrl}/api/chat", $settings + ['messages' => $messages], PoolExecutionReceipt::fromConfig($config)) as $chunk) {
+                    $message = $chunk['message'] ?? null;
+                    if (! is_array($message)) {
+                        continue;
+                    }
+                    $content = $message['content'] ?? '';
+                    if (is_string($content) && $content !== '') {
+                        $fullMessage .= $content;
+                        $streamContent = $textStepJoiner->append($iterations, $content);
+                        if ($streamContent !== null) {
+                            yield json_encode(['type' => 'content', 'content' => $streamContent])."\n";
                         }
-
-                        $chunk = json_decode($line, true);
-                        if (! $chunk) {
-                            continue;
-                        }
-
-                        $message = $chunk['message'] ?? null;
-                        if (! $message) {
-                            continue;
-                        }
-
-                        // Extract content and yield it
-                        $content = $message['content'] ?? '';
-                        if (! empty($content)) {
-                            $fullMessage .= $content;
-                            yield json_encode(['type' => 'content', 'content' => $content])."\n";
-                        }
-
-                        // Check for tool calls
-                        if (isset($message['tool_calls']) && ! empty($message['tool_calls'])) {
-                            $toolCalls = $message['tool_calls'];
-                        }
-
-                        // Check if done
-                        if ($chunk['done'] ?? false) {
-                            $assistantMessage = $message;
-                            break;
-                        }
-                    } else {
-                        $buffer .= $char;
+                    }
+                    if (! empty($message['tool_calls'])) {
+                        $toolCalls = $message['tool_calls'];
+                    }
+                    if ($chunk['done'] ?? false) {
+                        $assistantMessage = $message;
                     }
                 }
 
@@ -2400,6 +2159,7 @@ class AIRouter
                 if (! empty($toolCalls)) {
                     yield json_encode(['type' => 'tool_start', 'count' => count($toolCalls)])."\n";
 
+                    $toolCallPosition = 0;
                     foreach ($toolCalls as $toolCall) {
                         $functionName = $toolCall['function']['name'] ?? '';
                         $arguments = $toolCall['function']['arguments'] ?? [];
@@ -2416,8 +2176,10 @@ class AIRouter
                         }
 
                         [$server, $tool] = $parts;
+                        $toolCallPosition++;
+                        $toolCallId = "tool_{$iterations}_{$toolCallPosition}";
 
-                        yield json_encode(['type' => 'tool_call', 'server' => $server, 'tool' => $tool, 'arguments' => $arguments])."\n";
+                        yield json_encode(['type' => 'tool_call', 'tool_call_id' => $toolCallId, 'server' => $server, 'tool' => $tool, 'arguments' => $arguments])."\n";
 
                         try {
                             $toolResult = $this->mcpRouter->callTool($server, $tool, $arguments);
@@ -2428,9 +2190,10 @@ class AIRouter
                                 'content' => $this->formatMcpToolResultForPrompt($server, $tool, $toolResult),
                             ];
 
-                            yield json_encode(['type' => 'tool_result', 'server' => $server, 'tool' => $tool])."\n";
+                            yield json_encode(['type' => 'tool_result', 'tool_call_id' => $toolCallId, 'server' => $server, 'tool' => $tool])."\n";
 
                         } catch (Exception $e) {
+                            PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure($e);
                             Log::error('Tool execution failed during streaming', [
                                 'server' => $server,
                                 'tool' => $tool,
@@ -2442,7 +2205,13 @@ class AIRouter
                                 'content' => $this->formatMcpToolResultForPrompt($server, $tool, ['error' => $e->getMessage()], true),
                             ];
 
-                            yield json_encode(['type' => 'tool_error', 'server' => $server, 'tool' => $tool, 'error' => $e->getMessage()])."\n";
+                            yield json_encode([
+                                'type' => 'tool_error',
+                                'tool_call_id' => $toolCallId,
+                                'server' => $server,
+                                'tool' => $tool,
+                                'error_code' => 'tool_execution_failed',
+                            ])."\n";
                         }
                     }
 
@@ -2458,7 +2227,11 @@ class AIRouter
 
                 // If extraction returned sentinel, fall back to simple AI (no tools)
                 if ($cleanedMessage === '__RETRY_WITHOUT_TOOLS__') {
+                    if ($this->controllerManaged("{$targetUrl}/api/chat")) {
+                        throw new InferenceAdmissionException('Managed tool response was invalid; no replacement request was sent.');
+                    }
                     Log::info('Streaming: Retrying without tools due to malformed response');
+                    PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure();
                     $fallbackResponse = $this->processWithAI($prompt, $config);
                     yield json_encode(['type' => 'content_replace', 'content' => $fallbackResponse])."\n";
                     yield json_encode(['type' => 'done', 'content' => $fallbackResponse])."\n";
@@ -2476,6 +2249,10 @@ class AIRouter
                 return;
 
             } catch (Exception $e) {
+                PoolExecutionReceipt::fromConfig($config)?->stopReplayAfterFailure($e);
+                if (AIService::hasManagedInferenceContract() || $e instanceof InferenceAdmissionException || $e instanceof ModelHostControllerUnavailableException) {
+                    throw $e;
+                }
                 Log::error('Streaming error', ['error' => $e->getMessage()]);
                 yield json_encode(['type' => 'error', 'content' => $e->getMessage()])."\n";
 
@@ -2508,11 +2285,6 @@ class AIRouter
      */
     public function getStatus(): array
     {
-        $claudeCLIAvailable = $this->isClaudeCLIAvailable();
-        $apiKey = config('services.anthropic.api_key');
-        $apiConfigured = ! empty($apiKey);
-        $agentProxyAvailable = $this->isAgentProxyAvailable();
-
         return [
             'ollama' => [
                 'available' => $this->isOllamaAvailable(),
@@ -2523,26 +2295,9 @@ class AIRouter
             'vision' => [
                 'available' => $this->isVisionAvailable(),
                 'ollama_model' => $this->visionModel,
-                'claude_fallback' => $claudeCLIAvailable,
-            ],
-            'claude' => [
-                'available' => $claudeCLIAvailable || $apiConfigured || $agentProxyAvailable,
-                'cli_available' => $claudeCLIAvailable,
-                'api_configured' => $apiConfigured,
-                'path' => config('services.anthropic.cli_path', 'claude'),
-                'configured' => $claudeCLIAvailable || $apiConfigured,
-            ],
-            'agent_proxy' => [
-                'available' => $agentProxyAvailable,
-                'url' => $this->agentProxyUrl,
-                'description' => 'Claude Agent SDK with MCP tool access',
             ],
             'mode' => config('services.ai.default_mode', 'auto'),
-            'fallback_chain' => [
-                '1' => 'Ollama (local GPU)',
-                '2' => 'Claude Agent SDK Proxy (MCP tools)',
-                '3' => 'Claude CLI (text only)',
-            ],
+            'provider_routing_source' => 'llm_instances',
         ];
     }
 
@@ -2558,26 +2313,18 @@ class AIRouter
         $model = $config['model'] ?? $this->ollamaModel;
         $temperature = $config['temperature'] ?? 0.7;
         $maxTokens = $config['max_tokens'] ?? $this->defaultMaxTokens;
+        $numCtx = max(512, (int) ($config['num_ctx'] ?? 4096));
 
         if (empty($messages)) {
             throw new Exception('No messages provided for chat');
         }
 
-        // Extract model prefix (ollama: or claude:)
-        $useOllama = true;
-        if (str_starts_with($model, 'claude:')) {
-            $useOllama = false;
-            $model = str_replace('claude:', '', $model);
-        } elseif (str_starts_with($model, 'ollama:')) {
+        if (str_starts_with($model, 'ollama:')) {
             $model = str_replace('ollama:', '', $model);
         }
 
         try {
-            if ($useOllama) {
-                return $this->callOllamaChat($messages, $model, $temperature, $maxTokens);
-            } else {
-                return $this->callClaudeChat($messages, $model, $temperature, $maxTokens);
-            }
+            return $this->callOllamaChat($messages, $model, $temperature, $maxTokens, $numCtx, PoolExecutionReceipt::fromConfig($config));
         } catch (Exception $e) {
             Log::error('Chat processing failed', [
                 'error' => $e->getMessage(),
@@ -2591,7 +2338,7 @@ class AIRouter
     /**
      * Call Ollama chat endpoint with message history
      */
-    private function callOllamaChat(array $messages, string $model, float $temperature, int $maxTokens): array
+    private function callOllamaChat(array $messages, string $model, float $temperature, int $maxTokens, int $numCtx, ?PoolExecutionReceipt $receipt = null): array
     {
         // Sanitize all message content before json_encode
         foreach ($messages as &$msg) {
@@ -2603,18 +2350,24 @@ class AIRouter
 
         $chatTimeout = (int) config('services.ollama.chat_timeout', 90);
 
-        $response = Http::connectTimeout(5)->timeout($chatTimeout)
-            ->post("{$this->ollamaUrl}/api/chat", [
-                'model' => $model,
-                'messages' => $messages,
-                'think' => false,
+        $payload = [
+            'model' => $model,
+            'messages' => $messages,
+            'think' => false,
+            'temperature' => $temperature,
+            'stream' => false,
+            'options' => [
+                'num_predict' => $maxTokens,
                 'temperature' => $temperature,
-                'stream' => false,
-                'options' => [
-                    'num_predict' => $maxTokens,
-                    'num_ctx' => 4096,
-                ],
-            ]);
+                'num_ctx' => $numCtx,
+            ],
+        ];
+        $request = AIService::maintainInferenceHttp(Http::connectTimeout(5)->timeout($chatTimeout));
+        if ($receipt !== null) {
+            $request = $receipt->transportHttp($request);
+        }
+        $response = $this->controllerRequest('ollama_chat', "{$this->ollamaUrl}/api/chat", $payload,
+            fn () => $request->post("{$this->ollamaUrl}/api/chat", $payload), $receipt);
 
         if (! $response->successful()) {
             throw new Exception('Ollama chat request failed: '.$response->status());
@@ -2679,18 +2432,122 @@ class AIRouter
         return ltrim($cleaned);
     }
 
-    /**
-     * Claude chat not supported (API removed - use Claude Code CLI via processWithAI instead)
-     */
-    private function callClaudeChat(array $messages, string $model, float $temperature, int $maxTokens): array
-    {
-        throw new Exception('Claude API chat not supported. Use Ollama or convert to single prompt for Claude CLI.');
-    }
-
     private function getProcessEnvironment(): array
     {
         $environment = getenv();
 
         return is_array($environment) ? $environment : [];
+    }
+
+    /** Each tool round has its own request identity and keeps custody through stream completion. */
+    private function streamOllamaChatRequest(string $endpoint, array $payload, ?PoolExecutionReceipt $receipt = null): \Generator
+    {
+        if (! AIService::hasManagedInferenceContract() && $this->controllerManaged($endpoint)) {
+            yield from app(ModelHostControllerTransportSupervisor::class)->stream('ollama_chat', $endpoint, $payload,
+                fn () => $this->streamOllamaChatRequest($endpoint, $payload, $receipt),
+                ['cancelled' => static fn (): bool => connection_aborted() !== 0]);
+
+            return;
+        }
+        $this->assertControllerTransport('ollama_chat', $endpoint, $payload);
+        $client = PipelineHttpClientFactory::make();
+        $options = AIService::inferenceProgressOptions([
+            'json' => $payload, 'stream' => true,
+            'timeout' => (int) config('services.ollama.streaming_timeout', 240),
+        ]);
+        if ($receipt !== null) {
+            $options = $receipt->transportOptions($options);
+            $receipt->beforeSend('ollama_chat', $endpoint, (string) $payload['model']);
+        }
+        $response = $client->request('POST', $endpoint, $options);
+        if ($response->getStatusCode() !== 200) {
+            throw new InferenceAdmissionException('Tool stream failed after dispatch; no automatic replay is allowed.');
+        }
+        $body = $response->getBody();
+        $buffer = '';
+        try {
+            while (! $body->eof()) {
+                $char = $body->read(1);
+                if ($char !== "\n") {
+                    $buffer .= $char;
+
+                    continue;
+                }
+                $chunk = json_decode(trim($buffer), true);
+                $buffer = '';
+                if (! is_array($chunk)) {
+                    continue;
+                }
+                if (($chunk['done'] ?? false) === true && ! is_array($chunk['message'] ?? null)) {
+                    throw new InferenceAdmissionException('Tool stream completion has no valid message; no automatic replay is allowed.');
+                }
+                if (($chunk['done'] ?? null) === true) {
+                    $receipt?->ollamaTerminal($chunk);
+                }
+                yield $chunk;
+                if (($chunk['done'] ?? false) === true) {
+                    return;
+                }
+            }
+            if (trim($buffer) !== '') {
+                $chunk = json_decode($buffer, true);
+                if (is_array($chunk)) {
+                    if (($chunk['done'] ?? false) === true && ! is_array($chunk['message'] ?? null)) {
+                        throw new InferenceAdmissionException('Tool stream completion has no valid message; no automatic replay is allowed.');
+                    }
+                    if (($chunk['done'] ?? null) === true) {
+                        $receipt?->ollamaTerminal($chunk);
+                    }
+                    yield $chunk;
+                    if (($chunk['done'] ?? false) === true) {
+                        return;
+                    }
+                }
+            }
+            throw new InferenceAdmissionException('Tool stream ended without completion; no automatic replay is allowed.');
+        } finally {
+            $body->close();
+        }
+    }
+
+    private function toolRequestOptions(array $config, int $maxTokens): array
+    {
+        $options = is_array($config['ollama_options'] ?? null) ? $config['ollama_options'] : [];
+        if (array_key_exists('num_ctx', $config)) {
+            $options['num_ctx'] = $config['num_ctx'];
+        }
+        $options['num_predict'] = $maxTokens;
+
+        return $options;
+    }
+
+    private function controllerManaged(string $endpoint): bool
+    {
+        return app(ModelHostControllerResourcePolicyService::class)->managedHostForEndpoint($endpoint) !== null;
+    }
+
+    private function assertControllerTransport(string $wire, string $endpoint, array $payload): void
+    {
+        unset($payload['messages'], $payload['prompt'], $payload['system'], $payload['images'], $payload['input']);
+        AIService::assertInferenceTransport($wire, $endpoint, $payload);
+    }
+
+    private function controllerRequest(string $wire, string $endpoint, array $payload, callable $send, ?PoolExecutionReceipt $receipt = null): mixed
+    {
+        return app(ModelHostControllerTransportSupervisor::class)->run($wire, $endpoint, $payload, function () use ($wire, $endpoint, $payload, $send, $receipt) {
+            $this->assertControllerTransport($wire, $endpoint, $payload);
+            $receipt?->beforeSend($wire, $endpoint, (string) $payload['model']);
+            $response = $send();
+            if ($receipt !== null && $response->successful()) {
+                $data = $response->json();
+                $receipt->ollamaTerminal(is_array($data) ? $data : []);
+            }
+            if (AIService::hasManagedInferenceContract()
+                && (! $response->successful() || ! is_array($response->json('message')))) {
+                throw new InferenceAdmissionException('Managed chat returned an unsuccessful or invalid response; no automatic replay is allowed.');
+            }
+
+            return $response;
+        });
     }
 }

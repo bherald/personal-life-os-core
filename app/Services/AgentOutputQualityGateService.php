@@ -268,12 +268,16 @@ class AgentOutputQualityGateService
             return $explicit;
         }
 
-        if (preg_match('/\b(ancestry|myheritage|newspapers\.com|fold3|findmypast|familysearch|browser-only|manual browser|login session)\b/i', $text)) {
+        if (preg_match('/\b(ancestry|familysearch)\b/i', $text)) {
             return 'manual_browser';
         }
 
-        if (preg_match('/\b(nextcloud|google drive|dropbox|box connector|gmail|slack|private connector|oauth)\b/i', $text)) {
+        if (preg_match('/\b(nextcloud|google drive|dropbox|box connector|gmail|slack|private connector|oauth|myheritage|newspapers\.com|fold3|findmypast)\b/i', $text)) {
             return 'private_opt_in';
+        }
+
+        if (preg_match('/\b(browser capture|headed browser|login session)\b/i', $text)) {
+            return 'unknown';
         }
 
         if (preg_match('/\b(nara\.gov|archives\.gov|loc\.gov|archive\.org|wikipedia\.org|wikidata\.org|openstreetmap\.org)\b/i', $text)) {

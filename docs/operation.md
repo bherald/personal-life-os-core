@@ -1,484 +1,77 @@
 # Operation
 
-This document covers public, generic operation after installation. It does not
-replace private production runbooks.
+Start with [Quick start](quickstart.md), then run `setup:doctor` for the installed
+profile. Core installation, optional media dependencies and model configuration
+are separate checks.
 
-## Service Lifecycle
+## Research and evidence
 
-Docker installs:
+Use the configured topic/mission surfaces and Review Desk (`/reviews`) for
+evidence and proposed conclusions. See [UI routes](connectors-and-ui.md). Configure source access and the selected
+AI route before scheduling work. See [Research workbench](research-workbench.md).
 
-```bash
-docker compose ps
-docker compose up -d
-docker compose logs -f app worker scheduler
-docker compose down
-docker compose build app
-```
+Keep original documents, retrieved text, source URLs and retrieval dates. A model
+summary is an interpretation; it does not replace a source. Citation readiness
+means a result has a usable source reference, not that the claim is proved.
 
-Bare-metal installs should run the Laravel app server, queue worker or Horizon,
-Redis, scheduler, MySQL/MariaDB, and PostgreSQL/pgvector using the host's
-normal service manager.
+## Queues and scheduling
 
-## Health Checks
+Bring up workers and the scheduler after core services pass setup doctor. Inspect
+execution status and failure receipts before retrying. Interrupted work may retain
+custody while completion is uncertain; do not erase that evidence to force a retry.
+Review queues keep sensitive changes under human control.
 
-Use setup doctor first:
+## Local AI and external sources
 
-```bash
-php artisan setup:doctor --profile=core --json
-php artisan setup:doctor --profile=media --skip-services
-php artisan setup:doctor --profile=full --only=services,database,python
-```
+The public baseline provides operator-configured local AI defaults. Add only
+the models and endpoints you actually run. Optional external providers and web
+search require explicit credentials and network policy. Offline mode blocks
+external LLM routes; it does not supply fresh web evidence.
 
-Check these surfaces before trusting scheduled automation:
+## Photos and family history
 
-- application key and Passport keys;
-- MySQL/MariaDB and PostgreSQL/pgvector connectivity;
-- Redis connectivity;
-- writable `storage/` and cache directories;
-- queue worker and scheduler status;
-- optional browser, Python, media, and local AI assets.
+Detection proposes regions. A person decides identities. Preserve the original
+image and existing metadata before any write, compare exact source versions,
+and read back stored regions and names. Never substitute a family association
+for an approved face identity. Defer a metadata update when source or identity
+proof is missing. Numerical face embeddings remain private application data;
+portable name and region metadata is a separate output.
 
-## Queues And Scheduler
+## Backups and secrets
 
-PLOS uses queues for long-running and reviewable work. Keep failed jobs visible
-and investigate repeated failures before increasing automation.
+Back up the databases, original media, configuration and operator-managed
+connector state separately. Test restoration. Keep credentials and authentication
+keys outside Git, apply restrictive file permissions, and never expose an
+authenticated installation on a public interface without reviewing its access
+policy. See [Security and privacy](security-privacy.md).
 
-Public-safe checks include:
+## Optional controller experiments
 
-```bash
-php artisan queue:failed
-php artisan schedule:list
-php artisan setup:doctor --profile=core
-```
+Machine-specific manifests, private runtime receipts and installation-specific
+route migrations are excluded from the public extraction. Controller transport
+defaults are empty; optional controller and LAN-observation paths require
+explicit host configuration plus their existing reviewed activation policy.
+Their presence in source is not a public hardware qualification claim.
 
-Queue placement rules are documented in `docs/queue-placement-policy.md`.
-Task lease behavior is documented in `docs/plos-task-lease-contract.md`.
-
-## Review Queues
-
-Sensitive actions should be proposed for review before they mutate private
-state or send notifications. Treat completed agent runs as uptime only unless
-the output is source-backed, reviewable, and approved by an operator.
-
-Agent safety expectations live in `docs/AGENT-SAFETY-CARDS.md`.
-
-Use the review-backlog report when Agent Doctor reports aged pending reviews or
-when planning cleanup work:
+## Bounded agent diagnostics
 
 ```bash
-php artisan ops:review-backlog-report --compact
-php artisan ops:review-backlog-report --next-target
-php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json
-php artisan ops:review-backlog-report --next-target --focus=aged-review --json
-php artisan ops:review-backlog-report --json --compact
-php artisan ops:review-backlog-report --dry-run --json --compact
-php artisan ops:review-backlog-report --markdown
-php artisan ops:review-backlog-report --dry-run
-```
-
-The report groups pending review rows by age, review type, finding type, agent,
-high-priority status, typed-remediation readiness, and aggregate
-`genealogy_review_packet` readiness. It is read-only and does not approve,
-reject, expire, archive, notify, or mutate review rows. Use `--compact` for
-routine operator or MCP checks that only need aggregate counts and cleanup
-guidance.
-
-Use the source-backed packet focus during a Genealogy Evidence Sprint or packet
-review pass. It returns one redacted `genealogy_review_packet` pointer only when
-the packet is source-backed, review-ready, preview-only, boundary-labeled, and
-not marked as a canonical-mutation candidate:
-
-```bash
-php artisan ops:review-backlog-report --next-target --focus=source-backed-packet --json
-```
-
-The packet target output is count-only. It must not contain row ids, tokens,
-source locators, claim text, person ids, raw packet details, repair selectors,
-or materializer commands. Review Hub packet cards and the packet detail pane
-show the same display-only `target_ref`, so match that value to the command
-output, open the selected packet, and decide it one at a time; do not use batch
-review or canonical writeback.
-
-Use the aged-review focus when Agent Doctor or Operator Evidence reports stale
-pending reviews and no higher-priority packet pass is underway:
-
-```bash
-php artisan ops:review-backlog-report --next-target --focus=aged-review --json
-```
-
-The aged target is still read-only and sanitized. It should return one opaque
-target pointer selected by oldest stale age, not raw row ids, tokens, source
-locators, packet details, repair selectors, or apply commands.
-
-Typed remediation materialization has a separate, dry-run-first operator
-handoff. Use it only when the next backlog target is a pending
-`genealogy_finding` typed-remediation candidate:
-
-```bash
-php artisan ops:review-backlog-report --next-target
-php artisan ops:review-backlog-report --json --next-target
-php artisan ops:review-backlog-report --next-target --focus=typed-remediation --json
-php artisan genealogy:materialize-typed-remediation --target-ref=GENEALOGY_FINDING_TARGET_REF --json --compact
-php artisan genealogy:materialize-typed-remediation --id=SOURCE_REVIEW_QUEUE_ID --json --compact
-php artisan genealogy:materialize-typed-remediation --token=SOURCE_REVIEW_QUEUE_TOKEN --json --compact
-```
-
-The first command selects one sanitized review target only. If its
-classification is high-priority, check `underlying_classification` and
-`underlying_next_action`; typed remediation work should proceed only when that
-underlying path is `typed_preview_needed` or the target is otherwise confirmed
-as a typed-remediation `genealogy_finding`. Prefer the sanitized
-`target_ref` emitted by the next-target command, then run the materializer in
-its default dry-run mode with exactly one source selector: `--target-ref`,
-`--id`, or `--token`. Raw id/token selectors are fallback operator tools only.
-The compact dry run must show the planned action, supported operation types,
-operation/guard counts, failed guard names, row-touch count,
-`no_canonical_write=true`, and `apply_held=true` without raw source URLs,
-tokens, ids, current-state rows, stale hashes, target-ref values, or evidence
-text. Use non-compact JSON only for direct operator inspection when the compact
-proof is insufficient.
-
-Only after an operator reviews that dry-run output should the same selector be
-run with `--execute`:
-
-```bash
-php artisan genealogy:materialize-typed-remediation --target-ref=GENEALOGY_FINDING_TARGET_REF --execute --json --compact
-php artisan genealogy:materialize-typed-remediation --id=SOURCE_REVIEW_QUEUE_ID --execute --json
-php artisan genealogy:materialize-typed-remediation --token=SOURCE_REVIEW_QUEUE_TOKEN --execute --json
-```
-
-`--execute` may create or reuse a pending `genealogy_review_packet` row for
-review. It still must not write canonical genealogy tables, apply repairs,
-unlock apply/writeback, bulk approve, reject, or clear the source advisory row.
-Treat the materialized packet as review context only until a separate operator
-decision path explicitly supports apply.
-
-For already-authored source-backed packet JSON, use the direct packet
-materializer. Its default mode validates the file and reports whether it would
-create or reuse one pending review packet:
-
-```bash
-php artisan genealogy:materialize-review-packet --file=/path/to/packet.json --json --compact
-```
-
-Only after reviewing that dry-run output should the same file be run with
-`--execute`:
-
-```bash
-php artisan genealogy:materialize-review-packet --file=/path/to/packet.json --execute --json
-```
-
-This command is limited to `agent_review_queue` packet materialization. It must
-not write canonical genealogy tables, enable apply/writeback, or approve packet
-decisions.
-
-Use genealogy agent triage before any genealogy research-agent re-enablement
-discussion:
-
-```bash
-php artisan genealogy:agent-triage --compact
-php artisan genealogy:agent-triage --json --compact
-php artisan genealogy:agent-triage --json
-```
-
-The compact report is read-only. It keeps target counts, per-target enabled
-state, sessions/reviews/AWO headline counts, next action, and recommendation
-count without dumping full scheduler, episode, nested review, or AWO details.
-Its validation proof also exposes gate counts and compact blocking gate ids so
-operators can see why future enablement remains blocked without opening the full
-payload.
-
-Use compact reviewer-feedback summaries when checking Review Packet UX feedback
-signals:
-
-```bash
-php artisan genealogy:packet-reason-codes --compact
-php artisan genealogy:packet-reason-codes --json --compact
-php artisan genealogy:reject-codes --compact
-php artisan genealogy:reject-codes --json --compact
-php artisan genealogy:review-feedback --compact
-php artisan genealogy:review-feedback --json --compact
-```
-
-These commands are read-only. Compact output keeps only window, agent scope,
-row/agent counts, review/decision count, accepted/rejected proposal counts
-where applicable, acceptance rate where applicable, and top action/reason
-counts without dumping full daily rollup or per-agent summary arrays.
-
-## RAG And KG Evidence
-
-Use the compact backlog report for routine KG/RAG checks:
-
-```bash
-php artisan rag:backlog-report --compact
-php artisan rag:backlog-report --json --compact
-```
-
-The compact report is read-only. It keeps document count, RAPTOR/sentence/KG
-pending counts, KG fresh/stale/entity counts, throughput/ETA, net-burn trend,
-and evidence-error count without dumping the full net-burn lane payload.
-
-## Local AI And Offline Mode
-
-Local Ollama-compatible providers are the preferred default for public installs.
-External providers should stay opt-in and should respect sensitivity and
-offline-mode policy gates.
-
-Use the read-only offline status surface when checking current operator
-authority or degraded-mode posture:
-
-```bash
-php artisan ops:offline-status
-php artisan ops:offline-status --json
-php artisan ops:offline-smoke --json --compact
-php artisan ops:operator-evidence --json --compact
-```
-
-`ops:offline-status` returns only the Operator Evidence offline/degraded
-section. The authenticated `GET /api/ops/offline-status` route returns the same
-narrow payload for UI consumers without collecting every Operator Evidence
-section. The full `/operator-evidence` screen and `GET /api/ops/operator-evidence`
-include the same offline/degraded section beside queue, backlog, review, and
-other operational evidence.
-
-`ops:offline-smoke --json --compact` is the routine manual report-only
-companion. It joins the offline-status payload, audit summary, profile-filtered
-MCP catalog boundary, and local runtime scorecard. It does not switch profiles,
-execute network calls, run remediation, or write audit receipts, and it is not
-scheduled by default. The compact form keeps section statuses, stable reason
-codes, aggregate counts, leaked-server counts, and safe local runtime labels
-while omitting nested payloads, raw details, server lists,
-paths, prompts, traces, and environment values.
-
-Key fields to check:
-
-- `active_profile`: the authority profile, such as `default`,
-  `offline_review`, `offline_dev_assist`, `hybrid_review`,
-  `hybrid_dev_assist`, or `cloud_escalation_only`;
-- `runtime_state`: the derived state, such as `normal`,
-  `offline_profile_without_kill_switch`, `offline_mode_enabled`, or
-  `hybrid_profile`;
-- `offline_mode_active`: whether the cloud-provider kill switch is active;
-- `policy_denials_24h` and `mode_changes_24h`: recent policy/audit activity;
-- `local_runtime_status`, `local_availability_state`,
-  `healthy_local_instances`, and `selected_local_model`: the compact local
-  Ollama scorecard from `LLMPoolManagerService`, derived from monitoring rows
-  without executing a routing selection;
-- `capabilities`: the current profile's allowed tool, MCP trust, path,
-  provider, remote-domain, and confirmation classes;
-- `recent_audit_events`: sanitized recent receipts without private targets or
-  actor detail.
-
-Treat these surfaces as observation tools. They do not switch profiles, enable
-providers, run remediation, or change scheduler behavior.
-
-### Offline/Dev-Agent Compact Flow
-
-Use this sequence for the current local/offline dev-agent scorecard pass:
-
-```bash
-php artisan ops:agent-doctor --json --compact --since=24
-php artisan ops:mcp-health --compact
 php artisan plos:agent-trace-tail --limit=20 --since=24 --json --compact
-php artisan offline:dev-assist /doctor --json
 ```
 
-`ops:agent-doctor --json --compact --since=24` is the first stop. It keeps only
-aggregate status and counts: agent totals, active/stalled sessions, pending
-reviews, scheduled-output signals, memory evidence, recursion status, compact
-trace-readiness, and capped critical/warning agent ids. It does not dump raw
-scheduled output, prompts, completions, trace content, full per-agent payloads,
-or review-row details.
+Inspect `plos_artisan list` for the loaded command allowlist revision. A stale
+allowlist is a tooling mismatch, not permission to bypass a policy refusal.
 
-`ops:mcp-health --compact` checks configured MCP scorecards, local entry/path
-readiness, process presence, process matchability, marker counts, enabled versus
-disabled missing entries, and disabled external processes that are still
-running. It does not start, stop, restart, or dynamically exercise MCP servers,
-and it does not print env values, tokens, or raw process lines.
+## Release checks and pending operations
 
-Use `plos:agent-trace-tail --json --compact` after Agent Doctor, MCP Health, or
-`offline:dev-assist` reports a trace-readiness issue. The compact tail reports
-aggregate event, warning, type, surface, actor-type, and result-status counts
-without trace ids, event ids, actor ids, paths, or event payload details. Use
-`plos:agent-trace-read` only for a selected local diagnostic trace outside the
-routine MCP scorecard path. The trace commands read sanitized append-only NDJSON
-envelopes under local storage. They do not grant tool access, execute
-remediation, delete trace files, or promote dev-agent autonomy.
+Run `php artisan ops:release-documentation-audit --staged --json --compact --fail-on-gaps` before committing source changes. The public configuration requires the public README, release notes, operation guide, architecture and source/license references when their corresponding surfaces change; it retains every release-audit category without requiring private work records.
 
-The PLOS MCP `plos_artisan` allowlist exposes only the exact compact Agent
-Doctor and compact recent trace-tail forms shown above. Trace reads, raw tail
-output, trace-specific tail filters, wider windows, higher limits, reordered
-flags, detail-expanding options, and non-JSON trace commands stay blocked
-through MCP until separately reviewed.
+Use `ops:release-cache-invalidate --json` for named configuration/provider inventory invalidation. Global `cache:clear` is held because the store also contains live execution custody and response state. On an uncertain physical action outcome, retain its original durable identity for evidence reconciliation; a timeout, stop or lost acknowledgement does not permit an automatic replay. Human review owns photo/identity and substantive finding approval.
 
-If a live MCP session blocks one of those exact forms, run `plos_artisan` with
-`command=list` and compare the reported allowlist revision to source. Treat a
-missing revision or missing exact command as a loaded-session freshness issue;
-use direct local/prod artisan for read-only proof until the normal MCP reload.
-Do not widen the command, reorder flags, or add trace ids to work around a stale
-session.
+## Public maintenance scope
 
-Trace reads are direct operator diagnostics only after a sanitized trace id or
-event id is already visible:
-
-```bash
-php artisan plos:agent-trace-read trc_example --since=168 --json
-php artisan plos:agent-trace-read --event=evt_example --since=168 --json
-```
-
-`offline:dev-assist` is local opt-in, not part of routine observation. For
-status work, prefer `/doctor --json` with the default `read-only` approval mode.
-One-shot model requests return `trace_id` and `trace_written`; their trace
-envelopes store request `prompt_hash`, response `output_hash`, status, policy,
-model role, and classification metadata rather than raw prompts, completions,
-stdout/stderr, stack traces, tool parameters, secrets, or diffs. `repo-write`
-approval is a separate explicit operator choice and should not be used to clear
-scorecard warnings.
-
-Prompt Compressor MCP remains disabled by default and should be enabled only in
-trusted local/operator environments:
-
-```bash
-cd mcp-servers/prompt-compressor
-npm install
-npm run build
-```
-
-Then set `PROMPT_COMPRESSOR_MCP_ENABLED=true` in the local environment and
-confirm visibility with `php artisan ops:mcp-health --compact`. Treat it as
-context reduction only: token counting, prompt/diff/file compression, and local
-context store/retrieve/list. File reads stay inside configured allowed roots,
-`context_store` is a bounded local write, protected reads stay refused unless an
-operator deliberately overrides them, and stored context must not contain
-secrets, credentials, private release material, or living-person source text.
-
-A warning or critical scorecard is evidence to inspect configuration, backlog,
-or local process posture. It is not permission to widen offline profiles, enable
-cloud providers, run broader MCP tools, approve review rows, change scheduler
-behavior, or promote agent autonomy.
-
-For trend evidence, preview aggregate readiness snapshots before writing rows:
-
-```bash
-php artisan ops:agent-doctor-snapshot --dry-run --json
-php artisan ops:agent-doctor-history --json --compact --days=7
-```
-
-Without `--dry-run`, `ops:agent-doctor-snapshot` appends one aggregate row to
-`dev_agent_readiness_snapshots`. The stored row contains only status/count
-fields, trace-readiness aggregates, recursion status/count, check ids, and
-scheduled output-quality counts. `ops:agent-doctor-history` reads that table
-only and does not re-run live diagnostics. Use the compact form for routine
-MCP/operator checks because it omits snapshot ids and check-id lists.
-
-## Agent Output Quality Replay
-
-Use the AWO replay surface when checking whether agent output has enough
-operator-reviewed evidence to support later autonomy decisions:
-
-```bash
-php artisan awo:replay --window=7d --json --compact
-php artisan awo:replay --window=7d --limit=500 --json
-php artisan awo:replay --window=7d --limit=500 --markdown
-php artisan awo:replay --compare-scheduled --window=7d --limit=500 --json
-```
-
-These commands are read-only. They scan `agent_review_queue`, report aggregate
-approval-worthy-output counts, and leave `promotion_decisions` empty. They do
-not enable `awo.recording_enabled`, approve or reject review rows, promote
-agents, or change scheduler behavior.
-
-The summary keeps completed-review metrics separate from scanned row signals.
-`hard_fail_count` is the legacy alias for completed-review hard fails, matching
-`completed_hard_fail_count`. `scanned_hard_fail_signal_count` includes every
-scanned item with a replay hard-fail signal, including pending rows, and
-`pending_hard_fail_signal_count` isolates signals that do not yet have a final
-operator decision.
-
-For one-at-a-time review backlog cleanup, use
-`php artisan ops:review-backlog-report --next-target`. The payload is
-observe-only and sanitized. `classification` reflects the ordering reason, so a
-high-priority row may show `high_priority_pending_review`; when that happens,
-`underlying_classification` and `underlying_next_action` preserve the normal
-cleanup path such as typed-preview or source-backed packet work.
-
-Use `--compare-scheduled` after the weekly `awo_replay_weekly_report` has at
-least one successful retained run. It compares the latest scheduled Markdown
-summary to a current replay and emits stop rules only; mismatches are review
-evidence, not an automation trigger.
-
-Treat fewer than 10 completed reviews as insufficient data. Also require at
-least 10 completed reviews for an individual agent before using that agent's
-AWO rate as promotion evidence. Item-level JSON can include private review
-context, so public notes should use aggregate counts only. A pending item with
-`hard_fail=true` is review evidence, not a completed-review hard fail, until the
-operator decision is finalized.
-
-## Database Telemetry
-
-Use the observe-only DBA telemetry report before considering retention,
-partition, cleanup, backup, or Redis remediation work:
-
-```bash
-php artisan ops:dba-telemetry-report --json --compact
-php artisan ops:dba-telemetry-report --dry-run
-```
-
-The default report collects MySQL/MariaDB table sizes, the
-`agent_recursion_calls` storage signal, PostgreSQL/pgvector relation health,
-and Redis memory/fragmentation counters. It is metadata-only and does not
-delete rows, alter tables, optimize/vacuum databases, flush Redis, change
-backups, or modify scheduler behavior.
-
-Do not use `--deep` as a routine health check. It may run heavier raw
-aggregation over `agent_recursion_calls`; reserve it for an off-peak window
-after the default report shows that exact recent growth evidence is needed.
-
-For the approved `agent_recursion_calls` retention cleanup path, use the
-bounded dry-run-first command:
-
-```bash
-php artisan ops:arc-retention --json --compact
-php artisan ops:arc-retention --execute --max-rows=50000 --batch=5000 --sleep-ms=100 --json --compact
-php artisan ops:arc-retention --execute --repeat=5 --max-rows=10000 --batch=5000 --sleep-ms=100 --json --compact
-```
-
-The command defaults to dry-run, requires `--execute` to delete rows, uses the
-`created_at` retention index, avoids count-first cleanup, caps each execution,
-preserves `recursion_effectiveness`, and supports compact aggregate output for
-operator evidence. Repeated execution requires `--execute`, is capped, and
-stops when a bounded run no longer reaches its row cap; keep health/capacity
-checks between repeat groups. Larger off-peak chunks require the same bounded
-operator approval recorded in the private operator TODO.
-
-Relevant docs:
-
-- `docs/AIService-LLM-Gateway.md`
-- `docs/OLLAMA-COMPATIBILITY.md`
-- `docs/security-privacy.md`
-
-## Backups
-
-Back up the databases and any local storage paths you configure. A public core
-install generally needs:
-
-- MySQL/MariaDB application database;
-- PostgreSQL/pgvector RAG database;
-- configured `storage/` contents that are not reproducible;
-- private connector volumes if you enabled them locally.
-
-Do not publish backup scripts, snapshots, or personal data in public issues or
-fixtures.
-
-## Maintenance Cadence
-
-Before publishing or tagging:
-
-```bash
-scripts/guards/public-release-audit.sh
-scripts/audit-licenses.sh
-php artisan setup:doctor --profile=core
-```
-
-Keep schema dumps, fixture provenance, dependency lockfiles, and public docs
-aligned with the release you intend to support.
+The cancelled privileged maintenance MCP adapter and host helper are excluded.
+Use your installation's reviewed deployment and service procedures; the public
+example does not install privileged helpers or qualify mounts. Explicit Codex
+preference retains offline/local-only, privacy, profile, role and exact provider
+admission; preference alone does not grant permission to send source data.

@@ -2,7 +2,10 @@
 
 namespace Tests\Feature\Console;
 
+use App\Services\AgentEpisodicMemoryService;
 use App\Services\AIService;
+use App\Services\EpisodicMemoryMaintenanceRuntimePolicyService;
+use App\Services\SystemConfigService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
@@ -25,6 +28,23 @@ class AgentMemoryStatsCommandTest extends TestCase
         $this->createAgentEpisodeSummariesTable();
         $this->createAgentEpisodesTable();
         $this->createAgentProceduresTable();
+
+        $systemConfig = new class($this->maintenancePolicy()) extends SystemConfigService
+        {
+            /** @param array<string,mixed> $policy */
+            public function __construct(private readonly array $policy) {}
+
+            public function get(string $key, mixed $default = null): mixed
+            {
+                return $key === EpisodicMemoryMaintenanceRuntimePolicyService::CONFIG_KEY
+                    ? $this->policy
+                    : $default;
+            }
+        };
+        $this->app->instance(
+            EpisodicMemoryMaintenanceRuntimePolicyService::class,
+            new EpisodicMemoryMaintenanceRuntimePolicyService($systemConfig),
+        );
     }
 
     protected function tearDown(): void
@@ -88,7 +108,7 @@ class AgentMemoryStatsCommandTest extends TestCase
         $this->assertStringNotContainsString('alpha-agent', $output);
     }
 
-    public function test_episodic_memory_json_mode_rejects_mutating_options(): void
+    public function test_episodic_memory_archive_requires_dry_run_or_confirmation(): void
     {
         $exit = Artisan::call('episodic:memory', [
             '--archive' => true,
@@ -98,9 +118,177 @@ class AgentMemoryStatsCommandTest extends TestCase
 
         $this->assertSame(1, $exit);
         $this->assertStringContainsString(
-            'The --json/--compact options are only supported for stats and bounded backfill.',
+            'Maintenance requires --dry-run or --confirm.',
             (string) Artisan::output()
         );
+    }
+
+    public function test_episodic_memory_archive_compact_dry_run_is_bounded_and_does_not_write(): void
+    {
+        DB::table('agent_episode_summaries')->insert([
+            'agent_id' => 'archive-agent',
+            'session_id' => 'archive-session',
+            'task' => 'Old low-importance task',
+            'summary' => 'Old low-importance summary.',
+            'outcome' => 'success',
+            'importance' => 0.40,
+            'tool_count' => 0,
+            'tokens_used' => 0,
+            'duration_ms' => 0,
+            'episode_count' => 1,
+            'is_archived' => 0,
+            'created_at' => now()->subDays(100),
+        ]);
+
+        $exit = Artisan::call('episodic:memory', [
+            '--archive' => true,
+            '--dry-run' => true,
+            '--json' => true,
+            '--compact' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $payload = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(0, $exit, $output);
+        $this->assertSame('archive', $payload['mode']);
+        $this->assertTrue($payload['dry_run']);
+        $this->assertSame(1, $payload['summary']['candidates_selected']);
+        $this->assertSame(0, $payload['summary']['summaries_archived']);
+        $this->assertSame(50, $payload['summary']['limit']);
+        $this->assertSame(0, DB::table('agent_episode_summaries')->where('is_archived', 1)->count());
+        $this->assertStringNotContainsString('archive-agent', $output);
+        $this->assertStringNotContainsString('archive-session', $output);
+    }
+
+    public function test_confirmed_archive_requires_explicit_limit_before_service_access(): void
+    {
+        $service = $this->mock(AgentEpisodicMemoryService::class);
+        $service->shouldNotReceive('archiveOldEpisodes');
+
+        $exit = Artisan::call('episodic:memory', [
+            '--archive' => true,
+            '--confirm' => true,
+        ]);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('requires an explicit --limit', (string) Artisan::output());
+    }
+
+    public function test_confirmed_archive_changes_only_the_explicit_bounded_selection(): void
+    {
+        DB::table('agent_episode_summaries')->insert([
+            'agent_id' => 'archive-agent',
+            'session_id' => 'archive-session',
+            'task' => 'Old low-importance task',
+            'summary' => 'Old low-importance summary.',
+            'outcome' => 'success',
+            'importance' => 0.40,
+            'tool_count' => 0,
+            'tokens_used' => 0,
+            'duration_ms' => 0,
+            'episode_count' => 1,
+            'is_archived' => 0,
+            'created_at' => now()->subDays(100),
+        ]);
+
+        $exit = Artisan::call('episodic:memory', [
+            '--archive' => true,
+            '--limit' => 1,
+            '--confirm' => true,
+            '--json' => true,
+            '--compact' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $payload = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+        $this->assertSame(0, $exit, $output);
+        $this->assertFalse($payload['dry_run']);
+        $this->assertTrue($payload['confirmed']);
+        $this->assertSame(1, $payload['summary']['summaries_archived']);
+        $this->assertSame(1, $payload['summary']['limit']);
+        $this->assertSame(1, DB::table('agent_episode_summaries')->where('is_archived', 1)->count());
+        $this->assertStringNotContainsString('archive-agent', $output);
+        $this->assertStringNotContainsString('archive-session', $output);
+    }
+
+    public function test_episodic_memory_rejects_conflicting_maintenance_modes(): void
+    {
+        $exit = Artisan::call('episodic:memory', [
+            '--archive' => true,
+            '--backfill' => true,
+            '--dry-run' => true,
+        ]);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('Choose exactly one episodic memory mode', (string) Artisan::output());
+    }
+
+    public function test_episodic_memory_rejects_mode_inapplicable_options(): void
+    {
+        $statsExit = Artisan::call('episodic:memory', ['--limit' => 5]);
+        $this->assertSame(1, $statsExit);
+        $this->assertStringContainsString('Maintenance options require', (string) Artisan::output());
+
+        $agentExit = Artisan::call('episodic:memory', ['--agent' => 'genealogy']);
+        $this->assertSame(1, $agentExit);
+        $this->assertStringContainsString('Maintenance options require', (string) Artisan::output());
+
+        $archiveExit = Artisan::call('episodic:memory', [
+            '--archive' => true,
+            '--days' => 10,
+            '--dry-run' => true,
+        ]);
+        $this->assertSame(1, $archiveExit);
+        $this->assertStringContainsString('supported only with --backfill', (string) Artisan::output());
+    }
+
+    public function test_archived_embedding_prune_requires_dry_run_or_confirmation(): void
+    {
+        $exit = Artisan::call('episodic:memory', [
+            '--prune-archived-embeddings' => true,
+        ]);
+
+        $this->assertSame(1, $exit);
+        $this->assertStringContainsString('requires --dry-run or --confirm', (string) Artisan::output());
+    }
+
+    public function test_archived_embedding_prune_compact_dry_run_exposes_counts_without_ids(): void
+    {
+        $this->mock(AgentEpisodicMemoryService::class, function ($mock): void {
+            $mock->shouldReceive('pruneArchivedEmbeddings')
+                ->once()
+                ->with(50, false, $this->maintenancePolicy()['prune'])
+                ->andReturn([
+                    'status' => 'pass',
+                    'execute' => false,
+                    'scan_count' => 1200,
+                    'candidate_count' => 50,
+                    'deleted_count' => 0,
+                    'more_possible' => true,
+                    'summaries_changed' => 0,
+                    'memory_links_changed' => 0,
+                ]);
+        });
+
+        $exit = Artisan::call('episodic:memory', [
+            '--prune-archived-embeddings' => true,
+            '--dry-run' => true,
+            '--limit' => 50,
+            '--json' => true,
+            '--compact' => true,
+        ]);
+
+        $output = (string) Artisan::output();
+        $payload = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame(0, $exit, $output);
+        $this->assertSame('prune_archived_embeddings', $payload['mode']);
+        $this->assertTrue($payload['dry_run']);
+        $this->assertSame(50, $payload['summary']['archived_embedding_candidates']);
+        $this->assertSame(0, $payload['summary']['embeddings_deleted']);
+        $this->assertSame(0, $payload['summary']['summaries_changed']);
+        $this->assertSame(0, $payload['summary']['memory_links_changed']);
+        $this->assertStringNotContainsString('summary_id', $output);
     }
 
     public function test_episodic_memory_backfill_requires_confirm_without_dry_run(): void
@@ -126,7 +314,7 @@ class AgentMemoryStatsCommandTest extends TestCase
         $this->assertSame(1, $exit);
         $this->assertSame(0, DB::table('agent_episode_summaries')->count());
         $this->assertStringContainsString(
-            'requires --confirm',
+            'requires --dry-run or --confirm',
             (string) Artisan::output()
         );
     }
@@ -174,6 +362,44 @@ class AgentMemoryStatsCommandTest extends TestCase
         $this->assertStringContainsString('alpha-agent', $output);
         $this->assertStringNotContainsString('alpha-session', $output);
         $this->assertTrue(Cache::has('operator_evidence:agent_doctor:v1'));
+    }
+
+    public function test_episodic_memory_backfill_prioritizes_oldest_undistilled_session(): void
+    {
+        DB::table('agent_episodes')->insert([
+            [
+                'agent_id' => 'oldest-agent',
+                'session_id' => 'oldest-session',
+                'event_type' => 'task_completed',
+                'summary' => 'Old task',
+                'details' => null,
+                'tokens_used' => 10,
+                'duration_ms' => 100,
+                'created_at' => now()->subHours(8),
+            ],
+            [
+                'agent_id' => 'newest-agent',
+                'session_id' => 'newest-session',
+                'event_type' => 'task_completed',
+                'summary' => 'New task',
+                'details' => null,
+                'tokens_used' => 10,
+                'duration_ms' => 100,
+                'created_at' => now()->subHour(),
+            ],
+        ]);
+
+        $exit = Artisan::call('episodic:memory', [
+            '--backfill' => true,
+            '--dry-run' => true,
+            '--days' => 2,
+            '--limit' => 1,
+        ]);
+
+        $output = (string) Artisan::output();
+        $this->assertSame(0, $exit, $output);
+        $this->assertStringContainsString('oldest-agent', $output);
+        $this->assertStringNotContainsString('newest-agent', $output);
     }
 
     public function test_episodic_memory_backfill_json_mode_emits_compact_payload_without_progress_output(): void
@@ -234,6 +460,7 @@ class AgentMemoryStatsCommandTest extends TestCase
         $this->assertSame(1, $payload['summary']['summaries_created']);
         $this->assertSame(0, $payload['summary']['failed']);
         $this->assertSame(1, $payload['summary']['agent_rollup_count']);
+        $this->assertSame('oldest_undistilled_first', $payload['summary']['selection_policy']);
         $this->assertSame(1, $payload['agent_rollup'][0]['rank']);
         $this->assertSame(1, DB::table('agent_episode_summaries')->count());
         $this->assertStringNotContainsString('0/1', $output);
@@ -301,6 +528,7 @@ class AgentMemoryStatsCommandTest extends TestCase
         $exit = Artisan::call('episodic:memory', [
             '--backfill' => true,
             '--days' => 2,
+            '--limit' => 50,
             '--confirm' => true,
         ]);
 
@@ -398,6 +626,33 @@ class AgentMemoryStatsCommandTest extends TestCase
             'The --json/--compact options are only supported for read-only stats.',
             (string) Artisan::output()
         );
+    }
+
+    /** @return array<string,mixed> */
+    private function maintenancePolicy(): array
+    {
+        return [
+            'schema' => EpisodicMemoryMaintenanceRuntimePolicyService::SCHEMA,
+            'archive' => [
+                'retention_days' => 90,
+                'importance_below' => 0.6,
+                'preview_default_limit' => 50,
+                'max_limit' => 5000,
+            ],
+            'backfill' => [
+                'default_days' => 30,
+                'max_days' => 3650,
+                'preview_default_limit' => 50,
+                'max_limit' => 500,
+            ],
+            'prune' => [
+                'preview_default_limit' => 50,
+                'max_limit' => 5000,
+                'scan_batch' => 1000,
+                'scan_cap' => 100000,
+                'delete_batch' => 500,
+            ],
+        ];
     }
 
     private function createAgentEpisodesTable(): void

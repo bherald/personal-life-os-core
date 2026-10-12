@@ -2,10 +2,13 @@
 
 namespace App\Nodes\YouTube;
 
+use App\DTOs\TrustEnvelope;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Nodes\BaseNode;
-use App\Services\AgentGuardrailService;
 use App\Services\AIService;
 use App\Services\SystemConfigService;
+use App\Services\TrustBoundaryFormatterService;
+use App\Services\YouTubeJoplinDeliveryService;
 use Exception;
 use Illuminate\Support\Facades\Log;
 
@@ -34,9 +37,9 @@ class YouTubeTranscriptFormatter extends BaseNode
         'formatter_max_seconds' => 240,
     ];
 
-    private ?AIService $aiService = null;
+    private array $lastAiFailure = [];
 
-    private ?AgentGuardrailService $guardrail = null;
+    private ?AIService $aiService = null;
 
     /** @var array<string,mixed>|null */
     private ?array $runtimePolicy = null;
@@ -58,7 +61,7 @@ class YouTubeTranscriptFormatter extends BaseNode
             if (! $enabled) {
                 Log::info('YouTubeTranscriptFormatter: Formatting disabled, skipping');
 
-                return $this->standardOutput($input, [
+                return $this->standardOutput($input['data'] ?? $input, [
                     'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
                 ]);
             }
@@ -69,7 +72,7 @@ class YouTubeTranscriptFormatter extends BaseNode
             if (empty($videos)) {
                 Log::info('YouTubeTranscriptFormatter: No videos to process');
 
-                return $this->standardOutput($input);
+                return $this->standardOutput($input['data'] ?? $input);
             }
 
             Log::info('YouTubeTranscriptFormatter: Starting transcript formatting', [
@@ -141,11 +144,22 @@ class YouTubeTranscriptFormatter extends BaseNode
                             }
                         }
 
+                        if (empty($extracted['key_points'])) {
+                            $failedCount++;
+                            $video['transcript_formatted'] = false;
+                            $video['transcript_formatting_failure'] = $this->lastAiFailure
+                                ?: ['failure_kind' => 'invalid_response'];
+                            Log::warning('YouTubeTranscriptFormatter: Required key points missing', $video['transcript_formatting_failure']);
+
+                            continue;
+                        }
+
                         // Store key points as separate array
                         $video['key_points'] = $extracted['key_points'];
 
-                        // Store formatted transcript WITHOUT key points section
-                        $video['transcript_full_text'] = $extracted['transcript'];
+                        // Keep the fetched transcript authoritative. AI formatting is
+                        // supplemental and must never silently shorten the archive.
+                        $video['transcript_formatted_text'] = $extracted['transcript'];
                         $video['transcript_formatted'] = true;
                         $formattedCount++;
 
@@ -158,9 +172,13 @@ class YouTubeTranscriptFormatter extends BaseNode
                     } else {
                         $failedCount++;
                         $video['transcript_formatted'] = false;
+                        $video['transcript_formatting_failure'] = $this->lastAiFailure;
                     }
 
                 } catch (Exception $e) {
+                    if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                        throw $e;
+                    }
                     $failedCount++;
                     $video['transcript_formatted'] = false;
                     Log::error('YouTubeTranscriptFormatter: Exception formatting transcript', [
@@ -188,13 +206,13 @@ class YouTubeTranscriptFormatter extends BaseNode
 
             // Return videos with formatted transcripts
             // Pass through ip_blocked status from previous node
-            return $this->standardOutput([
+            return $this->standardOutput(array_merge($input['data'] ?? $input, [
                 'videos' => $videos,
                 'transcripts_fetched' => $input['data']['transcripts_fetched'] ?? $input['transcripts_fetched'] ?? 0,
                 'transcripts_failed' => $input['data']['transcripts_failed'] ?? $input['transcripts_failed'] ?? 0,
                 'ip_blocked' => $input['data']['ip_blocked'] ?? $input['ip_blocked'] ?? false,
                 'ip_block_error' => $input['data']['ip_block_error'] ?? $input['ip_block_error'] ?? null,
-            ], [
+            ]), [
                 'transcripts_formatted' => $formattedCount,
                 'transcripts_skipped' => $skippedCount,
                 'transcripts_failed' => $failedCount,
@@ -206,6 +224,9 @@ class YouTubeTranscriptFormatter extends BaseNode
             ]);
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('YouTubeTranscriptFormatter: Execution failed', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
@@ -226,6 +247,7 @@ class YouTubeTranscriptFormatter extends BaseNode
     private function formatTranscript(string $transcript, string $videoTitle): ?string
     {
         try {
+            $this->lastAiFailure = [];
             // Build AI prompt for transcript formatting with summary
             $prompt = $this->buildFormattingPrompt($transcript, $videoTitle);
 
@@ -233,6 +255,10 @@ class YouTubeTranscriptFormatter extends BaseNode
             $result = $this->aiService->process($prompt, $this->config);
 
             if (! $result['success']) {
+                $this->lastAiFailure = ['failure_kind' => 'provider_failure', 'controller_failure' => InferenceAdmissionException::sanitizeControllerFailure(
+                    is_array($result['controller_failure'] ?? null) ? $result['controller_failure'] : []
+                )];
+                Log::warning('YouTubeTranscriptFormatter: Typed AI failure', $this->lastAiFailure);
                 Log::warning('YouTubeTranscriptFormatter: AI processing failed', [
                     'error' => $result['error'],
                 ]);
@@ -245,10 +271,11 @@ class YouTubeTranscriptFormatter extends BaseNode
             // Validate result
             $minFormattedChars = $this->configuredPositiveInt('min_formatted_chars')
                 ?? $this->runtimePolicyInt('formatter_min_formatted_chars');
-            if (empty($formatted) || strlen($formatted) < $minFormattedChars) {
+            if (! is_string($formatted) || $formatted === '' || strlen($formatted) < $minFormattedChars) {
+                $this->lastAiFailure = ['failure_kind' => 'invalid_response'];
                 Log::warning('YouTubeTranscriptFormatter: AI returned suspiciously short result', [
                     'original_length' => strlen($transcript),
-                    'formatted_length' => strlen($formatted),
+                    'formatted_length' => is_string($formatted) ? strlen($formatted) : 0,
                     'min_formatted_chars' => $minFormattedChars,
                 ]);
 
@@ -258,6 +285,12 @@ class YouTubeTranscriptFormatter extends BaseNode
             return $formatted;
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+            $cause = InferenceAdmissionException::controllerFailureFrom($e);
+            $this->lastAiFailure = ['failure_kind' => $cause === [] ? 'exception' : 'controller_refusal', 'controller_failure' => $cause];
+            Log::warning('YouTubeTranscriptFormatter: Typed AI failure', $this->lastAiFailure);
             Log::error('YouTubeTranscriptFormatter: AI formatting failed', [
                 'error' => $e->getMessage(),
             ]);
@@ -275,7 +308,10 @@ class YouTubeTranscriptFormatter extends BaseNode
      */
     private function buildFormattingPrompt(string $transcript, string $videoTitle): string
     {
-        $safeTranscript = $this->getGuardrail()->sanitizeUntrustedText($transcript);
+        $safeTranscript = app(TrustBoundaryFormatterService::class)->format(new TrustEnvelope(
+            sourceType: 'transcript', contentType: 'text/plain', origin: $videoTitle,
+            payload: $transcript, preservePayload: true,
+        ));
 
         return <<<PROMPT
 Format this YouTube video transcript. Your output MUST have exactly this structure:
@@ -302,6 +338,8 @@ RULES FOR KEY POINTS (MANDATORY — do not skip this section):
 - Each bullet starts with "- " and is 1-2 sentences of SPECIFIC content (names, numbers, claims)
 - Put a blank line between each bullet point
 - Do NOT write generic points like "The video discusses..." — be specific
+- Preserve attribution, uncertainty and caveats; identify assertions as source claims when unverified
+- Do not present creator medical claims as verified facts or add advice or endorsements
 
 RULES FOR TRANSCRIPT (after the "---" separator):
 - Write "---" on its own line after the key points
@@ -317,15 +355,6 @@ Raw Transcript:
 CRITICAL: Your output MUST start with "## Key Points" and MUST contain "---" separator. Do NOT use placeholder text.
 
 PROMPT;
-    }
-
-    private function getGuardrail(): AgentGuardrailService
-    {
-        if (! $this->guardrail) {
-            $this->guardrail = app(AgentGuardrailService::class);
-        }
-
-        return $this->guardrail;
     }
 
     private function configuredBool(string $key): ?bool
@@ -454,7 +483,7 @@ PROMPT;
         ];
 
         // Look for "## Key Points" section
-        if (! preg_match('/##\s*Key Points/i', $formattedText)) {
+        if (! preg_match('/^##[\t ]+Key Points[\t ]*\r?$/mi', $formattedText)) {
             Log::warning('YouTubeTranscriptFormatter: No "## Key Points" section found in AI output');
 
             return $result;
@@ -470,12 +499,36 @@ PROMPT;
         }
 
         $keyPointsSection = $parts[0];
+        if (! preg_match('/\A##[\t ]+Key Points[\t ]*\R(.*)\z/si', trim($keyPointsSection), $section)) {
+            return $result;
+        }
+        $keyPointsSection = $section[1];
+        if (preg_match('/will be extracted|to be generated|pending|placeholder/i', $keyPointsSection)) {
+            return $result;
+        }
         $transcriptSection = trim($parts[1]);
+        if ($transcriptSection === '') {
+            return $result;
+        }
 
         // Extract bullet points from key points section
         // Match lines starting with "- " after the "## Key Points" heading
-        if (preg_match_all('/^-\s+(.+)$/m', $keyPointsSection, $matches)) {
-            $result['key_points'] = array_map('trim', $matches[1]);
+        $lines = preg_split('/\R/u', trim($keyPointsSection));
+        if ($lines === false) {
+            return $result;
+        }
+        $points = [];
+        foreach ($lines as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            if (! preg_match('/^-[\t ]+(\S[^\r\n]*)$/D', $line, $match)) {
+                return $result;
+            }
+            $points[] = trim($match[1]);
+        }
+        if (app(YouTubeJoplinDeliveryService::class)->validGeneratedKeyPoints($points)) {
+            $result['key_points'] = $points;
             $result['transcript'] = $transcriptSection;
 
             Log::debug('YouTubeTranscriptFormatter: Extracted key points', [

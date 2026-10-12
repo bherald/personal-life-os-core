@@ -3,22 +3,39 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\AIService;
 use App\Services\ExifWritebackService;
+use App\Services\FaceEmbeddingService;
 use App\Services\FaceMatcherService;
 use App\Services\FileRegistryLifecycleService;
 use App\Services\FileRegistryService;
+use App\Services\Files\PhotoReviewEvidenceService;
 use App\Services\FileVersionService;
 use App\Services\Genealogy\FaceCandidateDecisionService;
 use App\Services\Genealogy\FaceCandidateService;
 use App\Services\Genealogy\FaceLinkBridgeService;
+use App\Services\Genealogy\FaceMatchReviewDecisionService;
 use App\Services\Genealogy\Support\TemporalProximityChecker;
 use App\Services\ImageEditService;
+use App\Services\NextcloudFileApiService;
+use App\Services\NextcloudService;
+use App\Services\RagEmbeddingProvenanceService;
+use App\Services\Review\RegistryFaceReviewService;
+use App\Services\ReviewTypeRegistryService;
 use App\Services\ThumbnailService;
+use App\Support\PgVector;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 
 /**
  * MediaBrowserController - API for media gallery and viewer
@@ -33,6 +50,43 @@ use Illuminate\Support\Facades\Log;
  */
 class MediaBrowserController extends Controller
 {
+    public function photoEvidence(Request $request): JsonResponse
+    {
+        try {
+            $bundle = app(PhotoReviewEvidenceService::class)->evidence($this->photoEvidenceSelector($request));
+
+            return response()->json($bundle)->header('Cache-Control', 'private, no-store');
+        } catch (\InvalidArgumentException $exception) {
+            return response()->json(['success' => false, 'error_code' => 'invalid_photo_selector'], 422)->header('Cache-Control', 'private, no-store');
+        } catch (\RuntimeException $exception) {
+            return response()->json(['success' => false, 'error_code' => $exception->getMessage()], 409)->header('Cache-Control', 'private, no-store');
+        }
+    }
+
+    public function photoEvidencePreview(Request $request): Response
+    {
+        $request->validate(['source_sha256' => 'required|string|regex:/^[a-f0-9]{64}$/D']);
+        try {
+            $preview = app(PhotoReviewEvidenceService::class)->preview($this->photoEvidenceSelector($request, true), $request->query('source_sha256'));
+
+            return response($preview['bytes'], 200, ['Content-Type' => 'image/jpeg', 'Cache-Control' => 'private, no-store',
+                'X-PLOS-Source-SHA256' => $preview['source_sha256'], 'X-Content-Type-Options' => 'nosniff']);
+        } catch (\InvalidArgumentException|\RuntimeException) {
+            abort(409, 'Current source photo requires review.');
+        }
+    }
+
+    private function photoEvidenceSelector(Request $request, bool $preview = false): array
+    {
+        $fields = ['asset_uuid', 'file_registry_id', 'face_match_id', 'face_id', 'media_id', 'tree_id'];
+        $allowed = $preview ? [...$fields, 'source_sha256'] : $fields;
+        if (array_diff(array_keys($request->query()), $allowed) !== []) {
+            throw new \InvalidArgumentException('Unsupported photo selector.');
+        }
+
+        return $request->only($fields);
+    }
+
     private const FACE_CANDIDATE_DECISION_ACTIONS = [
         'keep_name_only',
         'outside_tree',
@@ -380,12 +434,12 @@ class MediaBrowserController extends Controller
 
         // Get source image data — filesystem-first, WebDAV fallback
         try {
-            $ncApi = app(\App\Services\NextcloudFileApiService::class);
+            $ncApi = app(NextcloudFileApiService::class);
             $localFsPath = $ncApi->localPath($path);
             if ($localFsPath) {
                 $sourceData = @file_get_contents($localFsPath);
             } else {
-                $nextcloud = app(\App\Services\NextcloudService::class);
+                $nextcloud = app(NextcloudService::class);
                 $result = $nextcloud->downloadFile($path);
                 if (! $result['success']) {
                     return response('File not found', 404);
@@ -476,7 +530,7 @@ class MediaBrowserController extends Controller
         }
 
         try {
-            $nextcloud = app(\App\Services\NextcloudService::class);
+            $nextcloud = app(NextcloudService::class);
             $result = $nextcloud->downloadFile($path);
 
             if (! $result['success']) {
@@ -558,7 +612,7 @@ class MediaBrowserController extends Controller
      *
      * GET /api/media/{uuid}/stream
      */
-    public function stream(Request $request, string $uuid): \Symfony\Component\HttpFoundation\StreamedResponse|Response
+    public function stream(Request $request, string $uuid): StreamedResponse|Response
     {
         $item = DB::selectOne("
             SELECT current_path, mime_type, file_size
@@ -1156,7 +1210,7 @@ class MediaBrowserController extends Controller
             $faceOrderSql = 'face_count DESC, frf.person_name ASC';
             if ($search !== '') {
                 $normalizedSearch = $normalizeName($search);
-                $faceOrderSql = "
+                $faceOrderSql = '
                     CASE
                         WHEN LOWER(frf.person_name) = ? THEN 0
                         WHEN LOWER(frf.person_name) LIKE ? THEN 1
@@ -1164,12 +1218,12 @@ class MediaBrowserController extends Controller
                     END,
                     face_count DESC,
                     frf.person_name ASC
-                ";
+                ';
                 array_push($faceParams, $normalizedSearch, $normalizedSearch.'%');
             }
 
             $faceParams[] = $limit;
-            $faceIdentityRows = DB::select("
+            $faceIdentityRows = DB::select('
                 SELECT
                     frf.person_name,
                     frf.genealogy_person_id,
@@ -1183,7 +1237,7 @@ class MediaBrowserController extends Controller
                     COUNT(DISTINCT frf.file_registry_id) AS media_count
                 FROM file_registry_faces frf
                 LEFT JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
-                WHERE ".implode(' AND ', $faceWhere)."
+                WHERE '.implode(' AND ', $faceWhere)."
                 GROUP BY
                     frf.person_name,
                     frf.genealogy_person_id,
@@ -1235,6 +1289,7 @@ class MediaBrowserController extends Controller
             if (isset($results[$key])) {
                 $results[$key]['face_count'] = max((int) $results[$key]['face_count'], (int) $person->face_count);
                 $results[$key]['media_count'] = max((int) $results[$key]['media_count'], (int) $person->face_count);
+
                 continue;
             }
 
@@ -1313,48 +1368,54 @@ class MediaBrowserController extends Controller
      */
     public function setFaceName(Request $request, int $faceId): JsonResponse
     {
-        $personName = trim($request->input('person_name', ''));
-        $genealogyPersonId = (int) $request->input('genealogy_person_id', 0);
-        if (! $personName) {
-            return response()->json(['error' => 'person_name required'], 400);
-        }
+        return DB::transaction(function () use ($request, $faceId): JsonResponse {
+            $personName = trim($request->input('person_name', ''));
+            $genealogyPersonId = (int) $request->input('genealogy_person_id', 0);
+            if (! $personName) {
+                return response()->json(['error' => 'person_name required'], 400);
+            }
 
-        if ($genealogyPersonId > 0 && ! $this->findGenealogyPerson($genealogyPersonId, (int) $request->input('tree_id', 0))) {
-            return $this->invalidGenealogyPersonResponse($genealogyPersonId);
-        }
+            if ($genealogyPersonId > 0 && ! $this->findGenealogyPerson($genealogyPersonId, (int) $request->input('tree_id', 0))) {
+                return $this->invalidGenealogyPersonResponse($genealogyPersonId);
+            }
 
-        $face = DB::selectOne('SELECT id, file_registry_id FROM file_registry_faces WHERE id = ?', [$faceId]);
-        if (! $face) {
-            return response()->json(['error' => 'Face not found'], 404);
-        }
+            $face = DB::selectOne('SELECT id, file_registry_id, global_identity_uuid, global_identity_approval_receipt_id FROM file_registry_faces WHERE id = ? FOR UPDATE', [$faceId]);
+            if (! $face) {
+                return response()->json(['error' => 'Face not found'], 404);
+            }
 
-        if ($genealogyPersonId > 0) {
-            DB::update(
-                'UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = ? WHERE id = ?',
-                [$personName, $genealogyPersonId, $faceId]
-            );
-        } else {
-            DB::update(
-                'UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = NULL, verified = 0 WHERE id = ?',
-                [$personName, $faceId]
-            );
-        }
+            if ($this->faceHasGlobalAssignment($face)) {
+                return $this->globalFaceMutationConflict();
+            }
 
-        // Reset writeback flags so scheduled job re-writes EXIF
-        DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$face->file_registry_id]);
+            if ($genealogyPersonId > 0) {
+                DB::update(
+                    'UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = ? WHERE id = ? AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL',
+                    [$personName, $genealogyPersonId, $faceId]
+                );
+            } else {
+                DB::update(
+                    'UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = NULL, verified = 0 WHERE id = ? AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL',
+                    [$personName, $faceId]
+                );
+            }
 
-        $bridgeResult = null;
-        if ($genealogyPersonId > 0) {
-            $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $genealogyPersonId);
-        }
+            // Reset writeback flags so scheduled job re-writes EXIF
+            DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$face->file_registry_id]);
 
-        return response()->json([
-            'success' => true,
-            'face_id' => $faceId,
-            'person_name' => $personName,
-            'genealogy_person_id' => $genealogyPersonId ?: null,
-            'genealogy_bridge' => $bridgeResult,
-        ]);
+            $bridgeResult = null;
+            if ($genealogyPersonId > 0) {
+                $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $genealogyPersonId);
+            }
+
+            return response()->json([
+                'success' => true,
+                'face_id' => $faceId,
+                'person_name' => $personName,
+                'genealogy_person_id' => $genealogyPersonId ?: null,
+                'genealogy_bridge' => $bridgeResult,
+            ]);
+        });
     }
 
     /**
@@ -1364,26 +1425,36 @@ class MediaBrowserController extends Controller
      */
     public function linkFace(Request $request): JsonResponse
     {
-        $faceId = (int) $request->input('face_id');
-        $personId = (int) ($request->input('person_id') ?: $request->input('genealogy_person_id'));
+        return DB::transaction(function () use ($request): JsonResponse {
+            $faceId = (int) $request->input('face_id');
+            $personId = (int) ($request->input('person_id') ?: $request->input('genealogy_person_id'));
 
-        if (! $faceId || ! $personId) {
-            return response()->json(['error' => 'face_id and person_id required'], 400);
-        }
+            if (! $faceId || ! $personId) {
+                return response()->json(['error' => 'face_id and person_id required'], 400);
+            }
 
-        if (! $this->findGenealogyPerson($personId, (int) $request->input('tree_id', 0))) {
-            return $this->invalidGenealogyPersonResponse($personId);
-        }
+            $face = DB::selectOne('SELECT id, global_identity_uuid, global_identity_approval_receipt_id FROM file_registry_faces WHERE id = ? FOR UPDATE', [$faceId]);
+            if (! $face) {
+                return response()->json(['error' => 'Face not found'], 404);
+            }
+            if ($this->faceHasGlobalAssignment($face)) {
+                return $this->globalFaceMutationConflict();
+            }
 
-        $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $personId);
-        $success = $bridgeResult['success'] ?? false;
+            if (! $this->findGenealogyPerson($personId, (int) $request->input('tree_id', 0))) {
+                return $this->invalidGenealogyPersonResponse($personId);
+            }
 
-        return response()->json([
-            'success' => $success,
-            'face_id' => $faceId,
-            'person_id' => $personId,
-            'genealogy_bridge' => $bridgeResult,
-        ]);
+            $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $personId);
+            $success = $bridgeResult['success'] ?? false;
+
+            return response()->json([
+                'success' => $success,
+                'face_id' => $faceId,
+                'person_id' => $personId,
+                'genealogy_bridge' => $bridgeResult,
+            ]);
+        });
     }
 
     /**
@@ -1395,10 +1466,11 @@ class MediaBrowserController extends Controller
     {
         $treeId = (int) $request->get('tree_id', 4);
         $status = $request->get('status', 'pending');
-        $limit = min((int) $request->get('limit', 50), 200);
+        $limit = max(1, min((int) $request->get('limit', 50), 200));
+        $offset = max(0, (int) $request->get('offset', 0));
 
         $statusFilter = $status === 'all' ? '' : 'AND q.status = ?';
-        $params = $status === 'all' ? [$treeId, $limit] : [$treeId, $status, $limit];
+        $params = $status === 'all' ? [$treeId, $limit, $offset] : [$treeId, $status, $limit, $offset];
 
         $queue = DB::select("
             SELECT
@@ -1407,7 +1479,7 @@ class MediaBrowserController extends Controller
                 gp.surname,
                 COALESCE(fr1.filename, fr2.filename, gm.local_filename) as filename,
                 COALESCE(fr1.asset_uuid, fr2.asset_uuid) as asset_uuid,
-                gm.nextcloud_path as media_path,
+                COALESCE(gm.nextcloud_path, gm.original_path, fr1.current_path, fr1.original_path, fr2.current_path, fr2.original_path) as media_path,
                 gm.id as genealogy_media_id
             FROM genealogy_face_match_queue q
             LEFT JOIN genealogy_persons gp ON gp.id = q.suggested_person_id
@@ -1419,15 +1491,27 @@ class MediaBrowserController extends Controller
             LEFT JOIN file_registry fr2 ON fr2.current_path = gm.nextcloud_path
             WHERE q.tree_id = ? {$statusFilter}
             ORDER BY q.confidence_score DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
         ", $params);
 
+        $countParams = $status === 'all' ? [$treeId] : [$treeId, $status];
+        $total = DB::selectOne("
+            SELECT COUNT(*) AS total
+            FROM genealogy_face_match_queue q
+            WHERE q.tree_id = ? {$statusFilter}
+        ", $countParams);
+
         $stats = $this->faceMatcher->getQueueStats($treeId);
+        $totalCount = (int) ($total->total ?? 0);
 
         return response()->json([
             'success' => true,
             'data' => $queue,
             'stats' => $stats,
+            'total' => $totalCount,
+            'limit' => $limit,
+            'offset' => $offset,
+            'has_more' => ($offset + $limit) < $totalCount,
         ]);
     }
 
@@ -1490,38 +1574,62 @@ class MediaBrowserController extends Controller
      */
     public function reviewFaceMatch(Request $request, int $id): JsonResponse
     {
-        $action = $request->input('action'); // approve or reject
-
-        if (! in_array($action, ['approve', 'reject'])) {
-            return response()->json(['error' => 'action must be approve or reject'], 400);
-        }
-
-        $status = $action === 'approve' ? 'approved' : 'rejected';
-        $bridgeResult = null;
-
-        // If approving, also create the link
-        if ($action === 'approve') {
-            $match = DB::selectOne('SELECT * FROM genealogy_face_match_queue WHERE id = ?', [$id]);
-            if ($match && $match->suggested_person_id && $match->file_registry_face_id) {
-                $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink(
-                    (int) $match->file_registry_face_id,
-                    (int) $match->suggested_person_id,
-                    $match->media_id ? (int) $match->media_id : null
-                );
-            }
-        }
-
-        DB::update('
-            UPDATE genealogy_face_match_queue
-            SET status = ?, reviewed_at = NOW()
-            WHERE id = ?
-        ', [$status, $id]);
-
-        return response()->json([
-            'success' => true,
-            'status' => $status,
-            'genealogy_bridge' => $bridgeResult,
+        $validated = $request->validate([
+            'action' => 'required|string|in:approve,reject',
+            'decision_scope' => 'required|string|in:confirm_face_identity_link,reject_face_identity_suggestion',
+            'notes' => 'nullable|string|max:2000',
+            'face_region_convention' => 'nullable|string|in:normalized_top_left',
         ]);
+
+        $expectedScope = $validated['action'] === 'approve'
+            ? 'confirm_face_identity_link'
+            : 'reject_face_identity_suggestion';
+        if ($validated['decision_scope'] !== $expectedScope) {
+            return response()->json(['error' => 'decision_scope does not match action'], 422);
+        }
+
+        return DB::transaction(function () use ($validated, $id): JsonResponse {
+            $action = $validated['action'];
+            $match = DB::selectOne('SELECT * FROM genealogy_face_match_queue WHERE id = ? FOR UPDATE', [$id]);
+            if (! $match) {
+                return response()->json(['error' => 'Face match not found'], 404);
+            }
+
+            if (! empty($match->file_registry_face_id)) {
+                $face = DB::selectOne('SELECT id, global_identity_uuid, global_identity_approval_receipt_id FROM file_registry_faces WHERE id = ? FOR UPDATE', [(int) $match->file_registry_face_id]);
+                if (! $face) {
+                    return response()->json(['error' => 'Face not found'], 404);
+                }
+                if ($this->faceHasGlobalAssignment($face)) {
+                    return $this->globalFaceMutationConflict();
+                }
+            }
+
+            $decisionMeta = [
+                'decision_scope' => $validated['decision_scope'],
+                'face_region_convention' => $validated['face_region_convention'] ?? null,
+            ];
+            $decision = $action === 'approve'
+                ? app(FaceMatchReviewDecisionService::class)->approve($id, $validated['notes'] ?? null, $decisionMeta)
+                : app(FaceMatchReviewDecisionService::class)->reject($id, $validated['notes'] ?? null, $decisionMeta);
+            if (! ($decision['success'] ?? false)) {
+                $status = ($decision['error_code'] ?? null) === 'not_found' ? 404 : 409;
+
+                return response()->json([
+                    'success' => false,
+                    'error' => [
+                        'message' => $decision['error'] ?? 'Face match review failed.',
+                        'code' => $decision['error_code'] ?? 'face_match_review_failed',
+                    ],
+                ], $status);
+            }
+
+            return response()->json([
+                'success' => true,
+                'status' => $action === 'approve' ? 'approved' : 'rejected',
+                'genealogy_bridge' => $decision['genealogy_bridge'] ?? null,
+            ]);
+        });
     }
 
     // =========================================================================
@@ -1535,46 +1643,51 @@ class MediaBrowserController extends Controller
      */
     public function reassignFace(Request $request, int $faceId): JsonResponse
     {
-        $personId = (int) ($request->input('person_id') ?: $request->input('genealogy_person_id'));
-        if (! $personId) {
-            return response()->json(['error' => 'person_id required'], 400);
-        }
+        return DB::transaction(function () use ($request, $faceId): JsonResponse {
+            $personId = (int) ($request->input('person_id') ?: $request->input('genealogy_person_id'));
+            if (! $personId) {
+                return response()->json(['error' => 'person_id required'], 400);
+            }
 
-        $face = DB::selectOne('SELECT id, file_registry_id FROM file_registry_faces WHERE id = ?', [$faceId]);
-        if (! $face) {
-            return response()->json(['error' => 'Face not found'], 404);
-        }
+            $face = DB::selectOne('SELECT id, file_registry_id, global_identity_uuid, global_identity_approval_receipt_id FROM file_registry_faces WHERE id = ? FOR UPDATE', [$faceId]);
+            if (! $face) {
+                return response()->json(['error' => 'Face not found'], 404);
+            }
+            if ($this->faceHasGlobalAssignment($face)) {
+                return $this->globalFaceMutationConflict();
+            }
 
-        $person = $this->findGenealogyPerson($personId, (int) $request->input('tree_id', 0));
-        if (! $person) {
-            return $this->invalidGenealogyPersonResponse($personId);
-        }
+            $person = $this->findGenealogyPerson($personId, (int) $request->input('tree_id', 0));
+            if (! $person) {
+                return $this->invalidGenealogyPersonResponse($personId);
+            }
 
-        // Update face assignment
-        DB::update('UPDATE file_registry_faces SET genealogy_person_id = ?, person_name = ? WHERE id = ?', [
-            $personId,
-            trim($person->given_name.' '.$person->surname),
-            $faceId,
-        ]);
+            // Update face assignment
+            DB::update('UPDATE file_registry_faces SET genealogy_person_id = ?, person_name = ? WHERE id = ? AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL', [
+                $personId,
+                trim($person->given_name.' '.$person->surname),
+                $faceId,
+            ]);
 
-        // Reset writeback flags so scheduled job re-writes EXIF
-        DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$face->file_registry_id]);
+            // Reset writeback flags so scheduled job re-writes EXIF
+            DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$face->file_registry_id]);
 
-        // Delete scan log entry so face-sync re-processes
-        $file = DB::selectOne('SELECT current_path FROM file_registry WHERE id = ?', [$face->file_registry_id]);
-        if ($file) {
-            DB::delete('DELETE FROM genealogy_media_scan_log WHERE nextcloud_path = ?', [$file->current_path]);
-        }
+            // Delete scan log entry so face-sync re-processes
+            $file = DB::selectOne('SELECT current_path FROM file_registry WHERE id = ?', [$face->file_registry_id]);
+            if ($file) {
+                DB::delete('DELETE FROM genealogy_media_scan_log WHERE nextcloud_path = ?', [$file->current_path]);
+            }
 
-        $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $personId);
+            $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $personId);
 
-        return response()->json([
-            'success' => true,
-            'face_id' => $faceId,
-            'person_id' => $personId,
-            'person_name' => trim($person->given_name.' '.$person->surname),
-            'genealogy_bridge' => $bridgeResult,
-        ]);
+            return response()->json([
+                'success' => true,
+                'face_id' => $faceId,
+                'person_id' => $personId,
+                'person_name' => trim($person->given_name.' '.$person->surname),
+                'genealogy_bridge' => $bridgeResult,
+            ]);
+        });
     }
 
     /**
@@ -1584,23 +1697,12 @@ class MediaBrowserController extends Controller
      */
     public function unlinkFace(int $faceId): JsonResponse
     {
-        $face = DB::selectOne('SELECT id, file_registry_id FROM file_registry_faces WHERE id = ?', [$faceId]);
-        if (! $face) {
+        $result = $this->clearFacePersonAssignment($faceId, false);
+        if (($result['error'] ?? null) === 'face_not_found') {
             return response()->json(['error' => 'Face not found'], 404);
         }
 
-        DB::update('UPDATE file_registry_faces SET genealogy_person_id = NULL WHERE id = ?', [$faceId]);
-
-        // Reset writeback flags
-        DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$face->file_registry_id]);
-
-        // Delete scan log entry
-        $file = DB::selectOne('SELECT current_path FROM file_registry WHERE id = ?', [$face->file_registry_id]);
-        if ($file) {
-            DB::delete('DELETE FROM genealogy_media_scan_log WHERE nextcloud_path = ?', [$file->current_path]);
-        }
-
-        return response()->json(['success' => true, 'face_id' => $faceId]);
+        return response()->json(['success' => true, 'face_id' => $faceId, 'assignment' => $result]);
     }
 
     /**
@@ -1696,11 +1798,36 @@ class MediaBrowserController extends Controller
      */
     public function updateMetadata(Request $request, string $uuid): JsonResponse
     {
-        $file = DB::selectOne("
-            SELECT id, current_path, date_taken, ai_description, tags
-            FROM file_registry
-            WHERE asset_uuid = ? AND status = 'active'
-        ", [$uuid]);
+        if ($request->exists('photo_field_decision')) {
+            if (array_keys($request->all()) !== ['photo_field_decision'] || ! is_array($request->input('photo_field_decision'))) {
+                return response()->json(['success' => false, 'error' => 'Review one photo field separately from other metadata edits',
+                    'review_required' => true, 'decision_applied' => false], 422)
+                    ->header('Cache-Control', 'private, no-store');
+            }
+            $actorId = $request->user()?->getAuthIdentifier();
+            if ((! is_int($actorId) && ! is_string($actorId)) || ! ctype_digit((string) $actorId) || (int) $actorId <= 0) {
+                return response()->json(['success' => false, 'error' => 'An authenticated reviewer is required'], 401)
+                    ->header('Cache-Control', 'private, no-store');
+            }
+            try {
+                $result = app(PhotoReviewEvidenceService::class)->decideField($uuid, $request->input('photo_field_decision'), (int) $actorId);
+
+                return response()->json($result + ['file_written' => null, 'source_replaced' => false, 'repair_required' => false])
+                    ->header('Cache-Control', 'private, no-store');
+            } catch (\InvalidArgumentException $exception) {
+                return response()->json(['success' => false, 'error' => $exception->getMessage(), 'review_required' => true, 'decision_applied' => false], 422)
+                    ->header('Cache-Control', 'private, no-store');
+            } catch (\RuntimeException $exception) {
+                if ($exception instanceof QueryException
+                    || (! str_starts_with($exception->getMessage(), 'photo_field_review_') && $exception->getMessage() !== 'photo_asset_unavailable')) {
+                    throw $exception;
+                }
+
+                return response()->json(['success' => false, 'error' => $exception->getMessage(), 'review_required' => true, 'decision_applied' => false], 409)
+                    ->header('Cache-Control', 'private, no-store');
+            }
+        }
+        $file = DB::selectOne("SELECT * FROM file_registry WHERE asset_uuid = ? AND status = 'active'", [$uuid]);
 
         if (! $file) {
             return response()->json(['error' => 'File not found'], 404);
@@ -1709,126 +1836,249 @@ class MediaBrowserController extends Controller
         $updates = [];
         $params = [];
         $exifWriteArgs = [];
+        $dateChanged = false;
+        $tagsChanged = false;
+        $fileOnlyChanges = false;
+        $captionSourceHash = null;
         $writeToFile = $request->boolean('write_to_file', false);
         $localPath = $this->resolveLocalPath($file->current_path);
 
-        // Date taken
-        if ($request->has('date_taken')) {
-            $dateTaken = $request->input('date_taken') ?: null;
-            $updates[] = 'date_taken = ?';
-            $params[] = $dateTaken;
-            $updates[] = "date_taken_source = 'user_manual'";
-            $updates[] = 'date_taken_confidence = 1.0';
-            $updates[] = 'exif_written = 0';
-            if ($dateTaken) {
-                $exifDate = str_replace(['-', 'T'], [':', ' '], substr($dateTaken, 0, 19));
-                $exifWriteArgs[] = "-DateTimeOriginal={$exifDate}";
-                $exifWriteArgs[] = "-CreateDate={$exifDate}";
-                $exifWriteArgs[] = "-ModifyDate={$exifDate}";
+        // Only an explicit original-date decision may promote an estimate or clear EXIF.
+        if ($request->exists('date_taken')) {
+            $dateTaken = $request->input('date_taken');
+            $dateTaken = $dateTaken === '' ? null : $dateTaken;
+            if ($dateTaken !== null) {
+                if (! is_string($dateTaken)) {
+                    return response()->json(['error' => 'Invalid original date'], 422);
+                }
+                $dateTaken = str_replace('T', ' ', $dateTaken);
+                if (strlen($dateTaken) === 16) {
+                    $dateTaken .= ':00';
+                }
+                $parsedDate = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $dateTaken);
+                if (! $parsedDate || $parsedDate->format('Y-m-d H:i:s') !== $dateTaken) {
+                    return response()->json(['error' => 'Original date must be a valid YYYY-MM-DD HH:MM:SS value'], 422);
+                }
+            }
+            $intent = $request->input('date_taken_intent');
+            $currentDate = $file->date_taken ? str_replace('T', ' ', $file->date_taken) : null;
+            // Older clients truncate displayed dates to minutes. An unchanged save is not a date decision.
+            $unchanged = $dateTaken === $currentDate || ($dateTaken && $currentDate
+                && substr($dateTaken, 0, 16) === substr($currentDate, 0, 16)
+                && substr($dateTaken, -3) === ':00');
+            if (! $unchanged || $intent !== null) {
+                $validIntent = $dateTaken === null
+                    ? $intent === 'clear_original_date'
+                    : in_array($intent, ['set_original_date', 'confirm_original_date'], true);
+                if (! $validIntent) {
+                    return response()->json(['error' => 'An explicit original-date decision is required', 'review_required' => true], 422);
+                }
+                $dateChanged = true;
+                $updates[] = 'date_taken = ?';
+                $params[] = $dateTaken;
+                $updates[] = 'date_taken_precision = ?';
+                $params[] = $dateTaken === null ? null : 'exact';
+                $updates[] = "date_taken_source = 'user_manual'";
+                $updates[] = 'date_taken_confidence = ?';
+                $params[] = $dateTaken === null ? null : 1.0;
+                $exifDate = $dateTaken === null ? '' : str_replace('-', ':', substr($dateTaken, 0, 10)).substr($dateTaken, 10);
+                foreach (['DateTimeOriginal', 'CreateDate', 'ModifyDate'] as $tag) {
+                    $exifWriteArgs[] = "-{$tag}={$exifDate}";
+                }
             }
         }
 
-        // Description
-        if ($request->has('description')) {
-            $desc = $request->input('description');
-            $updates[] = 'ai_description = ?';
-            $params[] = $desc;
-            $updates[] = 'exif_tags_written = 0';
-            if ($desc) {
+        // Manual captions belong to description; generated AI evidence remains unchanged.
+        if ($request->exists('description')) {
+            $desc = (string) $request->input('description', '');
+            $currentDescription = $file->description ?? $file->ai_description ?? '';
+            if ($desc !== $currentDescription) {
+                $captionSourceHash = $request->input('source_sha256');
+                if (! is_string($captionSourceHash) || ! preg_match('/^[a-f0-9]{64}$/D', $captionSourceHash)) {
+                    return response()->json(['success' => false, 'error' => 'A reviewed source SHA-256 is required for caption edits', 'review_required' => true], 422);
+                }
+                if (! $this->metadataSourceMatches($file, $captionSourceHash)) {
+                    return response()->json(['success' => false, 'error' => 'Caption source changed or is unavailable; reload the photo', 'review_required' => true], 409);
+                }
+                $updates[] = 'description = ?';
+                $params[] = $desc;
+                $tagsChanged = true;
                 $exifWriteArgs[] = '-ImageDescription='.$desc;
                 $exifWriteArgs[] = '-XMP:Description='.$desc;
             }
         }
 
-        // Tags (comma-separated string or JSON array)
-        if ($request->has('tags')) {
+        if ($request->exists('tags')) {
             $tags = $request->input('tags');
-            $tagArray = is_array($tags) ? $tags : array_map('trim', explode(',', $tags));
-            $tagArray = array_filter($tagArray);
-            $updates[] = 'tags = ?';
-            $params[] = json_encode(array_values($tagArray));
-            $updates[] = 'exif_tags_written = 0';
-            foreach ($tagArray as $tag) {
-                $exifWriteArgs[] = '-IPTC:Keywords='.$tag;
-                $exifWriteArgs[] = '-XMP:Subject='.$tag;
+            $tagArray = is_array($tags) ? $tags : explode(',', (string) $tags);
+            $tagArray = array_values(array_filter(array_map('trim', $tagArray), fn ($tag) => $tag !== ''));
+            $currentTags = is_array($file->tags) ? $file->tags : (json_decode($file->tags ?? '[]', true) ?? []);
+            if ($tagArray !== $currentTags) {
+                $updates[] = 'tags = ?';
+                $params[] = json_encode($tagArray);
+                $tagsChanged = true;
+                // Replace only the explicitly edited lists, preserving other metadata.
+                $exifWriteArgs[] = '-IPTC:Keywords=';
+                $exifWriteArgs[] = '-XMP:Subject=';
+                foreach ($tagArray as $tag) {
+                    $exifWriteArgs[] = '-IPTC:Keywords+='.$tag;
+                    $exifWriteArgs[] = '-XMP:Subject+='.$tag;
+                }
             }
         }
 
-        // Copyright
-        if ($request->has('copyright')) {
-            $copyright = $request->input('copyright');
+        if ($request->exists('copyright')) {
+            $fileOnlyChanges = true;
+            $copyright = (string) $request->input('copyright', '');
             $exifWriteArgs[] = '-IPTC:CopyrightNotice='.$copyright;
             $exifWriteArgs[] = '-XMP:Rights='.$copyright;
             $exifWriteArgs[] = '-IFD0:Copyright='.$copyright;
         }
 
-        // Title
-        if ($request->has('title')) {
-            $title = $request->input('title');
+        if ($request->exists('title') && (string) $request->input('title', '') !== ($file->title ?? '')) {
+            $title = (string) $request->input('title', '');
             $updates[] = 'title = ?';
             $params[] = $title;
+            $tagsChanged = true;
             $exifWriteArgs[] = '-XMP:Title='.$title;
             $exifWriteArgs[] = '-IPTC:ObjectName='.$title;
         }
 
-        // Custom EXIF fields (raw exiftool tag=value pairs)
         if ($request->has('exif_fields') && is_array($request->input('exif_fields'))) {
             foreach ($request->input('exif_fields') as $field) {
                 if (! empty($field['tag']) && isset($field['value'])) {
                     $tag = preg_replace('/[^a-zA-Z0-9:\-_]/', '', $field['tag']);
+                    $baseTag = substr($tag, (int) strrpos(':'.$tag, ':'));
+                    if (preg_match('/date|time|^all$/i', $baseTag)) {
+                        return response()->json(['error' => 'Use the original-date field and explicit date intent to edit date metadata'], 422);
+                    }
                     $exifWriteArgs[] = "-{$tag}=".$field['value'];
+                    $fileOnlyChanges = true;
                 }
             }
         }
 
-        // Update DB
-        if (! empty($updates)) {
-            $params[] = $file->id;
-            $sql = 'UPDATE file_registry SET '.implode(', ', $updates).' WHERE id = ?';
-            DB::update($sql, $params);
+        if ($fileOnlyChanges && ! $writeToFile) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Copyright and custom EXIF edits require saving to the physical file',
+                'source_replaced' => false,
+                'repair_required' => false,
+            ], 422);
         }
 
-        // Delete scan log so face-sync re-processes
-        DB::delete('DELETE FROM genealogy_media_scan_log WHERE nextcloud_path = ?', [$file->current_path]);
-
-        // Write to physical file if requested and we have changes
+        // Verified file publication precedes semantic DB edits. A held write cannot claim a saved date.
         $writeResult = null;
-        if ($writeToFile && ! empty($exifWriteArgs) && $localPath && file_exists($localPath)) {
+        if ($writeToFile && $exifWriteArgs !== []) {
             if (! config('metadata_writeback.enabled', false) || ! config('metadata_writeback.in_place_enabled', false)) {
-                $writeResult = [
-                    'success' => false,
-                    'error' => 'Metadata writeback disabled',
-                    'code' => -3,
-                ];
+                $writeResult = ['success' => false, 'error' => 'Metadata writeback disabled', 'code' => -3];
+            } elseif (! $localPath || ! is_file($localPath)) {
+                $writeResult = ['success' => false, 'error' => 'Metadata source is unavailable'];
             } else {
                 try {
-                    $args = array_merge(['-overwrite_original', '-preserve'], $exifWriteArgs);
-                    $cmd = 'exiftool '.implode(' ', array_map('escapeshellarg', $args)).' '.escapeshellarg($localPath);
-                    $result = \Illuminate\Support\Facades\Process::timeout(30)->run($cmd);
-                    $writeResult = [
-                        'success' => $result->successful(),
-                        'output' => trim($result->output().' '.$result->errorOutput()),
-                    ];
-                    if ($result->successful()) {
-                        // Mark as written since we just did it
-                        DB::update('UPDATE file_registry SET exif_written = 1, exif_tags_written = 1 WHERE id = ?', [$file->id]);
-                        // Re-read EXIF to sync DB with what was actually written
-                        $this->syncExifToDb($file->id, $localPath);
-                    }
-                } catch (\Exception $e) {
+                    $args = array_merge(['-preserve'], $exifWriteArgs);
+                    $writeResult = $captionSourceHash === null
+                        ? $this->exifWriteback->writeVerifiedMetadata($localPath, $args, true)
+                        : $this->exifWriteback->writeVerifiedMetadata($localPath, $args, true, $captionSourceHash);
+                } catch (\Throwable $e) {
                     $writeResult = ['success' => false, 'error' => $e->getMessage()];
                 }
             }
+            if (! ($writeResult['success'] ?? false)) {
+                return response()->json([
+                    'success' => false,
+                    'error' => $writeResult['error'] ?? 'Metadata write held',
+                    'data' => (array) $file,
+                    'file_written' => $writeResult,
+                    'source_replaced' => $writeResult['source_replaced'] ?? false,
+                    'repair_required' => $writeResult['repair_required'] ?? false,
+                ]);
+            }
         }
+        if ($dateChanged) {
+            $updates[] = 'exif_written = '.(int) ($writeResult['success'] ?? false);
+        }
+        if ($tagsChanged) {
+            $updates[] = 'exif_tags_written = '.(int) ($writeResult['success'] ?? false);
+        }
+
+        if ($updates !== []) {
+            $params[] = $file->id;
+            try {
+                DB::transaction(function () use ($file, $captionSourceHash, $writeResult, $updates, $params): void {
+                    $currentHash = ($writeResult['success'] ?? false) ? ($writeResult['written_sha256'] ?? null) : $captionSourceHash;
+                    if ($captionSourceHash !== null) {
+                        $locked = DB::table('file_registry')->where('id', $file->id)->lockForUpdate()->first();
+                        if (! $locked || ! is_string($currentHash) || ! $this->metadataSourceMatches($file, $currentHash)
+                            || ($locked->description ?? null) !== ($file->description ?? null)) {
+                            throw new \RuntimeException('caption_source_changed');
+                        }
+                    }
+                    DB::update('UPDATE file_registry SET '.implode(', ', $updates).' WHERE id = ?', $params);
+                    if ($captionSourceHash !== null && ! $this->metadataSourceMatches($file, $currentHash)) {
+                        throw new \RuntimeException('caption_source_changed');
+                    }
+                });
+            } catch (\Throwable $e) {
+                // The staged writer has already published bytes. Do not disguise a DB failure as a held file write.
+                $sourceReplaced = ($writeResult['success'] ?? false) && ! ($writeResult['unchanged'] ?? false);
+                if ($e instanceof \RuntimeException && $e->getMessage() === 'caption_source_changed') {
+                    return response()->json(['success' => false, 'error' => 'Caption source or catalog changed before saving; reload the photo',
+                        'review_required' => true, 'file_written' => $writeResult, 'source_replaced' => $sourceReplaced, 'repair_required' => $sourceReplaced], 409);
+                }
+                if (! $sourceReplaced) {
+                    throw $e;
+                }
+
+                Log::error('Metadata file published but semantic DB update failed', ['uuid' => $uuid, 'error' => $e->getMessage()]);
+
+                return response()->json([
+                    'success' => false,
+                    'error' => 'File metadata changed but database metadata could not be saved; repair is required',
+                    'data' => (array) $file,
+                    'file_written' => $writeResult,
+                    'source_replaced' => true,
+                    'repair_required' => true,
+                ]);
+            }
+        }
+        // Keep scan evidence and date provenance; generic EXIF rereads must not promote scan/estimate dates.
 
         // Update RAG content if provided
         if ($request->has('rag_content')) {
             try {
-                $ragContent = $request->input('rag_content');
+                $ragContent = trim((string) $request->input('rag_content'));
+                if ($ragContent === '') {
+                    throw new \RuntimeException('RAG content cannot be empty.');
+                }
+
+                $embeddingResult = app(AIService::class)->generateEmbedding($ragContent);
+                if (! ($embeddingResult['success'] ?? false) || empty($embeddingResult['embedding'])) {
+                    throw new \RuntimeException('RAG content embedding failed; searchable content was not changed.');
+                }
+
+                $contentHash = hash('sha256', $ragContent);
+                $provenance = app(RagEmbeddingProvenanceService::class)->attach(
+                    null,
+                    $embeddingResult,
+                    $contentHash
+                );
                 $updated = DB::connection('pgsql_rag')->update("
-                    UPDATE rag_documents SET content = ?, updated_at = NOW()
+                    UPDATE rag_documents
+                    SET content = ?,
+                        embedding = ?::vector,
+                        content_hash = ?,
+                        metadata = COALESCE(metadata, '{}'::jsonb) || ?::jsonb,
+                        updated_at = NOW()
                     WHERE metadata->>'asset_uuid' = ? OR metadata->>'file_path' = ?
-                ", [$ragContent, $uuid, $file->current_path]);
+                ", [
+                    $ragContent,
+                    PgVector::literal($embeddingResult['embedding']),
+                    $contentHash,
+                    json_encode($provenance, JSON_THROW_ON_ERROR),
+                    $uuid,
+                    $file->current_path,
+                ]);
                 if ($updated === 0) {
                     // No existing doc — could create one, but for now just note it
                     Log::info('RAG content update: no matching document found', ['uuid' => $uuid]);
@@ -1845,7 +2095,21 @@ class MediaBrowserController extends Controller
             'success' => true,
             'data' => (array) $updatedFile,
             'file_written' => $writeResult,
+            'source_replaced' => ($writeResult['success'] ?? false) && ! ($writeResult['unchanged'] ?? false),
+            'repair_required' => false,
         ]);
+    }
+
+    private function metadataSourceMatches(object $file, string $expectedHash): bool
+    {
+        $current = DB::table('file_registry')->where('id', $file->id)->where('asset_uuid', $file->asset_uuid)->where('status', 'active')->first(['current_path']);
+        if (! $current || $current->current_path !== $file->current_path) {
+            return false;
+        }
+        $deadline = hrtime(true) / 1e9 + max(.001, min(30, (float) config('file_registry.photo_review.hash_timeout_seconds', 10)));
+        $proof = app(NextcloudFileApiService::class)->computeFileHash($file->current_path, $deadline, true);
+
+        return ($proof['success'] ?? false) && hash_equals($expectedHash, (string) ($proof['hash'] ?? ''));
     }
 
     /**
@@ -1854,7 +2118,7 @@ class MediaBrowserController extends Controller
     private function syncExifToDb(int $fileId, string $localPath): void
     {
         try {
-            $result = \Illuminate\Support\Facades\Process::timeout(10)
+            $result = Process::timeout(10)
                 ->run([
                     'exiftool',
                     '-json',
@@ -1892,7 +2156,7 @@ class MediaBrowserController extends Controller
                 DB::update('UPDATE file_registry SET '.implode(', ', $syncUpdates).' WHERE id = ?', $syncParams);
             }
         } catch (\Exception $e) {
-            Log::debug('syncExifToDb failed: '.$e->getMessage());
+            Log::debug('syncExifToDb failed', ['exception' => $e]);
         }
     }
 
@@ -1953,7 +2217,7 @@ class MediaBrowserController extends Controller
 
         $usedXmp = [];
         foreach ($faces as $face) {
-            if (! empty($face->person_name)) {
+            if (! empty($face->person_name) || $this->faceHasGlobalAssignment($face)) {
                 continue;
             }
 
@@ -1979,10 +2243,12 @@ class MediaBrowserController extends Controller
             if ($bestIdx !== null) {
                 $usedXmp[$bestIdx] = true;
                 $name = $xmpRegions[$bestIdx]['name'];
-                DB::update("UPDATE file_registry_faces SET person_name = ? WHERE id = ? AND (person_name IS NULL OR person_name = '')", [
+                $updated = DB::update("UPDATE file_registry_faces SET person_name = ? WHERE id = ? AND (person_name IS NULL OR person_name = '') AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL", [
                     $name, $face->id,
                 ]);
-                $face->person_name = $name;
+                if ($updated > 0) {
+                    $face->person_name = $name;
+                }
             }
         }
     }
@@ -2006,13 +2272,14 @@ class MediaBrowserController extends Controller
 
         // Get faces
         $faces = DB::select('
-            SELECT frf.id, frf.person_name, frf.genealogy_person_id,
+            SELECT frf.id, frf.person_name, frf.genealogy_person_id, frf.global_identity_uuid, frf.global_identity_approval_receipt_id,
                    frf.region_x, frf.region_y, frf.region_w, frf.region_h,
                    frf.confidence, frf.verified,
                    gp.given_name, gp.surname
             FROM file_registry_faces frf
             LEFT JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
             WHERE frf.file_registry_id = ?
+              AND frf.source_current = 1 AND frf.superseded_at IS NULL
         ', [$file->id]);
 
         // Get linked persons (via genealogy_person_media)
@@ -2061,7 +2328,7 @@ class MediaBrowserController extends Controller
         $localPath = $this->resolveLocalPath($file->current_path);
         if ($localPath && file_exists($localPath)) {
             try {
-                $result = \Illuminate\Support\Facades\Process::timeout(10)
+                $result = Process::timeout(10)
                     ->run([
                         'exiftool',
                         '-json',
@@ -2079,7 +2346,7 @@ class MediaBrowserController extends Controller
                     }
                 }
             } catch (\Exception $e) {
-                Log::debug('EXIF read failed for '.$uuid.': '.$e->getMessage());
+                Log::debug('EXIF read failed', ['uuid' => $uuid, 'exception' => $e]);
             }
         }
 
@@ -2352,8 +2619,10 @@ class MediaBrowserController extends Controller
 
         $libraryRoot = '/'.trim((string) config('services.nextcloud.library_root', '/Library'), '/');
         $ncPath = '/'.ltrim($ncPath, '/');
-        $basePath = rtrim($dataPath, '/').$libraryRoot;
-        $relativePath = str_starts_with($ncPath, $libraryRoot)
+        $matchedLibraryRoot = str_starts_with(strtolower($ncPath), strtolower($libraryRoot));
+        $diskLibraryRoot = $matchedLibraryRoot ? substr($ncPath, 0, strlen($libraryRoot)) : $libraryRoot;
+        $basePath = rtrim($dataPath, '/').$diskLibraryRoot;
+        $relativePath = $matchedLibraryRoot
             ? substr($ncPath, strlen($libraryRoot))
             : ltrim($ncPath, '/');
 
@@ -2366,10 +2635,6 @@ class MediaBrowserController extends Controller
                 return null;
             }
             $segments[] = $segment;
-        }
-
-        if (str_starts_with($ncPath, $libraryRoot)) {
-            return $basePath.(empty($segments) ? '' : '/'.implode('/', $segments));
         }
 
         return $basePath.(empty($segments) ? '' : '/'.implode('/', $segments));
@@ -2457,7 +2722,7 @@ class MediaBrowserController extends Controller
      */
     public function faceClusters(Request $request): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         // Support both legacy status param and new filter param
         $filter = $request->input('filter', $request->input('status', 'all'));
@@ -2496,7 +2761,7 @@ class MediaBrowserController extends Controller
      */
     public function faceCountsByPerson(): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
         $counts = $faceEmbedding->getFaceCountsByGenealogyPerson();
 
         return response()->json([
@@ -2552,7 +2817,7 @@ class MediaBrowserController extends Controller
      */
     public function confirmCluster(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $name = $request->input('name');
         $genealogyPersonId = (int) $request->input('genealogy_person_id', 0);
@@ -2606,7 +2871,7 @@ class MediaBrowserController extends Controller
 
         $name = trim($person->given_name.' '.$person->surname);
 
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
         $result = $faceEmbedding->confirmCluster($id, $name, $genealogyPersonId, true);
         $bridgeResult = null;
         if ($result) {
@@ -2627,7 +2892,7 @@ class MediaBrowserController extends Controller
      */
     public function batchConfirmClusters(Request $request): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $clusterIds = $request->input('cluster_ids', []);
         $name = $request->input('name');
@@ -2694,7 +2959,7 @@ class MediaBrowserController extends Controller
      */
     public function mergeClusters(Request $request): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $targetId = $request->input('target_id');
         $sourceIds = $request->input('source_ids', []);
@@ -2718,7 +2983,7 @@ class MediaBrowserController extends Controller
      */
     public function similarClusters(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $tolerance = (float) $request->get('tolerance', 0.5);
         $limit = min((int) $request->get('limit', 20), 50);
@@ -2776,7 +3041,7 @@ class MediaBrowserController extends Controller
      */
     public function propagateMatches(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         try {
             $result = $faceEmbedding->propagateClusterMatches($id);
@@ -2801,7 +3066,7 @@ class MediaBrowserController extends Controller
      */
     public function ignoreCluster(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $reason = $request->get('reason', null);
 
@@ -2826,7 +3091,7 @@ class MediaBrowserController extends Controller
      */
     public function revertCluster(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $previousStatus = $request->input('previous_status', 'unreviewed');
         $previousName = $request->input('previous_name');
@@ -2853,7 +3118,7 @@ class MediaBrowserController extends Controller
      */
     public function splitCluster(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $faceIds = $request->input('face_ids', []);
 
@@ -2879,7 +3144,7 @@ class MediaBrowserController extends Controller
      */
     public function clusterFaces(int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         try {
             $faces = $faceEmbedding->getClusterFaces($id);
@@ -2971,43 +3236,23 @@ class MediaBrowserController extends Controller
      *
      * GET /api/media/face-crop/{id}
      */
-    public function serveFaceCrop(int $id): \Illuminate\Http\Response|\Symfony\Component\HttpFoundation\BinaryFileResponse
+    public function serveFaceCrop(int $id): Response|BinaryFileResponse
     {
         try {
-            $face = DB::connection('pgsql_rag')->selectOne('
-                SELECT crop_path, file_registry_face_id FROM face_embeddings WHERE id = ?
-            ', [$id]);
-
+            $face = DB::connection('pgsql_rag')->selectOne('SELECT * FROM face_embeddings WHERE id = ?', [$id]);
             if (! $face) {
-                $placeholder = public_path('images/face-placeholder.png');
-                if (file_exists($placeholder)) {
-                    return response()->file($placeholder);
-                }
-
-                return response('Face not found', 404);
+                return response('Face not found', 404, ['Cache-Control' => 'private, no-store']);
+            }
+            if (! app(FaceEmbeddingService::class)->embeddingHasCurrentSourceEvidence($face)) {
+                return response('Face source provenance requires review; source photo remains available', 409, ['Cache-Control' => 'private, no-store']);
+            }
+            if (! empty($face->file_registry_face_id)) {
+                return $this->serveFaceRegistryCrop((int) $face->file_registry_face_id);
             }
 
-            // Serve pre-computed crop if available
-            if ($face->crop_path && file_exists($face->crop_path)) {
-                return response()->file($face->crop_path, [
-                    'Content-Type' => 'image/jpeg',
-                    'Cache-Control' => 'public, max-age=86400',
-                ]);
-            }
-
-            // Fall back to generating crop from file_registry_faces
-            if ($face->file_registry_face_id) {
-                return $this->serveFaceRegistryCrop($face->file_registry_face_id);
-            }
-
-            $placeholder = public_path('images/face-placeholder.png');
-            if (file_exists($placeholder)) {
-                return response()->file($placeholder);
-            }
-
-            return response('Face not found', 404);
-        } catch (\Exception $e) {
-            return response('Error: '.$e->getMessage(), 500);
+            return response('Face source provenance requires review; source photo remains available', 409, ['Cache-Control' => 'private, no-store']);
+        } catch (\Throwable $e) {
+            return response('Face source unavailable', 500, ['Cache-Control' => 'private, no-store']);
         }
     }
 
@@ -3016,57 +3261,194 @@ class MediaBrowserController extends Controller
      *
      * GET /api/media/face-match-crop/{id}
      */
-    public function serveFaceMatchCrop(int $id): \Illuminate\Http\Response|\Symfony\Component\HttpFoundation\BinaryFileResponse
+    public function serveFaceMatchCrop(int $id): Response|BinaryFileResponse
     {
+        $headers = ['Cache-Control' => 'private, no-cache, must-revalidate'];
         try {
-            $match = DB::selectOne('
-                SELECT q.media_id, q.face_region,
-                       COALESCE(m.nextcloud_path, m.original_path) as media_path
-                FROM genealogy_face_match_queue q
-                JOIN genealogy_media m ON m.id = q.media_id
-                WHERE q.id = ?
-            ', [$id]);
-
-            if (! $match || ! $match->media_path) {
-                return $this->returnFacePlaceholder();
+            $match = DB::selectOne('SELECT q.media_id, q.file_registry_face_id, q.face_region, q.match_details,
+                COALESCE(m.nextcloud_path, m.original_path, fr.current_path) AS media_path
+                FROM genealogy_face_match_queue q LEFT JOIN genealogy_media m ON m.id = q.media_id
+                LEFT JOIN file_registry_faces frf ON frf.id = q.file_registry_face_id
+                LEFT JOIN file_registry fr ON fr.id = frf.file_registry_id WHERE q.id = ?', [$id]);
+            if (! $match) {
+                return response('Face not found', 404, $headers);
             }
+            if (! empty($match->file_registry_face_id)) {
+                $face = DB::selectOne('SELECT frf.*, fr.current_path, fr.status AS file_status FROM file_registry_faces frf
+                    JOIN file_registry fr ON fr.id = frf.file_registry_id WHERE frf.id = ?', [(int) $match->file_registry_face_id]);
+                $details = json_decode((string) ($match->match_details ?? ''), true);
+                $region = json_decode((string) ($match->face_region ?? ''), true);
+                $proof = $face ? app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($face) : ['success' => false];
+                if (! ($proof['success'] ?? false) || ($details['source_sha256'] ?? null) !== $proof['source_sha256']
+                    || ($details['face_region_convention'] ?? null) !== 'normalized_top_left'
+                    || ($details['source_path'] ?? null) !== $proof['source_path']) {
+                    return response('Face review source requires review; source photo remains available', 409, $headers);
+                }
+                foreach (['x', 'y', 'w', 'h'] as $axis) {
+                    if (! is_numeric($region[$axis] ?? null) || abs((float) $region[$axis] - $proof['region'][$axis]) > (float) config('genealogy.face_region_match_tolerance')) {
+                        return response('Face review region changed; source photo remains available', 409, $headers);
+                    }
+                }
 
-            // Resolve the full path
-            $basePath = trim((string) config('services.nextcloud.data_path', ''));
-            $fullPath = $basePath === '' ? '' : rtrim($basePath, '/').'/'.ltrim($match->media_path, '/');
-
-            // Alternative: resolve through the configured library root.
-            if ($fullPath === '' || ! file_exists($fullPath)) {
-                $fullPath = $this->resolveLocalPath($match->media_path);
+                return $this->serveFaceRegistryCrop((int) $match->file_registry_face_id);
             }
-
-            if (! $fullPath || ! file_exists($fullPath)) {
-                return $this->returnFacePlaceholder();
+            $details = json_decode((string) ($match->match_details ?? ''), true);
+            $region = json_decode((string) ($match->face_region ?? ''), true);
+            $hash = $details['source_sha256'] ?? null;
+            if (($details['face_region_convention'] ?? null) !== 'normalized_top_left' || ! is_string($hash)
+                || ! preg_match('/^[a-f0-9]{64}$/D', $hash) || ! is_array($region)) {
+                return response('Face source provenance requires review; source photo remains available', 409, $headers);
             }
-
-            // If we have face_region, crop the image
-            if ($match->face_region) {
-                $region = is_string($match->face_region) ? json_decode($match->face_region, true) : (array) $match->face_region;
-
-                if ($region && isset($region['x'], $region['y'], $region['w'], $region['h'])) {
-                    return $this->cropAndServeFace($fullPath, $region);
+            foreach (['x', 'y', 'w', 'h'] as $axis) {
+                if (! is_numeric($region[$axis] ?? null) || ! is_finite((float) $region[$axis])) {
+                    return response('Face region requires review', 409, $headers);
                 }
             }
+            if ($region['x'] < 0 || $region['y'] < 0 || $region['w'] <= 0 || $region['h'] <= 0
+                || $region['x'] + $region['w'] > 1 || $region['y'] + $region['h'] > 1) {
+                return response('Face region requires review', 409, $headers);
+            }
+            $path = $this->resolveFaceMatchSourcePath($match->media_path ?? null);
+            $current = $path ? @hash_file('sha256', $path) : null;
+            if (! is_string($current) || ! hash_equals($hash, $current)) {
+                return response('Face source changed or unavailable', 409, $headers);
+            }
+            $response = $this->cropAndServeFace($path, $region);
+            $current = @hash_file('sha256', $path);
+            if (! is_string($current) || ! hash_equals($hash, $current)) {
+                return response('Face source changed during rendering', 409, $headers);
+            }
+            $response->headers->set('Cache-Control', $headers['Cache-Control']);
 
-            // No region, serve full image as thumbnail
-            return $this->serveImageThumbnail($fullPath, 128);
-
-        } catch (\Exception $e) {
-            Log::warning('serveFaceMatchCrop failed', ['id' => $id, 'error' => $e->getMessage()]);
-
-            return $this->returnFacePlaceholder();
+            return $response;
+        } catch (\Throwable $e) {
+            return response('Face source unavailable', 500, $headers);
         }
+    }
+
+    /**
+     * Serve a read-only source-photo preview for a face-match review row.
+     *
+     * GET /api/media/face-match-source/{id}
+     */
+    public function serveFaceMatchSource(int $id): Response
+    {
+        $headers = ['Cache-Control' => 'private, no-store'];
+        try {
+            $hash = request()->query('source_sha256');
+            if (! is_string($hash) || ! preg_match('/^[a-f0-9]{64}$/D', $hash)) {
+                return response('Load current source proof before opening this photo', 409, $headers);
+            }
+            $match = DB::table('genealogy_face_match_queue')->where('id', $id)->first();
+            $proof = $match ? app(FaceLinkBridgeService::class)->reviewSourcePhoto($match, $hash) : ['success' => false];
+            if (! ($proof['success'] ?? false)) {
+                return response('Source photo changed or unavailable', 409, $headers);
+            }
+            $image = imagecreatefromstring($proof['bytes']);
+            // Encoded pixel geometry matches normalized_top_left. No orientation metadata survives this preview.
+            $maxSize = max(1, (int) config('metadata_writeback.preview_max_dimension'));
+            $scale = min(1, $maxSize / imagesx($image), $maxSize / imagesy($image));
+            $preview = imagescale($image, max(1, (int) round(imagesx($image) * $scale)), max(1, (int) round(imagesy($image) * $scale)));
+            if (! $preview) {
+                imagedestroy($image);
+
+                return response('Source preview could not be rendered', 409, $headers);
+            }
+            ob_start();
+            imagejpeg($preview, null, 90);
+            $bytes = ob_get_clean();
+            imagedestroy($preview);
+            imagedestroy($image);
+            $current = app(NextcloudFileApiService::class)->computeFileHash($proof['source_path']);
+            if (! ($current['success'] ?? false) || ! hash_equals($hash, (string) ($current['hash'] ?? ''))) {
+                return response('Source photo changed during rendering', 409, $headers);
+            }
+
+            return response($bytes, 200, $headers + ['Content-Type' => 'image/jpeg', 'X-PLOS-Source-SHA256' => $hash]);
+        } catch (\Throwable $e) {
+            return response('Source photo unavailable', 409, $headers);
+        }
+    }
+
+    public function faceMatchSourceProof(int $id): JsonResponse
+    {
+        $match = DB::table('genealogy_face_match_queue')->where('id', $id)->first();
+        $proof = $match ? app(FaceLinkBridgeService::class)->reviewSourcePhoto($match) : ['success' => false];
+        if (! ($proof['success'] ?? false)) {
+            return response()->json(['success' => false, 'error' => ($proof['error_code'] ?? '') === 'source_resource_budget'
+                ? 'The source photo exceeds the current decoding budget; no corruption is implied.' : 'Current source photo is unavailable',
+                'error_code' => $proof['error_code'] ?? 'source_photo_unavailable'], 409, ['Cache-Control' => 'private, no-store']);
+        }
+        $suggestionProof = array_diff_key($proof, ['bytes' => true]);
+        unset($proof['bytes'], $proof['source_path']);
+        $proof['preview_url'] = '/api/media/face-match-source/'.$id.'?source_sha256='.$proof['source_sha256'];
+        if (($match->status ?? null) === 'pending' && auth('web')->check()) {
+            // Detector regions are suggestions only. An unavailable private packet
+            // must not prevent the operator from drawing a current region manually.
+            try {
+                $proof['anonymous_suggestions'] = app(FaceEmbeddingService::class)->anonymousPreviewSuggestions(
+                    ['face_review_id' => $id, 'tree_id' => (int) $match->tree_id], $suggestionProof
+                );
+            } catch (\Throwable) {
+                $proof['anonymous_suggestions'] = ['state' => 'unavailable'];
+            }
+        }
+
+        return response()->json($proof, 200, ['Cache-Control' => 'private, no-store']);
+    }
+
+    private function resolveFaceMatchSourcePath(mixed $mediaPath): ?string
+    {
+        $path = is_scalar($mediaPath) ? trim((string) $mediaPath) : '';
+        $configuredRoot = realpath(trim((string) config('services.nextcloud.data_path', '')));
+        if ($path === '' || $configuredRoot === false || ! is_dir($configuredRoot)) {
+            return null;
+        }
+
+        $candidates = [$this->resolveLocalPath($path)];
+        if (str_starts_with($path, '/')) {
+            $candidates[] = $path;
+        }
+        $candidates[] = rtrim($configuredRoot, '/').'/'.ltrim($path, '/');
+
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate) || $candidate === '') {
+                continue;
+            }
+
+            $resolved = realpath($candidate);
+            if ($resolved === false || ! is_file($resolved)) {
+                continue;
+            }
+
+            if ($resolved === $configuredRoot || str_starts_with($resolved, rtrim($configuredRoot, '/').'/')) {
+                return $resolved;
+            }
+        }
+
+        return null;
+    }
+
+    private function faceRegistryCropOrPlaceholder(mixed $fileRegistryFaceId): Response|BinaryFileResponse
+    {
+        $registryCrop = is_numeric($fileRegistryFaceId)
+            ? $this->faceRegistryCropOrNull((int) $fileRegistryFaceId)
+            : null;
+
+        return $registryCrop ?? $this->returnFacePlaceholder();
+    }
+
+    private function faceRegistryCropOrNull(int $fileRegistryFaceId): ?Response
+    {
+        $response = $this->serveFaceRegistryCrop($fileRegistryFaceId);
+
+        return $response->getStatusCode() < 400 ? $response : null;
     }
 
     /**
      * Crop face from image and return as response
      */
-    private function cropAndServeFace(string $imagePath, array $region): \Illuminate\Http\Response
+    private function cropAndServeFace(string $imagePath, array $region): Response
     {
         try {
             $image = imagecreatefromstring(file_get_contents($imagePath));
@@ -3128,8 +3510,11 @@ class MediaBrowserController extends Controller
     /**
      * Serve image as thumbnail
      */
-    private function serveImageThumbnail(string $imagePath, int $maxSize): \Illuminate\Http\Response
-    {
+    private function serveImageThumbnail(
+        string $imagePath,
+        int $maxSize,
+        string $cacheControl = 'public, max-age=86400'
+    ): Response {
         try {
             $image = imagecreatefromstring(file_get_contents($imagePath));
             if (! $image) {
@@ -3154,7 +3539,7 @@ class MediaBrowserController extends Controller
 
             return response($imageData, 200, [
                 'Content-Type' => 'image/jpeg',
-                'Cache-Control' => 'public, max-age=86400',
+                'Cache-Control' => $cacheControl,
             ]);
         } catch (\Exception $e) {
             return $this->returnFacePlaceholder();
@@ -3164,7 +3549,7 @@ class MediaBrowserController extends Controller
     /**
      * Return placeholder image for faces
      */
-    private function returnFacePlaceholder(): \Illuminate\Http\Response|\Symfony\Component\HttpFoundation\BinaryFileResponse
+    private function returnFacePlaceholder(): Response|BinaryFileResponse
     {
         $placeholder = public_path('images/face-placeholder.png');
         if (file_exists($placeholder)) {
@@ -3360,7 +3745,7 @@ class MediaBrowserController extends Controller
     }
 
     /**
-     * Permanently delete a file from registry and disk
+     * Permanently delete a file from disk and retain its registry tombstone.
      *
      * DELETE /api/media/{uuid}
      */
@@ -3379,25 +3764,52 @@ class MediaBrowserController extends Controller
 
         $ncPath = $file->current_path;
         $localPath = $this->resolveLocalPath($ncPath);
+        $physical = $this->deletePhysicalFile($localPath);
+        if (! $physical['success']) {
+            Log::warning('Failed to delete physical file; registry tombstone withheld', [
+                'path' => $localPath,
+                'uuid' => $uuid,
+                'reason' => $physical['reason'],
+            ]);
 
-        // Delete physical file if it exists
-        $physicalDeleted = false;
-        if ($localPath && file_exists($localPath)) {
-            $physicalDeleted = @unlink($localPath);
-            if (! $physicalDeleted) {
-                Log::warning('Failed to delete physical file, proceeding with DB cleanup', ['path' => $localPath, 'uuid' => $uuid]);
-            }
+            return response()->json([
+                'success' => false,
+                'error' => $physical['error'],
+            ], $physical['http_status']);
         }
 
-        $this->fileLifecycle->deleteFileFromRegistry($uuid, $ncPath, 'Deleted by user');
+        $physicalDeleted = $physical['physical_deleted'];
+        $physicalMissing = $physical['physical_missing'];
 
-        Log::info('File deleted', ['uuid' => $uuid, 'filename' => $file->filename, 'path' => $ncPath, 'physical' => $physicalDeleted]);
+        $deleted = $this->fileLifecycle->deleteFileFromRegistry($uuid, $ncPath, 'Deleted by user');
+        if (! $deleted) {
+            Log::error('Physical file removed but registry tombstone failed', [
+                'uuid' => $uuid,
+                'path' => $ncPath,
+                'physical_deleted' => $physicalDeleted,
+                'physical_missing' => $physicalMissing,
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'error' => 'File removal completed but registry cleanup failed; operator review is required',
+            ], 500);
+        }
+
+        Log::info('File deleted', [
+            'uuid' => $uuid,
+            'filename' => $file->filename,
+            'path' => $ncPath,
+            'physical' => $physicalDeleted,
+            'physical_missing' => $physicalMissing,
+        ]);
 
         return response()->json([
             'success' => true,
             'data' => [
                 'filename' => $file->filename,
                 'physical_deleted' => $physicalDeleted,
+                'physical_missing' => $physicalMissing,
             ],
         ]);
     }
@@ -3433,33 +3845,93 @@ class MediaBrowserController extends Controller
         }
 
         $localPath = $this->resolveLocalPath($ncPath);
+        $physical = $this->deletePhysicalFile($localPath);
+        if (! $physical['success']) {
+            Log::warning('Failed to delete physical file during hard purge; registry purge withheld', [
+                'path' => $localPath,
+                'uuid' => $uuid,
+                'reason' => $physical['reason'],
+            ]);
 
-        $physicalDeleted = false;
-        if ($localPath && file_exists($localPath)) {
-            $physicalDeleted = @unlink($localPath);
-            if (! $physicalDeleted) {
-                Log::warning('Failed to delete physical file during hard purge, proceeding with registry purge', [
-                    'path' => $localPath,
-                    'uuid' => $uuid,
-                ]);
-            }
+            return response()->json([
+                'success' => false,
+                'error' => $physical['error'],
+            ], $physical['http_status']);
         }
+
+        $physicalDeleted = $physical['physical_deleted'];
+        $physicalMissing = $physical['physical_missing'];
 
         $purged = $this->fileLifecycle->hardPurgeFileFromRegistry($uuid, $ncPath, $force);
         if (! $purged) {
             return response()->json(['success' => false, 'error' => 'Failed to hard purge file'], 500);
         }
 
-        Log::info('File hard purged', ['uuid' => $uuid, 'filename' => $file->filename, 'path' => $ncPath, 'physical' => $physicalDeleted]);
+        Log::info('File hard purged', [
+            'uuid' => $uuid,
+            'filename' => $file->filename,
+            'path' => $ncPath,
+            'physical' => $physicalDeleted,
+            'physical_missing' => $physicalMissing,
+        ]);
 
         return response()->json([
             'success' => true,
             'data' => [
                 'filename' => $file->filename,
                 'physical_deleted' => $physicalDeleted,
+                'physical_missing' => $physicalMissing,
                 'hard_purged' => true,
             ],
         ]);
+    }
+
+    /**
+     * @return array{success:bool,physical_deleted:bool,physical_missing:bool,reason:?string,error:?string,http_status:int}
+     */
+    private function deletePhysicalFile(?string $localPath): array
+    {
+        if (! $localPath) {
+            return [
+                'success' => false,
+                'physical_deleted' => false,
+                'physical_missing' => false,
+                'reason' => 'local_storage_unavailable',
+                'error' => 'Local media storage is unavailable; no file or registry data was changed',
+                'http_status' => 503,
+            ];
+        }
+
+        if (! file_exists($localPath) && ! is_link($localPath)) {
+            return [
+                'success' => true,
+                'physical_deleted' => false,
+                'physical_missing' => true,
+                'reason' => null,
+                'error' => null,
+                'http_status' => 200,
+            ];
+        }
+
+        if (@unlink($localPath)) {
+            return [
+                'success' => true,
+                'physical_deleted' => true,
+                'physical_missing' => false,
+                'reason' => null,
+                'error' => null,
+                'http_status' => 200,
+            ];
+        }
+
+        return [
+            'success' => false,
+            'physical_deleted' => false,
+            'physical_missing' => false,
+            'reason' => 'unlink_failed',
+            'error' => 'Physical file deletion failed; no registry data was changed',
+            'http_status' => 500,
+        ];
     }
 
     /**
@@ -3488,6 +3960,8 @@ class MediaBrowserController extends Controller
                 SELECT id, current_path, filename, date_taken, date_taken_source, date_taken_confidence
                 FROM file_registry
                 WHERE date_taken IS NOT NULL
+                AND COALESCE(date_taken_precision, 'exact') = 'exact'
+                AND is_scan = 0
                 AND date_taken_source NOT LIKE 'exif_%'
                 AND (exif_written IS NULL OR exif_written = 0)
                 AND extension IN ({$imageExts})
@@ -3536,13 +4010,16 @@ class MediaBrowserController extends Controller
 
         // Process faces
         if (! $permissionHalted && ($type === 'faces' || $type === 'all')) {
+            $faceWritebackExists = $this->exifWriteback->faceWritebackExistsSql('fr', 'ff', 'fip');
             $files = DB::select("
                 SELECT DISTINCT fr.id, fr.current_path, fr.filename
                 FROM file_registry fr
                 INNER JOIN file_registry_faces ff ON ff.file_registry_id = fr.id
+                INNER JOIN face_identity_provenance fip ON fip.file_registry_face_id = ff.id
                 WHERE (fr.exif_faces_written IS NULL OR fr.exif_faces_written = 0)
                 AND fr.status = 'active'
                 AND fr.extension IN ({$imageExts})
+                AND {$faceWritebackExists}
                 LIMIT ?
             ", [$limit]);
 
@@ -3559,26 +4036,7 @@ class MediaBrowserController extends Controller
                     continue;
                 }
 
-                $faces = DB::select('
-                    SELECT person_name, genealogy_person_id, region_x, region_y, region_w, region_h, confidence
-                    FROM file_registry_faces
-                    WHERE file_registry_id = ?
-                ', [$file->id]);
-
-                // Enrich with genealogy names
-                foreach ($faces as &$face) {
-                    if ($face->genealogy_person_id && ! $face->person_name) {
-                        $person = DB::selectOne("
-                            SELECT CONCAT(given_name, ' ', surname) as name
-                            FROM genealogy_persons
-                            WHERE id = ?
-                        ", [$face->genealogy_person_id]);
-                        if ($person) {
-                            $face->person_name = $person->name;
-                        }
-                    }
-                }
-
+                $faces = $this->exifWriteback->facesForWriteback((int) $file->id);
                 $result = $this->exifWriteback->writeFaces($localPath, $faces);
 
                 if ($result['success']) {
@@ -3678,6 +4136,7 @@ class MediaBrowserController extends Controller
         $showHidden = (bool) $request->get('hidden', false);
 
         $where = $showHidden ? 'frf.hidden = 1' : 'frf.hidden = 0';
+        $where .= " AND frf.source_current = 1 AND frf.superseded_at IS NULL AND fr.status = 'active' AND frf.global_identity_uuid IS NULL";
         $where .= " AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL AND LOWER(TRIM(frf.person_name)) != 'unknown'";
 
         $baseSql = "
@@ -3708,6 +4167,7 @@ class MediaBrowserController extends Controller
                 NULL as representative_filename,
                 MAX(frf.favorite) as favorite
             FROM file_registry_faces frf
+            JOIN file_registry fr ON fr.id = frf.file_registry_id
             LEFT JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
             WHERE {$where}
             GROUP BY
@@ -3787,8 +4247,9 @@ class MediaBrowserController extends Controller
             ", [...$mediaParams, $windowLimit]);
         }
 
+        $globalPeople = ! $showHidden && auth('web')->check() ? $this->globalFacePeople($search, $windowLimit) : [];
         $peopleByIdentity = [];
-        foreach (array_merge($facePeople, $mediaPeople) as $person) {
+        foreach (array_merge($facePeople, $mediaPeople, $globalPeople) as $person) {
             $key = (string) $person->identity_key;
             if ($key === '') {
                 continue;
@@ -3828,12 +4289,13 @@ class MediaBrowserController extends Controller
             $linkedMediaCount = (int) ($person['linked_media_count'] ?? 0);
             $person['face_count'] = $faceCount;
             $person['linked_media_count'] = $linkedMediaCount;
-            $person['media_count'] = max((int) ($person['media_count'] ?? 0), $faceCount, $linkedMediaCount);
+            $global = ($person['scope_type'] ?? null) === 'global_identity';
+            $person['media_count'] = $global ? (int) ($person['media_count'] ?? 0) : max((int) ($person['media_count'] ?? 0), $faceCount, $linkedMediaCount);
             $person['has_face_rows'] = $faceCount > 0;
             $person['has_ft_media'] = $linkedMediaCount > 0;
-            $person['known_source'] = $faceCount > 0
+            $person['known_source'] = $global ? 'global_identity' : ($faceCount > 0
                 ? ($linkedMediaCount > 0 ? 'face_rows_and_ft_media' : 'face_rows')
-                : 'ft_media';
+                : 'ft_media');
             $person['representative_thumbnail_url'] = ! empty($person['representative_asset_uuid'])
                 ? "/api/media/{$person['representative_asset_uuid']}/thumbnail/medium"
                 : null;
@@ -3857,8 +4319,8 @@ class MediaBrowserController extends Controller
             $registryRows = DB::select("
                 SELECT asset_uuid, filename, current_path, original_path
                 FROM file_registry
-                WHERE current_path IN ({$pathPlaceholders})
-                   OR original_path IN ({$pathPlaceholders})
+                WHERE status = 'active' AND (current_path IN ({$pathPlaceholders})
+                   OR original_path IN ({$pathPlaceholders}))
             ", [...$mediaPaths, ...$mediaPaths]);
 
             $registryByPath = [];
@@ -3915,20 +4377,34 @@ class MediaBrowserController extends Controller
             FROM file_registry_faces frf
             JOIN file_registry fr ON fr.id = frf.file_registry_id
             WHERE frf.person_name = '' AND frf.hidden = 0
+              AND frf.source_current = 1 AND frf.superseded_at IS NULL AND fr.status = 'active'
+              AND frf.global_identity_uuid IS NULL
             ORDER BY frf.confidence DESC, frf.id DESC
             LIMIT ? OFFSET ?
         ", [$limit, $offset]);
 
-        // Stats
+        // Legacy labels and independent global identities keep distinct count keys.
         $stats = DB::selectOne("
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN person_name != '' AND hidden = 0 THEN 1 ELSE 0 END) as named_count,
-                SUM(CASE WHEN person_name = '' AND hidden = 0 THEN 1 ELSE 0 END) as unnamed_count,
-                SUM(CASE WHEN hidden = 1 THEN 1 ELSE 0 END) as hidden_count,
-                COUNT(DISTINCT CASE WHEN person_name != '' AND LOWER(person_name) != 'unknown' THEN person_name END) as unique_people
-            FROM file_registry_faces
+                SUM(CASE WHEN frf.person_name != '' AND frf.hidden = 0 THEN 1 ELSE 0 END) as named_count,
+                SUM(CASE WHEN frf.person_name = '' AND frf.hidden = 0 THEN 1 ELSE 0 END) as unnamed_count,
+                SUM(CASE WHEN frf.hidden = 1 THEN 1 ELSE 0 END) as hidden_count,
+                COUNT(DISTINCT CASE WHEN frf.person_name != '' AND LOWER(frf.person_name) != 'unknown'
+                    THEN CASE WHEN frf.genealogy_person_id IS NOT NULL THEN CONCAT('ft:', frf.genealogy_person_id)
+                    ELSE CONCAT('name:', frf.person_name) END END) as unique_people
+            FROM file_registry_faces frf
+            JOIN file_registry fr ON fr.id = frf.file_registry_id
+            WHERE frf.source_current = 1 AND frf.superseded_at IS NULL AND fr.status = 'active' AND frf.global_identity_uuid IS NULL
         ");
+        if (auth('web')->check()) {
+            $globalStats = $this->globalFaceRows()->selectRaw('COUNT(*) AS faces, COUNT(DISTINCT frf.global_identity_uuid) AS people')->first();
+            $globalHidden = $this->globalFaceRows(true)->count();
+            $stats->total = (int) ($stats->total ?? 0) + (int) $globalStats->faces + $globalHidden;
+            $stats->named_count = (int) ($stats->named_count ?? 0) + (int) $globalStats->faces;
+            $stats->hidden_count = (int) ($stats->hidden_count ?? 0) + $globalHidden;
+            $stats->unique_people = (int) ($stats->unique_people ?? 0) + (int) $globalStats->people;
+        }
 
         return response()->json([
             'success' => true,
@@ -4008,6 +4484,8 @@ class MediaBrowserController extends Controller
               )
         ";
         $namedOnlyFilter = "frf.hidden = 0
+              AND frf.source_current = 1 AND frf.superseded_at IS NULL AND fr.status = 'active'
+              AND frf.global_identity_uuid IS NULL
               AND frf.genealogy_person_id IS NULL
               AND NULLIF(TRIM(frf.person_name), '') IS NOT NULL
               AND LOWER(TRIM(frf.person_name)) != 'unknown'";
@@ -4019,6 +4497,8 @@ class MediaBrowserController extends Controller
                 FROM file_registry_faces frf_mix
                 JOIN file_registry fr_mix ON fr_mix.id = frf_mix.file_registry_id
                 WHERE frf_mix.hidden = 0
+                  AND frf_mix.source_current = 1 AND frf_mix.superseded_at IS NULL AND fr_mix.status = 'active'
+                  AND frf_mix.global_identity_uuid IS NULL
                   AND frf_mix.cluster_id IS NOT NULL
                   AND NULLIF(TRIM(frf_mix.person_name), '') IS NOT NULL
                   AND LOWER(TRIM(frf_mix.person_name)) != 'unknown'
@@ -4061,6 +4541,7 @@ class MediaBrowserController extends Controller
                    frf.genealogy_person_id, frf.region_x, frf.region_y,
                    frf.region_w, frf.region_h, frf.confidence, frf.source,
                    frf.verified, frf.favorite, frf.cluster_id,
+                   frf.source_sha256, frf.source_current, frf.superseded_at, frf.hidden, frf.face_region_convention,
                    fr.asset_uuid, fr.filename, fr.current_path, fr.date_taken,
                    fr.status AS file_status,
                    IFNULL(GREATEST(TIMESTAMPDIFF(HOUR, frf.updated_at, NOW()), 0), 0) AS backlog_age_hours,
@@ -4094,6 +4575,9 @@ class MediaBrowserController extends Controller
             $face->candidate_decision_terminal = $this->safeFaceCandidateDecisionTerminal($face->candidate_decision_terminal ?? null);
             $face->candidate_decision_at = $this->safeFaceCandidateDecisionTimestamp($face->candidate_decision_at ?? null);
             $face->photo_date_context = $this->facePhotoDateContext($face->date_taken ?? null);
+            $face->source_current = (int) ($face->source_current ?? 0) === 1;
+            $face->hidden = (bool) ($face->hidden ?? true);
+            $face->global_face_evidence = $this->globalFaceStoredEvidence($face);
             unset($face->date_taken);
 
             return $face;
@@ -4126,6 +4610,37 @@ class MediaBrowserController extends Controller
             'limit' => $limit,
             'offset' => $offset,
         ]);
+    }
+
+    /** Stored snapshot only: the pinned crop and proposal admission verify actual bytes. */
+    private function globalFaceStoredEvidence(object $face): ?array
+    {
+        $hash = $face->source_sha256 ?? null;
+        if (($face->file_status ?? null) !== 'active' || ! empty($face->hidden)
+            || (int) ($face->source_current ?? 0) !== 1 || ! empty($face->superseded_at)
+            || ! is_string($hash) || ! preg_match('/^[a-f0-9]{64}$/D', $hash)
+            || ($face->face_region_convention ?? null) !== 'normalized_top_left'
+            || (int) ($face->face_id ?? 0) < 1) {
+            return null;
+        }
+        $region = [];
+        foreach (['x', 'y', 'w', 'h'] as $axis) {
+            $value = $face->{'region_'.$axis} ?? null;
+            if (! is_numeric($value) || ! is_finite((float) $value)) {
+                return null;
+            }
+            $region[$axis] = (float) $value;
+        }
+        if ($region['x'] < 0 || $region['y'] < 0 || $region['w'] <= 0 || $region['h'] <= 0
+            || $region['x'] + $region['w'] > 1 || $region['y'] + $region['h'] > 1) {
+            return null;
+        }
+        $fingerprint = hash('sha256', $hash.json_encode($region, JSON_THROW_ON_ERROR));
+
+        return ['face_id' => (int) $face->face_id, 'source_sha256' => $hash, 'region' => $region,
+            'face_region_convention' => 'normalized_top_left', 'coordinate_basis' => 'encoded_pixels',
+            'region_fingerprint' => $fingerprint,
+            'crop_url' => '/api/media/faces/registry-crop/'.$face->face_id.'?source_sha256='.$hash.'&region_fingerprint='.$fingerprint];
     }
 
     /**
@@ -4288,27 +4803,82 @@ class MediaBrowserController extends Controller
      *
      * GET /api/media/faces/unidentified
      */
+    public function registryFaceSourceProof(int $id): JsonResponse
+    {
+        $registry = app(ReviewTypeRegistryService::class);
+        $type = $registry->getType(RegistryFaceReviewService::TYPE);
+        if (($type['source_table'] ?? null) !== 'file_registry_faces'
+            || in_array(RegistryFaceReviewService::TYPE, $registry->getDisabledTypeNames(), true)) {
+            return response()->json(['success' => false, 'error' => 'Photo review is unavailable.'], 503);
+        }
+        try {
+            return response()->json(app(RegistryFaceReviewService::class)->proof($id));
+        } catch (\Throwable) {
+            return response()->json(['success' => false, 'error' => 'The current face and source photo need preparation before review.'], 409);
+        }
+    }
+
     public function unidentifiedFaces(Request $request): JsonResponse
     {
-        $perPage = min((int) $request->get('per_page', 50), 200);
+        $perPage = max(1, min((int) $request->get('per_page', 50), 200));
         $page = max((int) $request->get('page', 1), 1);
         $offset = ($page - 1) * $perPage;
+        $query = DB::table('genealogy_face_match_queue as f')
+            ->where('f.status', 'pending')->where('f.match_type', 'no_match');
+        $pendingTotal = (clone $query)->count();
+        $forReview = $request->boolean('for_review');
+        if ($forReview) {
+            $type = app(ReviewTypeRegistryService::class)->getType('face');
+            if (($type['source_table'] ?? null) !== 'genealogy_face_match_queue'
+                || ($type['source_connection'] ?? null) === 'pgsql_rag') {
+                return response()->json(['success' => false, 'error' => 'Photo review is unavailable.'], 503);
+            }
+            $source = 'default:'.$type['source_table'];
+            // Deferral belongs to the Desk; it does not change the underlying face queue.
+            // Only the latest generation may hold a photo, so a reopened item returns normally.
+            $query->whereNotExists(function (Builder $held) use ($source): void {
+                $held->selectRaw('1')->from('review_desk_references as desk')
+                    ->where('desk.source', $source)->whereRaw('desk.source_id = CAST(f.id AS CHAR)')
+                    ->whereIn('desk.status', ['later', 'followup'])
+                    ->whereNotExists(function (Builder $newer): void {
+                        $newer->selectRaw('1')->from('review_desk_references as newer')
+                            ->whereColumn('newer.source', 'desk.source')
+                            ->whereColumn('newer.source_id', 'desk.source_id')
+                            ->whereColumn('newer.generation', '>', 'desk.generation');
+                    });
+            });
+        }
+        $registry = app(ReviewTypeRegistryService::class);
+        $registryType = $forReview ? $registry->getType(RegistryFaceReviewService::TYPE) : null;
+        if (($registryType['source_table'] ?? null) === 'file_registry_faces'
+            && ($registryType['source_connection'] ?? null) !== 'pgsql_rag'
+            && ! in_array(RegistryFaceReviewService::TYPE, $registry->getDisabledTypeNames(), true)) {
+            $adapter = app(RegistryFaceReviewService::class);
+            $global = $adapter->pending();
+            $pendingTotal += (clone $global)->count();
+            $adapter->excludeDeferred($global, $adapter::SOURCE, 'face.id');
+            $legacy = $query->leftJoin('genealogy_media as m', 'm.id', '=', 'f.media_id')
+                ->select(['f.id', 'f.media_id', 'f.face_region', 'f.created_at', 'm.local_filename as filename'])
+                ->selectRaw("COALESCE(m.nextcloud_path, m.original_path) as media_path, 'face' as review_type");
+            // Union columns have an explicit common order; queue IDs and registry IDs may overlap.
+            $global->select(['face.id'])
+                ->selectRaw('NULL as media_id, NULL as face_region')->addSelect(['face.created_at', 'file.filename'])
+                ->selectRaw("file.current_path as media_path, 'registry_face' as review_type");
+            $merged = DB::query()->fromSub($legacy->unionAll($global), 'photos');
+            $total = (clone $merged)->count();
+            $faces = $merged->orderByDesc('created_at')->orderBy('review_type')->orderByDesc('id')->limit($perPage)->offset($offset)->get();
+            foreach ($faces as $face) {
+                $face->reference = $face->review_type.':'.$face->id;
+            }
 
-        $total = (int) (DB::selectOne(
-            "SELECT COUNT(*) as total FROM genealogy_face_match_queue WHERE status = 'pending' AND match_type = 'no_match'"
-        )->total ?? 0);
-
-        $faces = DB::select(
-            "SELECT f.id, f.media_id, f.face_region, f.created_at,
-                    COALESCE(m.nextcloud_path, m.original_path) as media_path,
-                    m.local_filename as filename
-             FROM genealogy_face_match_queue f
-             LEFT JOIN genealogy_media m ON m.id = f.media_id
-             WHERE f.status = 'pending' AND f.match_type = 'no_match'
-             ORDER BY f.created_at DESC
-             LIMIT ? OFFSET ?",
-            [$perPage, $offset]
-        );
+            return response()->json(['faces' => $faces, 'total' => $total, 'pending_total' => $pendingTotal,
+                'page' => $page, 'per_page' => $perPage, 'pages' => $total > 0 ? (int) ceil($total / $perPage) : 0]);
+        }
+        $total = $forReview ? (clone $query)->count() : $pendingTotal;
+        $faces = $query->leftJoin('genealogy_media as m', 'm.id', '=', 'f.media_id')
+            ->select(['f.id', 'f.media_id', 'f.face_region', 'f.created_at', 'm.local_filename as filename'])
+            ->selectRaw('COALESCE(m.nextcloud_path, m.original_path) as media_path')
+            ->orderByDesc('f.created_at')->orderByDesc('f.id')->limit($perPage)->offset($offset)->get();
 
         return response()->json([
             'faces' => $faces,
@@ -4316,6 +4886,7 @@ class MediaBrowserController extends Controller
             'page' => $page,
             'per_page' => $perPage,
             'pages' => $total > 0 ? (int) ceil($total / $perPage) : 0,
+            ...($forReview ? ['pending_total' => $pendingTotal] : []),
         ]);
     }
 
@@ -4327,8 +4898,15 @@ class MediaBrowserController extends Controller
     public function updateFaceMatchStatus(Request $request, int $id): JsonResponse
     {
         $status = $request->input('status');
-        $allowed = ['pending', 'ignored', 'dismissed', 'approved', 'rejected'];
-        if (! in_array($status, $allowed)) {
+        if (in_array($status, ['approved', 'rejected'], true)) {
+            return response()->json([
+                'success' => false,
+                'error' => 'Identity approvals and rejections require the picture match review.',
+                'error_code' => 'face_identity_review_required',
+            ], 422);
+        }
+        $allowed = ['pending', 'ignored', 'dismissed'];
+        if (! in_array($status, $allowed, true)) {
             return response()->json(['success' => false, 'error' => 'Invalid status'], 422);
         }
 
@@ -4337,12 +4915,28 @@ class MediaBrowserController extends Controller
         }
 
         $affected = DB::update(
-            'UPDATE genealogy_face_match_queue SET status = ?, reviewed_at = NOW() WHERE id = ?',
-            [$status, $id]
+            "UPDATE genealogy_face_match_queue
+             SET status = ?, reviewed_at = CASE WHEN ? = 'pending' THEN NULL ELSE NOW() END, updated_at = NOW()
+             WHERE id = ? AND match_type = 'no_match'
+               AND status IN ('pending', 'ignored', 'dismissed')
+               AND (suggested_person_id IS NULL OR suggested_person_id = 0)
+               AND JSON_EXTRACT(match_details, '$.latest_candidate_decision') IS NULL
+               AND JSON_EXTRACT(match_details, '$.candidate_decisions') IS NULL
+               AND JSON_EXTRACT(match_details, '$.rejected_candidate_ids') IS NULL
+               AND JSON_EXTRACT(match_details, '$.candidate_decision_version') IS NULL
+               AND JSON_EXTRACT(match_details, '$.operator_confirmations') IS NULL
+               AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(match_details, '$.source')), '') <> 'operator confirmation'",
+            [$status, $status, $id]
         );
 
-        if (! $affected) {
-            return response()->json(['success' => false, 'error' => 'Face match record not found'], 404);
+        if ($affected !== 1) {
+            $exists = DB::selectOne('SELECT id FROM genealogy_face_match_queue WHERE id = ?', [$id]);
+
+            return response()->json([
+                'success' => false,
+                'error' => $exists ? 'Only unidentified matches without identity decision history can be dismissed or reopened; the match may have changed.' : 'Face match record not found',
+                'error_code' => $exists ? 'face_match_status_conflict' : 'not_found',
+            ], $exists ? 409 : 404);
         }
 
         return response()->json(['success' => true, 'status' => $status]);
@@ -4353,123 +4947,223 @@ class MediaBrowserController extends Controller
      *
      * GET /api/media/faces/registry-crop/{faceId}
      */
-    public function serveFaceRegistryCrop(int $faceId): Response
+    public function serveFaceRegistryCrop(int $faceId, ?Request $request = null): Response
     {
-        $face = DB::selectOne('
-            SELECT frf.region_x, frf.region_y, frf.region_w, frf.region_h,
-                   fr.current_path
-            FROM file_registry_faces frf
-            JOIN file_registry fr ON fr.id = frf.file_registry_id
-            WHERE frf.id = ?
-        ', [$faceId]);
-
-        if (! $face || ! $face->current_path) {
-            return response('Face not found', 404);
+        $request ??= request();
+        $pinned = $request->query->has('source_sha256') || $request->query->has('region_fingerprint');
+        $headers = ['Cache-Control' => $pinned ? 'private, no-store' : 'private, no-cache, must-revalidate'];
+        $expectedHash = $request->query('source_sha256');
+        $expectedRegion = $request->query('region_fingerprint');
+        if ($pinned && (! is_string($expectedHash) || ! preg_match('/^[a-f0-9]{64}$/D', $expectedHash)
+            || ! is_string($expectedRegion) || ! preg_match('/^[a-f0-9]{64}$/D', $expectedRegion))) {
+            return response('Exact source and region pins are required together', 409, $headers);
         }
-
-        $cachePath = storage_path("app/thumbnails/faces/frf_{$faceId}.jpg");
-
-        if (file_exists($cachePath)) {
-            return response(file_get_contents($cachePath), 200, [
-                'Content-Type' => 'image/jpeg',
-                'Cache-Control' => 'public, max-age=604800',
-            ]);
+        $query = "SELECT frf.source, frf.source_sha256, frf.face_region_convention, frf.source_current, frf.superseded_at, frf.region_x, frf.region_y, frf.region_w, frf.region_h, fr.current_path
+                  FROM file_registry_faces frf
+                  JOIN file_registry fr ON fr.id = frf.file_registry_id
+                  WHERE frf.id = ? AND fr.status = 'active' AND COALESCE(frf.hidden, 0) = 0";
+        $face = DB::selectOne($query, [$faceId]);
+        if ($face && (empty($face->source_current) || ! empty($face->superseded_at))) {
+            return response('Face source superseded; source photo remains available', 409, $headers);
         }
-
-        try {
-            $filePath = $face->current_path;
-
-            // Try local file first, then Nextcloud
-            if (file_exists($filePath)) {
-                $imageData = file_get_contents($filePath);
-            } else {
-                $nextcloud = app(\App\Services\NextcloudService::class);
-                // Convert absolute path to Nextcloud relative path
-                $dataPath = trim((string) config('services.nextcloud.data_path', ''));
-                $localRoot = $dataPath === '' ? '' : rtrim($dataPath, '/').'/';
-                $ncPath = $localRoot !== '' && str_starts_with($filePath, $localRoot)
-                    ? substr($filePath, strlen(rtrim($localRoot, '/')))
-                    : ltrim($filePath, '/');
-                $result = $nextcloud->downloadFile($ncPath);
-                if (! $result['success']) {
-                    return response('File not accessible', 404);
-                }
-                $imageData = $result['content'];
+        if (! $face || ! is_string($face->current_path) || $face->current_path === '') {
+            return response('Face not found', 404, $headers);
+        }
+        $region = [];
+        foreach (['x', 'y', 'w', 'h'] as $axis) {
+            $value = $face->{'region_'.$axis};
+            if (! is_numeric($value) || ! is_finite((float) $value)) {
+                return response('Face region unavailable', 409, $headers);
             }
+            $region[$axis] = (float) $value;
+        }
+        if ($region['x'] < 0 || $region['y'] < 0 || $region['w'] <= 0 || $region['h'] <= 0
+            || $region['x'] + $region['w'] > 1 || $region['y'] + $region['h'] > 1) {
+            return response('Face region unavailable', 409, $headers);
+        }
+        if ($pinned && (($face->source_sha256 ?? null) !== $expectedHash
+            || ($face->face_region_convention ?? null) !== 'normalized_top_left'
+            || ! hash_equals($expectedRegion, hash('sha256', $expectedHash.json_encode($region, JSON_THROW_ON_ERROR))))) {
+            return response('Selected face source or region changed', 409, $headers);
+        }
 
+        $sourceImage = $cropped = null;
+        $temporary = null;
+        try {
+            $filePath = $this->resolveFaceMatchSourcePath($face->current_path);
+            $dataRoot = rtrim((string) config('services.nextcloud.data_path'), '/');
+            $ncPath = $dataRoot !== '' && str_starts_with($face->current_path, $dataRoot.'/')
+                ? substr($face->current_path, strlen($dataRoot)) : $face->current_path;
+            if (str_contains($ncPath, '\\') || str_contains($ncPath, "\0") || in_array('..', explode('/', $ncPath), true)) {
+                return response('Source photo unavailable', 404, $headers);
+            }
+            if ($filePath) {
+                $imageData = @file_get_contents($filePath);
+            } else {
+                $result = app(NextcloudFileApiService::class)->downloadFile($ncPath);
+                $imageData = ($result['success'] ?? false) ? ($result['content'] ?? null) : null;
+            }
+            if (! is_string($imageData) || $imageData === '') {
+                return response('Source photo unavailable', 404, $headers);
+            }
+            $sourceHash = hash('sha256', $imageData);
+            if ($pinned && ! hash_equals($expectedHash, $sourceHash)) {
+                return response('Selected face source changed', 409, $headers);
+            }
+            $geometryProven = function (object $row) use ($faceId, $region, $sourceHash): bool {
+                if (empty($row->source_current) || ! empty($row->superseded_at)) {
+                    return false;
+                }
+                if (($row->source_sha256 ?? null) !== null) {
+                    return ($row->face_region_convention ?? null) === 'normalized_top_left'
+                        && is_string($row->source_sha256) && hash_equals($sourceHash, $row->source_sha256);
+                }
+                // Legacy XMP boxes mix center and top-left geometry. Only an exact,
+                // current normalized receipt can establish how these stored pixels map.
+                $reviews = DB::select('SELECT match_details FROM genealogy_face_match_queue WHERE file_registry_face_id = ?', [$faceId]);
+                foreach ($reviews as $review) {
+                    $details = json_decode((string) ($review->match_details ?? ''), true);
+                    foreach (is_array($details['operator_confirmations'] ?? null) ? $details['operator_confirmations'] : [] as $receipt) {
+                        if (! is_array($receipt) || ($receipt['face_region_convention'] ?? null) !== 'normalized_top_left'
+                            || (int) ($receipt['file_registry_face_id'] ?? 0) !== $faceId
+                            || ($receipt['source_path'] ?? null) !== $row->current_path
+                            || ($receipt['source_sha256'] ?? null) !== $sourceHash) {
+                            continue;
+                        }
+                        foreach ($region as $axis => $coordinate) {
+                            if (! is_numeric($receipt['region'][$axis] ?? null)
+                                || abs((float) $receipt['region'][$axis] - $coordinate) > (float) config('genealogy.face_region_match_tolerance', 0.00015)) {
+                                continue 2;
+                            }
+                        }
+
+                        return true;
+                    }
+                }
+
+                return false;
+            };
+            if (! $geometryProven($face)) {
+                return response('Face source or geometry requires review; source photo remains available', 409, $headers);
+            }
+            $fingerprint = hash('sha256', $sourceHash.json_encode($region, JSON_THROW_ON_ERROR));
+            if ($pinned) {
+                $headers['X-PLOS-Source-SHA256'] = $sourceHash;
+                $headers['X-PLOS-Region-Fingerprint'] = $fingerprint;
+            }
+            $cachePath = storage_path("app/thumbnails/faces/frf_{$faceId}_{$fingerprint}.jpg");
+            $currentEvidenceMatches = function () use ($query, $faceId, $face, $region, $sourceHash, $filePath, $ncPath, $geometryProven): bool {
+                $current = DB::selectOne($query, [$faceId]);
+                if (! $current || $current->current_path !== $face->current_path
+                    || ($current->source ?? null) !== ($face->source ?? null) || ! $geometryProven($current)) {
+                    return false;
+                }
+                foreach ($region as $axis => $coordinate) {
+                    if (! is_numeric($current->{'region_'.$axis}) || (float) $current->{'region_'.$axis} !== $coordinate) {
+                        return false;
+                    }
+                }
+                $hash = $filePath ? @hash_file('sha256', $filePath) : null;
+                if (! $filePath) {
+                    $result = app(NextcloudFileApiService::class)->computeFileHash($ncPath);
+                    $hash = ($result['success'] ?? false) ? ($result['hash'] ?? null) : null;
+                }
+
+                return is_string($hash) && hash_equals($sourceHash, $hash);
+            };
+            if (is_file($cachePath)) {
+                $content = @file_get_contents($cachePath);
+                $dimensions = is_string($content) ? @getimagesizefromstring($content) : false;
+                $cachedImage = $dimensions && ($dimensions['mime'] ?? null) === 'image/jpeg' ? @imagecreatefromstring($content) : false;
+                $validCache = $cachedImage instanceof \GdImage;
+                if ($validCache) {
+                    imagedestroy($cachedImage);
+                }
+                if ($validCache) {
+                    if (! $currentEvidenceMatches()) {
+                        return response('Face source or region changed', 409, $headers);
+                    }
+
+                    return response($content, 200, ['Content-Type' => 'image/jpeg'] + $headers)->setEtag($fingerprint);
+                }
+            }
             $sourceImage = @imagecreatefromstring($imageData);
             if (! $sourceImage) {
-                return response('Cannot process image', 500);
+                return response('Cannot process image', 500, $headers);
             }
-
-            // Auto-orient from EXIF
-            if (function_exists('exif_read_data') && file_exists($filePath)) {
-                $exif = @exif_read_data($filePath);
-                if ($exif && isset($exif['Orientation'])) {
-                    $sourceImage = match ((int) $exif['Orientation']) {
-                        3 => imagerotate($sourceImage, 180, 0),
-                        6 => imagerotate($sourceImage, -90, 0),
-                        8 => imagerotate($sourceImage, 90, 0),
-                        default => $sourceImage,
-                    };
-                }
-            }
-
+            // Detector boxes belong to raw pixels. Crop first, then orient the selected crop.
             $imgWidth = imagesx($sourceImage);
             $imgHeight = imagesy($sourceImage);
-            $size = 200;
-
-            // Calculate crop from normalized coordinates with padding
+            if (floor($region['w'] * $imgWidth) < 1 || floor($region['h'] * $imgHeight) < 1) {
+                return response('Face region unavailable', 409, $headers);
+            }
             $padding = 0.3;
-            $x = max(0, ($face->region_x - $face->region_w * $padding) * $imgWidth);
-            $y = max(0, ($face->region_y - $face->region_h * $padding) * $imgHeight);
-            $w = min($imgWidth - $x, $face->region_w * (1 + $padding * 2) * $imgWidth);
-            $h = min($imgHeight - $y, $face->region_h * (1 + $padding * 2) * $imgHeight);
-
-            // Make square
-            $cropSize = max($w, $h);
-            $x = max(0, $x - ($cropSize - $w) / 2);
-            $y = max(0, $y - ($cropSize - $h) / 2);
-            if ($x + $cropSize > $imgWidth) {
-                $x = $imgWidth - $cropSize;
+            $x = max(0, ($region['x'] - $region['w'] * $padding) * $imgWidth);
+            $y = max(0, ($region['y'] - $region['h'] * $padding) * $imgHeight);
+            $w = min($imgWidth - $x, $region['w'] * (1 + $padding * 2) * $imgWidth);
+            $h = min($imgHeight - $y, $region['h'] * (1 + $padding * 2) * $imgHeight);
+            $cropSize = min(max($w, $h), $imgWidth, $imgHeight);
+            $x = max(0, min($x - ($cropSize - $w) / 2, $imgWidth - $cropSize));
+            $y = max(0, min($y - ($cropSize - $h) / 2, $imgHeight - $cropSize));
+            $cropped = imagecreatetruecolor(200, 200);
+            imagecopyresampled($cropped, $sourceImage, 0, 0, (int) $x, (int) $y, 200, 200, (int) $cropSize, (int) $cropSize);
+            if (function_exists('exif_read_data')) {
+                $stream = fopen('php://temp', 'w+b');
+                try {
+                    fwrite($stream, $imageData);
+                    rewind($stream);
+                    $exif = @exif_read_data($stream);
+                } finally {
+                    fclose($stream);
+                }
+                $orientation = (int) ($exif['Orientation'] ?? 1);
+                if (in_array($orientation, [2, 5, 7], true)) {
+                    imageflip($cropped, IMG_FLIP_HORIZONTAL);
+                } elseif ($orientation === 4) {
+                    imageflip($cropped, IMG_FLIP_VERTICAL);
+                }
+                $angle = match ($orientation) {
+                    3 => 180, 5, 6 => -90, 7, 8 => 90, default => 0
+                };
+                if ($angle !== 0) {
+                    $oriented = imagerotate($cropped, $angle, 0);
+                    imagedestroy($cropped);
+                    $cropped = $oriented;
+                }
             }
-            if ($y + $cropSize > $imgHeight) {
-                $y = $imgHeight - $cropSize;
-            }
-            if ($x < 0) {
-                $x = 0;
-                $cropSize = min($cropSize, $imgWidth);
-            }
-            if ($y < 0) {
-                $y = 0;
-                $cropSize = min($cropSize, $imgHeight);
-            }
-
-            $cropped = imagecreatetruecolor($size, $size);
-            imagecopyresampled(
-                $cropped, $sourceImage,
-                0, 0, (int) $x, (int) $y,
-                $size, $size, (int) $cropSize, (int) $cropSize
-            );
-
             $dir = dirname($cachePath);
-            if (! is_dir($dir)) {
-                mkdir($dir, 0755, true);
+            if (! is_dir($dir) && ! mkdir($dir, 0755, true) && ! is_dir($dir)) {
+                return response('Face crop cache unavailable', 500, $headers);
             }
-
-            imagejpeg($cropped, $cachePath, 90);
-            imagedestroy($sourceImage);
+            $temporary = tempnam($dir, '.face-');
+            if ($temporary === false || ! imagejpeg($cropped, $temporary, 90)) {
+                return response('Face crop cache unavailable', 500, $headers);
+            }
+            if (! $currentEvidenceMatches()) {
+                return response('Face source or region changed', 409, $headers);
+            }
+            chmod($temporary, 0666 & ~umask());
+            if (! rename($temporary, $cachePath)) {
+                return response('Face crop cache unavailable', 500, $headers);
+            }
+            $temporary = null;
             $content = file_get_contents($cachePath);
-            imagedestroy($cropped);
 
-            return response($content, 200, [
-                'Content-Type' => 'image/jpeg',
-                'Cache-Control' => 'public, max-age=604800',
-            ]);
-        } catch (\Exception $e) {
-            Log::error('Face registry crop error', ['face_id' => $faceId, 'error' => $e->getMessage()]);
+            return response($content, 200, ['Content-Type' => 'image/jpeg'] + $headers)->setEtag($fingerprint);
+        } catch (\Throwable $e) {
+            Log::warning('Face registry crop unavailable', ['face_id' => $faceId, 'exception' => $e::class]);
 
-            return response('Face crop failed', 500);
+            return response('Face crop failed', 500, $headers);
+        } finally {
+            if ($sourceImage instanceof \GdImage) {
+                imagedestroy($sourceImage);
+            }
+            if ($cropped instanceof \GdImage) {
+                imagedestroy($cropped);
+            }
+            if (is_string($temporary)) {
+                @unlink($temporary);
+            }
         }
     }
 
@@ -4480,55 +5174,63 @@ class MediaBrowserController extends Controller
      */
     public function bulkNameFaces(Request $request): JsonResponse
     {
-        $faceIds = array_values(array_unique(array_filter(
-            array_map('intval', (array) $request->input('face_ids', [])),
-            fn (int $faceId): bool => $faceId > 0
-        )));
-        $personName = trim($request->input('person_name', ''));
-        $genealogyPersonId = (int) $request->input('genealogy_person_id', 0);
+        return DB::transaction(function () use ($request): JsonResponse {
+            $faceIds = array_values(array_unique(array_filter(
+                array_map('intval', (array) $request->input('face_ids', [])),
+                fn (int $faceId): bool => $faceId > 0
+            )));
+            $personName = trim($request->input('person_name', ''));
+            $genealogyPersonId = (int) $request->input('genealogy_person_id', 0);
 
-        if (empty($faceIds)) {
-            return response()->json(['error' => 'face_ids required'], 400);
-        }
-
-        $genealogyPerson = null;
-        if ($genealogyPersonId > 0) {
-            $genealogyPerson = $this->findGenealogyPerson($genealogyPersonId, (int) $request->input('tree_id', 0));
-            if (! $genealogyPerson) {
-                return $this->invalidGenealogyPersonResponse($genealogyPersonId);
+            if (empty($faceIds)) {
+                return response()->json(['error' => 'face_ids required'], 400);
             }
 
-            $canonicalName = trim(($genealogyPerson->given_name ?? '').' '.($genealogyPerson->surname ?? ''));
-            if ($canonicalName !== '') {
-                $personName = $canonicalName;
+            $genealogyPerson = null;
+            if ($genealogyPersonId > 0) {
+                $genealogyPerson = $this->findGenealogyPerson($genealogyPersonId, (int) $request->input('tree_id', 0));
+                if (! $genealogyPerson) {
+                    return $this->invalidGenealogyPersonResponse($genealogyPersonId);
+                }
+
+                $canonicalName = trim(($genealogyPerson->given_name ?? '').' '.($genealogyPerson->surname ?? ''));
+                if ($canonicalName !== '') {
+                    $personName = $canonicalName;
+                }
             }
-        }
 
-        $placeholders = implode(',', array_fill(0, count($faceIds), '?'));
+            $placeholders = implode(',', array_fill(0, count($faceIds), '?'));
 
-        // Update face names and the explicit FT bridge field. The shared bridge
-        // still handles genealogy_media alignment when a person id is present.
-        if ($genealogyPersonId > 0) {
-            $updated = DB::update("
+            $selected = DB::select("SELECT id, global_identity_uuid, global_identity_approval_receipt_id FROM file_registry_faces WHERE id IN ({$placeholders}) FOR UPDATE", $faceIds);
+            foreach ($selected as $face) {
+                if ($this->faceHasGlobalAssignment($face)) {
+                    return $this->globalFaceMutationConflict();
+                }
+            }
+
+            // Update face names and the explicit FT bridge field. The shared bridge
+            // still handles genealogy_media alignment when a person id is present.
+            if ($genealogyPersonId > 0) {
+                $updated = DB::update("
                 UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = ?
-                WHERE id IN ({$placeholders})
+                WHERE id IN ({$placeholders}) AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL
             ", array_merge([$personName, $genealogyPersonId], $faceIds));
-        } else {
-            $updated = DB::update("
+            } else {
+                $updated = DB::update("
                 UPDATE file_registry_faces SET person_name = ?, genealogy_person_id = NULL, verified = 0
-                WHERE id IN ({$placeholders})
+                WHERE id IN ({$placeholders}) AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL
             ", array_merge([$personName], $faceIds));
-        }
+            }
 
-        // Reset writeback flags on affected files
-        DB::update("
+            // Reset writeback flags on affected files
+            DB::update("
             UPDATE file_registry SET exif_faces_written = 0
             WHERE id IN (
                 SELECT DISTINCT file_registry_id FROM file_registry_faces WHERE id IN ({$placeholders})
             )
         ", $faceIds);
 
-        $scanLogsReset = DB::delete("
+            $scanLogsReset = DB::delete("
             DELETE FROM genealogy_media_scan_log
             WHERE nextcloud_path IN (
                 SELECT current_path FROM file_registry
@@ -4538,21 +5240,22 @@ class MediaBrowserController extends Controller
             )
         ", $faceIds);
 
-        $bridgeResults = [];
-        if ($genealogyPersonId > 0) {
-            foreach ($faceIds as $faceId) {
-                $bridgeResults[$faceId] = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $genealogyPersonId);
+            $bridgeResults = [];
+            if ($genealogyPersonId > 0) {
+                foreach ($faceIds as $faceId) {
+                    $bridgeResults[$faceId] = app(FaceLinkBridgeService::class)->syncFaceLink($faceId, $genealogyPersonId);
+                }
             }
-        }
 
-        return response()->json([
-            'success' => true,
-            'updated' => $updated,
-            'person_name' => $personName,
-            'genealogy_person_id' => $genealogyPersonId ?: null,
-            'genealogy_bridge' => $bridgeResults,
-            'scan_logs_reset' => $scanLogsReset,
-        ]);
+            return response()->json([
+                'success' => true,
+                'updated' => $updated,
+                'person_name' => $personName,
+                'genealogy_person_id' => $genealogyPersonId ?: null,
+                'genealogy_bridge' => $bridgeResults,
+                'scan_logs_reset' => $scanLogsReset,
+            ]);
+        });
     }
 
     /**
@@ -4572,13 +5275,33 @@ class MediaBrowserController extends Controller
         $faceIds = array_map('intval', $faceIds);
         $placeholders = implode(',', array_fill(0, count($faceIds), '?'));
 
+        $fileRows = DB::select("
+            SELECT DISTINCT file_registry_id
+            FROM file_registry_faces
+            WHERE id IN ({$placeholders})
+        ", $faceIds);
+        $fileIds = array_values(array_unique(array_map(
+            static fn (object $row): int => (int) $row->file_registry_id,
+            $fileRows
+        )));
+
         $updated = DB::update("
             UPDATE file_registry_faces SET hidden = ? WHERE id IN ({$placeholders})
         ", array_merge([$hidden ? 1 : 0], $faceIds));
 
+        if ($fileIds !== []) {
+            $filePlaceholders = implode(',', array_fill(0, count($fileIds), '?'));
+            DB::update("
+                UPDATE file_registry
+                SET exif_faces_written = 0, metadata_synced_at = NULL, rag_indexed_at = NULL
+                WHERE id IN ({$filePlaceholders})
+            ", $fileIds);
+        }
+
         return response()->json([
             'success' => true,
             'updated' => $updated,
+            'metadata_files_marked_pending' => count($fileIds),
         ]);
     }
 
@@ -4618,86 +5341,95 @@ class MediaBrowserController extends Controller
      */
     public function renamePerson(Request $request): JsonResponse
     {
-        $scope = $this->faceRenameScopeFromRequest($request);
-        $newName = trim((string) $request->input('new_name', ''));
+        return DB::transaction(function () use ($request): JsonResponse {
+            $scope = $this->faceRenameScopeFromRequest($request);
+            $newName = trim((string) $request->input('new_name', ''));
 
-        if ($scope['error'] !== null) {
-            return response()->json(['error' => $scope['error']], 400);
-        }
+            if ($scope['error'] !== null) {
+                return response()->json(['error' => $scope['error']], 400);
+            }
 
-        if ($newName === '') {
-            return response()->json(['error' => 'new_name required'], 400);
-        }
+            if ($newName === '') {
+                return response()->json(['error' => 'new_name required'], 400);
+            }
 
-        if (
-            $scope['scope_type'] === 'name'
-            && count($scope['normalized_source_names']) === 1
-            && $scope['normalized_source_names'][0] === $this->normalizeFaceRenameName($newName)
-        ) {
-            return response()->json(['error' => 'Names are identical'], 400);
-        }
+            if (
+                $scope['scope_type'] === 'name'
+                && count($scope['normalized_source_names']) === 1
+                && $scope['normalized_source_names'][0] === $this->normalizeFaceRenameName($newName)
+            ) {
+                return response()->json(['error' => 'Names are identical'], 400);
+            }
 
-        $preview = $this->buildFaceRenamePreview($scope, $newName);
-        if (($preview['face_count'] ?? 0) < 1) {
-            return response()->json(['error' => 'No matching face labels found', 'preview' => $preview], 404);
-        }
+            [$lockedWhere, $lockedParams] = $this->faceRenameWhere($scope, 'frf');
+            $selected = DB::select("SELECT frf.id, frf.global_identity_uuid, frf.global_identity_approval_receipt_id FROM file_registry_faces frf WHERE {$lockedWhere} FOR UPDATE", $lockedParams);
+            foreach ($selected as $face) {
+                if ($this->faceHasGlobalAssignment($face)) {
+                    return $this->globalFaceMutationConflict();
+                }
+            }
+            $preview = $this->buildFaceRenamePreview($scope, $newName);
+            if (($preview['face_count'] ?? 0) < 1) {
+                return response()->json(['error' => 'No matching face labels found', 'preview' => $preview], 404);
+            }
 
-        [$faceWhere, $faceParams] = $this->faceRenameWhere($scope, 'frf');
-        $fileRows = DB::select("
+            [$faceWhere, $faceParams] = $this->faceRenameWhere($scope, 'frf');
+            $fileRows = DB::select("
             SELECT DISTINCT frf.file_registry_id
             FROM file_registry_faces frf
             WHERE {$faceWhere}
         ", $faceParams);
-        $fileIds = array_values(array_filter(array_map(fn ($row) => (int) $row->file_registry_id, $fileRows)));
+            $fileIds = array_values(array_filter(array_map(fn ($row) => (int) $row->file_registry_id, $fileRows)));
 
-        [$updateWhere, $updateParams] = $this->faceRenameWhere($scope, '');
-        $renamed = DB::transaction(function () use ($newName, $updateWhere, $updateParams, $fileIds): int {
-            $count = DB::update("
+            [$updateWhere, $updateParams] = $this->faceRenameWhere($scope, '');
+            $renamed = DB::transaction(function () use ($newName, $updateWhere, $updateParams, $fileIds): int {
+                $count = DB::update("
                 UPDATE file_registry_faces
                 SET person_name = ?
-                WHERE {$updateWhere}
+                WHERE {$updateWhere} AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL
             ", [$newName, ...$updateParams]);
 
-            if ($fileIds !== []) {
-                $placeholders = implode(',', array_fill(0, count($fileIds), '?'));
-                DB::update("
+                if ($fileIds !== []) {
+                    $placeholders = implode(',', array_fill(0, count($fileIds), '?'));
+                    DB::update("
                     UPDATE file_registry
                     SET exif_faces_written = 0, rag_indexed_at = NULL
                     WHERE id IN ({$placeholders})
                 ", $fileIds);
-            }
+                }
 
-            return $count;
-        });
+                return $count;
+            });
 
-        $clustersRenamed = 0;
-        try {
-            [$clusterWhere, $clusterParams] = $this->faceRenameClusterWhere($scope);
-            $clustersRenamed = DB::connection('pgsql_rag')->update("
+            $clustersRenamed = 0;
+            try {
+                [$clusterWhere, $clusterParams] = $this->faceRenameClusterWhere($scope);
+                $clustersRenamed = DB::connection('pgsql_rag')->update("
                 UPDATE person_clusters
                 SET name = ?
                 WHERE {$clusterWhere}
             ", [$newName, ...$clusterParams]);
-        } catch (\Throwable $e) {
-            Log::warning('Face rename cluster cascade failed', [
-                'scope_type' => $scope['scope_type'],
-                'genealogy_person_id' => $scope['genealogy_person_id'],
-                'old_name' => $scope['old_name'],
-                'new_name' => $newName,
-                'error' => $e->getMessage(),
-            ]);
-        }
+            } catch (\Throwable $e) {
+                Log::warning('Face rename cluster cascade failed', [
+                    'scope_type' => $scope['scope_type'],
+                    'genealogy_person_id' => $scope['genealogy_person_id'],
+                    'old_name' => $scope['old_name'],
+                    'new_name' => $newName,
+                    'error' => $e->getMessage(),
+                ]);
+            }
 
-        return response()->json([
-            'success' => true,
-            'renamed' => $renamed,
-            'merged' => (bool) ($preview['merged'] ?? false),
-            'files_queued_for_writeback' => count($fileIds),
-            'files_queued_for_rag' => count($fileIds),
-            'clusters_renamed' => $clustersRenamed,
-            'ft_record_changes' => 0,
-            'preview' => $preview,
-        ]);
+            return response()->json([
+                'success' => true,
+                'renamed' => $renamed,
+                'merged' => (bool) ($preview['merged'] ?? false),
+                'files_queued_for_writeback' => count($fileIds),
+                'files_queued_for_rag' => count($fileIds),
+                'clusters_renamed' => $clustersRenamed,
+                'ft_record_changes' => 0,
+                'preview' => $preview,
+            ]);
+        });
     }
 
     private function faceRenameScopeFromRequest(Request $request): array
@@ -4810,11 +5542,11 @@ class MediaBrowserController extends Controller
             WHERE {$where}
         ", $params);
 
-        $target = DB::selectOne("
+        $target = DB::selectOne('
             SELECT COUNT(*) as face_count, COUNT(DISTINCT file_registry_id) as photo_count
             FROM file_registry_faces
             WHERE LOWER(TRIM(person_name)) = ?
-        ", [$this->normalizeFaceRenameName($newName)]);
+        ', [$this->normalizeFaceRenameName($newName)]);
 
         $ftRows = DB::select("
             SELECT frf.genealogy_person_id, COUNT(*) as face_count, gp.gedcom_id,
@@ -4965,6 +5697,9 @@ class MediaBrowserController extends Controller
      */
     public function personFaces(Request $request): JsonResponse
     {
+        if ($request->query->has('identity_uuid')) {
+            return $this->globalPersonFaces($request);
+        }
         $personName = trim($request->get('name', ''));
         $genealogyPersonId = (int) $request->get('genealogy_person_id', 0);
         $limit = min((int) $request->get('limit', 60), 200);
@@ -4995,7 +5730,8 @@ class MediaBrowserController extends Controller
                    fip.matched_export_name,
                    fip.matched_variant_name';
         $provenanceJoin = 'LEFT JOIN face_identity_provenance fip ON fip.file_registry_face_id = frf.id';
-        $baseVisibilityWhere = "COALESCE(frf.hidden, 0) = 0 AND fr.status = 'active'";
+        $baseVisibilityWhere = "COALESCE(frf.hidden, 0) = 0 AND fr.status = 'active'
+            AND frf.source_current = 1 AND frf.superseded_at IS NULL AND frf.global_identity_uuid IS NULL";
         $provenanceWhere = '';
         if ($trustMode === 'provenance_trusted') {
             $provenanceWhere = " AND fip.status IN ({$trustedStatusSql})";
@@ -5015,11 +5751,6 @@ class MediaBrowserController extends Controller
             $normalizedNames = array_values(array_unique(array_filter($normalizedNames, fn (string $name): bool => $name !== '')));
             $where = 'frf.genealogy_person_id = ?';
             $params = [$genealogyPersonId];
-            if ($trustMode !== 'provenance_trusted' && $normalizedNames !== []) {
-                $namePlaceholders = implode(',', array_fill(0, count($normalizedNames), '?'));
-                $where = "({$where} OR LOWER(TRIM(frf.person_name)) IN ({$namePlaceholders}))";
-                $params = [$genealogyPersonId, ...$normalizedNames];
-            }
         }
 
         $faces = DB::select("
@@ -5122,8 +5853,8 @@ class MediaBrowserController extends Controller
                 $registryRows = DB::select("
                     SELECT id, asset_uuid, filename, current_path, original_path, face_count
                     FROM file_registry
-                    WHERE current_path IN ({$pathPlaceholders})
-                       OR original_path IN ({$pathPlaceholders})
+                    WHERE status = 'active' AND (current_path IN ({$pathPlaceholders})
+                       OR original_path IN ({$pathPlaceholders}))
                 ", [...$paths, ...$paths]);
 
                 foreach ($registryRows as $registry) {
@@ -5143,11 +5874,6 @@ class MediaBrowserController extends Controller
                 $idPlaceholders = implode(',', array_fill(0, count($registryIds), '?'));
                 $faceIdentityWhere = 'frf.genealogy_person_id = ?';
                 $faceIdentityParams = [$genealogyPersonId];
-                if ($trustMode !== 'provenance_trusted' && $normalizedNames !== []) {
-                    $namePlaceholders = implode(',', array_fill(0, count($normalizedNames), '?'));
-                    $faceIdentityWhere = "({$faceIdentityWhere} OR (frf.genealogy_person_id IS NULL AND LOWER(TRIM(frf.person_name)) IN ({$namePlaceholders})))";
-                    $faceIdentityParams = [$genealogyPersonId, ...$normalizedNames];
-                }
                 $linkedMediaProvenanceWhere = '';
                 if ($trustMode === 'provenance_trusted') {
                     $linkedMediaProvenanceWhere = "AND fip.status IN ({$trustedStatusSql})";
@@ -5160,6 +5886,7 @@ class MediaBrowserController extends Controller
                     WHERE frf.file_registry_id IN ({$idPlaceholders})
                       AND {$faceIdentityWhere}
                       AND COALESCE(frf.hidden, 0) = 0
+                      AND frf.source_current = 1 AND frf.superseded_at IS NULL AND frf.global_identity_uuid IS NULL
                       {$linkedMediaProvenanceWhere}
                 ", [...$registryIds, ...$faceIdentityParams]);
                 foreach ($matchedRows as $row) {
@@ -5228,6 +5955,128 @@ class MediaBrowserController extends Controller
         ]);
     }
 
+    /** Shared stored-proof eligibility for global lists and their counts; crops verify bytes. */
+    private function globalFaceRows(bool $hidden = false): Builder
+    {
+        return DB::table('file_registry_faces as frf')->join('file_registry as fr', 'fr.id', '=', 'frf.file_registry_id')
+            ->join('global_face_identities as identity', 'identity.identity_uuid', '=', 'frf.global_identity_uuid')
+            ->where('identity.status', 'operator_confirmed')->whereRaw("TRIM(identity.canonical_name) <> ''")
+            ->where('fr.status', 'active')->where('frf.source_current', 1)->whereNull('frf.superseded_at')->where('frf.hidden', $hidden ? 1 : 0)
+            ->where('frf.id', '>', 0)
+            ->where('frf.face_region_convention', 'normalized_top_left')
+            ->whereRaw('identity.identity_uuid REGEXP ?', ['^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'])
+            ->whereRaw('frf.source_sha256 REGEXP ?', ['^[a-f0-9]{64}$'])
+            ->whereRaw('frf.global_identity_approval_receipt_id REGEXP ?', ['^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'])
+            ->where(function ($query): void {
+                $query->whereNull('fr.content_hash')->orWhere('fr.content_hash', '')->orWhereColumn('fr.content_hash', 'frf.source_sha256');
+            })
+            ->where('frf.region_x', '>=', 0)->where('frf.region_y', '>=', 0)->where('frf.region_w', '>', 0)->where('frf.region_h', '>', 0)
+            ->whereRaw('frf.region_x + frf.region_w <= 1 AND frf.region_y + frf.region_h <= 1');
+    }
+
+    private function globalIdentityDetails(array $rows): array
+    {
+        $uuids = array_map(fn ($row) => $row->identity_uuid, $rows);
+        if ($uuids === []) {
+            return [];
+        }
+        $aliases = DB::table('global_face_identity_aliases')->whereIn('identity_uuid', $uuids)->orderBy('alias')->get()->groupBy('identity_uuid');
+        $mappings = DB::table('global_face_identity_genealogy_links as mapping')
+            ->leftJoin('genealogy_trees as tree', 'tree.id', '=', 'mapping.tree_id')
+            ->leftJoin('genealogy_persons as person', function ($join): void {
+                $join->on('person.id', '=', 'mapping.genealogy_person_id')->on('person.tree_id', '=', 'mapping.tree_id');
+            })->whereIn('mapping.identity_uuid', $uuids)->orderBy('mapping.tree_id')->orderBy('mapping.genealogy_person_id')
+            ->get(['mapping.identity_uuid', 'mapping.tree_id', 'mapping.genealogy_person_id', 'tree.name as tree_name', 'person.given_name', 'person.surname'])
+            ->groupBy('identity_uuid');
+
+        return array_map(fn ($row) => ['identity_uuid' => $row->identity_uuid, 'canonical_name' => $row->canonical_name,
+            'aliases' => ($aliases[$row->identity_uuid] ?? collect())->pluck('alias')->all(),
+            'mappings' => ($mappings[$row->identity_uuid] ?? collect())->map(fn ($mapping) => [
+                'tree_id' => (int) $mapping->tree_id, 'tree_name' => $mapping->tree_name,
+                'genealogy_person_id' => (int) $mapping->genealogy_person_id,
+                'person_name' => trim(($mapping->given_name ?? '').' '.($mapping->surname ?? '')),
+            ])->all()], $rows);
+    }
+
+    private function globalFaceSelect(Builder $query): Builder
+    {
+        return $query->select(['frf.*', 'frf.id as face_id', 'fr.status as file_status', 'fr.asset_uuid', 'fr.filename']);
+    }
+
+    private function globalFacePeople(string $search, int $limit): array
+    {
+        return DB::transaction(function () use ($search, $limit): array {
+            $query = $this->globalFaceRows();
+            if ($search !== '') {
+                $query->where(function ($query) use ($search): void {
+                    $query->where('identity.canonical_name', 'like', '%'.$search.'%')->orWhereExists(function ($aliases) use ($search): void {
+                        $aliases->selectRaw('1')->from('global_face_identity_aliases as alias')
+                            ->whereColumn('alias.identity_uuid', 'identity.identity_uuid')->where('alias.alias', 'like', '%'.$search.'%');
+                    });
+                });
+            }
+            $rows = $query->groupBy('identity.identity_uuid', 'identity.canonical_name')
+                ->select(['identity.identity_uuid', 'identity.canonical_name'])
+                ->selectRaw('COUNT(*) AS face_count, COUNT(DISTINCT frf.file_registry_id) AS media_count, MIN(frf.id) AS representative_face_id, MAX(frf.favorite) AS favorite')
+                ->orderByDesc('face_count')->orderBy('identity.identity_uuid')->limit($limit)->get()->all();
+            $details = collect($this->globalIdentityDetails($rows))->keyBy('identity_uuid');
+            $representatives = $this->globalFaceSelect($this->globalFaceRows()->whereIn('frf.id', array_column($rows, 'representative_face_id')))
+                ->get()->keyBy('face_id');
+
+            return array_values(array_filter(array_map(function ($row) use ($details, $representatives): ?object {
+                $representative = $representatives[$row->representative_face_id] ?? null;
+                $evidence = $representative ? $this->globalFaceStoredEvidence($representative) : null;
+                if ($evidence === null) {
+                    return null;
+                }
+
+                return (object) ['identity_key' => 'global:'.$row->identity_uuid, 'scope_type' => 'global_identity',
+                    'identity_uuid' => $row->identity_uuid, 'person_name' => $row->canonical_name,
+                    'aliases' => $details[$row->identity_uuid]['aliases'], 'genealogy_person_id' => null, 'scope_name' => null,
+                    'genealogy_name' => null, 'face_label_name' => null, 'face_name_variants' => null, 'face_name_variant_count' => 0,
+                    'face_count' => (int) $row->face_count, 'media_count' => (int) $row->media_count, 'linked_media_count' => 0,
+                    'representative_face_id' => (int) $row->representative_face_id, 'representative_crop_url' => $evidence['crop_url'],
+                    'representative_asset_uuid' => null, 'representative_filename' => null, 'favorite' => (int) $row->favorite];
+            }, $rows)));
+        });
+    }
+
+    private function globalPersonFaces(Request $request): JsonResponse
+    {
+        if (! auth('web')->check()) {
+            return response()->json(['error' => 'Authenticated operator required'], 401);
+        }
+        $uuid = $request->query('identity_uuid');
+        if (! is_string($uuid) || ! Str::isUuid($uuid) || $request->query->has('genealogy_person_id') || trim((string) $request->query('name', '')) !== '') {
+            return response()->json(['error' => 'Use one explicit global identity UUID'], 422);
+        }
+
+        return DB::transaction(function () use ($request, $uuid): JsonResponse {
+            $identity = DB::table('global_face_identities')->where('identity_uuid', $uuid)->where('status', 'operator_confirmed')->first();
+            if (! $identity) {
+                return response()->json(['error' => 'Confirmed individual not found'], 404);
+            }
+            $limit = max(1, min((int) $request->query('limit', 60), 200));
+            $offset = max(0, (int) $request->query('offset', 0));
+            $query = $this->globalFaceRows()->where('frf.global_identity_uuid', $uuid);
+            $total = (clone $query)->count();
+            $faces = $this->globalFaceSelect($query)->orderByDesc('frf.id')->limit($limit)->offset($offset)->get()->map(function ($face): array {
+                $evidence = $this->globalFaceStoredEvidence($face);
+
+                return ['face_id' => (int) $face->face_id, 'file_registry_id' => (int) $face->file_registry_id,
+                    'asset_uuid' => $face->asset_uuid, 'filename' => $face->filename, 'identity_uuid' => $face->global_identity_uuid,
+                    'source_sha256' => $face->source_sha256, 'source_current' => 1, 'superseded_at' => null, 'hidden' => 0,
+                    'face_region_convention' => 'normalized_top_left', 'global_face_evidence' => $evidence,
+                    'crop_url' => $evidence['crop_url'], 'assignment_source' => 'global_identity', 'assignment_label' => 'Confirmed',
+                    'confidence' => $face->confidence, 'favorite' => (bool) $face->favorite];
+            })->all();
+
+            return response()->json(['success' => true, 'data' => $faces, 'total' => $total, 'identity_uuid' => $uuid,
+                'identity' => $this->globalIdentityDetails([$identity])[0], 'person_name' => $identity->canonical_name,
+                'trust_mode' => 'operator_confirmed', 'linked_media' => [], 'linked_media_total' => 0, 'limit' => $limit, 'offset' => $offset]);
+        });
+    }
+
     private function facePersonPageTrustMode(): string
     {
         try {
@@ -5253,20 +6102,92 @@ class MediaBrowserController extends Controller
      */
     public function excludeFace(int $faceId): JsonResponse
     {
-        $face = DB::selectOne('SELECT id, person_name, file_registry_id FROM file_registry_faces WHERE id = ?', [$faceId]);
-        if (! $face) {
+        $result = $this->clearFacePersonAssignment($faceId, true);
+        if (($result['error'] ?? null) === 'face_not_found') {
             return response()->json(['error' => 'Face not found'], 404);
         }
 
-        DB::update("UPDATE file_registry_faces SET person_name = '' WHERE id = ?", [$faceId]);
-
-        // Reset writeback flag
-        DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$face->file_registry_id]);
-
         return response()->json([
             'success' => true,
-            'excluded_from' => $face->person_name,
+            'excluded_from' => $result['previous_person_name'] ?? null,
+            'previous_genealogy_person_id' => $result['previous_genealogy_person_id'] ?? null,
+            'assignment' => $result,
         ]);
+    }
+
+    /**
+     * Clear a face/person assignment and mark the file for a metadata rewrite.
+     *
+     * If $expectedPersonId is supplied, the row is only cleared when it is still
+     * linked to that same rejected person. This keeps stale review actions from
+     * clobbering a later operator reassignment.
+     */
+    private function clearFacePersonAssignment(int $faceId, bool $clearName, ?int $expectedPersonId = null): array
+    {
+        return DB::transaction(function () use ($faceId, $clearName, $expectedPersonId): array {
+            $face = DB::selectOne('
+            SELECT frf.id, frf.file_registry_id, frf.person_name, frf.genealogy_person_id,
+                   frf.global_identity_uuid, frf.global_identity_approval_receipt_id, fr.current_path
+            FROM file_registry_faces frf
+            JOIN file_registry fr ON fr.id = frf.file_registry_id
+            WHERE frf.id = ? FOR UPDATE
+        ', [$faceId]);
+
+            if (! $face) {
+                return ['success' => false, 'error' => 'face_not_found'];
+            }
+            if ($this->faceHasGlobalAssignment($face)) {
+                throw new HttpException(409, 'Global identity requires its individual operator review.');
+            }
+
+            if ($expectedPersonId !== null && (int) ($face->genealogy_person_id ?? 0) !== $expectedPersonId) {
+                return [
+                    'success' => true,
+                    'cleared' => false,
+                    'reason' => 'face_reassigned_to_different_person',
+                    'previous_genealogy_person_id' => $face->genealogy_person_id !== null ? (int) $face->genealogy_person_id : null,
+                    'previous_person_name' => $face->person_name,
+                ];
+            }
+
+            $setNameSql = $clearName ? "person_name = '', " : '';
+            $updated = DB::update("
+            UPDATE file_registry_faces
+            SET {$setNameSql}genealogy_person_id = NULL, verified = 0, updated_at = NOW()
+            WHERE id = ? AND global_identity_uuid IS NULL AND global_identity_approval_receipt_id IS NULL
+        ", [$faceId]);
+
+            if ($updated > 0) {
+                DB::update('
+                UPDATE file_registry
+                SET exif_faces_written = 0, metadata_synced_at = NULL, rag_indexed_at = NULL
+                WHERE id = ?
+            ', [$face->file_registry_id]);
+
+                if (! empty($face->current_path)) {
+                    DB::delete('DELETE FROM genealogy_media_scan_log WHERE nextcloud_path = ?', [$face->current_path]);
+                }
+            }
+
+            return [
+                'success' => true,
+                'cleared' => $updated > 0,
+                'face_id' => $faceId,
+                'file_registry_id' => (int) $face->file_registry_id,
+                'previous_genealogy_person_id' => $face->genealogy_person_id !== null ? (int) $face->genealogy_person_id : null,
+                'previous_person_name' => $face->person_name,
+            ];
+        });
+    }
+
+    private function faceHasGlobalAssignment(object $face): bool
+    {
+        return ($face->global_identity_uuid ?? null) !== null || ($face->global_identity_approval_receipt_id ?? null) !== null;
+    }
+
+    private function globalFaceMutationConflict(): JsonResponse
+    {
+        return response()->json(['error' => 'Global identity requires its individual operator review.'], 409);
     }
 
     /**
@@ -5289,7 +6210,7 @@ class MediaBrowserController extends Controller
             return $this->invalidGenealogyPersonResponse($genealogyPersonId);
         }
 
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         try {
             $result = $faceEmbedding->identifyCluster($id, $name, $genealogyPersonId, $writeToMedia);
@@ -5337,7 +6258,7 @@ class MediaBrowserController extends Controller
             return $this->invalidGenealogyPersonResponse($genealogyPersonId);
         }
 
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         $results = [];
         $succeeded = 0;
@@ -5374,7 +6295,7 @@ class MediaBrowserController extends Controller
      */
     public function hideClusterUnified(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         try {
             $result = $faceEmbedding->hideCluster($id);
@@ -5395,7 +6316,7 @@ class MediaBrowserController extends Controller
      */
     public function restoreClusterUnified(Request $request, int $id): JsonResponse
     {
-        $faceEmbedding = app(\App\Services\FaceEmbeddingService::class);
+        $faceEmbedding = app(FaceEmbeddingService::class);
 
         try {
             $result = $faceEmbedding->restoreCluster($id);

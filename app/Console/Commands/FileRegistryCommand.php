@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\FileRegistryImageSourceAuditService;
 use App\Services\FileRegistryService;
 use App\Services\NextcloudFileApiService;
 use App\Services\ProcessHealthFlagService;
@@ -21,6 +22,7 @@ use Illuminate\Support\Facades\DB;
  *   php artisan files:registry --resolve="uuid-here"
  *   php artisan files:registry --scan="/Library/Documents" --limit=10
  *   php artisan files:registry --verify
+ *   php artisan files:registry --verify --all
  *   php artisan files:registry --duplicates
  *   php artisan files:registry --info="uuid-here"
  *   php artisan files:registry --test
@@ -30,18 +32,30 @@ class FileRegistryCommand extends Command
     use HasHeartbeat;
 
     protected $signature = 'files:registry
+        {--current-source-hash= : Preview one exact missing current-source hash by registry ID}
+        {--apply-current-source-hash : Publish only the pinned eligible current-source hash}
+        {--expected-hash-proof= : Preview proof SHA256 required for publication}
+        {--hash-receipt-id= : Unique UUID for the private publication preimage and receipt}
         {--status : Show registry statistics}
         {--register= : Register a single file by Nextcloud path}
         {--resolve= : Resolve an asset UUID to a URL}
         {--scan= : Scan a Nextcloud directory and register files}
         {--limit=500 : Limit number of files to scan}
+        {--all : Process all matching rows without a per-run limit}
         {--skip-hash : Skip content hash computation for faster scanning}
         {--verify : Verify all registered files still exist}
+        {--audit-images : Read-only bounded image source hash and header audit}
+        {--decode-images : Also validate full image decodability within configured resource caps}
+        {--after-id=0 : Resume image audit after this registry ID}
+        {--catalog-cutoff= : Keep the image audit within a captured maximum registry ID}
+        {--max-seconds=30 : Image audit time budget; never interrupts a write}
+        {--json : Emit image audit JSON, including private source paths}
         {--duplicates : Show duplicate file report}
         {--test : Run test with sample files}
         {--info= : Get detailed info for an asset UUID}
         {--cleanup-stuck : Clean up stuck sync jobs (running > 1 hour)}
         {--maintenance : Run self-healing maintenance (cleanup deleted files)}
+        {--failure-threshold= : Required verification failure threshold for maintenance deletion}
         {--maintenance-stats : Show maintenance/cleanup statistics}';
 
     protected $description = 'Manage the file registry for persistent file references';
@@ -52,8 +66,21 @@ class FileRegistryCommand extends Command
 
     public function handle(): int
     {
-        $this->nextcloudApi = new NextcloudFileApiService;
-        $this->registry = new FileRegistryService($this->nextcloudApi);
+        if ($this->option('current-source-hash') !== null || $this->option('apply-current-source-hash')
+            || $this->option('expected-hash-proof') !== null || $this->option('hash-receipt-id') !== null) {
+            return $this->currentSourceHash();
+        }
+        if ($this->option('decode-images') && ! $this->option('audit-images')) {
+            $this->error('--decode-images requires --audit-images.');
+
+            return self::FAILURE;
+        }
+        if ($this->option('audit-images')) {
+            return $this->auditImages();
+        }
+
+        $this->nextcloudApi = app(NextcloudFileApiService::class);
+        $this->registry = app(FileRegistryService::class);
 
         if ($this->option('status')) {
             return $this->showStatus();
@@ -70,7 +97,7 @@ class FileRegistryCommand extends Command
         if ($this->option('scan')) {
             return $this->scanDirectory(
                 $this->option('scan'),
-                (int) $this->option('limit'),
+                $this->option('all') ? 0 : (int) $this->option('limit'),
                 (bool) $this->option('skip-hash')
             );
         }
@@ -111,7 +138,8 @@ class FileRegistryCommand extends Command
         $this->line('  --register=<path>     Register a Nextcloud file');
         $this->line('  --resolve=<uuid>      Resolve UUID to downloadable URL');
         $this->line('  --scan=<path>         Scan directory and register files');
-        $this->line('  --limit=<n>           Limit files to scan (default 100)');
+        $this->line('  --limit=<n>           Limit files to scan/verify (default 500)');
+        $this->line('  --all                 Process all matching rows without a limit');
         $this->line('  --skip-hash           Skip hash computation for speed');
         $this->line('  --verify              Verify all files still exist');
         $this->line('  --duplicates          Show duplicate file report');
@@ -119,11 +147,74 @@ class FileRegistryCommand extends Command
         $this->line('  --info=<uuid>         Show detailed file info');
         $this->line('  --cleanup-stuck       Clean up stuck sync jobs');
         $this->line('  --maintenance         Run self-healing maintenance');
+        $this->line('  --failure-threshold=n Required for maintenance deletion');
         $this->line('  --maintenance-stats   Show maintenance statistics');
         $this->line('');
         $this->line('For full catalog sync, use: php artisan file-catalog:sync');
 
         return 0;
+    }
+
+    private function currentSourceHash(): int
+    {
+        $id = filter_var($this->option('current-source-hash'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $apply = (bool) $this->option('apply-current-source-hash');
+        $invalid = $id === false || ($apply !== ($this->option('expected-hash-proof') !== null))
+            || ($apply !== ($this->option('hash-receipt-id') !== null));
+        foreach (['status', 'register', 'resolve', 'scan', 'all', 'skip-hash', 'verify', 'audit-images', 'decode-images',
+            'duplicates', 'test', 'info', 'cleanup-stuck', 'maintenance', 'maintenance-stats'] as $option) {
+            $invalid = $invalid || (bool) $this->option($option);
+        }
+        $result = $invalid
+            ? ['success' => false, 'schema' => 'plos.current_source_hash.v1', 'status' => 'held', 'reason_code' => 'hash_request_invalid']
+            : app(FileRegistryService::class)->repairCurrentSourceHash($id,
+                $apply ? $this->option('expected-hash-proof') : null, $apply ? $this->option('hash-receipt-id') : null);
+        $this->line(json_encode($result, JSON_THROW_ON_ERROR));
+
+        return $result['success'] ? self::SUCCESS : self::FAILURE;
+    }
+
+    private function auditImages(): int
+    {
+        $afterId = filter_var($this->option('after-id'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+        $limit = filter_var($this->option('limit'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $seconds = filter_var($this->option('max-seconds'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 120]]);
+        $cutoffOption = $this->option('catalog-cutoff');
+        $cutoff = $cutoffOption === null ? null : filter_var($cutoffOption, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+        $audit = app(FileRegistryImageSourceAuditService::class);
+        if ($afterId === false || $limit === false || $seconds === false || $cutoff === false) {
+            $payload = $audit->auditRegistryBatch(-1, 0, 0, null, (bool) $this->option('decode-images'));
+
+            return $this->emitImageAudit($payload, self::FAILURE);
+        }
+        foreach (['all', 'verify', 'register', 'scan', 'maintenance', 'cleanup-stuck', 'test'] as $option) {
+            if ($this->option($option)) {
+                $payload = $audit->auditRegistryBatch(-1, 0, 0, null, (bool) $this->option('decode-images'));
+                $payload['error'] = 'Image audit cannot be combined with mutation or unlimited selectors.';
+
+                return $this->emitImageAudit($payload, self::FAILURE);
+            }
+        }
+        $payload = $audit->auditRegistryBatch($afterId, $limit, $seconds, $cutoff, (bool) $this->option('decode-images'));
+
+        return $this->emitImageAudit($payload, $payload['status'] === 'blocked' ? self::FAILURE : self::SUCCESS);
+    }
+
+    private function emitImageAudit(array $payload, int $exitCode = self::SUCCESS): int
+    {
+        if ($this->option('json')) {
+            $this->line(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        } else {
+            $this->line(sprintf('Image source audit: %s checked=%d next=%s cutoff=%s has_more=%s; %s.',
+                $payload['status'], count($payload['rows']), $payload['next_after_id'] ?? '-',
+                $payload['catalog_cutoff'] ?? '-', ! empty($payload['has_more']) ? 'yes' : 'no',
+                ! empty($payload['decode_requested']) ? 'bounded decode requested' : 'header checks only'));
+            if (isset($payload['error'])) {
+                $this->error($payload['error']);
+            }
+        }
+
+        return $exitCode;
     }
 
     private function showStatus(): int
@@ -237,125 +328,56 @@ class FileRegistryCommand extends Command
 
     private function scanDirectory(string $path, int $limit, bool $skipHash = false): int
     {
-        $this->info("Scanning directory: {$path} (limit: {$limit}, hash: ".($skipHash ? 'skip' : 'compute').')');
-
-        // Create sync run record
-        DB::insert("
-            INSERT INTO file_registry_sync_runs (run_type, status, started_at, scope_path)
-            VALUES ('initial_import', 'running', NOW(), ?)
-        ", [$path]);
-        $runId = (int) DB::getPdo()->lastInsertId();
-
-        // Initialize heartbeat for stuck process detection
-        $this->initHeartbeat('file_registry_sync_runs', $runId, 20);
-
-        $stats = [
-            'scanned' => 0,
-            'registered' => 0,
-            'skipped' => 0,
-            'updated' => 0,
-            'duplicates' => 0,
-            'errors' => 0,
-        ];
-
+        $this->info("Scanning directory slice: {$path} (limit: {$limit}, hash: ".($skipHash ? 'skip' : 'compute').')');
+        $runId = $this->registry->createSyncRun('initial_import', $path);
         try {
-            $result = $this->nextcloudApi->listFiles($path, true, 0, $limit);
-
-            if (! $result['success']) {
-                $this->error('Failed to list files: '.($result['error'] ?? 'Unknown error'));
-
-                return 1;
+            $this->initHeartbeat('file_registry_sync_runs', $runId, 20);
+            $result = $this->registry->scanAndRegisterNew($path, $limit, ['compute_hash' => ! $skipHash]);
+            $this->checkHeartbeat();
+            $this->registry->completeSyncRun($runId, $result);
+            $complete = ($result['state'] ?? null) === 'complete' && ($result['discovery_complete'] ?? false) === true && ($result['intake_complete'] ?? false) === true;
+            $failed = ($result['state'] ?? null) === 'held' || ($result['continuation']['state'] ?? null) === 'held' || ($result['errors'] ?? 0) > 0;
+            if ($complete && ! $failed) {
+                app(ProcessHealthFlagService::class)->clearFlag('file_registry_sync_runs', $runId, 'completed', 'Discovery and intake completed');
+                $this->info('Discovery and intake complete');
+            } else {
+                $this->warn('Scan slice finished; discovery state: '.($result['state'] ?? 'unproven'));
+                $this->line('Discovery complete: '.(($result['discovery_complete'] ?? false) ? 'yes' : 'no').
+                    '; intake complete: '.(($result['intake_complete'] ?? false) ? 'yes' : 'no'));
+                $this->line('Pending work: '.($result['pending_work'] ?? 0).'; held work: '.($result['held_work'] ?? 0).
+                    '; next attempt: '.($result['next_attempt_at'] ?? 'not scheduled'));
             }
-
-            $files = array_filter($result['files'], fn ($f) => ! $f['is_directory']);
-            $files = array_slice($files, 0, $limit);
-
-            $this->line('Found '.count($files).' files to process');
-            $this->line('');
-
-            $bar = $this->output->createProgressBar(count($files));
-            $bar->start();
-
-            foreach ($files as $file) {
-                $stats['scanned']++;
-                $this->checkHeartbeat();
-
-                try {
-                    $regResult = $this->registry->registerFile($file['path'], [
-                        'original_source' => 'nextcloud',
-                        'compute_hash' => ! $skipHash,
-                    ]);
-
-                    if ($regResult['success']) {
-                        if ($regResult['skipped'] ?? false) {
-                            $stats['skipped']++;
-                        } else {
-                            $stats['registered']++;
-                            if ($regResult['is_duplicate'] ?? false) {
-                                $stats['duplicates']++;
-                            }
-                        }
-                    }
-
-                } catch (\Exception $e) {
-                    $stats['errors']++;
-                }
-
-                $bar->advance();
+            if (isset($result['continuation']['state'])) {
+                $this->line('Continuation: '.$result['continuation']['state'].
+                    (isset($result['continuation']['reason']) ? '; reason: '.$result['continuation']['reason'] : '').
+                    (isset($result['continuation']['next_attempt_at']) ? '; due: '.$result['continuation']['next_attempt_at'] : ''));
             }
+            $this->table(['Metric', 'Count'], [
+                ['Files Scanned', $result['scanned'] ?? 0], ['Files Registered', $result['registered'] ?? 0],
+                ['Already Registered', $result['already_registered'] ?? 0], ['Skipped (Unchanged)', $result['skipped_unchanged'] ?? 0],
+                ['Deferred (Still Changing)', $result['deferred_unstable'] ?? 0], ['Duplicates Found', $result['duplicates'] ?? 0],
+                ['Errors', $result['errors'] ?? 0],
+            ]);
 
-            $bar->finish();
-            $this->line('');
-            $this->line('');
-
-            $this->clearHeartbeat();
-
-            app(ProcessHealthFlagService::class)->clearFlag(
-                'file_registry_sync_runs',
-                $runId,
-                'completed',
-                'Scan completed successfully'
-            );
-
-            DB::update("
-                UPDATE file_registry_sync_runs
-                SET status = 'completed', completed_at = NOW(),
-                    files_scanned = ?, files_registered = ?, duplicates_found = ?, errors = ?
-                WHERE id = ?
-            ", [$stats['scanned'], $stats['registered'], $stats['duplicates'], $stats['errors'], $runId]);
-
-            $this->info('Scan complete');
-            $this->table(
-                ['Metric', 'Count'],
-                [
-                    ['Files Scanned', $stats['scanned']],
-                    ['Files Registered', $stats['registered']],
-                    ['Skipped (Unchanged)', $stats['skipped']],
-                    ['Duplicates Found', $stats['duplicates']],
-                    ['Errors', $stats['errors']],
-                ]
-            );
-
-        } catch (\Exception $e) {
-            DB::update("
-                UPDATE file_registry_sync_runs
-                SET status = 'failed', completed_at = NOW(), error_log = ?
-                WHERE id = ?
-            ", [json_encode(['error' => $e->getMessage()]), $runId]);
-
+            return $failed ? self::FAILURE : self::SUCCESS;
+        } catch (\Throwable $e) {
+            $this->registry->failSyncRun($runId, $e->getMessage());
             $this->error('Scan failed: '.$e->getMessage());
 
-            return 1;
+            return self::FAILURE;
+        } finally {
+            $this->clearHeartbeat();
         }
-
-        return 0;
     }
 
     private function verifyFiles(): int
     {
-        $this->info('Verifying registered files...');
+        $limit = $this->option('all') ? 0 : max(1, (int) $this->option('limit'));
+        $limitDisplay = $limit > 0 ? (string) $limit : 'all';
 
-        $result = $this->registry->verifyBatch(100);
+        $this->info("Verifying registered files ({$limitDisplay})...");
+
+        $result = $this->registry->verifyBatch($limit);
 
         $this->info('Verification complete');
         $this->table(
@@ -574,11 +596,29 @@ class FileRegistryCommand extends Command
 
     private function runMaintenance(): int
     {
+        $threshold = filter_var($this->option('failure-threshold'), FILTER_VALIDATE_INT, [
+            'options' => ['min_range' => 1],
+        ]);
+        if ($threshold === false) {
+            $this->error('--maintenance requires an explicit positive --failure-threshold.');
+
+            return 2;
+        }
+        $limit = $this->option('all') ? 0 : max(1, (int) $this->option('limit'));
+
         $this->info('Running self-healing maintenance...');
+        $this->line("Failure threshold: {$threshold}, Limit: ".($limit > 0 ? (string) $limit : 'all'));
         $this->line('');
 
-        $orphanCount = DB::selectOne("SELECT COUNT(*) as cnt FROM file_registry WHERE status = 'orphaned' AND verification_failures >= 3")->cnt ?? 0;
-        $stats = $this->registry->cleanupOrphanedFiles(3, max((int) $orphanCount, 1));
+        if ($limit <= 0) {
+            $orphanCount = DB::selectOne(
+                'SELECT COUNT(*) as cnt FROM file_registry WHERE status = ? AND verification_failures >= ?',
+                ['orphaned', $threshold]
+            )->cnt ?? 0;
+            $limit = max((int) $orphanCount, 1);
+        }
+
+        $stats = $this->registry->cleanupOrphanedFiles($threshold, $limit);
 
         $this->table(
             ['Action', 'Count'],
@@ -618,7 +658,7 @@ class FileRegistryCommand extends Command
             ['Metric', 'Value'],
             [
                 ['Total Orphaned', number_format($stats['total_orphaned'])],
-                ['Ready for Deletion (3+ failures)', number_format($stats['orphaned_ready_for_deletion'])],
+                ['Ready for Deletion (1+ failures)', number_format($stats['orphaned_ready_for_deletion'])],
                 ['Thumbnail Errors', number_format($stats['thumbnail_errors'])],
                 ['404 Not Found Errors', number_format($stats['not_found_errors'])],
             ]
@@ -646,6 +686,6 @@ class FileRegistryCommand extends Command
 
     private function nextcloudLibraryRoot(): string
     {
-        return '/'.trim((string) config('services.nextcloud.library_root', '/Library'), '/');
+        return $this->nextcloudApi->configuredLibraryRoot();
     }
 }

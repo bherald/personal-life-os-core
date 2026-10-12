@@ -2,11 +2,14 @@
 
 namespace App\Nodes;
 
-use App\Services\AIService;
 use App\Services\AgentGuardrailService;
+use App\Services\AIService;
 use App\Services\Genealogy\GenealogySourceService;
+use App\Services\GraphlitResearchService;
+use App\Services\RAGService;
 use App\Services\Research\UniversalResearchOrchestrator;
 use App\Services\SystemConfigService;
+use App\Services\WebResearchService;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -41,6 +44,7 @@ class ResearchTopicRunner extends BaseNode
     private const RUNTIME_POLICY_CONFIG_KEY = 'research.topic_runner_runtime_policy';
 
     private ?AgentGuardrailService $guardrail = null;
+
     private ?array $runtimePolicy = null;
 
     public function execute(array $input): array
@@ -82,7 +86,7 @@ class ResearchTopicRunner extends BaseNode
             foreach ($topics as $topic) {
                 $remainingSeconds = $this->resolveRemainingRuntimeBudget($runStartedAt, $deadlineSeconds);
 
-                if (!empty($processedTopics) && $this->shouldStopForRuntimeBudget($runStartedAt, $deadlineSeconds, count($processedTopics))) {
+                if (! empty($processedTopics) && $this->shouldStopForRuntimeBudget($runStartedAt, $deadlineSeconds, count($processedTopics))) {
                     Log::info('ResearchTopicRunner: Stopping early for runtime budget', [
                         'processed' => count($processedTopics),
                         'deadline_seconds' => $deadlineSeconds,
@@ -262,7 +266,7 @@ class ResearchTopicRunner extends BaseNode
             WHERE id = ? AND is_active = true
         ", [$topicId]);
 
-        return $result ? array_map(fn($row) => (array) $row, $result) : [];
+        return $result ? array_map(fn ($row) => (array) $row, $result) : [];
     }
 
     /**
@@ -292,7 +296,7 @@ class ResearchTopicRunner extends BaseNode
             LIMIT ?
         ", [$limit]);
 
-        return array_map(fn($row) => (array) $row, $result);
+        return array_map(fn ($row) => (array) $row, $result);
     }
 
     /**
@@ -300,20 +304,20 @@ class ResearchTopicRunner extends BaseNode
      */
     private function updateTopicLastRan(int $topicId): void
     {
-        DB::connection('pgsql_rag')->statement("
+        DB::connection('pgsql_rag')->statement('
             UPDATE research_topics
             SET last_ran_at = NOW(), updated_at = NOW()
             WHERE id = ?
-        ", [$topicId]);
+        ', [$topicId]);
     }
 
     /**
      * Store research result using raw SQL with multi-layer deduplication
      *
-     * @param int $topicId Topic ID
-     * @param string $aiOutput AI-generated output
-     * @param float|null $qualityScore Quality score 0.0-1.0 (from source analysis)
-     * @param string $status Status: pending, deferred, skipped
+     * @param  int  $topicId  Topic ID
+     * @param  string  $aiOutput  AI-generated output
+     * @param  float|null  $qualityScore  Quality score 0.0-1.0 (from source analysis)
+     * @param  string  $status  Status: pending, deferred, skipped
      */
     private function storeResult(int $topicId, string $aiOutput, ?float $qualityScore = null, string $status = 'pending', array $references = []): array
     {
@@ -321,7 +325,7 @@ class ResearchTopicRunner extends BaseNode
         $normalizedContent = $this->normalizeContent($aiOutput);
         $contentHash = hash('sha256', $normalizedContent);
         $extractedFacts = $this->extractFacts($aiOutput);
-        $factHashes = array_map(fn($f) => hash('sha256', strtolower(json_encode($f))), $extractedFacts);
+        $factHashes = array_map(fn ($f) => hash('sha256', strtolower(json_encode($f))), $extractedFacts);
 
         // Skip dedup for "no results" messages — they're always identical templates
         // and should not block human-source topics from showing in the review queue
@@ -330,7 +334,7 @@ class ResearchTopicRunner extends BaseNode
         $dedupStatus = null;
         $dedupMatchedId = null;
 
-        if (!$skipDedup) {
+        if (! $skipDedup) {
             // Multi-layer deduplication check
             $dedupResult = $this->checkDeduplication($topicId, $contentHash, $factHashes, $normalizedContent);
 
@@ -341,7 +345,7 @@ class ResearchTopicRunner extends BaseNode
                 // Check topic source - only auto-skip duplicates for auto topics
                 // Human-sourced topics should still go to pending for review
                 $topic = DB::connection('pgsql_rag')->selectOne(
-                    "SELECT source FROM research_topics WHERE id = ?",
+                    'SELECT source FROM research_topics WHERE id = ?',
                     [$topicId]
                 );
                 $topicSource = $topic->source ?? 'auto';
@@ -385,12 +389,12 @@ class ResearchTopicRunner extends BaseNode
             ]);
         }
         // If AI determines no findings, auto-defer for auto topics (don't clutter human review queue)
-        elseif (!$aiHasFindings && $status === 'pending') {
-            $topic = DB::connection('pgsql_rag')->select("
+        elseif (! $aiHasFindings && $status === 'pending') {
+            $topic = DB::connection('pgsql_rag')->select('
                 SELECT source FROM research_topics WHERE id = ?
-            ", [$topicId]);
+            ', [$topicId]);
 
-            if (!empty($topic) && ($topic[0]->source ?? 'auto') === 'auto') {
+            if (! empty($topic) && ($topic[0]->source ?? 'auto') === 'auto') {
                 $status = 'skipped';
                 Log::info('ResearchTopicRunner: Auto-skipping result with no findings', [
                     'topic_id' => $topicId,
@@ -399,7 +403,7 @@ class ResearchTopicRunner extends BaseNode
             }
         }
 
-        DB::connection('pgsql_rag')->statement("
+        DB::connection('pgsql_rag')->statement('
             INSERT INTO research_results (
                 research_topic_id, ai_output, status, quality_score,
                 ai_quality_score, ai_has_findings, ai_recommendation,
@@ -408,7 +412,7 @@ class ResearchTopicRunner extends BaseNode
                 created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?::jsonb, NOW(), NOW())
-        ", [
+        ', [
             $topicId,
             $aiOutput,
             $status,
@@ -421,10 +425,10 @@ class ResearchTopicRunner extends BaseNode
             json_encode($extractedFacts),
             $dedupStatus,
             $dedupMatchedId,
-            !empty($references) ? json_encode($references) : null,
+            ! empty($references) ? json_encode($references) : null,
         ]);
 
-        $result = DB::connection('pgsql_rag')->select("
+        $result = DB::connection('pgsql_rag')->select('
             SELECT id, research_topic_id, ai_output, status, quality_score,
                    ai_quality_score, ai_has_findings, ai_recommendation,
                    content_hash, dedup_status, source_references, created_at
@@ -432,7 +436,7 @@ class ResearchTopicRunner extends BaseNode
             WHERE research_topic_id = ?
             ORDER BY created_at DESC
             LIMIT 1
-        ", [$topicId]);
+        ', [$topicId]);
 
         return $result ? (array) $result[0] : [];
     }
@@ -448,6 +452,7 @@ class ResearchTopicRunner extends BaseNode
         $normalized = preg_replace('/\s+/', ' ', $normalized);
         // Remove common filler phrases that might vary
         $normalized = preg_replace('/\b(the|a|an|is|are|was|were|been|being)\b/', '', $normalized);
+
         // Trim
         return trim($normalized);
     }
@@ -470,7 +475,7 @@ class ResearchTopicRunner extends BaseNode
         if (preg_match_all('/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b/', $aiOutput, $matches)) {
             foreach (array_unique($matches[0]) as $name) {
                 // Filter out common non-name phrases
-                if (!preg_match('/^(The|This|That|These|Those|According|Research|Summary|Finding)/i', $name)) {
+                if (! preg_match('/^(The|This|That|These|Those|According|Research|Summary|Finding)/i', $name)) {
                     $facts[] = ['type' => 'name', 'value' => $name];
                 }
             }
@@ -502,14 +507,14 @@ class ResearchTopicRunner extends BaseNode
     private function checkDeduplication(int $topicId, string $contentHash, array $factHashes, string $normalizedContent): array
     {
         // Layer 1: Exact hash match
-        $exactMatch = DB::connection('pgsql_rag')->select("
+        $exactMatch = DB::connection('pgsql_rag')->select('
             SELECT id, status FROM research_results
             WHERE research_topic_id = ? AND content_hash = ?
             ORDER BY created_at DESC
             LIMIT 1
-        ", [$topicId, $contentHash]);
+        ', [$topicId, $contentHash]);
 
-        if (!empty($exactMatch)) {
+        if (! empty($exactMatch)) {
             return [
                 'is_duplicate' => true,
                 'layer' => 'hash_exact',
@@ -519,26 +524,26 @@ class ResearchTopicRunner extends BaseNode
         }
 
         // Layer 2: Rejection tracking
-        $rejected = DB::connection('pgsql_rag')->select("
+        $rejected = DB::connection('pgsql_rag')->select('
             SELECT id, rejection_reason FROM research_rejections
             WHERE research_topic_id = ? AND content_hash = ?
             LIMIT 1
-        ", [$topicId, $contentHash]);
+        ', [$topicId, $contentHash]);
 
-        if (!empty($rejected)) {
+        if (! empty($rejected)) {
             return [
                 'is_duplicate' => true,
                 'layer' => 'rejected',
                 'matched_id' => $rejected[0]->id,
-                'reason' => 'Previously rejected: ' . ($rejected[0]->rejection_reason ?? 'no reason'),
+                'reason' => 'Previously rejected: '.($rejected[0]->rejection_reason ?? 'no reason'),
             ];
         }
 
         // Layer 2b: Check fact hashes against rejections
         // Note: Using jsonb_exists_any() instead of ?| operator due to PDO parameter binding issues
-        if (!empty($factHashes)) {
+        if (! empty($factHashes)) {
             // Build array literal for PostgreSQL
-            $arrayLiteral = "ARRAY['" . implode("','", array_map(fn($h) => addslashes($h), $factHashes)) . "']::text[]";
+            $arrayLiteral = "ARRAY['".implode("','", array_map(fn ($h) => addslashes($h), $factHashes))."']::text[]";
             $rejectedByFacts = DB::connection('pgsql_rag')->select("
                 SELECT id, rejection_reason FROM research_rejections
                 WHERE research_topic_id = ?
@@ -549,7 +554,7 @@ class ResearchTopicRunner extends BaseNode
                 LIMIT 1
             ", [$topicId]);
 
-            if (!empty($rejectedByFacts)) {
+            if (! empty($rejectedByFacts)) {
                 return [
                     'is_duplicate' => true,
                     'layer' => 'rejected_facts',
@@ -561,15 +566,15 @@ class ResearchTopicRunner extends BaseNode
 
         // Layer 3: Semantic similarity (check RAG for very similar content)
         try {
-            $ragService = app(\App\Services\RAGService::class);
+            $ragService = app(RAGService::class);
             $similar = $ragService->search($normalizedContent, 1, 'research');
 
-            if (!empty($similar) && ($similar[0]['similarity'] ?? 0) > 0.90) {
+            if (! empty($similar) && ($similar[0]['similarity'] ?? 0) > 0.90) {
                 return [
                     'is_duplicate' => true,
                     'layer' => 'semantic',
                     'matched_id' => $similar[0]['document']->id ?? null,
-                    'reason' => 'Semantically similar content in RAG (>' . round($similar[0]['similarity'] * 100) . '%)',
+                    'reason' => 'Semantically similar content in RAG (>'.round($similar[0]['similarity'] * 100).'%)',
                 ];
             }
         } catch (\Throwable $e) {
@@ -578,7 +583,7 @@ class ResearchTopicRunner extends BaseNode
         }
 
         // Layer 4: Fact-based comparison (>70% fact overlap = duplicate)
-        if (!empty($factHashes)) {
+        if (! empty($factHashes)) {
             $recentResults = DB::connection('pgsql_rag')->select("
                 SELECT id, extracted_facts FROM research_results
                 WHERE research_topic_id = ?
@@ -591,9 +596,9 @@ class ResearchTopicRunner extends BaseNode
 
             foreach ($recentResults as $recent) {
                 $recentFacts = json_decode($recent->extracted_facts, true) ?? [];
-                $recentFactHashes = array_map(fn($f) => hash('sha256', strtolower(json_encode($f))), $recentFacts);
+                $recentFactHashes = array_map(fn ($f) => hash('sha256', strtolower(json_encode($f))), $recentFacts);
 
-                if (!empty($recentFactHashes)) {
+                if (! empty($recentFactHashes)) {
                     $overlap = count(array_intersect($factHashes, $recentFactHashes));
                     $total = max(count($factHashes), count($recentFactHashes));
                     $overlapRatio = $total > 0 ? $overlap / $total : 0;
@@ -603,7 +608,7 @@ class ResearchTopicRunner extends BaseNode
                             'is_duplicate' => true,
                             'layer' => 'fact_overlap',
                             'matched_id' => $recent->id,
-                            'reason' => 'High fact overlap (' . round($overlapRatio * 100) . '%) with recent result',
+                            'reason' => 'High fact overlap ('.round($overlapRatio * 100).'%) with recent result',
                         ];
                     }
                 }
@@ -648,11 +653,11 @@ class ResearchTopicRunner extends BaseNode
      */
     private function aiTriageFindings(string $aiOutput): ?array
     {
-        $aiService = app(\App\Services\AIService::class);
+        $aiService = app(AIService::class);
 
         $triageInputLimit = $this->runtimePolicyInt('ai_triage.truncate_chars');
         $truncated = strlen($aiOutput) > $triageInputLimit
-            ? substr($aiOutput, 0, $triageInputLimit) . "\n[truncated]"
+            ? substr($aiOutput, 0, $triageInputLimit)."\n[truncated]"
             : $aiOutput;
 
         $prompt = <<<PROMPT
@@ -674,7 +679,7 @@ PROMPT;
             'ai_timeout' => $this->runtimePolicyInt('ai_triage.timeout_seconds'),
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return null;
         }
 
@@ -749,22 +754,23 @@ PROMPT;
                 $triage = $this->aiTriageFindings($result->ai_output);
                 if ($triage === null) {
                     Log::debug('ResearchTopicRunner: AI triage still unavailable, skipping retry');
+
                     return; // AI still down, stop trying
                 }
 
                 // Determine new status based on triage
                 $status = 'pending';
-                if (!$triage['has_findings']) {
+                if (! $triage['has_findings']) {
                     $topic = DB::connection('pgsql_rag')->select(
-                        "SELECT source FROM research_topics WHERE id = ?",
+                        'SELECT source FROM research_topics WHERE id = ?',
                         [$result->research_topic_id]
                     );
-                    if (!empty($topic) && ($topic[0]->source ?? 'auto') === 'auto') {
+                    if (! empty($topic) && ($topic[0]->source ?? 'auto') === 'auto') {
                         $status = 'skipped';
                     }
                 }
 
-                DB::connection('pgsql_rag')->update("
+                DB::connection('pgsql_rag')->update('
                     UPDATE research_results
                     SET ai_quality_score = ?,
                         ai_has_findings = ?,
@@ -772,7 +778,7 @@ PROMPT;
                         status = ?,
                         updated_at = NOW()
                     WHERE id = ?
-                ", [
+                ', [
                     $triage['score'],
                     $triage['has_findings'],
                     $triage['recommendation'],
@@ -837,12 +843,12 @@ PROMPT;
                 $reasons[] = "{$relevantWeb} relevant web sources";
             } else {
                 // Web results exist but aren't relevant (like GitHub/StackOverflow noise)
-                $reasons[] = "web sources not relevant to topic";
+                $reasons[] = 'web sources not relevant to topic';
             }
         }
 
         // Check RAG results quality
-        if (!empty($ragResults)) {
+        if (! empty($ragResults)) {
             $relevantRag = 0;
             foreach ($ragResults as $result) {
                 $content = strtolower($result['document']->content ?? '');
@@ -867,7 +873,7 @@ PROMPT;
             'no matching',
             'not found',
         ];
-        $contextLower = strtolower($webContext . ' ' . $ragContext);
+        $contextLower = strtolower($webContext.' '.$ragContext);
         foreach ($noResultIndicators as $indicator) {
             if (strpos($contextLower, $indicator) !== false) {
                 $score = max(0, $score - 0.1);
@@ -891,13 +897,13 @@ PROMPT;
     {
         $description = $topic['description'] ?? '';
         $content = $topic['topic_content'] ?? '';
-        $combined = $description . ' ' . $content;
+        $combined = $description.' '.$content;
 
         // Extract surnames (capitalized words that aren't common)
         preg_match_all('/\b([A-Z][a-z]+)\b/', $combined, $matches);
         $commonWords = ['Research', 'Find', 'Search', 'The', 'And', 'Marriage', 'Birth', 'Death',
             'Location', 'Record', 'Date', 'Certificate', 'Ancestry', 'Verify', 'Missing'];
-        $surnames = array_filter($matches[1] ?? [], fn($w) => !in_array($w, $commonWords) && strlen($w) > 2);
+        $surnames = array_filter($matches[1] ?? [], fn ($w) => ! in_array($w, $commonWords) && strlen($w) > 2);
 
         // Extract years (4-digit numbers 1700-2100)
         preg_match_all('/\b(1[7-9]\d{2}|20[0-2]\d)\b/', $combined, $yearMatches);
@@ -927,8 +933,8 @@ PROMPT;
             $snippet = $result['snippet'] ?? '';
             $desc = $result['description'] ?? '';
             $text = strtolower(
-                (is_array($title) ? implode(' ', $title) : $title) . ' ' .
-                (is_array($snippet) ? implode(' ', $snippet) : $snippet) . ' ' .
+                (is_array($title) ? implode(' ', $title) : $title).' '.
+                (is_array($snippet) ? implode(' ', $snippet) : $snippet).' '.
                 (is_array($desc) ? implode(' ', $desc) : $desc)
             );
 
@@ -950,8 +956,7 @@ PROMPT;
      * Modes:
      * - 'tools' (default): Direct PHP service calls with AI synthesis
      * - 'orchestrator': Uses UniversalResearchOrchestrator for dynamic discovery + verification
-     * - 'claude': Uses Claude CLI with WebSearch for highest quality research
-     * - 'graphlit': Uses Graphlit MCP (Exa/Tavily/Podscan) + Claude WebSearch + knowledge graph
+     * - 'graphlit': Uses Graphlit MCP (Exa/Tavily/Podscan) and its knowledge graph
      * - 'hybrid': Combines tools + orchestrator for genealogy
      * - 'legacy': Old approach (deprecated)
      */
@@ -959,7 +964,7 @@ PROMPT;
     {
         // Mode priority: topic.mode > node_config.mode > category default
         $ragCategory = strtolower($topic['rag_category'] ?? 'general');
-        $defaultMode = ($ragCategory === 'genealogy') ? 'hybrid' : 'claude';
+        $defaultMode = ($ragCategory === 'genealogy') ? 'hybrid' : 'orchestrator';
 
         // Check if topic has explicit mode set
         $topicMode = $topic['mode'] ?? null;
@@ -969,8 +974,10 @@ PROMPT;
             return $this->processTopicLegacy($topic);
         }
 
+        // Migrate previously stored provider-specific mode values to the
+        // maintained orchestrator without reactivating a retired provider.
         if ($mode === 'claude') {
-            return $this->processTopicWithClaude($topic, $remainingSeconds);
+            $mode = 'orchestrator';
         }
 
         if ($mode === 'orchestrator') {
@@ -999,7 +1006,7 @@ PROMPT;
      */
     private function processTopicWithOrchestrator(array $topic, ?int $remainingSeconds = null): array
     {
-        $orchestrator = app(\App\Services\Research\UniversalResearchOrchestrator::class);
+        $orchestrator = app(UniversalResearchOrchestrator::class);
 
         $description = $topic['topic_content'] ?? $topic['description'];
         $ragCategory = $topic['rag_category'] ?? 'general';
@@ -1035,8 +1042,8 @@ PROMPT;
             'created_by' => 'workflow',
         ]);
 
-        if (!$missionResult['success']) {
-            throw new Exception('Failed to create research mission: ' . ($missionResult['error'] ?? 'Unknown error'));
+        if (! $missionResult['success']) {
+            throw new Exception('Failed to create research mission: '.($missionResult['error'] ?? 'Unknown error'));
         }
 
         // Execute the mission
@@ -1046,12 +1053,12 @@ PROMPT;
             'max_verification_facts' => $this->runtimePolicyInt('orchestrator.max_verification_facts'),
         ]);
 
-        if (!$executionResult['success']) {
+        if (! $executionResult['success']) {
             // Store partial result if we have a report
-            if (!empty($executionResult['report'])) {
+            if (! empty($executionResult['report'])) {
                 return $this->storeResult($topic['id'], $executionResult['report']);
             }
-            throw new Exception('Mission execution failed: ' . ($executionResult['error'] ?? 'Unknown error'));
+            throw new Exception('Mission execution failed: '.($executionResult['error'] ?? 'Unknown error'));
         }
 
         // Build research summary
@@ -1068,199 +1075,6 @@ PROMPT;
         $summary .= $executionResult['report'] ?? 'No report generated.';
 
         return $this->storeResult($topic['id'], $summary);
-    }
-
-    /**
-     * Process topic using CLAUDE mode
-     *
-     * Uses Claude CLI with WebSearch tool for highest quality research.
-     * Produces structured, well-sourced responses directly comparable to
-     * interactive Claude Code sessions.
-     *
-     * Best for:
-     * - Complex research questions requiring authoritative sources
-     * - Topics needing current web data with proper citation
-     * - High-priority research where quality > speed
-     */
-    private function processTopicWithClaude(array $topic, ?int $remainingSeconds = null): array
-    {
-        $aiService = app(AIService::class);
-        $description = $topic['topic_content'] ?? $topic['description'];
-
-        // Extract depth for logging and timeout adjustment
-        $depth = $this->extractDepthSignal($description);
-        $requestedTimeout = $this->runtimePolicyInt('claude.depth_timeout_seconds.'.$depth);
-        $timeout = $this->capTimeoutToRemainingBudget($requestedTimeout, $remainingSeconds);
-
-        Log::info('ResearchTopicRunner: Using Claude mode (WebSearch)', [
-            'topic_id' => $topic['id'],
-            'category' => $topic['rag_category'] ?? 'general',
-            'depth' => $depth,
-            'timeout' => $timeout,
-        ]);
-
-        // Build research prompt with structured output requirements
-        $researchPrompt = $this->buildClaudeResearchPrompt($topic, $description);
-
-        // Execute Claude web research with depth-appropriate timeout
-        $result = $aiService->claudeWebResearch($researchPrompt, [
-            'timeout' => $timeout,
-            'system_prompt' => $this->getClaudeResearchSystemPrompt($topic),
-        ]);
-
-        if (!$result['success']) {
-            Log::warning('ResearchTopicRunner: Claude research failed, falling back to orchestrator', [
-                'topic_id' => $topic['id'],
-                'error' => $result['error'],
-            ]);
-            return $this->processTopicWithOrchestrator($topic, $remainingSeconds);
-        }
-
-        // Build summary from Claude response
-        $summary = $this->formatClaudeResearchResult($topic, $result);
-
-        return $this->storeResult($topic['id'], $summary);
-    }
-
-    /**
-     * Build research prompt for Claude mode
-     * Supports depth signals: [DEPTH: NORMAL|DEEP|EXHAUSTIVE] in topic_content
-     */
-    private function buildClaudeResearchPrompt(array $topic, string $description): string
-    {
-        $category = $topic['rag_category'] ?? 'general';
-
-        // Extract depth signal from description
-        $depth = $this->extractDepthSignal($description);
-        $cleanDescription = preg_replace('/\[DEPTH:\s*\w+\]\s*/i', '', $description);
-
-        // Build depth-appropriate requirements
-        $requirements = $this->getDepthRequirements($depth);
-
-        return <<<PROMPT
-Research the following topic using web search:
-
-**Topic:** {$cleanDescription}
-**Category:** {$category}
-**Depth Level:** {$depth}
-
-{$requirements}
-
-Format your response with:
-- **Key Findings** (most important discoveries)
-- **Verified Facts** (confirmed from multiple sources)
-- **Uncertain/Conflicting** (items needing more research)
-- **Sources** (complete list with URLs)
-
-Be factual and thorough. Do not speculate beyond available evidence.
-PROMPT;
-    }
-
-    /**
-     * Extract depth signal from topic content
-     * Supports: [DEPTH: NORMAL], [DEPTH: DEEP], [DEPTH: EXHAUSTIVE]
-     */
-    private function extractDepthSignal(string $content): string
-    {
-        if (preg_match('/\[DEPTH:\s*(\w+)\]/i', $content, $matches)) {
-            $depth = strtoupper($matches[1]);
-            if (in_array($depth, ['NORMAL', 'DEEP', 'EXHAUSTIVE'])) {
-                return $depth;
-            }
-        }
-        return 'NORMAL';
-    }
-
-    /**
-     * Get depth-appropriate research requirements
-     */
-    private function getDepthRequirements(string $depth): string
-    {
-        $base = <<<REQ
-Requirements:
-1. Search for authoritative, current sources
-2. Verify facts across multiple sources when possible
-3. Include specific data (dates, statistics, names)
-4. Note any uncertainties or conflicting information
-5. Provide direct source URLs for all claims
-REQ;
-
-        if ($depth === 'DEEP') {
-            return <<<REQ
-DEEP RESEARCH MODE - Thorough analysis required.
-
-Requirements:
-1. Search multiple authoritative sources (government, academic, major news)
-2. Cross-reference ALL claims across at least 2-3 independent sources
-3. Include specific data: dates, statistics, costs, names, locations
-4. Analyze trends and changes over time
-5. Note contradictions between sources with details
-6. Assess source credibility and recency
-7. Identify gaps in available information
-8. Provide complete source URLs with access dates
-REQ;
-        }
-
-        if ($depth === 'EXHAUSTIVE') {
-            return <<<REQ
-EXHAUSTIVE RESEARCH MODE - Maximum thoroughness required.
-
-Requirements:
-1. Search ALL available authoritative sources comprehensively
-2. Cross-reference EVERY claim across multiple independent sources
-3. Include ALL specific data: dates, statistics, costs, names, locations, changes
-4. Provide historical context and trend analysis
-5. Document ALL contradictions with source comparisons
-6. Rate each source for credibility (official/academic/news/other)
-7. Identify what information is NOT available or uncertain
-8. Suggest specific follow-up research areas
-9. Consider regional/demographic variations
-10. Include actionable implications for personal decision-making
-11. Provide complete source URLs, access dates, and publication dates
-12. Do NOT stop until you have thoroughly covered all angles
-REQ;
-        }
-
-        return $base;
-    }
-
-    /**
-     * Get system prompt for Claude research mode
-     */
-    private function getClaudeResearchSystemPrompt(array $topic): string
-    {
-        $category = $topic['rag_category'] ?? 'general';
-
-        return "You are an expert research assistant specializing in {$category} topics. " .
-            "Your role is to find authoritative, factual information using web search. " .
-            "Always cite sources with full URLs. Distinguish between verified facts and " .
-            "uncertain claims. Be thorough but concise. Never fabricate information.";
-    }
-
-    /**
-     * Format Claude research result into standard summary format
-     */
-    private function formatClaudeResearchResult(array $topic, array $claudeResult): string
-    {
-        $response = $claudeResult['response'];
-        $sources = $claudeResult['sources'] ?? [];
-        $durationMs = $claudeResult['duration_ms'] ?? 0;
-
-        // Build statistics section
-        $stats = "## Statistics\n";
-        $stats .= "- Mode: Claude WebSearch\n";
-        $stats .= "- Sources found: " . count($sources) . "\n";
-        $stats .= "- Duration: " . round($durationMs / 1000, 1) . "s\n\n";
-
-        // Combine response with metadata
-        $summary = "# Research Results\n\n";
-        $summary .= "**Topic:** " . ($topic['description'] ?? 'Unknown') . "\n";
-        $summary .= "**Category:** " . ($topic['rag_category'] ?? 'general') . "\n\n";
-        $summary .= $stats;
-        $summary .= "## Research Output\n\n";
-        $summary .= $response;
-
-        return $summary;
     }
 
     /**
@@ -1302,7 +1116,7 @@ REQ;
         $toolsResult = $this->processTopicWithToolsInternal($topic);
 
         // Phase 2: Dynamic discovery via orchestrator
-        $orchestrator = app(\App\Services\Research\UniversalResearchOrchestrator::class);
+        $orchestrator = app(UniversalResearchOrchestrator::class);
         $missionResult = $orchestrator->createMission([
             'title' => $description,
             'query' => $description,
@@ -1326,7 +1140,7 @@ REQ;
                 'trace_timing' => true,
                 'max_verification_facts' => $this->runtimePolicyInt('orchestrator.max_verification_facts'),
             ]);
-            if ($executionResult['success'] && !empty($executionResult['report'])) {
+            if ($executionResult['success'] && ! empty($executionResult['report'])) {
                 $orchestratorReport = $executionResult['report'];
             }
         }
@@ -1376,7 +1190,6 @@ PROMPT;
      * - Podcast search via Podscan
      * - Knowledge base retrieval
      * - RAG-powered synthesis
-     * Plus Claude WebSearch for verification and freshness checking.
      *
      * Best for:
      * - Topics that benefit from multiple search engines
@@ -1389,7 +1202,7 @@ PROMPT;
         $description = $topic['topic_content'] ?? $topic['description'];
         $ragCategory = $topic['rag_category'] ?? 'general';
 
-        Log::info('ResearchTopicRunner: Using Graphlit mode (MCP + Claude)', [
+        Log::info('ResearchTopicRunner: Using Graphlit mode', [
             'topic_id' => $topic['id'],
             'category' => $ragCategory,
         ]);
@@ -1398,15 +1211,13 @@ PROMPT;
         $kbContextLimit = $this->runtimePolicyInt('graphlit.kb_context_limit');
         $podcastContextLimit = $this->runtimePolicyInt('graphlit.podcast_context_limit');
 
-        $graphlitService = app(\App\Services\GraphlitResearchService::class);
-        $claudeSearchService = app(\App\Services\ClaudeWebSearchService::class);
-        $aiService = app(\App\Services\AIService::class);
+        $graphlitService = app(GraphlitResearchService::class);
+        $aiService = app(AIService::class);
 
         $results = [
             'graphlit_web' => null,
             'graphlit_kb' => null,
             'podcasts' => null,
-            'claude_verification' => null,
         ];
 
         // Phase 1: Graphlit comprehensive research
@@ -1422,52 +1233,34 @@ PROMPT;
             $results['graphlit_synthesis'] = $graphlitResult['synthesis']['message'] ?? null;
         }
 
-        // Phase 2: Claude WebSearch for supplementary verification
-        if ($claudeSearchService->isAvailable()) {
-            try {
-                $claudeResult = $claudeSearchService->search($description);
-                if ($claudeResult['success'] ?? false) {
-                    $results['claude_verification'] = [
-                        'summary' => $claudeResult['summary'] ?? '',
-                        'sources' => $claudeResult['sources'] ?? [],
-                    ];
-                }
-            } catch (Exception $e) {
-                Log::warning('ResearchTopicRunner: Claude verification failed', ['error' => $e->getMessage()]);
-            }
-        }
-
-        // Phase 3: Synthesize all findings
+        // Synthesize all findings.
         $webResults = [];
         foreach ($results['graphlit_web']['results'] ?? [] as $r) {
-            $webResults[] = sprintf("- %s: %s (%s)", $r['title'] ?? 'Untitled', $r['text'] ?? '', $r['url'] ?? '');
+            $webResults[] = sprintf('- %s: %s (%s)', $r['title'] ?? 'Untitled', $r['text'] ?? '', $r['url'] ?? '');
         }
 
         $kbResults = [];
         foreach ($results['graphlit_kb']['sources'] ?? [] as $s) {
-            $kbResults[] = "- " . ($s['name'] ?? 'Document');
+            $kbResults[] = '- '.($s['name'] ?? 'Document');
         }
 
         $podcastResults = [];
         foreach ($results['podcasts']['results'] ?? [] as $p) {
-            $podcastResults[] = sprintf("- %s", $p['title'] ?? 'Episode');
+            $podcastResults[] = sprintf('- %s', $p['title'] ?? 'Episode');
         }
 
         $contextParts = [];
-        if (!empty($webResults)) {
-            $contextParts[] = "## Web Sources (Graphlit)\n" . implode("\n", array_slice($webResults, 0, $webContextLimit));
+        if (! empty($webResults)) {
+            $contextParts[] = "## Web Sources (Graphlit)\n".implode("\n", array_slice($webResults, 0, $webContextLimit));
         }
-        if (!empty($kbResults)) {
-            $contextParts[] = "## Knowledge Base\n" . implode("\n", array_slice($kbResults, 0, $kbContextLimit));
+        if (! empty($kbResults)) {
+            $contextParts[] = "## Knowledge Base\n".implode("\n", array_slice($kbResults, 0, $kbContextLimit));
         }
-        if (!empty($podcastResults)) {
-            $contextParts[] = "## Related Podcasts\n" . implode("\n", array_slice($podcastResults, 0, $podcastContextLimit));
+        if (! empty($podcastResults)) {
+            $contextParts[] = "## Related Podcasts\n".implode("\n", array_slice($podcastResults, 0, $podcastContextLimit));
         }
-        if (!empty($results['claude_verification']['summary'])) {
-            $contextParts[] = "## Claude Verification\n" . $results['claude_verification']['summary'];
-        }
-        if (!empty($results['graphlit_synthesis'])) {
-            $contextParts[] = "## Graphlit Analysis\n" . $results['graphlit_synthesis'];
+        if (! empty($results['graphlit_synthesis'])) {
+            $contextParts[] = "## Graphlit Analysis\n".$results['graphlit_synthesis'];
         }
 
         $combinedContext = implode("\n\n", $contextParts);
@@ -1503,7 +1296,7 @@ PROMPT;
             $synthesis = $result['response'] ?? $result['content'] ?? $combinedContext;
         } catch (Exception $e) {
             Log::warning('ResearchTopicRunner: Graphlit synthesis failed, using raw results', ['error' => $e->getMessage()]);
-            $synthesis = "# Research Results (Unprocessed)\n\n" . $combinedContext;
+            $synthesis = "# Research Results (Unprocessed)\n\n".$combinedContext;
         }
 
         // Store with ingestion to Graphlit KB for future retrieval
@@ -1511,7 +1304,7 @@ PROMPT;
 
         // Optionally ingest to Graphlit for knowledge graph building
         try {
-            $graphlitService->ingestResearchText($synthesis, "Research: " . substr($description, 0, 100));
+            $graphlitService->ingestResearchText($synthesis, 'Research: '.substr($description, 0, 100));
         } catch (Exception $e) {
             Log::warning('ResearchTopicRunner: Failed to ingest to Graphlit KB', ['error' => $e->getMessage()]);
         }
@@ -1524,8 +1317,8 @@ PROMPT;
      */
     private function processTopicWithToolsInternal(array $topic): array
     {
-        $ragService = app(\App\Services\RAGService::class);
-        $webResearchService = app(\App\Services\WebResearchService::class);
+        $ragService = app(RAGService::class);
+        $webResearchService = app(WebResearchService::class);
 
         $maxSources = $topic['max_sources'] ?? $this->runtimePolicyInt('tools.default_max_sources');
         $description = $topic['topic_content'] ?? $topic['description'];
@@ -1536,17 +1329,23 @@ PROMPT;
         $webContext = '';
         $webReferences = [];
 
-        if (!empty($webResults['results'])) {
+        if (! empty($webResults['results'])) {
             foreach ($webResults['results'] as $result) {
                 $title = $result['title'] ?? 'Untitled';
                 $snippet = $result['snippet'] ?? $result['description'] ?? '';
                 $url = $result['url'] ?? '';
-                if (is_array($title)) $title = implode(' ', $title);
-                if (is_array($snippet)) $snippet = implode(' ', $snippet);
+                if (is_array($title)) {
+                    $title = implode(' ', $title);
+                }
+                if (is_array($snippet)) {
+                    $snippet = implode(' ', $snippet);
+                }
                 $title = $this->sanitizeExternalContext((string) $title);
                 $snippet = $this->sanitizeExternalContext((string) $snippet);
                 $webContext .= "**{$title}**\n{$snippet}\nSource: {$url}\n\n";
-                if ($url) $webReferences[] = $url;
+                if ($url) {
+                    $webReferences[] = $url;
+                }
             }
         }
 
@@ -1573,8 +1372,8 @@ PROMPT;
      */
     private function processTopicWithTools(array $topic): array
     {
-        $ragService = app(\App\Services\RAGService::class);
-        $webResearchService = app(\App\Services\WebResearchService::class);
+        $ragService = app(RAGService::class);
+        $webResearchService = app(WebResearchService::class);
         $aiService = app(AIService::class);
 
         // Get per-topic configuration with defaults
@@ -1690,7 +1489,7 @@ PROMPT;
 
         // Combine genealogy context with web context if present
         $combinedWebContext = $webContext;
-        if (!empty($genealogyContext)) {
+        if (! empty($genealogyContext)) {
             $combinedWebContext = "### Genealogy Archives\n{$genealogyContext}\n\n### General Web Sources\n{$webContext}";
         }
 
@@ -1717,7 +1516,7 @@ PROMPT;
         // - Human topics with no useful results: show concise "no results" message
         // - Topics with useful results: always show to human for review
 
-        if (!$qualityEval['has_useful_results']) {
+        if (! $qualityEval['has_useful_results']) {
             if ($topicSource === 'auto') {
                 // Auto-generated topic with no results - defer silently
                 $deferredOutput = $this->generateNoResultsMessage($topic, $qualityEval);
@@ -1766,6 +1565,7 @@ PROMPT;
                 $rejectedMsg = "## No Relevant Results Found\n\n";
                 $rejectedMsg .= "**Topic:** {$description}\n\n";
                 $rejectedMsg .= "AI synthesis was rejected: response contained information about unrelated people.\n";
+
                 return $this->storeResult($topic['id'], $rejectedMsg, 0.1, $topicSource === 'auto' ? 'deferred' : 'pending', $allReferences);
             }
 
@@ -1784,11 +1584,12 @@ PROMPT;
 
             // Fallback: Return raw collected data if AI synthesis fails
             $fallbackOutput = "## Research Data (AI synthesis failed)\n\n";
-            if (!empty($genealogyContext)) {
+            if (! empty($genealogyContext)) {
                 $fallbackOutput .= "### Genealogy Archives\n{$genealogyContext}\n\n";
             }
             $fallbackOutput .= "### Web Sources\n{$webContext}\n\n";
             $fallbackOutput .= "### Knowledge Base\n{$ragContext}\n";
+
             return $this->storeResult($topic['id'], $fallbackOutput, $qualityEval['score'], 'pending', $allReferences);
         }
     }
@@ -1805,7 +1606,7 @@ PROMPT;
         $message = "## No Relevant Results Found\n\n";
         $message .= "**Topic:** {$description}\n\n";
 
-        if (!empty($qualityEval['reasons'])) {
+        if (! empty($qualityEval['reasons'])) {
             $message .= "**Search Summary:**\n";
             foreach ($qualityEval['reasons'] as $reason) {
                 $message .= "- {$reason}\n";
@@ -1815,7 +1616,7 @@ PROMPT;
             $message .= "No sources returned information specifically about this topic.\n\n";
         }
 
-        $message .= "**Quality Score:** " . ($qualityEval['score'] * 100) . "%\n\n";
+        $message .= '**Quality Score:** '.($qualityEval['score'] * 100)."%\n\n";
 
         if ($topicSource !== 'auto') {
             $message .= "**Suggestions:**\n";
@@ -1831,26 +1632,26 @@ PROMPT;
     private function getCategorySuggestions(string $category): string
     {
         return match ($category) {
-            'genealogy' => "- Try different search terms or name variations\n" .
-                          "- Check manual genealogy databases directly when needed (FamilySearch, Ancestry, Fold3, NEHGS)\n" .
+            'genealogy' => "- Try different search terms or name variations\n".
+                          "- Check manual genealogy databases directly when needed (FamilySearch, Ancestry, Fold3, NEHGS)\n".
                           "- Consider date ranges and locations in searches\n",
-            'health' => "- Try searching medical databases (PubMed, Mayo Clinic, WebMD)\n" .
-                       "- Check FDA or manufacturer websites for specific products\n" .
+            'health' => "- Try searching medical databases (PubMed, Mayo Clinic, WebMD)\n".
+                       "- Check FDA or manufacturer websites for specific products\n".
                        "- Consult healthcare.gov for insurance coverage questions\n",
-            'legal' => "- Check Congress.gov for bill status and legislative text\n" .
-                      "- Search CBO.gov for budget scoring and analyses\n" .
+            'legal' => "- Check Congress.gov for bill status and legislative text\n".
+                      "- Search CBO.gov for budget scoring and analyses\n".
                       "- Review committee websites for hearing schedules\n",
-            'technology' => "- Search official documentation and GitHub repositories\n" .
-                          "- Check Stack Overflow for community discussions\n" .
+            'technology' => "- Search official documentation and GitHub repositories\n".
+                          "- Check Stack Overflow for community discussions\n".
                           "- Review release notes and changelogs\n",
-            'finance' => "- Check SEC filings and investor relations pages\n" .
-                        "- Review Federal Reserve and Treasury publications\n" .
+            'finance' => "- Check SEC filings and investor relations pages\n".
+                        "- Review Federal Reserve and Treasury publications\n".
                         "- Search financial news sources (Bloomberg, Reuters)\n",
-            'news' => "- Try major news aggregators with different keywords\n" .
-                     "- Check AP News or Reuters for wire service coverage\n" .
+            'news' => "- Try major news aggregators with different keywords\n".
+                     "- Check AP News or Reuters for wire service coverage\n".
                      "- Search specific publication archives\n",
-            default => "- Try different search terms or phrasing\n" .
-                      "- Check authoritative sources in this domain\n" .
+            default => "- Try different search terms or phrasing\n".
+                      "- Check authoritative sources in this domain\n".
                       "- Consider narrowing or broadening the search scope\n",
         };
     }
@@ -1870,7 +1671,7 @@ PROMPT;
         $sourceGroups = [];
         foreach ($results['results'] as $result) {
             $source = $result['source'] ?? 'Unknown';
-            if (!isset($sourceGroups[$source])) {
+            if (! isset($sourceGroups[$source])) {
                 $sourceGroups[$source] = [];
             }
             $sourceGroups[$source][] = $result;
@@ -1885,33 +1686,49 @@ PROMPT;
 
                 // Handle arrays safely - some APIs return arrays for these fields
                 $title = $item['title'] ?? 'Untitled';
-                if (is_array($title)) $title = implode(', ', $title);
+                if (is_array($title)) {
+                    $title = implode(', ', $title);
+                }
 
                 $date = $item['date'] ?? 'Date unknown';
-                if (is_array($date)) $date = implode(', ', $date);
+                if (is_array($date)) {
+                    $date = implode(', ', $date);
+                }
 
                 $newspaper = $item['newspaper'] ?? '';
-                if (is_array($newspaper)) $newspaper = implode(', ', $newspaper);
+                if (is_array($newspaper)) {
+                    $newspaper = implode(', ', $newspaper);
+                }
 
                 $location = $item['location'] ?? '';
-                if (is_array($location)) $location = implode(', ', $location);
+                if (is_array($location)) {
+                    $location = implode(', ', $location);
+                }
 
                 $description = $item['description'] ?? '';
-                if (is_array($description)) $description = implode(' ', $description);
+                if (is_array($description)) {
+                    $description = implode(' ', $description);
+                }
 
                 $type = $item['type'] ?? 'other';
 
                 $context .= "- [{$refKey}] {$title}";
-                if ($newspaper) $context .= " ({$newspaper})";
-                if ($date) $context .= " - {$date}";
-                if ($location) $context .= " - {$location}";
+                if ($newspaper) {
+                    $context .= " ({$newspaper})";
+                }
+                if ($date) {
+                    $context .= " - {$date}";
+                }
+                if ($location) {
+                    $context .= " - {$location}";
+                }
                 $context .= " [Type: {$type}]";
                 $context .= "\n";
 
                 if ($description) {
                     $descStr = is_string($description) ? $description : '';
                     $previewLimit = $this->runtimePolicyInt('genealogy_deep_research.description_preview_chars');
-                    $context .= "  " . substr($descStr, 0, $previewLimit) . (strlen($descStr) > $previewLimit ? '...' : '') . "\n";
+                    $context .= '  '.substr($descStr, 0, $previewLimit).(strlen($descStr) > $previewLimit ? '...' : '')."\n";
                 }
 
                 $references[] = [
@@ -1930,24 +1747,24 @@ PROMPT;
         }
 
         // Add deep research metadata
-        if (!empty($results['elapsed_seconds'])) {
+        if (! empty($results['elapsed_seconds'])) {
             $context .= "**Research Summary:**\n";
             $context .= "- Time spent: {$results['elapsed_seconds']} seconds\n";
-            $context .= "- Queries executed: " . count($results['queries_used'] ?? []) . "\n";
+            $context .= '- Queries executed: '.count($results['queries_used'] ?? [])."\n";
             $context .= "- Total results found: {$results['total_results']}\n";
         }
 
         // Add sources searched info
-        if (!empty($results['sources_searched'])) {
-            $context .= "- Sources searched: " . implode(', ', $results['sources_searched']) . "\n";
+        if (! empty($results['sources_searched'])) {
+            $context .= '- Sources searched: '.implode(', ', $results['sources_searched'])."\n";
         }
 
-        if (!empty($results['errors'])) {
-            $context .= "- Some sources had errors: " . implode('; ', array_map(
-                fn($k, $v) => "{$k}: {$v}",
+        if (! empty($results['errors'])) {
+            $context .= '- Some sources had errors: '.implode('; ', array_map(
+                fn ($k, $v) => "{$k}: {$v}",
                 array_keys($results['errors']),
                 array_values($results['errors'])
-            )) . "\n";
+            ))."\n";
         }
 
         return [$context, $references];
@@ -1981,8 +1798,8 @@ PROMPT;
             'ai_timeout' => $this->runtimePolicyInt('synthesis.timeout_seconds'),
         ]);
 
-        if (!$result['success']) {
-            throw new Exception("AI synthesis failed: " . ($result['error'] ?? 'unknown error'));
+        if (! $result['success']) {
+            throw new Exception('AI synthesis failed: '.($result['error'] ?? 'unknown error'));
         }
 
         $response = $result['response'];
@@ -1992,7 +1809,7 @@ PROMPT;
         if (strtolower($ragCategory) === 'genealogy') {
             $validationPassed = $this->validateResponseRelevance($description, $response);
 
-            if (!$validationPassed) {
+            if (! $validationPassed) {
                 Log::warning('ResearchTopicRunner: AI response contains foreign names, rejecting', [
                     'topic_id' => $topic['id'],
                     'description' => $description,
@@ -2111,8 +1928,8 @@ PROMPT;
      */
     private function processTopicLegacy(array $topic): array
     {
-        $ragService = app(\App\Services\RAGService::class);
-        $webResearchService = app(\App\Services\WebResearchService::class);
+        $ragService = app(RAGService::class);
+        $webResearchService = app(WebResearchService::class);
         $aiService = app(AIService::class);
 
         $ragContext = '';
@@ -2133,7 +1950,7 @@ PROMPT;
                 'topic_id' => $topic['id'],
                 'error' => $e->getMessage(),
             ]);
-            $ragContext = "Knowledge base search unavailable.";
+            $ragContext = 'Knowledge base search unavailable.';
         }
 
         // Step 2: Search the web
@@ -2148,7 +1965,7 @@ PROMPT;
                 'topic_id' => $topic['id'],
                 'error' => $e->getMessage(),
             ]);
-            $webContext = "Web search unavailable.";
+            $webContext = 'Web search unavailable.';
         }
 
         // Step 3: Combine references
@@ -2167,7 +1984,7 @@ PROMPT;
     private function formatRAGContext(array $results): array
     {
         if (empty($results)) {
-            return ["No relevant documents found in knowledge base.", []];
+            return ['No relevant documents found in knowledge base.', []];
         }
 
         $context = "KNOWLEDGE BASE SOURCES:\n\n";
@@ -2195,7 +2012,7 @@ PROMPT;
 
             $content = $doc->content;
             if (strlen($content) > $contentLimit) {
-                $content = substr($content, 0, $contentLimit) . "\n... [truncated]";
+                $content = substr($content, 0, $contentLimit)."\n... [truncated]";
             }
             $context .= "Content:\n{$content}\n\n";
         }
@@ -2211,7 +2028,7 @@ PROMPT;
         $results = $webResults['results'] ?? [];
 
         if (empty($results)) {
-            return ["No relevant web results found.", []];
+            return ['No relevant web results found.', []];
         }
 
         $context = "WEB SOURCES:\n\n";
@@ -2224,9 +2041,15 @@ PROMPT;
             $snippet = $result['snippet'] ?? '';
 
             // Safety: external APIs may return arrays for these fields
-            if (is_array($title)) $title = implode(' ', $title);
-            if (is_array($url)) $url = is_string($url[0] ?? null) ? $url[0] : '';
-            if (is_array($snippet)) $snippet = implode(' ', $snippet);
+            if (is_array($title)) {
+                $title = implode(' ', $title);
+            }
+            if (is_array($url)) {
+                $url = is_string($url[0] ?? null) ? $url[0] : '';
+            }
+            if (is_array($snippet)) {
+                $snippet = implode(' ', $snippet);
+            }
             $title = $this->sanitizeExternalContext((string) $title);
             $snippet = $this->sanitizeExternalContext((string) $snippet);
 
@@ -2322,12 +2145,12 @@ PROMPT;
                 'factual_mode' => true, // Enables temp=0.1 + anti-hallucination prompt
             ]);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 throw new Exception($result['error'] ?? 'AI processing failed');
             }
 
             $output = $result['response'];
-            $output .= "\n\n---\n" . $this->formatReferencesAsLinks($references);
+            $output .= "\n\n---\n".$this->formatReferencesAsLinks($references);
 
             return $output;
 
@@ -2337,7 +2160,7 @@ PROMPT;
                 'error' => $e->getMessage(),
             ]);
 
-            return "Error generating research: " . $e->getMessage();
+            return 'Error generating research: '.$e->getMessage();
         }
     }
 
@@ -2347,7 +2170,7 @@ PROMPT;
     private function formatReferencesForPrompt(array $references): string
     {
         if (empty($references)) {
-            return "No references available.";
+            return 'No references available.';
         }
 
         $lines = [];
@@ -2373,7 +2196,7 @@ PROMPT;
     private function formatReferencesAsLinks(array $references): string
     {
         if (empty($references)) {
-            return "";
+            return '';
         }
 
         $lines = ["### Source Links\n"];
@@ -2426,11 +2249,12 @@ PROMPT;
 
         // Check for foreign name contamination — names in response NOT in topic
         $foreignNames = $this->detectForeignNames($description, $response);
-        if (!empty($foreignNames)) {
+        if (! empty($foreignNames)) {
             Log::warning('ResearchTopicRunner: Foreign names detected in response', [
                 'topic' => $description,
                 'foreign_names' => $foreignNames,
             ]);
+
             return false;
         }
 
@@ -2448,9 +2272,10 @@ PROMPT;
             'Pennsylvania', 'New', 'York', 'Virginia', 'Maryland', 'Ohio', 'Jersey',
             'North', 'South', 'West', 'East', 'United', 'States', 'Methodist',
             'Baptist', 'Lutheran', 'Catholic', 'Presbyterian', 'Reformed'];
+
         return array_values(array_unique(array_filter(
             $matches[1] ?? [],
-            fn($w) => !in_array($w, $commonWords) && strlen($w) > 2
+            fn ($w) => ! in_array($w, $commonWords) && strlen($w) > 2
         )));
     }
 
@@ -2482,7 +2307,9 @@ PROMPT;
                     break;
                 }
             }
-            if ($skip) continue;
+            if ($skip) {
+                continue;
+            }
 
             // Extract individual words from the full name
             preg_match_all('/\b([A-Z][a-z]{2,})\b/', $fullName, $nameWords);
@@ -2497,7 +2324,7 @@ PROMPT;
                 }
             }
 
-            if (!$matchesAny && count($words) >= 2) {
+            if (! $matchesAny && count($words) >= 2) {
                 $foreignNames[] = $fullName;
             }
         }

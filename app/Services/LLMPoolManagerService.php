@@ -2,7 +2,12 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Services\Custody\TaskCustodyService;
+use App\Support\AI\PoolExecutionReceipt;
+use App\Support\RuntimeBoolean;
 use Exception;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -16,13 +21,13 @@ use Illuminate\Support\Facades\Schema;
  * Manages a pool of LLM instances with:
  * - Dynamic routing based on health, load, and capabilities
  * - Per-instance circuit breakers (fault isolation)
- * - Per-instance busy locks (prevent resource contention)
+ * - Per-instance or shared admission-group busy locks (prevent resource contention)
  * - Health scoring with automatic recovery
  * - Self-healing: unhealthy instances automatically recover
  * - Cost-aware routing (future)
  *
  * Follows existing AIService patterns:
- * - Circuit breaker: 3 failures → open, 60s cooldown, half-open test
+ * - Circuit breaker: table-owned failure threshold, cooldown, and half-open test
  * - Busy locks: Per-instance with configurable TTL
  * - Health checks: Nightly via OpsMaintenanceJob
  *
@@ -30,10 +35,10 @@ use Illuminate\Support\Facades\Schema;
  */
 class LLMPoolManagerService
 {
-    // Circuit breaker configuration — reads from config/circuit_breaker.php (SC-2.1)
-    private const CIRCUIT_FAILURE_THRESHOLD = 5;    // Fallback only — config() is primary
+    public const CUSTODY_POLICY_KEY = 'pool_execution_custody';
 
-    private const CIRCUIT_COOLDOWN_SECONDS = 30;
+    /** Exact service invocation ownership; request IDs or PIDs alone confer no release authority. */
+    private array $poolExecutions = [];
 
     // Health score thresholds — config/health_thresholds.php is primary (SC-2.5)
     private const HEALTH_SCORE_MIN = 0;
@@ -58,7 +63,17 @@ class LLMPoolManagerService
 
     private const BUSY_LOCK_DEFAULT_TTL = 150; // 2.5 minutes (was 5 min — actual calls take 30-120s)
 
-    public function __construct() {}
+    private LlmCircuitBreakerPolicyService $circuitBreakerPolicy;
+
+    private LlmPoolProbePolicyService $probePolicy;
+
+    public function __construct(
+        ?LlmCircuitBreakerPolicyService $circuitBreakerPolicy = null,
+        ?LlmPoolProbePolicyService $probePolicy = null
+    ) {
+        $this->circuitBreakerPolicy = $circuitBreakerPolicy ?? app(LlmCircuitBreakerPolicyService::class);
+        $this->probePolicy = $probePolicy ?? app(LlmPoolProbePolicyService::class);
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     // INSTANCE MANAGEMENT
@@ -114,8 +129,10 @@ class LLMPoolManagerService
      *
      * @param  array  $requirements  [
      *                               'capabilities' => ['text', 'vision'],
+     *                               'model_capability_groups' => [['tool_calling', 'tool_use', 'tools']],
      *                               'model' => 'llama3.1:8b-instruct-q5_K_M',
      *                               'prefer_instance' => 'ollama_primary',
+     *                               'explicit_instance_selection' => true,
      *                               'exclude_instances' => ['ollama_secondary'],
      *                               'urgency' => 'normal|high|low',
      *                               ]
@@ -124,8 +141,12 @@ class LLMPoolManagerService
     public function selectInstance(array $requirements = []): ?array
     {
         $capabilities = $requirements['capabilities'] ?? ['text'];
+        $modelCapabilityGroups = is_array($requirements['model_capability_groups'] ?? null)
+            ? $requirements['model_capability_groups']
+            : [];
         $model = $requirements['model'] ?? null;
         $preferInstance = $requirements['prefer_instance'] ?? null;
+        $explicitInstanceSelection = $this->truthyDbValue($requirements['explicit_instance_selection'] ?? false);
         $excludeInstances = $requirements['exclude_instances'] ?? [];
         $urgency = $requirements['urgency'] ?? 'normal';
         // Role lets each instance "advertise" its strength via config.models.{role}.
@@ -146,7 +167,10 @@ class LLMPoolManagerService
             return null;
         }
 
-        $authoritativeGpuTarget = $model !== null
+        // An exact operator-selected instance has its own model and hardware
+        // admission below. A global model-name GPU target can belong to a
+        // different host carrying the same model (for example EmbeddingGemma).
+        $authoritativeGpuTarget = $model !== null && ! ($explicitInstanceSelection && is_string($preferInstance) && $preferInstance !== '')
             ? $this->resolveAuthoritativeGpuTargetForModel((string) $model)
             : null;
 
@@ -171,6 +195,15 @@ class LLMPoolManagerService
                     'instance_id' => $instance->instance_id ?? null,
                     'instance_type' => $instance->instance_type ?? null,
                     'routability' => $instance->routability ?? null,
+                ]);
+
+                continue;
+            }
+
+            $instanceConfig = $this->decodeInstanceConfig($instance);
+            if (! (new LlmRoutePolicyService)->allowsInstance($instanceConfig, $instance->instance_id, $explicitInstanceSelection, $preferInstance)) {
+                Log::debug('LLMPoolManager: explicit-only instance skipped without exact preference', [
+                    'instance_id' => $instance->instance_id ?? null,
                 ]);
 
                 continue;
@@ -258,16 +291,53 @@ class LLMPoolManagerService
             }
 
             // Exclude instances whose table-owned route policy does not allow
-            // the requested role. Ollama additionally must advertise an
-            // explicit role model so fallback iteration cannot silently widen
-            // from quality/standard into a light model.
+            // the requested role. A provider that requires a model role must
+            // also reject unscoped requests; otherwise callers omitting `role`
+            // could bypass the BitNet/Jetson route policy entirely.
+            $config = $this->decodeInstanceConfig($instance);
+            if ($role === null && ! $this->providerConfigAllowsUnscopedRequest($config)) {
+                continue;
+            }
+
+            // Ollama additionally must advertise an explicit role model so
+            // fallback iteration cannot silently widen from quality/standard
+            // into a light model.
+            $roleModel = null;
             if ($role !== null) {
-                $config = $this->decodeInstanceConfig($instance);
                 if (! $this->providerConfigAllowsModelRole($config, $role)) {
                     continue;
                 }
 
-                if ($instance->instance_type === 'ollama' && $this->resolveRoleModel($instance, $role) === null) {
+                if ($instance->instance_type === 'ollama') {
+                    $roleModel = $this->resolveRoleModel($instance, $role);
+                    if ($roleModel === null) {
+                        continue;
+                    }
+                }
+            }
+
+            if ($instance->instance_type === 'ollama') {
+                $admissionModel = (string) ($model ?: $roleModel ?: '');
+                if (
+                    $modelCapabilityGroups !== []
+                    && ! $this->modelMatchesCapabilityGroups($instance->id, $admissionModel, $modelCapabilityGroups)
+                ) {
+                    continue;
+                }
+
+                $admission = app(ModelHardwareAdmissionService::class)->assess(
+                    $instance,
+                    $admissionModel,
+                    $role
+                );
+                if (! (bool) ($admission['route_allowed'] ?? false)) {
+                    Log::debug('LLMPoolManager: instance skipped by model hardware admission', [
+                        'instance_id' => $instance->instance_id ?? null,
+                        'model' => $admissionModel !== '' ? $admissionModel : null,
+                        'role' => $role,
+                        'decision' => $admission['decision'] ?? 'unknown',
+                    ]);
+
                     continue;
                 }
             }
@@ -276,7 +346,8 @@ class LLMPoolManagerService
             $score = $this->calculateRoutingScore($instance, $preferInstance, $urgency, $role);
 
             // Check if busy (affects score but doesn't exclude)
-            $isBusy = $this->isInstanceBusyForInstance($instance);
+            $isBusy = in_array($instance->instance_type ?? null, ['ollama', 'local_llm'], true)
+                && $this->isInstanceBusy((string) $instance->instance_id);
 
             $candidates[] = [
                 'instance' => $instance,
@@ -318,6 +389,33 @@ class LLMPoolManagerService
                 'score' => $c['adjusted_score'],
             ], $candidates),
         ];
+    }
+
+    /**
+     * Require each capability group to have at least one exact model-level match.
+     * Instance capabilities describe the host; they do not prove that the role
+     * model can emit the native protocol needed by this request.
+     *
+     * @param  array<int,array<int,string>>  $groups
+     */
+    private function modelMatchesCapabilityGroups(int $instanceId, string $model, array $groups): bool
+    {
+        if ($model === '') {
+            return false;
+        }
+
+        $row = DB::selectOne(
+            'SELECT capabilities FROM ollama_models
+             WHERE instance_id = ? AND model_name = ? AND is_available = 1
+             LIMIT 1',
+            [$instanceId, $model]
+        );
+        $capabilities = json_decode((string) ($row->capabilities ?? '[]'), true);
+        if (! is_array($capabilities)) {
+            return false;
+        }
+
+        return (new LlmRoutePolicyService)->matchesCapabilities($capabilities, $groups);
     }
 
     /**
@@ -547,45 +645,20 @@ class LLMPoolManagerService
      */
     private function providerConfigAllowsModelRole(array $providerConfig, string $role): bool
     {
-        $routePolicy = is_array($providerConfig['route_policy'] ?? null) ? $providerConfig['route_policy'] : [];
-        $allowedRoles = $routePolicy['allowed_model_roles']
-            ?? $providerConfig['allowed_model_roles']
-            ?? null;
+        return (new LlmRoutePolicyService)->allowsRole($providerConfig, $role);
+    }
 
-        if (is_array($allowedRoles) && $allowedRoles !== []) {
-            $allowedRoles = array_values(array_filter($allowedRoles, 'is_string'));
-            if (! in_array($role, $allowedRoles, true)) {
-                return false;
-            }
-        }
-
-        $models = is_array($providerConfig['models'] ?? null) ? $providerConfig['models'] : [];
-        $hasRoleModel = is_string($models[$role] ?? null) && trim((string) $models[$role]) !== '';
-        $requiresRoleModel = $this->truthyDbValue($routePolicy['require_model_role'] ?? false)
-            || ! $this->truthyDbValue($routePolicy['allow_generic_fallback'] ?? true);
-
-        if ($requiresRoleModel && ! $hasRoleModel) {
-            return false;
-        }
-
-        return true;
+    /**
+     * @param  array<string,mixed>  $providerConfig
+     */
+    private function providerConfigAllowsUnscopedRequest(array $providerConfig): bool
+    {
+        return (new LlmRoutePolicyService)->allowsUnscoped($providerConfig);
     }
 
     private function truthyDbValue(mixed $value): bool
     {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_int($value)) {
-            return $value === 1;
-        }
-
-        if (is_string($value)) {
-            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
-        }
-
-        return (bool) $value;
+        return RuntimeBoolean::isTrue($value);
     }
 
     /**
@@ -856,13 +929,13 @@ class LLMPoolManagerService
         // Update metrics
         DB::update(
             'UPDATE llm_instances SET
+                success_rate = ((total_requests - total_failures + 1) * 100.0) / (total_requests + 1),
                 total_requests = total_requests + 1,
                 consecutive_failures = 0,
                 avg_response_ms = COALESCE(
                     (avg_response_ms * 0.9) + (? * 0.1),
                     ?
                 ),
-                success_rate = ((total_requests - total_failures) * 100.0) / (total_requests + 1),
                 last_success_at = NOW(),
                 health_score = LEAST(100, health_score + 5),
                 is_healthy = CASE WHEN health_score >= ? THEN 1 ELSE is_healthy END,
@@ -894,10 +967,10 @@ class LLMPoolManagerService
         // Update metrics
         DB::update(
             'UPDATE llm_instances SET
+                success_rate = ((total_requests - total_failures) * 100.0) / (total_requests + 1),
                 total_requests = total_requests + 1,
                 total_failures = total_failures + 1,
                 consecutive_failures = ?,
-                success_rate = ((total_requests - total_failures - 1) * 100.0) / (total_requests + 1),
                 last_failure_at = NOW(),
                 health_score = GREATEST(0, health_score - 10),  -- 2:1 ratio now (was 10:1)
                 is_healthy = CASE WHEN health_score <= ? THEN 0 ELSE is_healthy END,
@@ -907,7 +980,7 @@ class LLMPoolManagerService
         );
 
         // Check if circuit should open
-        if ($consecutiveFailures >= config('circuit_breaker.failure_threshold', self::CIRCUIT_FAILURE_THRESHOLD)) {
+        if ($consecutiveFailures >= $this->circuitBreakerPolicy->failureThreshold()) {
             $this->openCircuit($instanceId, $error, $retryAfterSeconds);
         }
 
@@ -920,6 +993,23 @@ class LLMPoolManagerService
         $this->recordModelUsage($instanceId, $metadata, false, null);
 
         $this->clearInstanceCache();
+    }
+
+    /**
+     * Persist an authoritative model attempt without changing provider health or circuit state.
+     */
+    public function recordModelRequestAttempt(
+        string $instanceId,
+        bool $success,
+        ?int $responseTimeMs,
+        array $metadata = []
+    ): void {
+        $instance = $this->getInstance($instanceId);
+        if (! $instance || ! $this->isInstanceActive($instance)) {
+            return;
+        }
+
+        $this->recordModelUsage($instanceId, $metadata, $success, $responseTimeMs);
     }
 
     private function recordModelUsage(string $instanceId, array $metadata, bool $success, ?int $responseTimeMs): void
@@ -1016,7 +1106,7 @@ class LLMPoolManagerService
                 $error = null;
             }
 
-            DB::table('llm_model_request_logs')->insert([
+            $log = [
                 'llm_instance_row_id' => $instance->id ?? null,
                 'instance_id' => $instanceId,
                 'instance_type' => $instance->instance_type ?? null,
@@ -1031,7 +1121,79 @@ class LLMPoolManagerService
                 'escalated' => array_key_exists('escalated', $metadata) ? (bool) $metadata['escalated'] : null,
                 'error_summary' => $error,
                 'created_at' => now(),
-            ]);
+            ];
+
+            $hasRouteTraceColumns = Cache::remember(
+                'llm_model_request_logs_route_trace_columns_exist',
+                60,
+                static fn (): bool => Schema::hasColumns(
+                    'llm_model_request_logs',
+                    ['route_trace_id', 'route_attempt_index']
+                )
+            );
+            if ($hasRouteTraceColumns) {
+                $traceId = strtolower(trim((string) ($metadata['route_trace_id'] ?? '')));
+                $log['route_trace_id'] = preg_match('/^[0-9a-f]{32}$/', $traceId) === 1
+                    && $traceId !== str_repeat('0', 32)
+                    ? $traceId
+                    : null;
+                $attemptIndex = filter_var(
+                    $metadata['route_attempt_index'] ?? null,
+                    FILTER_VALIDATE_INT,
+                    ['options' => ['min_range' => 1, 'max_range' => 65535]]
+                );
+                $log['route_attempt_index'] = $attemptIndex === false ? null : $attemptIndex;
+            }
+
+            $usageColumns = [
+                'input_tokens',
+                'cached_input_tokens',
+                'cache_write_input_tokens',
+                'output_tokens',
+                'reasoning_output_tokens',
+            ];
+            $hasUsageColumns = Cache::remember(
+                'llm_model_request_logs_token_usage_columns_exist',
+                60,
+                static fn (): bool => Schema::hasColumns('llm_model_request_logs', $usageColumns)
+            );
+            if ($hasUsageColumns) {
+                foreach ($usageColumns as $column) {
+                    $value = filter_var(
+                        $metadata[$column] ?? null,
+                        FILTER_VALIDATE_INT,
+                        ['options' => ['min_range' => 0]]
+                    );
+                    $log[$column] = $value === false ? null : $value;
+                }
+            }
+
+            $transportColumns = [
+                'queue_wait_ms',
+                'time_to_first_content_ms',
+                'response_bytes',
+                'transport_chunk_count',
+                'finish_reason',
+            ];
+            $hasTransportColumns = Cache::remember(
+                'llm_model_request_logs_transport_columns_exist',
+                60,
+                static fn (): bool => Schema::hasColumns('llm_model_request_logs', $transportColumns)
+            );
+            if ($hasTransportColumns) {
+                foreach (array_slice($transportColumns, 0, 4) as $column) {
+                    $value = filter_var(
+                        $metadata[$column] ?? null,
+                        FILTER_VALIDATE_INT,
+                        ['options' => ['min_range' => 0]]
+                    );
+                    $log[$column] = $value === false ? null : $value;
+                }
+                $finishReason = trim((string) ($metadata['finish_reason'] ?? ''));
+                $log['finish_reason'] = $finishReason !== '' ? mb_substr($finishReason, 0, 64) : null;
+            }
+
+            DB::table('llm_model_request_logs')->insert($log);
         } catch (\Throwable $e) {
             Log::debug('LLMPoolManager: model request log insert failed', [
                 'instance_id' => $instanceId,
@@ -1053,10 +1215,10 @@ class LLMPoolManagerService
      */
     private function openCircuit(string $instanceId, string $reason, ?int $retryAfterSeconds = null): void
     {
-        // Honor Retry-After header from 429 responses — use provider's window, not fixed 30s
-        $cooldown = config('circuit_breaker.cooldown_seconds', self::CIRCUIT_COOLDOWN_SECONDS);
+        // Honor Retry-After from 429 responses within the shared operator-owned cap.
+        $cooldown = $this->circuitBreakerPolicy->cooldownSeconds();
         if ($retryAfterSeconds !== null && $retryAfterSeconds > $cooldown) {
-            $cooldown = min($retryAfterSeconds, 7200); // cap at 2 hours
+            $cooldown = min($retryAfterSeconds, $this->circuitBreakerPolicy->retryAfterMaxSeconds());
         }
         $retryAt = now()->addSeconds($cooldown);
 
@@ -1185,62 +1347,361 @@ class LLMPoolManagerService
      */
     public function acquireBusyLock(string $instanceId, string $requestId, ?int $ttl = null): bool
     {
-        $instance = $this->getInstance($instanceId);
-        if (! $instance) {
-            return false;
+        if (isset($this->poolExecutions[$instanceId][$requestId])) {
+            throw new InferenceAdmissionException('Pool invocation already owns custody; another acquire is held.');
         }
+        try {
+            $instance = $this->getInstance($instanceId);
+            if ($instance === null) {
+                throw new InferenceAdmissionException('Pool instance catalog is unavailable; dispatch held.');
+            }
+            $policy = $this->resolveSlotPolicy($instance, $ttl);
+            $entered = false;
+            $admitted = Cache::lock($policy['slot_lock_key'], $policy['lock_ttl_seconds'])->get(function () use ($instanceId, $requestId, $ttl, &$entered): bool {
+                $entered = true;
 
-        $policy = $this->resolveSlotPolicy($instance, $ttl);
-        $ttl = $policy['request_ttl_seconds'];
+                return DB::transaction(function () use ($instanceId, $requestId, $ttl): bool {
+                    $catalog = $this->qualifiedPoolCatalog(true);
+                    $instance = $catalog[$instanceId] ?? null;
+                    if ($instance === null || app()->isDownForMaintenance()) {
+                        throw new InferenceAdmissionException('Pool admission is held before dispatch.');
+                    }
+                    $policy = $this->resolveSlotPolicy($instance, $ttl);
+                    [$group, $members, $capacity] = $this->poolGroup($instance, $catalog);
+                    $held = $this->poolHeldRows($group, $members, $catalog);
+                    $this->assertPoolCacheOwners($catalog, $held, $group, $members);
+                    if (count($held) >= $capacity) {
+                        return false;
+                    }
+                    $used = array_column(array_map(fn ($row) => json_decode($row->result_envelope, true, flags: JSON_THROW_ON_ERROR), $held), 'slot');
+                    $slot = 0;
+                    while (in_array($slot, $used, true)) {
+                        $slot++;
+                    }
+                    $owner = bin2hex(random_bytes(32));
+                    $envelope = ['schema' => 'plos.pool_execution.v1', 'instance_id' => $instanceId,
+                        'group_sha256' => hash('sha256', $group), 'members' => $members, 'slot' => $slot,
+                        'catalog_sha256' => $this->poolCatalogDigest($catalog), 'dispatch_sequence' => 0];
+                    $id = DB::table('task_custody_records')->insertGetId([
+                        'surface' => TaskCustodyService::SURFACE_LLM_POOL_EXECUTION,
+                        'surface_ref' => hash('sha256', $group).':'.$slot, 'owner_token' => $owner,
+                        'acquired_at' => now(), 'expires_at' => now()->addSeconds($policy['request_ttl_seconds']),
+                        'progress_note' => 'pool_prepared', 'result_envelope' => json_encode($envelope, JSON_THROW_ON_ERROR),
+                        'created_at' => now(), 'updated_at' => now(),
+                    ]);
+                    $row = DB::table('task_custody_records')->where('id', $id)->first();
+                    $this->poolExecutions[$instanceId][$requestId] = ['row' => $row, 'policy' => $policy,
+                        'instance' => $instance, 'receipt' => null];
+                    // Cache is an advisory mirror. Failure cannot erase the durable reservation.
+                    $cacheOwner = ['request_id' => $requestId, 'custody_id' => $id, 'owner_token' => $owner,
+                        'started_at' => now()->toDateTimeString(), 'pid' => getmypid()];
+                    if ($capacity === 1) {
+                        if (! Cache::add($policy['busy_lock_key'], $cacheOwner, $policy['request_ttl_seconds'])) {
+                            throw new InferenceAdmissionException('Pool cache owner changed during reservation; custody retained.');
+                        }
+                    } else {
+                        $slots = Cache::get($policy['slot_cache_key'], []);
+                        $slots[$requestId] = $cacheOwner;
+                        Cache::put($policy['slot_cache_key'], $slots, $policy['slot_cache_ttl_seconds']);
+                    }
 
-        // Check max concurrent
-        $maxConcurrent = max(1, (int) ($instance->max_concurrent ?? 1));
-        $currentLocks = $this->getActiveLockCountForInstance($instance);
-        if ($currentLocks >= $maxConcurrent) {
-            return false;
-        }
-
-        // For single-concurrent instances, use simple lock
-        if ($maxConcurrent === 1) {
-            return Cache::add($policy['busy_lock_key'], [
-                'request_id' => $requestId,
-                'started_at' => now()->toDateTimeString(),
-                'pid' => getmypid(),
-            ], $ttl);
-        }
-
-        // For multi-concurrent, use slot system
-        return $this->acquireSlot($instance, $requestId, $ttl);
-    }
-
-    /**
-     * Release busy lock for an instance
-     *
-     * @param  string  $instanceId  Instance identifier
-     * @param  string  $requestId  Request identifier that acquired the lock
-     */
-    public function releaseBusyLock(string $instanceId, string $requestId): bool
-    {
-        $instance = $this->getInstance($instanceId);
-        if (! $instance) {
-            return false;
-        }
-
-        $policy = $this->resolveSlotPolicy($instance);
-
-        if ($instance->max_concurrent == 1) {
-            $lockData = Cache::get($policy['busy_lock_key']);
-            if ($lockData && ($lockData['request_id'] ?? null) === $requestId) {
-                Cache::forget($policy['busy_lock_key']);
-
-                return true;
+                    return true;
+                });
+            });
+            if (! $entered) {
+                throw new InferenceAdmissionException('Pool admission mutex is unavailable; dispatch held.');
             }
 
+            return (bool) $admitted;
+        } catch (InferenceAdmissionException $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            throw new InferenceAdmissionException('Pool durable admission is unavailable; dispatch held.', 0, $error);
+        }
+    }
+
+    public function executionReceipt(string $instanceId, string $requestId, string $model): PoolExecutionReceipt
+    {
+        $execution = &$this->poolExecutions[$instanceId][$requestId];
+        if (! is_array($execution) || trim($model) === '') {
+            throw new InferenceAdmissionException('Exact pool invocation receipt is unavailable.');
+        }
+        if ($execution['receipt'] instanceof PoolExecutionReceipt) {
+            return $execution['receipt'];
+        }
+        $row = $execution['row'];
+        $base = rtrim((string) $execution['instance']->base_url, '/');
+        $parts = parse_url($base);
+        if (! is_array($parts) || isset($parts['user']) || isset($parts['pass']) || isset($parts['query']) || isset($parts['fragment'])
+            || ! in_array($parts['scheme'] ?? null, ['http', 'https'], true) || empty($parts['host'])) {
+            throw new InferenceAdmissionException('Pool transport endpoint binding is invalid.');
+        }
+        $endpoints = $execution['instance']->instance_type === 'ollama'
+            ? ['ollama_generate' => hash('sha256', $base.'/api/generate'), 'ollama_chat' => hash('sha256', $base.'/api/chat')]
+            : ['openai_chat_completions' => hash('sha256', $base.'/chat/completions')];
+        $execution['receipt'] = new PoolExecutionReceipt($model, $endpoints,
+            function (string $expected, string $next, array $metadata) use ($row): void {
+                DB::transaction(function () use ($row, $expected, $next, $metadata): void {
+                    if (str_starts_with($next, 'pool_dispatched:')) {
+                        $catalog = $this->qualifiedPoolCatalog(true);
+                        $acquired = json_decode($row->result_envelope, true, flags: JSON_THROW_ON_ERROR);
+                        if (! hash_equals($acquired['catalog_sha256'], $this->poolCatalogDigest($catalog))) {
+                            throw new InferenceAdmissionException('Pool invocation admission catalog changed; dispatch held.');
+                        }
+                        if (app()->isDownForMaintenance()) {
+                            throw new InferenceAdmissionException('Pool maintenance gate held before send.');
+                        }
+                    }
+                    $this->verifyOwnedPoolCheckpoint($row, $expected);
+                    $envelope = json_decode($row->result_envelope, true, flags: JSON_THROW_ON_ERROR);
+                    $envelope = array_replace($envelope, $metadata);
+                    if ($this->ownedPoolRow($row)->where('progress_note', $expected)->update([
+                        'progress_note' => $next, 'result_envelope' => json_encode($envelope, JSON_THROW_ON_ERROR), 'updated_at' => now(),
+                    ]) !== 1) {
+                        throw new InferenceAdmissionException('Pool owned checkpoint CAS failed; custody retained.');
+                    }
+                    $row->progress_note = $next;
+                    $row->result_envelope = json_encode($envelope, JSON_THROW_ON_ERROR);
+                });
+            },
+            function (string $phase, string $outcome) use ($row): void {
+                DB::transaction(function () use ($row, $phase, $outcome): void {
+                    $this->verifyOwnedPoolCheckpoint($row, $phase);
+                    if ($this->ownedPoolRow($row)->where('progress_note', $phase)->update([
+                        'released_at' => now(), 'outcome' => $outcome, 'notification_state' => 'suppressed', 'updated_at' => now(),
+                    ]) !== 1) {
+                        throw new InferenceAdmissionException('Pool owned terminal release CAS failed; custody retained.');
+                    }
+                });
+            });
+
+        return $execution['receipt'];
+    }
+
+    public function releaseBusyLock(string $instanceId, string $requestId): bool
+    {
+        $execution = $this->poolExecutions[$instanceId][$requestId] ?? null;
+        if ($execution === null) {
             return false;
         }
+        // An unbound reservation has never reached any transport checkpoint.
+        $receipt = $execution['receipt'] ?? $this->executionReceipt($instanceId, $requestId, '__no_send__');
+        $receipt->finish();
+        $row = $execution['row'];
+        $policy = $execution['policy'];
+        try {
+            $releasedCache = Cache::lock($policy['slot_lock_key'], $policy['lock_ttl_seconds'])->get(function () use ($policy, $row, $requestId): bool {
+                $busy = Cache::get($policy['busy_lock_key']);
+                if (is_array($busy) && ($busy['custody_id'] ?? null) === $row->id && ($busy['owner_token'] ?? null) === $row->owner_token) {
+                    Cache::forget($policy['busy_lock_key']);
+                }
+                $slots = Cache::get($policy['slot_cache_key'], []);
+                if (is_array($slots) && ($slots[$requestId]['custody_id'] ?? null) === $row->id
+                    && ($slots[$requestId]['owner_token'] ?? null) === $row->owner_token) {
+                    unset($slots[$requestId]);
+                    Cache::put($policy['slot_cache_key'], $slots, $policy['slot_cache_ttl_seconds']);
+                }
 
-        // Multi-concurrent slot release
-        return $this->releaseSlot($instance, $requestId);
+                return true;
+            });
+            if ($releasedCache !== true) {
+                throw new InferenceAdmissionException('Pool terminal cache mutex is unavailable; next dispatch held.');
+            }
+        } catch (\Throwable $error) {
+            throw new InferenceAdmissionException('Pool terminal cache publication failed; next dispatch held.', 0, $error);
+        }
+        unset($this->poolExecutions[$instanceId][$requestId]);
+
+        return true;
+    }
+
+    private function ownedPoolRow(object $row): Builder
+    {
+        return DB::table('task_custody_records')->where('id', $row->id)->where('surface', TaskCustodyService::SURFACE_LLM_POOL_EXECUTION)
+            ->where('surface_ref', $row->surface_ref)->where('owner_token', $row->owner_token)->whereNull('released_at');
+    }
+
+    private function verifyOwnedPoolCheckpoint(object $row, string $phase): void
+    {
+        $current = $this->ownedPoolRow($row)->where('progress_note', $phase)->lockForUpdate()->first();
+        if ($current === null || json_decode($current->result_envelope, true, flags: JSON_THROW_ON_ERROR)
+            != json_decode($row->result_envelope, true, flags: JSON_THROW_ON_ERROR)) {
+            throw new InferenceAdmissionException('Pool invocation phase or published evidence changed; custody retained.');
+        }
+    }
+
+    /** Fresh table policy and a complete deterministic catalog, never cache-derived admission. */
+    private function qualifiedPoolCatalog(bool $lock): array
+    {
+        $query = DB::table('system_configs')->where('section', 'ai')->where('config_key', self::CUSTODY_POLICY_KEY);
+        $policyRow = ($lock ? $query->lockForUpdate() : $query)->first();
+        $policy = json_decode($policyRow->config_value ?? '', true, flags: JSON_THROW_ON_ERROR);
+        if (! is_array($policy) || ($policy['schema'] ?? null) !== 'plos.pool_execution_policy.v1'
+            || ($policy['surface'] ?? null) !== TaskCustodyService::SURFACE_LLM_POOL_EXECUTION
+            || ($policy['enabled'] ?? null) !== true || ($policy['old_writers_qualified'] ?? null) !== true) {
+            throw new InferenceAdmissionException('Pool registration or independent old-writer qualification is unavailable; dispatch held.');
+        }
+        $query = DB::table('llm_instances')->orderBy('instance_id');
+        $rows = ($lock ? $query->lockForUpdate() : $query)->get(['instance_id', 'instance_type', 'base_url', 'max_concurrent', 'config', 'supported_models', 'capabilities']);
+        $catalog = [];
+        foreach ($rows as $row) {
+            $catalog[$row->instance_id] = $row;
+        }
+        foreach ($catalog as $member) {
+            if (in_array($member->instance_type, ['ollama', 'local_llm'], true)) {
+                $this->poolGroup($member, $catalog);
+            }
+        }
+        $digest = $this->poolCatalogDigest($catalog);
+        if (! is_string($policy['catalog_sha256'] ?? null) || ! hash_equals($digest, $policy['catalog_sha256'])) {
+            throw new InferenceAdmissionException('Pool registered admission catalog changed; dispatch held.');
+        }
+
+        return $catalog;
+    }
+
+    private function poolCatalogDigest(array $catalog): string
+    {
+        $binding = [];
+        foreach ($catalog as $id => $row) {
+            $config = json_decode((string) ($row->config ?? '{}'), true, flags: JSON_THROW_ON_ERROR);
+            $slot = $config['slot_policy'] ?? null;
+            if ($slot !== null && ! is_array($slot)) {
+                throw new InferenceAdmissionException('Pool table slot policy is invalid.');
+            }
+            if (is_array($slot)) {
+                ksort($slot);
+            }
+            // Include inactive members too: activation/removal cannot erase older holds.
+            $binding[$id] = [(string) $row->instance_type, hash('sha256', (string) $row->base_url), (string) $row->max_concurrent, $slot,
+                hash('sha256', json_encode($config, JSON_THROW_ON_ERROR)),
+                hash('sha256', (string) $row->supported_models), hash('sha256', (string) $row->capabilities)];
+        }
+        ksort($binding);
+
+        return hash('sha256', json_encode($binding, JSON_THROW_ON_ERROR));
+    }
+
+    private function poolGroup(object $instance, array $catalog): array
+    {
+        $policy = $this->decodeInstanceConfig($instance)['slot_policy'] ?? null;
+        if (! is_array($policy) || ($policy['policy_source'] ?? null) !== 'llm_instances.config.slot_policy'
+            || ($policy['source'] ?? null) !== 'llm_instances.max_concurrent'
+            || ! in_array($instance->instance_type, ['ollama', 'local_llm'], true)) {
+            throw new InferenceAdmissionException('Pool table capacity source is unqualified.');
+        }
+        $group = $this->policyString($policy['admission_group'] ?? null, $instance->instance_id);
+        $members = [];
+        $capacity = null;
+        $keys = null;
+        foreach ($catalog as $id => $row) {
+            $rowPolicy = $this->decodeInstanceConfig($row)['slot_policy'] ?? [];
+            if ($this->policyString($rowPolicy['admission_group'] ?? null, $id) !== $group) {
+                continue;
+            }
+            if (! is_array($rowPolicy) || ($rowPolicy['policy_source'] ?? null) !== 'llm_instances.config.slot_policy'
+                || ($rowPolicy['source'] ?? null) !== 'llm_instances.max_concurrent'
+                || ! ctype_digit((string) $row->max_concurrent) || (int) $row->max_concurrent < 1
+                || ! in_array($row->instance_type, ['ollama', 'local_llm'], true)) {
+                throw new InferenceAdmissionException('Pool group capacity is missing or ambiguous.');
+            }
+            $resolved = $this->resolveSlotPolicy($row);
+            $rowKeys = array_intersect_key($resolved, array_flip(['busy_lock_key', 'slot_cache_key', 'slot_lock_key']));
+            if (($capacity !== null && $capacity !== (int) $row->max_concurrent) || ($keys !== null && $keys !== $rowKeys)) {
+                throw new InferenceAdmissionException('Pool group policies disagree; dispatch held.');
+            }
+            $capacity = (int) $row->max_concurrent;
+            $keys = $rowKeys;
+            $members[] = $id;
+        }
+        sort($members);
+
+        return [$group, $members, $capacity];
+    }
+
+    /** Every unreleased row is counted irrespective of expiry, slot index, or current provider existence. */
+    private function poolHeldRows(string $group, array $members, array $catalog): array
+    {
+        $held = [];
+        $history = [];
+        $catalogGroups = [];
+        $catalogMembers = [];
+        foreach ($catalog as $id => $member) {
+            if (! in_array($member->instance_type ?? null, ['ollama', 'local_llm'], true)) {
+                continue;
+            }
+            $catalogMembers[] = $id;
+            $policy = $this->decodeInstanceConfig($member)['slot_policy'] ?? [];
+            $catalogGroups[] = hash('sha256', $this->policyString($policy['admission_group'] ?? null, $id));
+        }
+        foreach (DB::table('task_custody_records')->where('surface', TaskCustodyService::SURFACE_LLM_POOL_EXECUTION)->whereNull('released_at')->get() as $row) {
+            $envelope = json_decode($row->result_envelope ?? '', true, flags: JSON_THROW_ON_ERROR);
+            if (! is_array($envelope) || ($envelope['schema'] ?? null) !== 'plos.pool_execution.v1'
+                || ! is_array($envelope['members'] ?? null) || $envelope['members'] === []
+                || count(array_filter($envelope['members'], 'is_string')) !== count($envelope['members'])
+                || ! is_string($envelope['instance_id'] ?? null) || ! in_array($envelope['instance_id'], $envelope['members'], true)
+                || ! is_string($envelope['group_sha256'] ?? null) || ! preg_match('/^[a-f0-9]{64}$/', $envelope['group_sha256'])
+                || ! is_string($envelope['catalog_sha256'] ?? null) || ! preg_match('/^[a-f0-9]{64}$/', $envelope['catalog_sha256'])
+                || ! preg_match('/^[a-f0-9]{64}$/', (string) $row->owner_token)
+                || ! is_int($envelope['slot'] ?? null) || $envelope['slot'] < 0
+                || $row->surface_ref !== $envelope['group_sha256'].':'.$envelope['slot']) {
+                throw new InferenceAdmissionException('Pool historical custody binding is unqualified; dispatch held.');
+            }
+            $history[] = [$row, $envelope];
+        }
+        $closure = static function (array $groups, array $memberIds) use ($history): array {
+            $held = [];
+            do {
+                $changed = false;
+                foreach ($history as [$row, $envelope]) {
+                    if (isset($held[$row->id])) {
+                        continue;
+                    }
+                    if (in_array($envelope['group_sha256'], $groups, true)
+                        || array_intersect($memberIds, $envelope['members']) !== []) {
+                        $held[$row->id] = $row;
+                        $groups[] = $envelope['group_sha256'];
+                        $memberIds = array_values(array_unique(array_merge($memberIds, $envelope['members'])));
+                        $changed = true;
+                    }
+                }
+            } while ($changed);
+
+            return array_values($held);
+        };
+        if (count($closure($catalogGroups, $catalogMembers)) !== count($history)) {
+            throw new InferenceAdmissionException('Pool orphan custody has no qualified catalog binding; dispatch held.');
+        }
+
+        return $closure([hash('sha256', $group)], $members);
+    }
+
+    private function assertPoolCacheOwners(array $catalog, array $held, string $group, array $members): void
+    {
+        $qualified = [];
+        foreach ($held as $row) {
+            $qualified[(string) $row->id] = $row->owner_token;
+        }
+        $policies = [];
+        foreach ($members as $id) {
+            $policies[] = $this->resolveSlotPolicy($catalog[$id]);
+        }
+        foreach ($policies as $policy) {
+            $busy = Cache::get($policy['busy_lock_key']);
+            $slots = Cache::get($policy['slot_cache_key'], []);
+            if (! is_array($slots) || ($busy !== null && ! is_array($busy))) {
+                throw new InferenceAdmissionException('Pool cache owner is unqualified; dispatch held.');
+            }
+            foreach (array_merge($busy === null ? [] : [$busy], array_values($slots)) as $owner) {
+                if (! is_array($owner) || ! isset($owner['custody_id'], $owner['owner_token'])
+                    || ($qualified[(string) $owner['custody_id']] ?? null) !== $owner['owner_token']) {
+                    throw new InferenceAdmissionException('Pool legacy or foreign cache owner is unqualified; dispatch held.');
+                }
+            }
+        }
+        if (Cache::has('ollama_busy_lock')) {
+            throw new InferenceAdmissionException('Pool legacy global owner is unqualified; dispatch held.');
+        }
     }
 
     /**
@@ -1260,90 +1721,27 @@ class LLMPoolManagerService
 
     private function isInstanceBusyForInstance(object $instance): bool
     {
-        $maxConcurrent = max(1, (int) ($instance->max_concurrent ?? 1));
-        if ($maxConcurrent > 1) {
-            return $this->getActiveLockCountForInstance($instance) >= $maxConcurrent;
-        }
-
-        return Cache::has($this->resolveSlotPolicy($instance)['busy_lock_key']);
+        return $this->getActiveLockCountForInstance($instance) >= max(1, (int) ($instance->max_concurrent ?? 1));
     }
 
     private function getActiveLockCountForInstance(object $instance): int
     {
-        $slotsKey = $this->resolveSlotPolicy($instance)['slot_cache_key'];
-        $slots = Cache::get($slotsKey, []);
-
-        // Clean stale slots
-        $activeSlots = array_filter($slots, function ($slot) {
-            // Check if process is still running
-            if (isset($slot['pid']) && ! $this->isProcessRunning($slot['pid'])) {
-                return false;
+        if (! in_array($instance->instance_type ?? null, ['ollama', 'local_llm'], true)) {
+            return 0;
+        }
+        try {
+            $catalog = [];
+            foreach (DB::table('llm_instances')->orderBy('instance_id')->get(['instance_id', 'instance_type', 'base_url', 'max_concurrent', 'config', 'supported_models', 'capabilities']) as $row) {
+                $catalog[$row->instance_id] = $row;
             }
+            [$group, $members] = $this->poolGroup($instance, $catalog);
+            $held = $this->poolHeldRows($group, $members, $catalog);
+            $this->assertPoolCacheOwners($catalog, $held, $group, $members);
 
-            return true;
-        });
-
-        return count($activeSlots);
-    }
-
-    /**
-     * Acquire a slot for multi-concurrent instances
-     */
-    private function acquireSlot(object $instance, string $requestId, int $ttl): bool
-    {
-        $policy = $this->resolveSlotPolicy($instance, $ttl);
-        $slotsKey = $policy['slot_cache_key'];
-
-        return Cache::lock($policy['slot_lock_key'], $policy['lock_ttl_seconds'])->get(function () use ($slotsKey, $instance, $requestId, $policy) {
-            $slots = Cache::get($slotsKey, []);
-            $maxConcurrent = max(1, (int) ($instance->max_concurrent ?? 1));
-
-            // Clean stale slots
-            $slots = array_filter($slots, function ($slot) {
-                if (isset($slot['pid']) && ! $this->isProcessRunning($slot['pid'])) {
-                    return false;
-                }
-
-                return true;
-            });
-
-            if (count($slots) >= $maxConcurrent) {
-                Cache::put($slotsKey, $slots, $policy['slot_cache_ttl_seconds']);
-
-                return false;
-            }
-
-            $slots[$requestId] = [
-                'request_id' => $requestId,
-                'started_at' => now()->toDateTimeString(),
-                'pid' => getmypid(),
-            ];
-
-            Cache::put($slotsKey, $slots, $policy['slot_cache_ttl_seconds']);
-
-            return true;
-        });
-    }
-
-    /**
-     * Release a slot for multi-concurrent instances
-     */
-    private function releaseSlot(object $instance, string $requestId): bool
-    {
-        $policy = $this->resolveSlotPolicy($instance);
-        $slotsKey = $policy['slot_cache_key'];
-
-        return Cache::lock($policy['slot_lock_key'], $policy['lock_ttl_seconds'])->get(function () use ($slotsKey, $requestId, $policy) {
-            $slots = Cache::get($slotsKey, []);
-            if (isset($slots[$requestId])) {
-                unset($slots[$requestId]);
-                Cache::put($slotsKey, $slots, $policy['slot_cache_ttl_seconds']);
-
-                return true;
-            }
-
-            return false;
-        });
+            return count($held);
+        } catch (\Throwable $error) {
+            throw new InferenceAdmissionException('Pool occupancy is unqualified; dispatch held.', 0, $error);
+        }
     }
 
     /**
@@ -1373,10 +1771,11 @@ class LLMPoolManagerService
         $slotPrefix = $this->policyString($policy['slot_cache_key_prefix'] ?? null, 'llm_slots');
         $lockSuffix = $this->policyString($policy['slot_lock_key_suffix'] ?? null, '_lock');
         $instanceId = (string) $instance->instance_id;
-        $slotCacheKey = "{$slotPrefix}:{$instanceId}";
+        $admissionGroup = $this->policyString($policy['admission_group'] ?? null, $instanceId);
+        $slotCacheKey = "{$slotPrefix}:{$admissionGroup}";
 
         return [
-            'busy_lock_key' => "{$busyPrefix}:{$instanceId}",
+            'busy_lock_key' => "{$busyPrefix}:{$admissionGroup}",
             'slot_cache_key' => $slotCacheKey,
             'slot_lock_key' => "{$slotCacheKey}{$lockSuffix}",
             'request_ttl_seconds' => $requestTtl,
@@ -1407,18 +1806,6 @@ class LLMPoolManagerService
         return $fallback;
     }
 
-    /**
-     * Check if a process is still running
-     */
-    private function isProcessRunning(int $pid): bool
-    {
-        if (PHP_OS_FAMILY === 'Windows') {
-            return Process::timeout(5)->run(['tasklist', '/FI', "PID eq {$pid}"])->successful();
-        }
-
-        return posix_kill($pid, 0);
-    }
-
     // ═══════════════════════════════════════════════════════════════════
     // HEALTH CHECKS
     // ═══════════════════════════════════════════════════════════════════
@@ -1436,18 +1823,23 @@ class LLMPoolManagerService
             'unhealthy' => 0,
             'recovered' => 0,
             'degraded' => 0,
+            'unknown' => 0,
+            'managed_idle' => 0,
             'details' => [],
         ];
 
         $instances = $this->getInstances(false);
+        $controllerHealth = app(DailyReportAiRuntimeSnapshotService::class)->controllerHealthObservations($instances);
 
         foreach ($instances as $instance) {
             $results['checked']++;
 
-            $checkResult = $this->healthCheckInstance($instance);
+            $checkResult = $this->healthCheckInstance($instance, $controllerHealth[$instance->instance_id] ?? null);
             $results['details'][$instance->instance_id] = $checkResult;
 
-            if ($checkResult['healthy']) {
+            if ($checkResult['healthy'] === null) {
+                $results['unknown']++;
+            } elseif ($checkResult['healthy']) {
                 $results['healthy']++;
                 if ($checkResult['recovered']) {
                     $results['recovered']++;
@@ -1458,6 +1850,9 @@ class LLMPoolManagerService
 
             if ($checkResult['degraded']) {
                 $results['degraded']++;
+            }
+            if (in_array($checkResult['state'] ?? null, ['MANAGED-IDLE', 'RESEARCH-IDLE'], true)) {
+                $results['managed_idle']++;
             }
         }
 
@@ -1472,7 +1867,7 @@ class LLMPoolManagerService
      * @param  object  $instance  Instance data
      * @return array Check result
      */
-    public function healthCheckInstance(object $instance): array
+    public function healthCheckInstance(object $instance, ?array $controllerObservation = null): array
     {
         $result = [
             'instance_id' => $instance->instance_id,
@@ -1484,13 +1879,27 @@ class LLMPoolManagerService
             'error' => null,
         ];
 
+        $config = json_decode((string) ($instance->config ?? '{}'), true);
+        if (is_array($config) && array_key_exists('controller_catalog', $config)) {
+            $observation = $controllerObservation
+                ?? app(DailyReportAiRuntimeSnapshotService::class)->controllerHealthObservations([$instance])[$instance->instance_id];
+
+            return array_replace($result, $observation);
+        }
+
+        $blocked = $this->providerProbeBlockReason($instance);
+        if ($blocked !== null) {
+            return array_replace($result, ['healthy' => null, 'state' => 'PROBE-SKIPPED',
+                'health_persisted' => false, 'reason_code' => $blocked]);
+        }
+
         $startTime = microtime(true);
 
         try {
             $healthy = match ($instance->instance_type) {
                 'ollama' => $this->healthCheckOllama($instance),
                 'local_llm' => $this->probeLocalOpenAICompatible($instance),
-                'claude_cli' => $this->healthCheckClaudeCli($instance),
+                'claude_cli', 'anthropic_api' => false,
                 'codex_cli' => $this->healthCheckCodexCli($instance),
                 default => $this->healthCheckGeneric($instance),
             };
@@ -1536,7 +1945,9 @@ class LLMPoolManagerService
         }
 
         try {
-            $response = Http::connectTimeout(5)->timeout(10)->get("{$instance->base_url}/api/tags");
+            $response = Http::connectTimeout($this->probePolicy->httpConnectTimeoutSeconds())
+                ->timeout($this->probePolicy->healthRequestTimeoutSeconds())
+                ->get(rtrim($instance->base_url, '/').'/api/tags');
 
             return $response->successful();
         } catch (Exception $e) {
@@ -1544,41 +1955,6 @@ class LLMPoolManagerService
 
             return false;
         }
-    }
-
-    /**
-     * Health check for Claude CLI — verifies binary exists AND OAuth token is valid.
-     * Caches token expiry check for 5 minutes to avoid repeated filesystem reads.
-     */
-    private function healthCheckClaudeCli(object $instance): bool
-    {
-        // Check if configured claude command exists
-        $cliPath = config('services.anthropic.cli_path', 'claude');
-        $result = Process::timeout(5)->run(['which', $cliPath]);
-        $path = trim($result->output());
-        if (! $result->successful() || $path === '' || ! file_exists($path) || ! is_executable($path)) {
-            return false;
-        }
-
-        // Check OAuth token expiry (cached for 5 minutes). The credentials file
-        // can contain a stale expiresAt even when `claude auth status` is valid,
-        // so checkClaudeTokenExpiry verifies the CLI before returning expired.
-        $tokenStatus = $this->checkClaudeTokenExpiry();
-        if ($tokenStatus === 'expired') {
-            Log::warning('LLMPoolManagerService: Claude CLI OAuth token is expired — marking unhealthy', [
-                'action' => 'Run: claude login on prod to refresh',
-            ]);
-
-            return false;
-        }
-        if ($tokenStatus === 'expiring_soon') {
-            Log::warning('LLMPoolManagerService: Claude CLI OAuth token expires within 24h', [
-                'action' => 'Run: claude login on prod to refresh before expiry',
-            ]);
-            // Still healthy but warn — token works until actual expiry
-        }
-
-        return true;
     }
 
     /**
@@ -1590,163 +1966,15 @@ class LLMPoolManagerService
     {
         $config = json_decode($instance->config ?? '{}', true) ?: [];
         $cliPath = $config['executable'] ?? 'codex';
-        $result = Process::timeout(5)->run(['which', $cliPath]);
+        $result = Process::timeout($this->probePolicy->processLookupTimeoutSeconds())->run(['which', $cliPath]);
         $path = trim($result->output());
         if (! $result->successful() || $path === '' || ! file_exists($path) || ! is_executable($path)) {
             return false;
         }
 
-        $version = Process::timeout(10)->run([$cliPath, '--version']);
+        $version = Process::timeout($this->probePolicy->cliStatusTimeoutSeconds())->run([$cliPath, '--version']);
 
         return $version->successful() && trim($version->output().$version->errorOutput()) !== '';
-    }
-
-    public function checkClaudeTokenExpiry(): string
-    {
-        return Cache::remember('claude_token_expiry_status', 300, function () {
-            $status = $this->readClaudeCredentialExpiryStatus();
-
-            if ($status !== 'expired') {
-                return $status;
-            }
-
-            if ($this->claudeAuthStatusLoggedIn()) {
-                Log::info('LLMPoolManagerService: Claude credentials expiry is stale but CLI auth status is logged in');
-
-                return 'valid';
-            }
-
-            return 'expired';
-        });
-    }
-
-    /**
-     * Check Claude CLI OAuth token expiry from credentials file.
-     * Returns: 'valid', 'expiring_soon' (<24h), 'expired', or 'unknown' (no file/parse error).
-     */
-    private function readClaudeCredentialExpiryStatus(): string
-    {
-        $home = $this->resolveRuntimeEnvValue('HOME') ?: $this->resolveCurrentUserHome();
-        if (! $home) {
-            Log::debug('LLMPoolManagerService: HOME not available for Claude credentials check');
-
-            return 'unknown';
-        }
-
-        $credPath = rtrim($home, '/').'/.claude/.credentials.json';
-
-        if (! file_exists($credPath)) {
-            Log::debug('LLMPoolManagerService: Claude credentials file not found', ['path' => $credPath]);
-
-            return 'unknown';
-        }
-
-        try {
-            $creds = json_decode(file_get_contents($credPath), true);
-            $expiresAt = $creds['claudeAiOauth']['expiresAt'] ?? null;
-
-            if ($expiresAt === null) {
-                return 'unknown';
-            }
-
-            // expiresAt is in milliseconds.
-            $expiresAtSeconds = (int) ($expiresAt / 1000);
-            $now = time();
-
-            if ($now >= $expiresAtSeconds) {
-                return 'expired';
-            }
-
-            // Warn if expiring within 24 hours.
-            if (($expiresAtSeconds - $now) < 86400) {
-                return 'expiring_soon';
-            }
-
-            return 'valid';
-        } catch (\Throwable $e) {
-            Log::debug('LLMPoolManagerService: Failed to parse Claude credentials', ['error' => $e->getMessage()]);
-
-            return 'unknown';
-        }
-    }
-
-    private function claudeAuthStatusLoggedIn(): bool
-    {
-        $cliPath = config('services.anthropic.cli_path', 'claude');
-        $result = $this->runClaudeAuthStatus($cliPath);
-        $data = $this->extractClaudeAuthStatusData($result['output'] ?? '');
-
-        if (($data['loggedIn'] ?? false) === true) {
-            return true;
-        }
-
-        if (($result['successful'] ?? false) === false) {
-            Log::debug('LLMPoolManagerService: Claude auth status check failed', [
-                'output' => mb_substr((string) ($result['output'] ?? ''), 0, 500),
-            ]);
-        }
-
-        return false;
-    }
-
-    /**
-     * Health-only Claude CLI auth probe. Inference remains inside AIService/AIRouter.
-     *
-     * @return array{successful: bool, output: string}
-     */
-    protected function runClaudeAuthStatus(string $cliPath): array
-    {
-        $pending = Process::timeout(10);
-        $env = $this->buildClaudeCliEnv();
-        if ($env !== null) {
-            $pending = $pending->env($env);
-        }
-
-        $result = $pending->run([$cliPath, 'auth', 'status']);
-
-        return [
-            'successful' => $result->successful(),
-            'output' => trim($result->output()."\n".$result->errorOutput()),
-        ];
-    }
-
-    private function extractClaudeAuthStatusData(string $output): ?array
-    {
-        $data = json_decode(trim($output), true);
-        if (is_array($data)) {
-            return $data;
-        }
-
-        if (preg_match('/\{[^}]*"loggedIn"[^}]*\}/', $output, $jsonMatch)) {
-            $data = json_decode($jsonMatch[0], true);
-
-            return is_array($data) ? $data : null;
-        }
-
-        return null;
-    }
-
-    private function buildClaudeCliEnv(): ?array
-    {
-        $env = [];
-        foreach (['HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TERM', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'PWD'] as $key) {
-            $value = $this->resolveRuntimeEnvValue($key);
-            if ($value !== null) {
-                $env[$key] = $value;
-            }
-        }
-
-        $home = $env['HOME'] ?? $this->resolveCurrentUserHome();
-        if ($home !== null) {
-            $env['HOME'] = $home;
-        }
-
-        $token = config('services.anthropic.cli_oauth_token');
-        if ($token) {
-            $env['CLAUDE_CODE_OAUTH_TOKEN'] = $token;
-        }
-
-        return $env !== [] ? $env : null;
     }
 
     /**
@@ -1769,7 +1997,9 @@ class LLMPoolManagerService
 
         // No API key — fall back to simple GET
         try {
-            $response = Http::connectTimeout(5)->timeout(10)->get($instance->base_url);
+            $response = Http::connectTimeout($this->probePolicy->httpConnectTimeoutSeconds())
+                ->timeout($this->probePolicy->healthRequestTimeoutSeconds())
+                ->get($instance->base_url);
 
             return $response->successful();
         } catch (Exception $e) {
@@ -1799,7 +2029,8 @@ class LLMPoolManagerService
                 $headers[$key] = $value;
             }
 
-            $response = Http::connectTimeout(5)->timeout(15)
+            $response = Http::connectTimeout($this->probePolicy->httpConnectTimeoutSeconds())
+                ->timeout($this->probePolicy->externalHealthRequestTimeoutSeconds())
                 ->withHeaders($headers)
                 ->post(rtrim($instance->base_url, '/').'/chat/completions', [
                     'model' => $model,
@@ -2026,7 +2257,8 @@ class LLMPoolManagerService
 
         $unhealthy = DB::select(
             "SELECT instance_id, instance_type, base_url, api_key, api_key_env, config,
-                    circuit_state, is_healthy, health_score, supported_models, consecutive_failures
+                    circuit_state, is_healthy, health_score, supported_models, consecutive_failures,
+                    routability, compat_status, quarantine_status, allows_private_data, capabilities
              FROM llm_instances
              WHERE is_active = 1
                AND (circuit_state = 'open' OR is_healthy = 0)
@@ -2036,13 +2268,31 @@ class LLMPoolManagerService
         foreach ($unhealthy as $instance) {
             $providerId = $instance->instance_id;
 
+            $config = json_decode((string) ($instance->config ?? '{}'), true);
+            if (is_array($config) && array_key_exists('controller_catalog', $config)) {
+                $results[$providerId] = 'skipped_controller_managed';
+
+                continue;
+            }
+            $blocked = $this->providerProbeBlockReason($instance);
+            if ($blocked !== null) {
+                $results[$providerId] = $blocked;
+
+                continue;
+            }
+            if (in_array($instance->instance_type, ['claude_cli', 'anthropic_api', 'codex_cli'], true)) {
+                $results[$providerId] = 'skipped_unsupported';
+
+                continue;
+            }
+
             try {
                 if ($instance->instance_type === 'ollama') {
                     $success = $this->probeOllama($instance);
                 } elseif ($instance->instance_type === 'local_llm') {
                     $success = $this->probeLocalOpenAICompatible($instance);
-                } elseif ($instance->instance_type === 'claude_cli') {
-                    $success = $this->healthCheckClaudeCli($instance);
+                } elseif (in_array($instance->instance_type, ['claude_cli', 'anthropic_api'], true)) {
+                    $success = false;
                 } else {
                     $success = $this->probeExternalApi($instance);
                 }
@@ -2075,10 +2325,8 @@ class LLMPoolManagerService
                 }
 
             } catch (\Throwable $e) {
-                $results[$providerId] = 'probe_error: '.$e->getMessage();
-                Log::debug("LLMPoolManager: Health probe failed for {$providerId}", [
-                    'error' => $e->getMessage(),
-                ]);
+                $results[$providerId] = 'probe_error';
+                Log::debug('LLMPoolManager: Health probe failed', ['instance_id' => $providerId]);
             }
         }
 
@@ -2087,12 +2335,33 @@ class LLMPoolManagerService
         return $results;
     }
 
+    /** Recovery ignores current health/circuit, never routing or privacy admission. */
+    public function providerProbeBlockReason(object $instance): ?string
+    {
+        if (($instance->routability ?? null) !== 'allowed') {
+            return 'skipped_routability';
+        }
+        if (($instance->compat_status ?? null) === 'stale') {
+            return 'skipped_compatibility';
+        }
+        if (($instance->quarantine_status ?? 'none') === 'quarantined') {
+            return 'skipped_quarantine';
+        }
+        if (! is_array(json_decode((string) ($instance->config ?? '{}'), true))) {
+            return 'skipped_config';
+        }
+
+        return $this->offlinePolicyAllowsProvider($instance) ? null : 'skipped_policy';
+    }
+
     /**
      * Probe an Ollama instance by hitting /api/tags
      */
     private function probeOllama(object $instance): bool
     {
-        $response = Http::connectTimeout(5)->timeout(10)->get(rtrim($instance->base_url, '/').'/api/tags');
+        $response = Http::connectTimeout($this->probePolicy->httpConnectTimeoutSeconds())
+            ->timeout($this->probePolicy->healthRequestTimeoutSeconds())
+            ->get(rtrim($instance->base_url, '/').'/api/tags');
 
         return $response->successful();
     }
@@ -2108,8 +2377,11 @@ class LLMPoolManagerService
         $config = json_decode($instance->config ?? '{}', true) ?: [];
         $healthPath = $config['health_path'] ?? '/health';
         $healthBaseUrl = $config['health_base_url'] ?? $instance->base_url;
+        $headers = is_array($config['extra_headers'] ?? null) ? $config['extra_headers'] : [];
 
-        $response = Http::connectTimeout(3)->timeout(10)
+        $response = Http::connectTimeout($this->probePolicy->localSidecarConnectTimeoutSeconds())
+            ->timeout($this->probePolicy->healthRequestTimeoutSeconds())
+            ->withHeaders($headers)
             ->get(rtrim($healthBaseUrl, '/').$healthPath);
 
         return $response->successful();
@@ -2117,7 +2389,7 @@ class LLMPoolManagerService
 
     /**
      * Probe an external API by sending a minimal completion request.
-     * Returns true if the API responds (200 or 429 rate-limited = alive).
+     * Only a successful response qualifies for recovery; rate limits remain held.
      */
     private function probeExternalApi(object $instance): bool
     {
@@ -2139,7 +2411,8 @@ class LLMPoolManagerService
             $headers[$key] = $value;
         }
 
-        $response = Http::connectTimeout(5)->timeout(15)
+        $response = Http::connectTimeout($this->probePolicy->httpConnectTimeoutSeconds())
+            ->timeout($this->probePolicy->externalHealthRequestTimeoutSeconds())
             ->withHeaders($headers)
             ->post(rtrim($instance->base_url, '/').'/chat/completions', [
                 'model' => $model,
@@ -2148,8 +2421,7 @@ class LLMPoolManagerService
                 'temperature' => 0,
             ]);
 
-        // 200 = healthy, 429 = rate-limited but alive, both count as recovered
-        return $response->successful() || $response->status() === 429;
+        return $response->successful();
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2159,10 +2431,14 @@ class LLMPoolManagerService
     /**
      * Clear instance cache
      */
-    private function clearInstanceCache(): void
+    public static function clearInstanceCache(bool $strict = false): void
     {
-        Cache::forget('llm_instances_all');
-        Cache::forget('llm_instances_healthy');
+        foreach (['llm_instances_all', 'llm_instances_healthy'] as $key) {
+            Cache::forget($key);
+            if ($strict && Cache::has($key)) {
+                throw new \RuntimeException('Provider inventory cache invalidation unavailable.');
+            }
+        }
     }
 
     private function resolveRuntimeEnvValue(?string $key): ?string

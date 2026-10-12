@@ -58,4 +58,26 @@ class KnowledgeFrontendContractTest extends TestCase
             $this->assertStringNotContainsString($needle, $source);
         }
     }
+
+    public function test_knowledge_review_and_face_tab_counts_refresh_from_authoritative_stats(): void
+    {
+        $source = file_get_contents(resource_path('js/src/views/KnowledgeHubView.vue'));
+
+        foreach ([
+            'to="/reviews"',
+            '@counts-updated="loadKnowledgeCounts"',
+            'const knowledgeTabCounts = ref({ review: null, faces: null })',
+            'function tabCount(value)',
+            "{ label: 'Faces', value: 'faces', count: tabCount(knowledgeTabCounts.value.faces) }",
+
+            "axios.get('/api/research-hub/stats')",
+            "axios.get('/api/media/stats')",
+            'nextCounts.review = Number(data.visible_total_pending ?? data.visible_reviews?._total ?? data.total_pending ?? data.reviews?._total ?? 0)',
+            'nextCounts.faces = Number(data.pending_review ?? 0)',
+        ] as $needle) {
+            $this->assertStringContainsString($needle, $source);
+        }
+
+        $this->assertStringNotContainsString('pendingReviewCount.value || undefined', $source);
+    }
 }

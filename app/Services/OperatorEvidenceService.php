@@ -57,6 +57,14 @@ class OperatorEvidenceService
 
     private const FILE_LIFECYCLE_RECONCILIATION_CACHE_KEY = 'operator_evidence:file_lifecycle_reconciliation:v1';
 
+    private const RUNTIME_POLICY_AUDIT_JOB = 'runtime_policy_leak_audit';
+
+    private const RUNTIME_POLICY_AUDIT_STALE_HOURS = 36;
+
+    private const AGENT_CONFIDENCE_CALIBRATION_JOB = 'agent_confidence_calibration';
+
+    private const AGENT_CONFIDENCE_CALIBRATION_STALE_HOURS = 36;
+
     private const FACE_LINK_WEEKLY_REPORT_JOB = 'face_link_weekly_report';
 
     private const GENEALOGY_AUTOMATION_TARGETS = [
@@ -86,6 +94,7 @@ class OperatorEvidenceService
         private readonly ?AgentRecursionCallsRetentionService $arcRetention = null,
         private readonly ?SchedulerOptimizeReportService $schedulerOptimize = null,
         private readonly ?FileRegistryReconciliationReportService $fileReconciliation = null,
+        private readonly ?ChatResponseFeedbackService $chatResponseFeedback = null,
     ) {}
 
     public function collect(): array
@@ -98,6 +107,8 @@ class OperatorEvidenceService
 
         $sections = [
             'queue_health' => $this->collectQueueHealth($sampledAt),
+            'runtime_policy_debt' => $this->collectRuntimePolicyDebt($sampledAt),
+            'agent_confidence_calibration' => $this->collectAgentConfidenceCalibration($sampledAt),
             'scheduler_optimization' => $this->collectSchedulerOptimization($sampledAt),
             'dba_telemetry' => $this->collectDbaTelemetry($sampledAt),
             'file_lifecycle_reconciliation' => $this->collectFileLifecycleReconciliation($sampledAt),
@@ -111,6 +122,7 @@ class OperatorEvidenceService
             'agent_doctor' => $this->collectAgentDoctor($sampledAt),
             'agent_doctor_history' => $this->collectAgentDoctorHistory($sampledAt),
             'agent_tool_policy_telemetry' => $this->collectAgentToolPolicyTelemetry($sampledAt),
+            'chat_response_feedback' => $this->collectChatResponseFeedback($sampledAt),
             'review_backlog' => $this->collectReviewBacklog($sampledAt),
             'news_bias_coverage' => $this->collectNewsBiasCoverage($sampledAt),
             'face_match_link_backlog' => $this->collectFaceMatchLinkBacklog($sampledAt),
@@ -148,6 +160,8 @@ class OperatorEvidenceService
 
         $headlines = [
             'queue' => $this->compactQueueHeadline($sections),
+            'runtime_policy_debt' => $this->compactRuntimePolicyDebtHeadline($sections),
+            'agent_confidence_calibration' => $this->compactAgentConfidenceCalibrationHeadline($sections),
             'kg_rag' => $this->compactKgRagHeadline($sections),
             'review_backlog' => $this->compactReviewBacklogHeadline($sections),
             'face' => $this->compactFaceHeadline($sections),
@@ -168,6 +182,9 @@ class OperatorEvidenceService
         }
         if (is_array($sections['agent_tool_policy_telemetry'] ?? null)) {
             $headlines['agent_tool_policy_telemetry'] = $this->compactAgentToolPolicyTelemetryHeadline($sections);
+        }
+        if (is_array($sections['chat_response_feedback'] ?? null)) {
+            $headlines['chat_response_feedback'] = $this->compactChatResponseFeedbackHeadline($sections);
         }
         $headlines['genealogy_no_decision_gates'] = $this->compactGenealogyNoDecisionGatesHeadline($headlines);
 
@@ -200,6 +217,61 @@ class OperatorEvidenceService
             'scheduler_lag_minutes' => $freshness['scheduler_lag_minutes'] ?? null,
             'completion_lag_minutes' => $freshness['completion_lag_minutes'] ?? null,
             'queue_source' => $this->nullableString($freshness['queue_source'] ?? null),
+        ];
+    }
+
+    private function compactRuntimePolicyDebtHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'runtime_policy_debt');
+        $counts = $this->compactCounts($section);
+        $freshness = $this->compactFreshness($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'evidence_status' => $this->nullableString($counts['evidence_status'] ?? null),
+            'debt_open' => (bool) ($counts['debt_open'] ?? false),
+            'runtime_policy_candidates' => (int) ($counts['runtime_policy_candidates'] ?? 0),
+            'matches' => (int) ($counts['matches'] ?? 0),
+            'files_scanned' => (int) ($counts['files_scanned'] ?? 0),
+            'by_classification' => $this->integerCountMap($counts['by_classification'] ?? []),
+            'latest_run_status' => $this->nullableString($freshness['latest_run_status'] ?? null),
+            'latest_run_age_hours' => $freshness['latest_run_age_hours'] ?? null,
+        ];
+    }
+
+    private function compactAgentConfidenceCalibrationHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'agent_confidence_calibration');
+        $counts = $this->compactCounts($section);
+        $freshness = $this->compactFreshness($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'evidence_status' => $this->nullableString($counts['evidence_status'] ?? null),
+            'sample_count' => (int) ($counts['sample_count'] ?? 0),
+            'expected_calibration_error' => $counts['expected_calibration_error'] ?? null,
+            'brier_score' => $counts['brier_score'] ?? null,
+            'threshold_precision' => $counts['threshold_precision'] ?? null,
+            'latest_run_age_hours' => $freshness['latest_run_age_hours'] ?? null,
+        ];
+    }
+
+    private function compactChatResponseFeedbackHeadline(array $sections): array
+    {
+        $section = $this->compactSection($sections, 'chat_response_feedback');
+        $counts = $this->compactCounts($section);
+
+        return [
+            'status' => $this->compactStatus($section),
+            'available' => (bool) ($counts['available'] ?? false),
+            'window_days' => (int) ($counts['window_days'] ?? 0),
+            'feedback_total' => (int) ($counts['feedback_total'] ?? 0),
+            'helpful_total' => (int) ($counts['helpful_total'] ?? 0),
+            'unhelpful_total' => (int) ($counts['unhelpful_total'] ?? 0),
+            'helpful_rate' => $counts['helpful_rate'] ?? null,
+            'reason_counts' => $this->integerCountMap($counts['reason_counts'] ?? []),
+            'latest_feedback_at' => $this->nullableString($counts['latest_feedback_at'] ?? null),
+            'raw_content_included' => (bool) ($counts['raw_content_included'] ?? false),
         ];
     }
 
@@ -1004,6 +1076,30 @@ class OperatorEvidenceService
             );
         } catch (\Throwable $e) {
             return $this->failedSection($sampledAt, ['AgentDoctorService'], $e, 'Agent Doctor query failed.');
+        }
+    }
+
+    private function collectChatResponseFeedback(Carbon $sampledAt): array
+    {
+        try {
+            $counts = ($this->chatResponseFeedback ?? app(ChatResponseFeedbackService::class))->aggregate();
+
+            return $this->section(
+                ($counts['available'] ?? false) ? 'healthy' : 'watch',
+                $sampledAt,
+                ['ChatResponseFeedbackService', 'chat_response_feedback'],
+                $counts,
+                ($counts['available'] ?? false)
+                    ? null
+                    : 'Run pending migrations before collecting explicit chat response feedback.'
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection(
+                $sampledAt,
+                ['ChatResponseFeedbackService', 'chat_response_feedback'],
+                $e,
+                'Inspect the feedback aggregate query; raw chat content is not required.'
+            );
         }
     }
 
@@ -2191,6 +2287,32 @@ class OperatorEvidenceService
     }
 
     /**
+     * @return array<string,int>|null
+     */
+    private function validatedAggregateCountMap(mixed $value): ?array
+    {
+        if (! is_array($value)) {
+            return null;
+        }
+
+        $summary = [];
+        foreach ($value as $key => $count) {
+            if (! is_string($key)
+                || preg_match('/\A[a-z][a-z0-9_:-]{0,63}\z/', $key) !== 1
+                || ! is_int($count)
+                || $count < 0) {
+                return null;
+            }
+
+            $summary[$key] = $count;
+        }
+
+        ksort($summary);
+
+        return $summary;
+    }
+
+    /**
      * @return array<string,int>
      */
     private function possibleChangeTypeTypoCounts(mixed $value): array
@@ -2243,6 +2365,354 @@ class OperatorEvidenceService
         ksort($summary);
 
         return $summary;
+    }
+
+    private function collectAgentConfidenceCalibration(Carbon $sampledAt): array
+    {
+        $sources = ['scheduled_jobs', 'scheduled_job_runs', 'ops:agent-confidence-calibration --json --compact'];
+        $missing = $this->missingTables(['scheduled_jobs', 'scheduled_job_runs']);
+        if ($missing !== []) {
+            return $this->section('blocked', $sampledAt, $sources, [
+                'evidence_status' => 'missing_support_tables',
+                'missing_tables' => $missing,
+            ], 'Restore scheduler evidence tables before evaluating confidence calibration.');
+        }
+
+        try {
+            $job = DB::table('scheduled_jobs')
+                ->where('name', self::AGENT_CONFIDENCE_CALIBRATION_JOB)
+                ->first(['id', 'enabled', 'last_run_status', 'last_run_at', 'next_run_at']);
+            if ($job === null) {
+                return $this->section('degraded', $sampledAt, $sources, [
+                    'evidence_status' => 'job_missing',
+                ], 'Restore the agent_confidence_calibration scheduled job.');
+            }
+
+            $run = DB::table('scheduled_job_runs')
+                ->where('scheduled_job_id', $job->id)
+                ->orderByDesc('started_at')
+                ->orderByDesc('id')
+                ->first(['status', 'started_at', 'completed_at', 'output']);
+            $enabled = (int) ($job->enabled ?? 0) === 1;
+            $freshness = [
+                'scheduled_job_enabled' => $enabled,
+                'latest_run_status' => $this->nullableString($run->status ?? $job->last_run_status ?? null),
+                'latest_run_at' => $this->nullableString($run->completed_at ?? $run->started_at ?? $job->last_run_at ?? null),
+                'latest_run_age_hours' => null,
+                'next_run_at' => $this->nullableString($job->next_run_at ?? null),
+                'stale_after_hours' => self::AGENT_CONFIDENCE_CALIBRATION_STALE_HOURS,
+            ];
+            if (! $enabled) {
+                return $this->section('degraded', $sampledAt, $sources, ['evidence_status' => 'job_disabled'], 'Enable the read-only calibration audit.', $freshness);
+            }
+            if ($run === null) {
+                return $this->section('degraded', $sampledAt, $sources, ['evidence_status' => 'pending_first_run'], 'Run the calibration audit once to establish aggregate evidence.', $freshness);
+            }
+
+            $latestAt = $freshness['latest_run_at'];
+            if ($latestAt !== null) {
+                $freshness['latest_run_age_hours'] = $this->scheduledRunAgeHours($latestAt, $sampledAt);
+            }
+            if ((string) ($run->status ?? '') !== 'success') {
+                return $this->section('degraded', $sampledAt, $sources, ['evidence_status' => 'latest_run_failed'], 'Inspect and rerun the failed calibration audit.', $freshness);
+            }
+
+            $payload = json_decode((string) ($run->output ?? ''), true);
+            $metrics = is_array($payload['metrics'] ?? null) ? $payload['metrics'] : null;
+            $posture = is_array($payload['posture'] ?? null) ? $payload['posture'] : null;
+            $payloadStatus = $this->nullableString($payload['status'] ?? null);
+            $integerMetrics = ['sample_count', 'approved_count', 'rejected_count', 'monotonicity_violations', 'threshold_sample_count', 'threshold_approved_count'];
+            $nullableNumericMetrics = ['mean_confidence', 'observed_approval_rate', 'expected_calibration_error', 'brier_score', 'auroc', 'threshold_precision', 'threshold_coverage'];
+            $metricKeys = [
+                'sample_count', 'approved_count', 'rejected_count', 'mean_confidence', 'observed_approval_rate',
+                'expected_calibration_error', 'brier_score', 'auroc', 'monotonicity_violations',
+                'threshold_sample_count', 'threshold_approved_count', 'threshold_precision', 'threshold_coverage',
+            ];
+            $postureKeys = [
+                'deterministic', 'read_only', 'content_free', 'approval_is_operator_decision_proxy',
+                'approval_is_not_global_factual_correctness', 'changes_confidence_thresholds',
+                'changes_review_routing', 'changes_approval_authority', 'llm_used', 'network_used',
+                'compression', 'precompaction',
+            ];
+            $valid = is_array($payload)
+                && ($payload['schema'] ?? null) === 'plos.agent_confidence_calibration.v1'
+                && ($payload['scope'] ?? null) === self::AGENT_CONFIDENCE_CALIBRATION_JOB
+                && ($payload['policy_source'] ?? null) === 'system_configs.ops.agent_confidence_calibration'
+                && ($payload['compact'] ?? null) === true
+                && ($payload['read_only'] ?? null) === true
+                && ($payload['content_free'] ?? null) === true
+                && ($payload['mutation_allowed'] ?? null) === false
+                && is_array($payload['cohort'] ?? null)
+                && array_keys($payload['cohort']) === ['review_type', 'window_days', 'automatic_decisions_excluded', 'decision_statuses']
+                && ($payload['cohort']['review_type'] ?? null) === 'genealogy_finding'
+                && ($payload['cohort']['automatic_decisions_excluded'] ?? null) === true
+                && ($payload['cohort']['decision_statuses'] ?? null) === ['approved', 'rejected']
+                && in_array($payloadStatus, ['ok', 'review_required', 'insufficient_evidence'], true)
+                && $metrics !== null
+                && array_keys($metrics) === $metricKeys
+                && collect($integerMetrics)->every(static fn (string $key): bool => is_int($metrics[$key] ?? null) && $metrics[$key] >= 0)
+                && collect($nullableNumericMetrics)->every(static fn (string $key): bool => ($metrics[$key] ?? null) === null || is_float($metrics[$key]) || is_int($metrics[$key]))
+                && $this->validConfidenceCalibrationBins($payload['bins'] ?? null)
+                && is_array($payload['review_reasons'] ?? null)
+                && collect($payload['review_reasons'])->every(static fn (mixed $reason): bool => is_string($reason)
+                    && preg_match('/\A[a-z][a-z0-9_]{0,63}\z/', $reason) === 1)
+                && $posture !== null
+                && array_keys($posture) === $postureKeys
+                && ($posture['approval_is_operator_decision_proxy'] ?? null) === true
+                && ($posture['approval_is_not_global_factual_correctness'] ?? null) === true
+                && ($posture['changes_confidence_thresholds'] ?? null) === false
+                && ($posture['changes_review_routing'] ?? null) === false
+                && ($posture['changes_approval_authority'] ?? null) === false
+                && ($posture['llm_used'] ?? null) === false
+                && ($posture['network_used'] ?? null) === false
+                && $this->validConfidenceCalibrationPolicy($payload['policy'] ?? null)
+                && array_diff(array_keys($payload), [
+                    'schema', 'scope', 'generated_at', 'policy_source', 'cohort', 'status', 'compact',
+                    'read_only', 'content_free', 'mutation_allowed', 'review_reasons', 'metrics', 'bins',
+                    'policy', 'posture',
+                ]) === []
+                && ! array_key_exists('samples', $payload)
+                && ! array_key_exists('rows', $payload)
+                && ! array_key_exists('titles', $payload)
+                && ! array_key_exists('details', $payload);
+            if (! $valid) {
+                return $this->section('degraded', $sampledAt, $sources, ['evidence_status' => 'invalid_compact_payload'], 'Rerun the compact calibration audit and verify its aggregate-only contract.', $freshness);
+            }
+
+            $counts = array_merge(['evidence_status' => $payloadStatus], $metrics, [
+                'nonempty_bin_count' => count($payload['bins']),
+                'review_reason_count' => count($payload['review_reasons']),
+                'raw_content_included' => false,
+                'operator_decision_proxy_only' => true,
+                'mutation_allowed' => false,
+            ]);
+            if (($freshness['latest_run_age_hours'] ?? PHP_INT_MAX) > self::AGENT_CONFIDENCE_CALIBRATION_STALE_HOURS) {
+                return $this->section('degraded', $sampledAt, $sources, $counts, 'Rerun the stale calibration audit before interpreting the metrics.', $freshness);
+            }
+
+            return $this->section(
+                $payloadStatus === 'ok' ? 'healthy' : 'watch',
+                $sampledAt,
+                $sources,
+                $counts,
+                $payloadStatus === 'review_required'
+                    ? 'Review aggregate calibration debt before changing any confidence threshold; this audit has no routing or approval authority.'
+                    : ($payloadStatus === 'insufficient_evidence' ? 'Accumulate more explicit operator decisions before interpreting confidence.' : null),
+                $freshness
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, $sources, $e, 'Agent confidence calibration evidence query failed.');
+        }
+    }
+
+    private function validConfidenceCalibrationBins(mixed $value): bool
+    {
+        if (! is_array($value) || ! array_is_list($value) || count($value) > 20) {
+            return false;
+        }
+
+        $keys = ['index', 'lower_bound', 'upper_bound', 'sample_count', 'mean_confidence', 'approval_rate', 'calibration_gap'];
+        foreach ($value as $bin) {
+            if (! is_array($bin)
+                || array_keys($bin) !== $keys
+                || ! is_int($bin['index'])
+                || $bin['index'] < 0
+                || ! is_int($bin['sample_count'])
+                || $bin['sample_count'] < 1) {
+                return false;
+            }
+            foreach (['lower_bound', 'upper_bound', 'mean_confidence', 'approval_rate', 'calibration_gap'] as $key) {
+                if ((! is_float($bin[$key]) && ! is_int($bin[$key])) || $bin[$key] < 0 || $bin[$key] > 1) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    private function validConfidenceCalibrationPolicy(mixed $value): bool
+    {
+        if (! is_array($value) || array_keys($value) !== [
+            'min_samples', 'bin_count', 'actionability_threshold', 'min_threshold_samples',
+            'max_expected_calibration_error', 'max_brier_score', 'min_threshold_precision',
+            'max_monotonicity_violations',
+        ]) {
+            return false;
+        }
+
+        foreach (['min_samples', 'bin_count', 'min_threshold_samples', 'max_monotonicity_violations'] as $key) {
+            if (! is_int($value[$key]) || $value[$key] < 0) {
+                return false;
+            }
+        }
+        foreach (['actionability_threshold', 'max_expected_calibration_error', 'max_brier_score', 'min_threshold_precision'] as $key) {
+            if ((! is_float($value[$key]) && ! is_int($value[$key])) || $value[$key] < 0 || $value[$key] > 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function collectRuntimePolicyDebt(Carbon $sampledAt): array
+    {
+        $sources = ['scheduled_jobs', 'scheduled_job_runs', 'ops:runtime-policy-leak-audit --json --compact'];
+        $missing = $this->missingTables(['scheduled_jobs', 'scheduled_job_runs']);
+        if ($missing !== []) {
+            return $this->section('blocked', $sampledAt, $sources, [
+                'evidence_status' => 'missing_support_tables',
+                'missing_tables' => $missing,
+                'debt_open' => false,
+            ], 'Restore scheduler evidence tables before evaluating runtime-policy debt.');
+        }
+
+        try {
+            $job = DB::table('scheduled_jobs')
+                ->where('name', self::RUNTIME_POLICY_AUDIT_JOB)
+                ->first(['id', 'enabled', 'last_run_status', 'last_run_at', 'next_run_at']);
+
+            if ($job === null) {
+                return $this->section('degraded', $sampledAt, $sources, [
+                    'evidence_status' => 'job_missing',
+                    'debt_open' => false,
+                ], 'Restore the runtime_policy_leak_audit scheduled job.');
+            }
+
+            $run = DB::table('scheduled_job_runs')
+                ->where('scheduled_job_id', $job->id)
+                ->orderByDesc('started_at')
+                ->orderByDesc('id')
+                ->first(['status', 'started_at', 'completed_at', 'output']);
+
+            $enabled = (int) ($job->enabled ?? 0) === 1;
+            $freshness = [
+                'scheduled_job_enabled' => $enabled,
+                'latest_run_status' => $this->nullableString($run->status ?? $job->last_run_status ?? null),
+                'latest_run_at' => $this->nullableString($run->completed_at ?? $run->started_at ?? $job->last_run_at ?? null),
+                'latest_run_age_hours' => null,
+                'next_run_at' => $this->nullableString($job->next_run_at ?? null),
+                'stale_after_hours' => self::RUNTIME_POLICY_AUDIT_STALE_HOURS,
+            ];
+
+            if (! $enabled) {
+                return $this->section('degraded', $sampledAt, $sources, [
+                    'evidence_status' => 'job_disabled',
+                    'debt_open' => false,
+                ], 'Enable the observe-only runtime-policy audit before trusting its debt posture.', $freshness);
+            }
+
+            if ($run === null) {
+                return $this->section('degraded', $sampledAt, $sources, [
+                    'evidence_status' => 'pending_first_run',
+                    'debt_open' => false,
+                ], 'Run the runtime-policy audit once to establish aggregate debt evidence.', $freshness);
+            }
+
+            $latestAt = $this->nullableString($run->completed_at ?? $run->started_at ?? null);
+            if ($latestAt !== null) {
+                $freshness['latest_run_age_hours'] = $this->scheduledRunAgeHours($latestAt, $sampledAt);
+            }
+
+            if ((string) ($run->status ?? '') !== 'success') {
+                return $this->section('degraded', $sampledAt, $sources, [
+                    'evidence_status' => 'latest_run_failed',
+                    'debt_open' => false,
+                ], 'Inspect and rerun the failed runtime-policy audit.', $freshness);
+            }
+
+            $payload = json_decode((string) ($run->output ?? ''), true);
+            $summary = is_array($payload['summary'] ?? null) ? $payload['summary'] : null;
+            $payloadStatus = $this->nullableString($payload['status'] ?? null);
+            $candidateCount = is_int($summary['runtime_policy_candidates'] ?? null)
+                ? $summary['runtime_policy_candidates']
+                : -1;
+            $classificationCounts = $this->validatedAggregateCountMap($payload['by_classification'] ?? null);
+            $patternCounts = $this->validatedAggregateCountMap($payload['by_pattern'] ?? null);
+            $summaryCountKeys = [
+                'files_scanned',
+                'matches',
+                'runtime_policy_candidates',
+                'table_driven_references',
+                'intentional_safety_rails',
+                'observability_references',
+                'runtime_value_references',
+            ];
+            $valid = is_array($payload)
+                && ($payload['scope'] ?? null) === self::RUNTIME_POLICY_AUDIT_JOB
+                && ($payload['policy_source'] ?? null) === 'system_configs.ops.runtime_policy_leak_audit'
+                && ($payload['fingerprint_schema'] ?? null) === 'plos.runtime_policy_finding.v1'
+                && ($payload['compact'] ?? null) === true
+                && ($payload['read_only'] ?? null) === true
+                && ($payload['mutation_allowed'] ?? null) === false
+                && $summary !== null
+                && collect($summaryCountKeys)->every(
+                    static fn (string $key): bool => is_int($summary[$key] ?? null) && $summary[$key] >= 0
+                )
+                && $classificationCounts !== null
+                && $patternCounts !== null
+                && ! array_key_exists('findings', $payload)
+                && ! array_key_exists('runtime_policy_candidate_samples', $payload)
+                && ! array_key_exists('top_runtime_policy_candidate_files', $payload)
+                && in_array($payloadStatus, ['ok', 'review_required'], true)
+                && (($payloadStatus === 'ok' && $candidateCount === 0)
+                    || ($payloadStatus === 'review_required' && $candidateCount > 0));
+
+            if (! $valid) {
+                return $this->section('degraded', $sampledAt, $sources, [
+                    'evidence_status' => 'invalid_compact_payload',
+                    'debt_open' => false,
+                ], 'Rerun the compact runtime-policy audit and verify its output contract.', $freshness);
+            }
+
+            $counts = [
+                'evidence_status' => $payloadStatus,
+                'debt_open' => $candidateCount > 0,
+                'runtime_policy_candidates' => $candidateCount,
+                'matches' => (int) ($summary['matches'] ?? 0),
+                'files_scanned' => (int) ($summary['files_scanned'] ?? 0),
+                'table_driven_references' => (int) ($summary['table_driven_references'] ?? 0),
+                'intentional_safety_rails' => (int) ($summary['intentional_safety_rails'] ?? 0),
+                'observability_references' => (int) ($summary['observability_references'] ?? 0),
+                'runtime_value_references' => (int) ($summary['runtime_value_references'] ?? 0),
+                'by_classification' => $classificationCounts,
+                'by_pattern' => $patternCounts,
+                'aggregate_only' => true,
+                'raw_output_included' => false,
+                'findings_included' => false,
+                'paths_included' => false,
+                'mutation_allowed' => false,
+            ];
+
+            if (($freshness['latest_run_age_hours'] ?? PHP_INT_MAX) > self::RUNTIME_POLICY_AUDIT_STALE_HOURS) {
+                return $this->section('degraded', $sampledAt, $sources, $counts, 'Rerun the stale runtime-policy audit before acting on its debt counts.', $freshness);
+            }
+
+            return $this->section(
+                $candidateCount > 0 ? 'watch' : 'healthy',
+                $sampledAt,
+                $sources,
+                $counts,
+                $candidateCount > 0
+                    ? 'Review aggregate debt, then inspect a bounded sample with ops:runtime-policy-leak-audit --json --findings-limit=40.'
+                    : null,
+                $freshness
+            );
+        } catch (\Throwable $e) {
+            return $this->failedSection($sampledAt, $sources, $e, 'Runtime-policy debt evidence query failed.');
+        }
+    }
+
+    private function scheduledRunAgeHours(string $timestamp, Carbon $sampledAt): ?int
+    {
+        try {
+            $timezone = config('app.timezone', 'UTC');
+            $timezone = is_string($timezone) && trim($timezone) !== '' ? $timezone : 'UTC';
+
+            return (int) Carbon::parse($timestamp, $timezone)->utc()->diffInHours($sampledAt->copy()->utc());
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function collectQueueHealth(Carbon $sampledAt): array

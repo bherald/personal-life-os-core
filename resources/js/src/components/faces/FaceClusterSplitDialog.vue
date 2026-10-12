@@ -93,7 +93,7 @@
             v-model="assignmentName"
             type="text"
             placeholder="Known face label or FT person..."
-            class="w-full rounded border border-ops-peach/40 bg-black/50 px-3 py-2 text-sm text-ops-text outline-none focus:border-ops-peach"
+            class="w-full rounded border border-ops-peach/40 bg-black/50 px-3 py-2 text-sm text-ops-text outline-hidden focus:border-ops-peach"
             @input="onAssignmentInput"
             @keydown.enter="submitAssign"
             @keydown.escape="closeAssign"

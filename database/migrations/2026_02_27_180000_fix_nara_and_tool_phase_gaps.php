@@ -2,7 +2,6 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 
 return new class extends Migration
 {
@@ -24,7 +23,7 @@ return new class extends Migration
                  'Search the US National Archives catalog (37M+ records). Covers military, census, immigration, naturalization, court records, genealogy, land patents, presidential documents, photographs, maps. Primary source government documents with highest authority. Requires API key.',
                  ?,
                  '[]', 1, 'read', 'genealogy', 'manual', 'system',
-                 'NARA v2 API. Rate limit: 10K calls/month. Key stored in genealogy_research_providers.',
+                 'NARA v2 API. Rate limit: 10K calls/month. Key resolved from configured provider api_key_env.',
                  NOW(), NOW())
             ON DUPLICATE KEY UPDATE
                 service_class = VALUES(service_class),
@@ -59,7 +58,7 @@ return new class extends Migration
                 'App\\Services\\Genealogy\\GenealogySourceService',
                 'api',
                 'https://catalog.archives.gov/api/v2',
-                null, // Key stored in api_key column, not env var
+                'NARA_API_KEY',
                 'api_key',
                 json_encode(['search_records' => true, 'search_persons' => false, 'military_records' => true, 'census_records' => true, 'immigration_records' => true]),
                 json_encode(['search_endpoint' => '/records/search', 'header_key' => 'x-api-key', 'rate_limit_monthly' => 10000]),
@@ -71,18 +70,7 @@ return new class extends Migration
             ]);
         }
 
-        // Store the API key — separate UPDATE so it works whether row existed or was just inserted
-        try {
-            // Check if api_key column exists
-            $columns = DB::select("SHOW COLUMNS FROM genealogy_research_providers LIKE 'api_key'");
-            if (!empty($columns)) {
-                DB::update("UPDATE genealogy_research_providers SET api_key = ? WHERE provider_id = 'nara'", [
-                    'e6nVyhdMoyaajucJfjtfd4EyMoFh49pJ5zIG4hzJ',
-                ]);
-            }
-        } catch (\Exception $e) {
-            Log::warning("Could not set NARA API key: " . $e->getMessage());
-        }
+        DB::update("UPDATE genealogy_research_providers SET api_key_env = COALESCE(api_key_env, 'NARA_API_KEY') WHERE provider_id = 'nara'");
     }
 
     public function down(): void

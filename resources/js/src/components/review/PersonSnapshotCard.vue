@@ -59,7 +59,7 @@
       </dl>
 
       <div class="snapshot-footer">
-        <a :href="`/genealogy?person=${person.id}`" target="_blank" class="snapshot-link">
+        <a :href="person.tree_id ? `/genealogy?tree_id=${person.tree_id}&person=${person.id}` : '/genealogy'" target="_blank" class="snapshot-link">
           View full record →
         </a>
       </div>
@@ -112,8 +112,8 @@ const eventCount = computed(() => Array.isArray(props.person?.events) ? props.pe
 
 <style scoped>
 .person-snapshot {
-  background: rgba(99, 51, 153, 0.10);
-  border: 1px solid rgba(99, 51, 153, 0.30);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   padding: 1rem;
 }
@@ -122,20 +122,20 @@ const eventCount = computed(() => Array.isArray(props.person?.events) ? props.pe
   text-align: center;
 }
 .snapshot-header {
-  border-bottom: 1px solid rgba(99, 51, 153, 0.30);
+  border-bottom: 1px solid var(--color-border);
   padding-bottom: 0.5rem;
   margin-bottom: 0.75rem;
 }
 .snapshot-name {
   font-size: 1rem;
   font-weight: 700;
-  color: #ffb47a;
+  color: var(--ops-warning);
 }
 .snapshot-tree {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #b39ddb;
+  color: var(--color-accent);
 }
 .snapshot-facts { display: grid; gap: 0.4rem; margin: 0; }
 .snapshot-fact { display: grid; grid-template-columns: 5rem 1fr; gap: 0.5rem; align-items: baseline; }
@@ -143,24 +143,24 @@ const eventCount = computed(() => Array.isArray(props.person?.events) ? props.pe
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-weight: 600;
 }
 .snapshot-fact dd {
   font-size: 0.85rem;
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   margin: 0;
 }
-.snapshot-place { color: #b39ddb; font-size: 0.75rem; margin-left: 0.25rem; }
-.muted { color: #888; font-style: italic; }
+.snapshot-place { color: var(--color-accent); font-size: 0.75rem; margin-left: 0.25rem; }
+.muted { color: var(--color-text-secondary); font-style: italic; }
 .snapshot-footer {
   margin-top: 0.75rem;
   padding-top: 0.5rem;
-  border-top: 1px solid rgba(99, 51, 153, 0.30);
+  border-top: 1px solid var(--color-border);
 }
 .snapshot-link {
   font-size: 0.75rem;
-  color: #5da9ff;
+  color: var(--color-accent);
   text-decoration: none;
 }
 .snapshot-link:hover { text-decoration: underline; }

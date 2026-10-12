@@ -106,7 +106,7 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
             $this->markTestSkipped('HOME is required to create a portable non-temp cleanup fixture.');
         }
 
-        $root = $home.'/plos-public-cleanup-nontemp-'.bin2hex(random_bytes(5));
+        $root = base_path('storage/app/testing-public-cleanup-'.bin2hex(random_bytes(5)));
         $candidate = $root.'/personal-life-os-core-export-old';
         mkdir($candidate, 0700, true);
         file_put_contents($candidate.'/README.txt', 'must stay');
@@ -115,7 +115,7 @@ class PublicTempArtifactCleanupScriptTest extends TestCase
             $process = $this->runCleanup($root, ['--keep-latest', '1', '--execute']);
 
             $this->assertSame(2, $process->getExitCode());
-            $this->assertStringContainsString('Refusing to scan non-temp root', $process->getErrorOutput());
+            $this->assertStringContainsString('Refusing to scan inside private source repository', $process->getErrorOutput());
             $this->assertDirectoryExists($candidate);
         } finally {
             $this->removeTree($root);

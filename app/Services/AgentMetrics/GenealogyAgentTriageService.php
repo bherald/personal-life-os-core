@@ -25,7 +25,7 @@ class GenealogyAgentTriageService
             'role' => 'Missing-data topic discovery command',
             'scenario_tests' => [
                 'missing-data topic suggestion',
-                'manual-only source boundary',
+                'provider-specific source boundary',
                 'no direct fact writeback',
             ],
         ],

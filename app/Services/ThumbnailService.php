@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Exception;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
@@ -14,8 +15,7 @@ use Illuminate\Support\Facades\Storage;
  * Generates and caches thumbnails for images, PDFs, videos, and Office documents.
  * Uses a multi-strategy approach:
  * 1. Check local cache
- * 2. Try Nextcloud preview API (images only)
- * 3. Generate locally:
+ * 2. Generate from current local bytes or a downloaded source:
  *    - Images: GD/Imagick
  *    - PDFs: Imagick or pdftoppm CLI
  *    - Videos: ffmpeg (frame at 5s)
@@ -210,29 +210,51 @@ class ThumbnailService
             return ['success' => false, 'error' => "Invalid size: {$size}. Use: small, medium, large"];
         }
 
-        // Check local cache
+        $file = DB::selectOne(
+            "SELECT id, current_path, thumbnail_generated_at, thumbnail_sizes, thumbnail_error, nextcloud_modified_at
+             FROM file_registry WHERE asset_uuid = ? AND status = 'active' LIMIT 1",
+            [$assetUuid]
+        );
+        if (! $file) {
+            return ['success' => false, 'error' => 'File not found in registry'];
+        }
+
+        // The registry marker and tracked size are authoritative after invalidation.
         $cachePath = $this->getThumbnailPath($assetUuid, $size);
         $fullPath = storage_path('app/'.$cachePath);
 
         if (file_exists($fullPath)) {
-            // Ensure DB record has this size tracked (backfill for files generated before DB tracking)
-            $file = DB::selectOne(
-                "SELECT id, thumbnail_sizes FROM file_registry WHERE asset_uuid = ? AND status = 'active' LIMIT 1",
-                [$assetUuid]
-            );
-            if ($file) {
-                $sizes = json_decode($file->thumbnail_sizes ?? '[]', true) ?: [];
-                if (! in_array($size, $sizes)) {
-                    $this->updateThumbnailRecord($file->id, $assetUuid, $size);
+            clearstatcache(true, $fullPath);
+            $cachedAt = filemtime($fullPath);
+            $cachedImage = @getimagesize($fullPath);
+            $localSource = $this->getNextcloudApi()->localPath($file->current_path);
+            if ($localSource) {
+                clearstatcache(true, $localSource);
+            }
+            $sourceChanged = $localSource
+                && (! is_file($localSource) || filemtime($localSource) > $cachedAt);
+            if ($file->nextcloud_modified_at) {
+                try {
+                    $sourceChanged = $sourceChanged || Carbon::parse($file->nextcloud_modified_at)->timestamp > $cachedAt;
+                } catch (\Throwable $e) {
+                    $sourceChanged = true;
                 }
             }
+            $sizes = json_decode($file->thumbnail_sizes ?? '[]', true);
+            if (! $cachedImage || ($cachedImage['mime'] ?? null) !== 'image/jpeg' || $cachedAt === false
+                || ! is_array($sizes) || ! $file->thumbnail_generated_at || $file->thumbnail_error
+                || ! in_array($size, $sizes, true) || $sourceChanged
+            ) {
+                try {
+                    $this->deleteThumbnails($assetUuid);
+                } catch (\Throwable $e) {
+                    return ['success' => false, 'error' => 'Failed to remove stale thumbnail cache'];
+                }
 
-            return [
-                'success' => true,
-                'path' => $fullPath,
-                'mime_type' => 'image/jpeg',
-                'from_cache' => true,
-            ];
+                return $this->generateThumbnail($assetUuid, $size);
+            }
+
+            return ['success' => true, 'path' => $fullPath, 'mime_type' => 'image/jpeg', 'from_cache' => true];
         }
 
         // Generate thumbnail
@@ -250,7 +272,7 @@ class ThumbnailService
 
         // Get file info from registry
         $file = DB::selectOne(
-            "SELECT id, asset_uuid, current_path, mime_type, nextcloud_fileid, file_size
+            "SELECT id, asset_uuid, current_path, mime_type, nextcloud_fileid, file_size, nextcloud_modified_at, thumbnail_generated_at
              FROM file_registry WHERE asset_uuid = ? AND status = 'active' LIMIT 1",
             [$assetUuid]
         );
@@ -261,17 +283,9 @@ class ThumbnailService
 
         $mimeType = $file->mime_type ?? '';
 
-        // Try Nextcloud preview API first (for images) — skipped in batch mode (local Imagick is faster)
-        if (! $this->batchMode && $file->nextcloud_fileid && in_array($mimeType, self::SUPPORTED_IMAGE_TYPES)) {
-            $ncResult = $this->tryNextcloudPreview($file, $w, $h, $assetUuid, $size);
-            if ($ncResult && $ncResult['success']) {
-                return $ncResult;
-            }
-        }
-
-        // Filesystem-first: use local NVMe path when available (~1000x faster than WebDAV)
         $ncApi = $this->getNextcloudApi();
         $localFsPath = $ncApi->localPath($file->current_path);
+        // Filesystem-first: use local NVMe path when available (~1000x faster than WebDAV)
         $tempFile = null;
         $deleteTempFile = false;
 
@@ -281,7 +295,12 @@ class ThumbnailService
             // WebDAV fallback (non-prod or file not on local filesystem)
             $sourceResult = $ncApi->downloadFile($file->current_path);
             if (! $sourceResult['success']) {
-                $this->markError($file->id, 'Download failed: '.($sourceResult['error'] ?? 'unknown'));
+                $error = 'Download failed: '.($sourceResult['error'] ?? 'unknown');
+                if ($this->isMissingSourceError($error)) {
+                    $this->markSourceMissing($file->asset_uuid, $file->id, $error);
+                } else {
+                    $this->markError($file->id, $error);
+                }
 
                 return ['success' => false, 'error' => 'Failed to download source file'];
             }
@@ -290,8 +309,25 @@ class ThumbnailService
             $deleteTempFile = true;
         }
 
+        $outputPath = null;
         try {
-            $outputPath = $this->ensureThumbnailDir($assetUuid, $size);
+            $publishedPath = $this->ensureThumbnailDir($assetUuid, $size);
+            $outputMode = is_file($publishedPath) ? (fileperms($publishedPath) & 0777) : (0666 & ~umask());
+            $outputPath = tempnam(dirname($publishedPath), 'thumb_');
+            if ($outputPath === false || ! rename($outputPath, $outputPath.'.jpg')) {
+                $this->markError($file->id, 'Thumbnail staging failed');
+
+                return ['success' => false, 'error' => 'Thumbnail staging failed'];
+            }
+            $outputPath .= '.jpg';
+            $isImage = in_array($mimeType, self::SUPPORTED_IMAGE_TYPES)
+                || (self::EXTENSION_TYPE_MAP[strtolower(pathinfo($file->current_path, PATHINFO_EXTENSION))] ?? null) === 'image';
+            $sourceHash = $isImage ? @hash_file('sha256', $tempFile) : null;
+            if ($isImage && ! is_string($sourceHash)) {
+                $this->markError($file->id, 'Source image hash unavailable');
+
+                return ['success' => false, 'error' => 'Source image hash unavailable'];
+            }
 
             if (in_array($mimeType, self::SUPPORTED_IMAGE_TYPES)) {
                 $result = $this->generateImageThumbnail($tempFile, $outputPath, $w, $h);
@@ -330,11 +366,40 @@ class ThumbnailService
             }
 
             if ($result) {
-                $this->updateThumbnailRecord($file->id, $assetUuid, $size);
+                $published = DB::transaction(function () use ($file, $tempFile, $sourceHash, $localFsPath, $ncApi, $outputPath, $publishedPath, $outputMode, $assetUuid, $size): bool {
+                    $current = DB::selectOne("SELECT current_path, nextcloud_modified_at FROM file_registry WHERE id = ? AND status = 'active' FOR UPDATE", [$file->id]);
+                    if (! $current || $current->current_path !== $file->current_path
+                        || ($current->nextcloud_modified_at ?? null) !== ($file->nextcloud_modified_at ?? null)
+                    ) {
+                        return false;
+                    }
+                    if ($sourceHash !== null) {
+                        if ($localFsPath) {
+                            $currentHash = @hash_file('sha256', $tempFile);
+                        } else {
+                            $verified = $ncApi->computeFileHash($file->current_path);
+                            $currentHash = ($verified['success'] ?? false) ? ($verified['hash'] ?? null) : null;
+                        }
+                        if (! is_string($currentHash) || ! hash_equals($sourceHash, $currentHash)) {
+                            return false;
+                        }
+                    }
+                    if (! chmod($outputPath, $outputMode) || ! @rename($outputPath, $publishedPath)) {
+                        return false;
+                    }
+                    $this->updateThumbnailRecord($file->id, $assetUuid, $size);
+
+                    return true;
+                });
+                if (! $published) {
+                    $this->markError($file->id, 'Source or cache changed during thumbnail generation');
+
+                    return ['success' => false, 'error' => 'Source or cache changed during thumbnail generation'];
+                }
 
                 return [
                     'success' => true,
-                    'path' => $outputPath,
+                    'path' => $publishedPath,
                     'mime_type' => 'image/jpeg',
                     'from_cache' => false,
                 ];
@@ -344,6 +409,9 @@ class ThumbnailService
 
             return ['success' => false, 'error' => 'Thumbnail generation failed'];
         } finally {
+            if ($outputPath && is_file($outputPath)) {
+                @unlink($outputPath);
+            }
             if ($deleteTempFile && $tempFile) {
                 @unlink($tempFile);
             }
@@ -561,7 +629,7 @@ class ThumbnailService
             $ph = $probe->getImageHeight();
             $probe->destroy();
             if ($pw * $ph > 100_000_000) {
-                throw new \Exception("Image too large for safe thumbnailing: {$pw}x{$ph}");
+                throw new Exception("Image too large for safe thumbnailing: {$pw}x{$ph}");
             }
         }
 
@@ -1144,7 +1212,7 @@ PHPSCRIPT;
                     $img->autoOrient();
                     $img->writeImage($outputPath);
                     $img->destroy();
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     Log::debug('ThumbnailService: Imagick auto-orient failed, keeping original', ['error' => $e->getMessage()]);
                 }
             }
@@ -1224,25 +1292,53 @@ PHPSCRIPT;
         );
     }
 
+    private function markSourceMissing(string $assetUuid, int $fileId, string $error): void
+    {
+        DB::update(
+            'UPDATE file_registry SET thumbnail_error = ? WHERE id = ?',
+            [substr($error, 0, 255), $fileId]
+        );
+
+        app(FileRegistryService::class)->markOrphaned($assetUuid);
+    }
+
+    private function isMissingSourceError(string $error): bool
+    {
+        $normalized = strtolower($error);
+
+        return str_contains($normalized, '404')
+            || str_contains($normalized, 'not found')
+            || str_contains($normalized, 'no such file');
+    }
+
     /**
      * Delete all thumbnails for a file
      */
     public function deleteThumbnails(string $assetUuid): int
     {
-        $deleted = 0;
-        foreach (array_keys(self::SIZES) as $size) {
-            $path = storage_path('app/'.$this->getThumbnailPath($assetUuid, $size));
-            if (file_exists($path)) {
-                @unlink($path);
-                $deleted++;
-            }
-        }
-
-        // Clear DB record
+        // Mark invalid before touching disk so a failed removal cannot become a cache hit.
         DB::update(
             'UPDATE file_registry SET thumbnail_generated_at = NULL, thumbnail_sizes = NULL, thumbnail_error = NULL WHERE asset_uuid = ?',
             [$assetUuid]
         );
+        $deleted = 0;
+        $failed = false;
+        foreach (array_keys(self::SIZES) as $size) {
+            $path = storage_path('app/'.$this->getThumbnailPath($assetUuid, $size));
+            if (file_exists($path)) {
+                if (@unlink($path)) {
+                    $deleted++;
+                } else {
+                    $failed = true;
+                }
+            }
+        }
+
+        if ($failed) {
+            DB::update('UPDATE file_registry SET thumbnail_error = ? WHERE asset_uuid = ?', ['cache_delete_failed', $assetUuid]);
+
+            throw new \RuntimeException('Failed to remove thumbnail cache');
+        }
 
         return $deleted;
     }

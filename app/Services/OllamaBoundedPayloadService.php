@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use InvalidArgumentException;
+
 class OllamaBoundedPayloadService
 {
     public function __construct(
@@ -11,6 +13,11 @@ class OllamaBoundedPayloadService
     public function buildPayload(string $taskClass, string $text, array $context = []): array
     {
         $profile = $this->profiles->getTaskProfile($taskClass);
+        if (! ($profile['enabled'] ?? true)) {
+            $reason = (string) ($profile['disabled_reason'] ?? 'disabled');
+            throw new InvalidArgumentException("Ollama pipeline task disabled: {$taskClass} ({$reason})");
+        }
+
         $pages = $this->splitPages($text);
         $chunks = $this->chunkPages(
             $pages,
@@ -24,6 +31,7 @@ class OllamaBoundedPayloadService
                 'route' => $profile['route'],
                 'model_role' => $profile['model_role'],
                 'output_schema' => $profile['output_schema'],
+                'structured_output_enforced' => $profile['structured_output_enforced'],
                 'stages' => $profile['stages'],
                 'human_gate_required' => $profile['human_gate_required'],
             ],
@@ -94,6 +102,7 @@ class OllamaBoundedPayloadService
                 }
 
                 $chunkStartPage = $pageNumber + 1;
+
                 continue;
             }
 

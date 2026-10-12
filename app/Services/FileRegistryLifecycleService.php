@@ -2,10 +2,14 @@
 
 namespace App\Services;
 
+use App\Jobs\RetireFileRegistryDerivedArtifacts;
 use Exception;
+use Illuminate\Queue\DatabaseQueue;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 
 class FileRegistryLifecycleService
 {
@@ -48,11 +52,11 @@ class FileRegistryLifecycleService
             'hard_purge_action' => 'already cleared before hard purge',
         ],
         'file_registry_faces' => [
-            'primary_bucket' => self::BUCKET_CLEAR_ON_SOFT_DELETE,
+            'primary_bucket' => self::BUCKET_DELETE_ON_HARD_PURGE,
             'identity' => 'file_registry_id',
-            'content_change_action' => 'delete detected faces tied to old pixels',
-            'soft_delete_action' => 'delete detected faces',
-            'hard_purge_action' => 'already cleared before hard purge',
+            'content_change_action' => 'supersede the old face generation while retaining its evidence',
+            'soft_delete_action' => 'supersede the current generation and retain its decision evidence',
+            'hard_purge_action' => 'delete face rows and vectors when the tombstone is purged',
         ],
         'file_registry_perceptual_hashes' => [
             'primary_bucket' => self::BUCKET_CLEAR_ON_SOFT_DELETE,
@@ -261,45 +265,77 @@ class FileRegistryLifecycleService
     {
         $newPath = '/'.ltrim($newPath, '/');
         $newPathHash = hash('sha256', $newPath);
+        try {
+            return DB::transaction(function () use ($assetUuid, $newPath, $newPathHash, $movedBy, $reason): bool {
+                $file = DB::table('file_registry')->where('asset_uuid', $assetUuid)->lockForUpdate()->first(['id', 'current_path', 'path_hash']);
+                if (! $file) {
+                    Log::warning('FileRegistryLifecycle: Cannot update path - asset not found', ['asset_uuid' => $assetUuid]);
 
-        $file = DB::selectOne('
-            SELECT id, current_path, path_hash
-            FROM file_registry
-            WHERE asset_uuid = ?
-        ', [$assetUuid]);
+                    return false;
+                }
 
-        if (! $file) {
-            Log::warning('FileRegistryLifecycle: Cannot update path - asset not found', ['asset_uuid' => $assetUuid]);
+                try {
+                    $targetOwner = app(FileRegistryService::class)->currentExactSourcePath($newPath, true);
+                } catch (\RuntimeException $error) {
+                    Log::warning('FileRegistryLifecycle: Exact path ownership requires review', [
+                        'asset_uuid' => $assetUuid,
+                        'error' => $error->getMessage(),
+                    ]);
+
+                    return false;
+                }
+                if ($targetOwner !== null) {
+                    if ((int) $targetOwner->id === (int) $file->id
+                        && $targetOwner->current_path === $newPath
+                        && $targetOwner->path_hash === $newPathHash) {
+                        return true;
+                    }
+
+                    Log::warning('FileRegistryLifecycle: Target path already has a registry owner', [
+                        'asset_uuid' => $assetUuid,
+                        'target_registry_id' => (int) $targetOwner->id,
+                    ]);
+
+                    return false;
+                }
+
+                DB::table('file_registry_path_history')->insert([
+                    'file_registry_id' => (int) $file->id,
+                    'previous_path' => $file->current_path,
+                    'new_path' => $newPath,
+                    'moved_by' => $movedBy,
+                    'move_reason' => $reason,
+                    'moved_at' => now(),
+                ]);
+
+                $updated = DB::table('file_registry')->where('id', (int) $file->id)
+                    ->where('asset_uuid', $assetUuid)->where('current_path', $file->current_path)
+                    ->where('path_hash', $file->path_hash)
+                    ->update(['current_path' => $newPath, 'path_hash' => $newPathHash,
+                        'path_updated_at' => now(), 'updated_at' => now()]);
+                if ($updated !== 1) {
+                    throw new \RuntimeException('File registry path changed before remap completed.');
+                }
+
+                $this->remapOperationalPathReferences($assetUuid, $file->current_path, $newPath);
+
+                Log::info('FileRegistryLifecycle: Path updated', [
+                    'asset_uuid' => $assetUuid,
+                    'old_path' => $file->current_path,
+                    'new_path' => $newPath,
+                    'moved_by' => $movedBy,
+                ]);
+
+                return true;
+            });
+        } catch (\Throwable $error) {
+            Log::warning('FileRegistryLifecycle: Path remap failed', [
+                'asset_uuid' => $assetUuid,
+                'error' => $error::class,
+            ]);
 
             return false;
         }
-
-        if ($file->current_path === $newPath) {
-            return true;
-        }
-
-        DB::insert('
-            INSERT INTO file_registry_path_history (
-                file_registry_id, previous_path, new_path, moved_by, move_reason, moved_at
-            ) VALUES (?, ?, ?, ?, ?, NOW())
-        ', [$file->id, $file->current_path, $newPath, $movedBy, $reason]);
-
-        DB::update('
-            UPDATE file_registry
-            SET current_path = ?, path_hash = ?, path_updated_at = NOW(), updated_at = NOW()
-            WHERE asset_uuid = ?
-        ', [$newPath, $newPathHash, $assetUuid]);
-
-        $this->remapOperationalPathReferences($assetUuid, $file->current_path, $newPath);
-
-        Log::info('FileRegistryLifecycle: Path updated', [
-            'asset_uuid' => $assetUuid,
-            'old_path' => $file->current_path,
-            'new_path' => $newPath,
-            'moved_by' => $movedBy,
-        ]);
-
-        return true;
     }
 
     /**
@@ -525,6 +561,167 @@ class FileRegistryLifecycleService
         return max(0, (int) config('file_lifecycle.hard_purge_retention_days', 7));
     }
 
+    /** Resolve registered policy before entering the bounded discovery transaction. */
+    public function prepareDiscoveryRetirement(): array
+    {
+        $policy = app(SystemConfigService::class)->get(
+            'files.registry_discovery_retirement_policy', config('file_registry.discovery.retirement', [])
+        );
+        if (is_string($policy)) {
+            $policy = json_decode($policy, true, 512, JSON_THROW_ON_ERROR);
+        }
+        if (! is_array($policy)) {
+            throw new \RuntimeException('Discovery retirement policy is invalid.');
+        }
+        $this->discoveryRetirementQueue($policy);
+
+        return array_intersect_key($policy, array_flip(['connection', 'queue', 'tries', 'backoff_seconds']));
+    }
+
+    private function discoveryRetirementQueue(array $policy): DatabaseQueue
+    {
+        foreach (['connection', 'queue'] as $key) {
+            if (! is_string($policy[$key] ?? null) || trim($policy[$key]) === '') {
+                throw new \RuntimeException('Discovery retirement requires a registered durable queue policy.');
+            }
+        }
+        foreach (['tries', 'backoff_seconds'] as $key) {
+            $ceiling = config('file_registry.discovery.retirement_bounds.'.$key);
+            if (! is_int($policy[$key] ?? null) || $policy[$key] < 1
+                || ! is_int($ceiling) || $ceiling < 1 || $policy[$key] > $ceiling) {
+                throw new \RuntimeException('Discovery retirement requires a registered retry policy.');
+            }
+        }
+        if (config('queue.connections.'.$policy['connection'].'.driver') !== 'database') {
+            throw new \RuntimeException('Discovery retirement requires a database queue.');
+        }
+        $queue = Queue::connection($policy['connection']);
+        $database = DB::connection();
+        if (! $queue instanceof DatabaseQueue || $queue->getDatabase() !== $database
+            || $queue->getDatabase()->getPdo() !== $database->getPdo()) {
+            throw new \RuntimeException('Discovery retirement queue must share the intake database connection.');
+        }
+
+        return $queue;
+    }
+
+    /**
+     * Retire only transactional MySQL projections under the discovery lease.
+     * External retirement is durable in the same transaction, never dispatched synchronously.
+     */
+    public function invalidateDerivedDataForDiscovery(int $fileRegistryId, string $assetUuid, array $retirementPolicy): array
+    {
+        if (DB::transactionLevel() < 1) {
+            throw new \LogicException('Discovery invalidation requires the outer intake transaction.');
+        }
+        $queue = $this->discoveryRetirementQueue($retirementPolicy);
+        $file = DB::table('file_registry')->where('id', $fileRegistryId)->where('asset_uuid', $assetUuid)->lockForUpdate()->first();
+        if (! $file) {
+            throw new \RuntimeException('Discovery source registration is unavailable.');
+        }
+        $generation = (string) Str::uuid();
+        // Some projections use second precision. Equality is deliberately held for review.
+        $cutoff = now('UTC')->startOfSecond()->toDateTimeString();
+        $oldSha = is_string($file->content_hash ?? null) && preg_match('/^[a-f0-9]{64}$/D', $file->content_hash)
+            ? $file->content_hash : null;
+        DB::table('file_registry')->where('id', $fileRegistryId)->update([
+            'lifecycle_generation_key' => $generation,
+            'thumbnail_generated_at' => null, 'thumbnail_error' => null,
+            'face_scan_at' => null, 'face_count' => null,
+            'content_hash' => null, 'content_hash_verified_at' => null,
+            'chunk_hashes' => null, 'chunk_count' => null, 'chunked_at' => null,
+            'semantic_indexed_at' => null, 'semantic_chunk_count' => 0,
+            'rag_indexed_at' => null, 'ai_analysis_version' => 'stale', 'updated_at' => now(),
+        ]);
+        $faces = DB::table('file_registry_faces')->where('file_registry_id', $fileRegistryId)->where('source_current', 1)->update([
+            'source_current' => false, 'superseded_at' => DB::raw('COALESCE(superseded_at, CURRENT_TIMESTAMP)'),
+        ]);
+        $hashes = DB::table('file_registry_perceptual_hashes')->where('file_registry_id', $fileRegistryId)->delete();
+        $media = DB::table('genealogy_media')->where('nextcloud_path', $file->current_path)->update([
+            'analysis_status' => 'pending', 'rag_indexed_at' => null,
+        ]);
+        $job = (new RetireFileRegistryDerivedArtifacts($fileRegistryId, $assetUuid, $generation, $cutoff, $oldSha,
+            $retirementPolicy['tries'], $retirementPolicy['backoff_seconds']))
+            ->onConnection($retirementPolicy['connection'])->onQueue($retirementPolicy['queue'])->beforeCommit();
+        $jobId = $queue->push($job, '', $retirementPolicy['queue']);
+        if (! $jobId) {
+            throw new \RuntimeException('Discovery external retirement could not be persisted.');
+        }
+
+        return ['faces_mysql' => $faces, 'perceptual_hashes' => $hashes, 'genealogy_media_invalidated' => $media,
+            'external_retirement' => 'queued', 'retirement_job_id' => $jobId, 'lifecycle_generation_key' => $generation];
+    }
+
+    /**
+     * Exact generation and freshness gates protect completed newer enrichment.
+     * Timestamp predicates also retain rows published during or after intake.
+     * Producers spanning both databases are not made atomic by this retirement.
+     */
+    public function retireDiscoveryArtifacts(int $fileRegistryId, string $assetUuid, string $generation, string $cutoff, ?string $oldSha): array
+    {
+        if (! Str::isUuid($generation) || ($oldSha !== null && ! preg_match('/^[a-f0-9]{64}$/D', $oldSha))
+            || ! preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $cutoff)) {
+            throw new \InvalidArgumentException('Discovery retirement provenance is invalid.');
+        }
+
+        return DB::transaction(function () use ($fileRegistryId, $assetUuid, $generation, $cutoff, $oldSha): array {
+            $file = DB::table('file_registry')->where('id', $fileRegistryId)->where('asset_uuid', $assetUuid)->lockForUpdate()->first();
+            if (! $file || ($file->lifecycle_generation_key ?? null) !== $generation) {
+                return ['state' => 'superseded', 'reason' => 'source_generation_changed'];
+            }
+            foreach (['thumbnail_generated_at', 'face_scan_at', 'content_hash', 'content_hash_verified_at',
+                'chunked_at', 'semantic_indexed_at', 'rag_indexed_at'] as $field) {
+                if (($file->{$field} ?? null) !== null) {
+                    return ['state' => 'held', 'reason' => 'fresh_enrichment_present'];
+                }
+            }
+            $result = DB::connection('pgsql_rag')->transaction(function () use ($fileRegistryId, $assetUuid, $cutoff, $oldSha): array {
+                $pg = DB::connection('pgsql_rag');
+                $faces = $pg->table('face_embeddings')->where('file_registry_id', $fileRegistryId)->where('source_current', true)
+                    ->where('created_at', '<', $cutoff)->where('updated_at', '<', $cutoff);
+                if ($oldSha !== null) {
+                    $faces->where(fn ($query) => $query->whereNull('source_sha256')->orWhere('source_sha256', $oldSha));
+                }
+                $faceCount = $faces->update(['source_current' => false,
+                    'superseded_at' => DB::raw('COALESCE(superseded_at, CURRENT_TIMESTAMP)')]);
+                $semanticCount = $pg->table('file_semantic_embeddings')->where('file_id', $fileRegistryId)
+                    ->where('created_at', '<', $cutoff)->where('updated_at', '<', $cutoff)->delete();
+
+                // Lock the existing service's complete removal scope before checking age.
+                $documents = $pg->table('rag_documents')->where('document_type', 'file_catalog')
+                    ->where('metadata->asset_uuid', $assetUuid)->lockForUpdate()->get(['id', 'created_at', 'updated_at']);
+                $ragHeld = $documents->contains(fn ($document) => ! is_string($document->created_at) || ! is_string($document->updated_at)
+                    || $document->created_at >= $cutoff || $document->updated_at >= $cutoff);
+                $ragDeleted = 0;
+                if (! $ragHeld && $documents->isNotEmpty()) {
+                    $rag = $this->fileCategorizationRag->removeFile($assetUuid);
+                    if (($rag['success'] ?? false) !== true) {
+                        if (($rag['reason'] ?? null) === 'source_provenance_references_present') {
+                            $ragHeld = true;
+                        } else {
+                            throw new \RuntimeException('Discovery RAG retirement failed.');
+                        }
+                    } else {
+                        $ragDeleted = (int) ($rag['deleted'] ?? 0);
+                    }
+                }
+                $held = $ragHeld || $pg->table('face_embeddings')->where('file_registry_id', $fileRegistryId)->where('source_current', true)->exists()
+                    || $pg->table('file_semantic_embeddings')->where('file_id', $fileRegistryId)->exists();
+
+                return ['state' => $held ? 'held' : 'retired', 'reason' => $held ? 'external_projection_retained' : null,
+                    'face_embeddings_pg' => $faceCount, 'file_semantic_embeddings_pg' => $semanticCount,
+                    'rag_docs_deleted' => $ragDeleted];
+            });
+            $result['thumbnail_cache_files_deleted'] = $this->thumbnailService->deleteThumbnails($assetUuid);
+            if ($result['state'] === 'retired') {
+                DB::table('file_registry')->where('id', $fileRegistryId)->where('lifecycle_generation_key', $generation)
+                    ->update(['lifecycle_generation_key' => null]);
+            }
+
+            return $result;
+        });
+    }
+
     /**
      * Invalidate derived data when file content changes in place.
      */
@@ -532,6 +729,10 @@ class FileRegistryLifecycleService
     {
         $invalidated = [
             'thumbnail' => false,
+            'thumbnail_cache_files_deleted' => 0,
+            'thumbnail_cache_error' => null,
+            'genealogy_media_invalidated' => 0,
+            'genealogy_media_invalidation_error' => null,
             'perceptual_hashes' => 0,
             'faces_mysql' => 0,
             'face_embeddings_pg' => 0,
@@ -557,6 +758,7 @@ class FileRegistryLifecycleService
                 semantic_indexed_at = NULL,
                 semantic_chunk_count = 0,
                 rag_indexed_at = NULL,
+                ai_analysis_version = \'stale\',
                 updated_at = NOW()
             WHERE id = ?
         ', [$fileRegistryId]);
@@ -564,28 +766,41 @@ class FileRegistryLifecycleService
         $invalidated['chunk_fields_reset'] = true;
         $invalidated['rag_freshness_reset'] = true;
 
+        try {
+            $invalidated['thumbnail_cache_files_deleted'] = $this->thumbnailService->deleteThumbnails($assetUuid);
+        } catch (\Throwable $e) {
+            $invalidated['thumbnail_cache_files_deleted'] = null;
+            $invalidated['thumbnail_cache_error'] = 'cache_delete_failed';
+            Log::warning('FileRegistryLifecycle: thumbnail cache removal failed', ['asset_uuid' => $assetUuid, 'exception' => $e::class]);
+        }
+
+        try {
+            $file = DB::selectOne('SELECT current_path FROM file_registry WHERE id = ?', [$fileRegistryId]);
+            if ($file && is_string($file->current_path) && $file->current_path !== '') {
+                $invalidated['genealogy_media_invalidated'] = DB::update(
+                    "UPDATE genealogy_media SET analysis_status = 'pending', rag_indexed_at = NULL WHERE nextcloud_path = ?",
+                    [$file->current_path]
+                );
+            }
+        } catch (\Throwable $e) {
+            $invalidated['genealogy_media_invalidation_error'] = 'genealogy_projection_unavailable';
+            Log::warning('FileRegistryLifecycle: genealogy projection invalidation failed', ['asset_uuid' => $assetUuid, 'exception' => $e::class]);
+        }
+
         $invalidated['perceptual_hashes'] = DB::delete('
             DELETE FROM file_registry_perceptual_hashes WHERE file_registry_id = ?
         ', [$fileRegistryId]);
 
-        $invalidated['faces_mysql'] = DB::delete('
-            DELETE FROM file_registry_faces WHERE file_registry_id = ?
-        ', [$fileRegistryId]);
-
-        try {
-            $invalidated['face_embeddings_pg'] = DB::connection('pgsql_rag')->delete('
-                DELETE FROM face_embeddings WHERE file_registry_id = ?
-            ', [$fileRegistryId]);
-        } catch (Exception $e) {
-            Log::warning("Failed to delete face embeddings for file {$assetUuid}: ".$e->getMessage());
-        }
+        $faceGenerationInvalidation = $this->supersedeFaceGeneration($fileRegistryId, $assetUuid);
+        $invalidated['faces_mysql'] = $faceGenerationInvalidation['faces_mysql'];
+        $invalidated['face_embeddings_pg'] = $faceGenerationInvalidation['face_embeddings_pg'];
 
         try {
             $invalidated['file_semantic_embeddings_pg'] = DB::connection('pgsql_rag')->delete('
                 DELETE FROM file_semantic_embeddings WHERE file_id = ?
             ', [$fileRegistryId]);
         } catch (Exception $e) {
-            Log::warning("Failed to delete semantic embeddings for file {$assetUuid}: ".$e->getMessage());
+            Log::warning('Failed to delete semantic embeddings for file', ['asset_uuid' => $assetUuid, 'exception' => $e]);
         }
 
         if ($removeRagDocument) {
@@ -599,11 +814,65 @@ class FileRegistryLifecycleService
                 $invalidated['rag_docs_deleted'] = (int) ($ragResult['deleted'] ?? 0)
                     + $this->deleteRagDocumentsForFile($assetUuid, null, $fileRegistryId);
             } catch (Exception $e) {
-                Log::warning('Failed to delete stale RAG document for changed file '.$assetUuid.': '.$e->getMessage());
+                Log::warning('Failed to delete stale RAG document for changed file', ['asset_uuid' => $assetUuid, 'exception' => $e]);
             }
         }
 
         Log::info("Invalidated derived data for file {$assetUuid}", $invalidated);
+
+        return $invalidated;
+    }
+
+    /**
+     * Retain face decisions and vectors as historical evidence while excluding
+     * the generation from current matching and review.
+     *
+     * @return array{faces_mysql: int, face_embeddings_pg: int}
+     */
+    public function supersedeFaceGeneration(
+        int $fileRegistryId,
+        string $assetUuid,
+        ?string $preserveSourceSha256 = null,
+        bool $failClosed = false
+    ): array {
+        if ($preserveSourceSha256 !== null && ! preg_match('/^[a-f0-9]{64}$/D', $preserveSourceSha256)) {
+            throw new \InvalidArgumentException('Preserved face source SHA-256 is invalid.');
+        }
+        if ($failClosed && DB::transactionLevel() < 1) {
+            throw new \LogicException('Strict face generation supersede requires an outer MySQL transaction.');
+        }
+
+        $mysqlFaces = DB::table('file_registry_faces')
+            ->where('file_registry_id', $fileRegistryId)
+            ->where('source_current', 1);
+        $pgFaces = DB::connection('pgsql_rag')->table('face_embeddings')
+            ->where('file_registry_id', $fileRegistryId)
+            ->where('source_current', true);
+        if ($preserveSourceSha256 !== null) {
+            $mysqlFaces->where(function ($query) use ($preserveSourceSha256): void {
+                $query->whereNull('source_sha256')->orWhere('source_sha256', '<>', $preserveSourceSha256);
+            });
+            $pgFaces->where(function ($query) use ($preserveSourceSha256): void {
+                $query->whereNull('source_sha256')->orWhere('source_sha256', '<>', $preserveSourceSha256);
+            });
+        }
+
+        $invalidated = ['faces_mysql' => $mysqlFaces->update([
+            'source_current' => false,
+            'superseded_at' => DB::raw('COALESCE(superseded_at, CURRENT_TIMESTAMP)'),
+        ]), 'face_embeddings_pg' => 0];
+
+        try {
+            $invalidated['face_embeddings_pg'] = $pgFaces->update([
+                'source_current' => false,
+                'superseded_at' => DB::raw('COALESCE(superseded_at, CURRENT_TIMESTAMP)'),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('Failed to supersede face embeddings for file', ['asset_uuid' => $assetUuid, 'exception' => $e]);
+            if ($failClosed) {
+                throw new \RuntimeException('Face vectors could not be superseded; source registration was aborted.');
+            }
+        }
 
         return $invalidated;
     }
@@ -787,11 +1056,11 @@ class FileRegistryLifecycleService
     private function remapOperationalPathReferences(string $assetUuid, string $oldPath, string $newPath): void
     {
         try {
-            DB::update('
-                UPDATE genealogy_media_scan_log
-                SET nextcloud_path = ?
-                WHERE nextcloud_path = ?
-            ', [$newPath, $oldPath]);
+            $scanLogIds = DB::table('genealogy_media_scan_log')->where('nextcloud_path', $oldPath)->get(['id', 'nextcloud_path'])
+                ->filter(static fn ($row): bool => $row->nextcloud_path === $oldPath)->pluck('id')->all();
+            if ($scanLogIds !== []) {
+                DB::table('genealogy_media_scan_log')->whereIn('id', $scanLogIds)->update(['nextcloud_path' => $newPath]);
+            }
         } catch (Exception $e) {
             Log::warning('FileRegistryLifecycle: Failed to remap genealogy media scan log path', [
                 'old_path' => $oldPath,
@@ -801,11 +1070,11 @@ class FileRegistryLifecycleService
         }
 
         try {
-            DB::update('
-                UPDATE genealogy_media
-                SET nextcloud_path = ?, updated_at = NOW()
-                WHERE nextcloud_path = ?
-            ', [$newPath, $oldPath]);
+            $mediaIds = DB::table('genealogy_media')->where('nextcloud_path', $oldPath)->get(['id', 'nextcloud_path'])
+                ->filter(static fn ($row): bool => $row->nextcloud_path === $oldPath)->pluck('id')->all();
+            if ($mediaIds !== []) {
+                DB::table('genealogy_media')->whereIn('id', $mediaIds)->update(['nextcloud_path' => $newPath, 'updated_at' => now()]);
+            }
         } catch (Exception $e) {
             Log::warning('FileRegistryLifecycle: Failed to remap genealogy media path', [
                 'old_path' => $oldPath,

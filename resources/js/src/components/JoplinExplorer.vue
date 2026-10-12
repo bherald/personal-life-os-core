@@ -104,7 +104,7 @@
               selectedNoteId === note.id ? 'bg-ops-orange/20 border-l-4 border-ops-orange' : ''
             ]"
           >
-            <svg class="w-4 h-4 text-ops-sky mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg class="w-4 h-4 text-ops-sky mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
             </svg>
             <div class="flex-1 min-w-0">
@@ -158,7 +158,7 @@
                   selectedNoteId === note.id ? 'bg-ops-orange/20 border-l-4 border-ops-orange' : ''
                 ]"
               >
-                <svg class="w-4 h-4 text-ops-sky mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-4 h-4 text-ops-sky mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
                 </svg>
                 <div class="flex-1 min-w-0">

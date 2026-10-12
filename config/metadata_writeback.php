@@ -12,4 +12,6 @@ return [
     */
     'enabled' => (bool) env('PLOS_METADATA_WRITEBACK_ENABLED', false),
     'in_place_enabled' => (bool) env('PLOS_METADATA_WRITEBACK_IN_PLACE', false),
+    'preview_max_dimension' => 1600,
+    'preview_max_source_pixels' => 32000000,
 ];

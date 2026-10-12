@@ -276,8 +276,8 @@ class GenealogyMediaDownloadService
 
         if (! (bool) config('services.newspapers.personal_automation_enabled', false)) {
             $result['error'] = 'Newspapers.com media download is private/personal-gated and disabled for this install';
-            $result['manual_only'] = true;
-            $result['manual_required'] = true;
+            $result['provider_specific'] = true;
+            $result['operator_review_required'] = true;
             $result['policy'] = 'private_personal_adapter_disabled';
             $result['requires_browser'] = true;
 
@@ -734,12 +734,12 @@ class GenealogyMediaDownloadService
             'url' => $url,
         ];
 
-        if ($manualOnlyDomain = $this->manualOnlyDomainForUrl($url)) {
-            $result['error'] = "Manual-only domain media download is disabled for {$manualOnlyDomain}";
-            $result['manual_only'] = true;
-            $result['manual_required'] = true;
-            $result['policy'] = 'manual_only_domain';
-            $result['domain'] = $manualOnlyDomain;
+        if ($providerSpecificDomain = $this->providerSpecificDomainForUrl($url)) {
+            $result['error'] = "Provider-specific domain media download is disabled for {$providerSpecificDomain} by strict policy";
+            $result['provider_specific'] = true;
+            $result['operator_review_required'] = true;
+            $result['policy'] = 'provider_specific_domain';
+            $result['domain'] = $providerSpecificDomain;
 
             return $result;
         }
@@ -780,8 +780,12 @@ class GenealogyMediaDownloadService
         return $result;
     }
 
-    protected function manualOnlyDomainForUrl(string $url): ?string
+    protected function providerSpecificDomainForUrl(string $url): ?string
     {
+        if (! $this->shouldEnforceProviderSpecificDomains()) {
+            return null;
+        }
+
         $host = parse_url($url, PHP_URL_HOST);
         $host = strtolower(trim((string) $host));
         $host = preg_replace('/^www\./', '', $host) ?? $host;
@@ -790,7 +794,7 @@ class GenealogyMediaDownloadService
             return null;
         }
 
-        foreach ((array) config('scraping.manual_only_domains', []) as $domain) {
+        foreach ((array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', [])) as $domain) {
             $domain = ltrim(strtolower(trim((string) $domain)), '*.');
             if ($domain === '') {
                 continue;
@@ -802,6 +806,11 @@ class GenealogyMediaDownloadService
         }
 
         return null;
+    }
+
+    protected function shouldEnforceProviderSpecificDomains(): bool
+    {
+        return (bool) config('scraping.enforce_provider_specific_domains', config('scraping.enforce_manual_only_domains', false));
     }
 
     /**
@@ -1065,8 +1074,8 @@ class GenealogyMediaDownloadService
         if ($downloaded > 0) {
             DB::update(
                 "UPDATE genealogy_external_records SET status = 'imported', imported_at = NOW(), updated_at = NOW()
-                 WHERE service_type = 'nara' AND external_id = ?",
-                [$externalId]
+                 WHERE tree_id = ? AND service_type = 'nara' AND external_id = ?",
+                [$treeId, $externalId]
             );
         }
 

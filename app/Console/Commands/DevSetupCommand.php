@@ -2,8 +2,12 @@
 
 namespace App\Console\Commands;
 
+use App\Services\DevDatabaseSkeletonService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use PDO;
+use Symfony\Component\Process\Process;
+use Throwable;
 
 /**
  * dev:setup — Sync dev environment config tables from an approved source (schema + config match, no processing).
@@ -27,7 +31,15 @@ class DevSetupCommand extends Command
     protected $signature = 'dev:setup
                             {--config : Sync config tables from prod only}
                             {--seed : Seed test data only}
-                            {--schema : Run schema sync from prod only}';
+                            {--schema : Run schema sync from prod only}
+                            {--skeleton : Import production MySQL schema/history and selected framework data only}
+                            {--source= : Existing SSH alias for skeletal export}
+                            {--snapshot= : Existing verified skeletal snapshot path}
+                            {--database= : Local development database; defaults to the application connection}
+                            {--replace : Replace the dedicated skeletal dev database}
+                            {--refresh-config : Refresh selected configuration without resetting schema, migration history or local working data}
+                            {--plan : Validate and describe the skeletal import without database writes}
+                            {--json : Emit skeletal import metadata as JSON}';
 
     protected $description = 'Sync dev environment with source schema + config (all processing disabled)';
 
@@ -52,6 +64,9 @@ class DevSetupCommand extends Command
 
     public function handle(): int
     {
+        if ($this->option('skeleton') || $this->option('refresh-config')) {
+            return $this->syncSkeleton();
+        }
         if (app()->environment('production')) {
             $this->error('REFUSED: This command cannot run on production.');
 
@@ -78,6 +93,66 @@ class DevSetupCommand extends Command
         $this->info("Dev setup complete ({$duration}s). Run `php artisan ops:smoke-test` to verify.");
 
         return Command::SUCCESS;
+    }
+
+    private function syncSkeleton(): int
+    {
+        try {
+            if ($this->option('refresh-config') && ($this->option('replace') || $this->option('skeleton'))) {
+                throw new \RuntimeException('Configuration refresh cannot be combined with skeletal import or replacement.');
+            }
+            if (! app()->environment('local', 'development', 'testing')) {
+                throw new \RuntimeException('Skeletal database replacement is development-only.');
+            }
+            $path = $this->option('snapshot');
+            if (! is_string($path) || $path === '') {
+                $source = $this->option('source');
+                if (! is_string($source) || $source === '') {
+                    throw new \RuntimeException('Select an existing SSH source or skeletal snapshot.');
+                }
+                $directory = storage_path('app/private/plos-cli/dev-skeleton');
+                if (! is_dir($directory)) {
+                    mkdir($directory, 0700, true);
+                }
+                $path = $directory.'/source-'.bin2hex(random_bytes(8)).'.json';
+                $export = new Process(['python3', base_path('scripts/plos-cli/sync-registry.py'),
+                    '--source', $source, '--include-schema', '--network', 'lan', '--output', $path]);
+                $export->setTimeout(150);
+                $export->mustRun();
+            }
+            $snapshot = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+            $manifest = json_decode(file_get_contents(base_path('config/plos-cli-registry-export.json')), true, flags: JSON_THROW_ON_ERROR);
+            $service = new DevDatabaseSkeletonService;
+            $plan = $service->plan($snapshot, $manifest);
+            $result = $plan['summary'] + ['applied' => false,
+                'mode' => $this->option('refresh-config') ? 'configuration_refresh' : 'skeletal_import'];
+            if (! $this->option('plan')) {
+                $config = config('database.connections.mysql');
+                $config['database'] = $this->option('database') ?: $config['database'];
+                $config['url'] = null;
+                $config['options'][PDO::MYSQL_ATTR_MULTI_STATEMENTS] = false;
+                config(['database.connections.dev_skeleton' => $config]);
+                DB::purge('dev_skeleton');
+                try {
+                    $result = ($this->option('refresh-config')
+                        ? $service->refresh(DB::connection('dev_skeleton'), $plan)
+                        : $service->apply(DB::connection('dev_skeleton'), $plan, (bool) $this->option('replace')))
+                        + ['applied' => true];
+                } finally {
+                    DB::purge('dev_skeleton');
+                }
+            }
+            $this->line(json_encode($result, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+
+            return Command::SUCCESS;
+        } catch (Throwable $error) {
+            // Database/SSH exceptions can include SQL bindings and connection details.
+            $reason = in_array(get_class($error), [\RuntimeException::class, \InvalidArgumentException::class], true)
+                ? $error->getMessage() : 'Skeletal sync failed ('.class_basename($error).'); no success recorded.';
+            $this->error($reason);
+
+            return Command::FAILURE;
+        }
     }
 
     private function syncSchema(): void
@@ -171,7 +246,7 @@ class DevSetupCommand extends Command
                 DB::statement('SET FOREIGN_KEY_CHECKS = 0');
                 DB::statement("TRUNCATE TABLE {$table}");
                 DB::statement('SET FOREIGN_KEY_CHECKS = 1');
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 $this->warn("    Cannot truncate {$table}: ".$e->getMessage());
 
                 continue;
@@ -193,7 +268,7 @@ class DevSetupCommand extends Command
             try {
                 $affected = DB::update($sql);
                 $this->info("    {$table}: {$affected} rows disabled");
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 $this->warn("    {$table}: ".$e->getMessage());
             }
         }
@@ -279,7 +354,7 @@ class DevSetupCommand extends Command
                 }
                 $this->info("  rag_documents: {$ragSeeded} test rows seeded");
             }
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             $this->warn('  rag_documents: '.$e->getMessage());
         }
     }

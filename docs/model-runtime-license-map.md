@@ -1,73 +1,71 @@
 # Model And Runtime License Map
 
-Status: public-release working map, last reviewed 2026-04-28.
+Runtime code, model weights, converted artifacts, package wheels and service
+images have separate terms. This map retains recorded upstream license signals
+and sources for release review; it does not describe an installed private
+runtime or certify current model terms. Verify the exact recommended tag,
+revision and component terms before a release or redistribution.
 
-Purpose: keep model/runtime licensing separate from PLOS source licensing. The
-public repository does not redistribute model weights, dlib `.dat` files, spaCy
-pipelines, Docker images, or local AI runtimes. Operators install those assets
-separately and accept upstream terms.
+The public source repository does not bundle model weights, dlib model files,
+spaCy pipelines, Docker images, GPU packages or local AI runtime binaries.
+Package constraints and license snapshots document dependencies; they do not
+transfer permission to redistribute every resolved artifact.
 
-Python package license watch items for the constraints snapshots live in
-`docs/python-constraints-license-snapshot.md`; the optional native/ML/GPU
-package review matrix lives in `docs/native-ml-package-review.md`.
+## Local AI runtime and model references
 
-This is engineering release triage, not legal advice. Re-check upstream model
-cards before a tagged release, especially when changing recommended model names.
-
-## Core Local AI Defaults
-
-| Asset | Where PLOS references it | Upstream license signal | Public-release posture |
-| --- | --- | --- | --- |
-| Ollama runtime | `.env.example`, `config/setup.php`, AI routing docs | Ollama source is MIT; model weights served by Ollama carry separate model terms. Source: https://github.com/ollama/ollama | Runtime only. Do not bundle Ollama or model blobs. |
-| `llama3.1:8b` | `.env.example` default `OLLAMA_MODEL`; setup doctor default | Llama 3.1 Community License, not a standard OSS license. Source: https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/MODEL_CARD.md | Optional operator-pulled model. Do not describe as MIT/Apache or redistribute weights. |
-| `nomic-embed-text` / `nomic-ai/nomic-embed-text-v1.5` | `.env.example` default embedding model; embedding training scripts | Hugging Face model card reports Apache-2.0. Source: https://huggingface.co/nomic-ai/nomic-embed-text-v1.5 | Operator-pulled embedding model. Preserve model-card link in setup docs. |
-| `llava:7b` | `.env.example` default vision model | LLaVA-family weights and derivatives vary by base model; verify the exact Ollama tag/model card before recommending. Source project: https://github.com/haotian-liu/LLaVA | Optional vision model. Do not redistribute or assume a single license for all tags. |
-| `BAAI/bge-base-en-v1.5` | `scripts/embeddings/cpu_embedding.py` fallback | Hugging Face model card reports MIT. Source: https://huggingface.co/BAAI/bge-base-en-v1.5 | Operator-downloaded transformer model; do not vendor. |
-| `sentence-transformers/all-MiniLM-L6-v2` | fallback in embedding training script | Hugging Face model list reports Apache-2.0. Source: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 | Operator-downloaded fallback model; do not vendor. |
-
-## Media, OCR, Face, And Speech Assets
-
-| Asset | Where PLOS references it | Upstream license signal | Public-release posture |
-| --- | --- | --- | --- |
-| dlib code | `requirements-media.txt`, face scripts | dlib is commonly distributed under the Boost Software License. Source: http://dlib.net/ | Dependency only. Keep package-manager install path. |
-| dlib face model files | `docs/FACE-RECOGNITION.md`, `config/setup.php` asset checks | Large `.dat` files are downloaded by the operator from dlib-hosted URLs with checksums recorded in `docs/FACE-RECOGNITION.md`. | Do not commit model files. Setup doctor warns when absent. |
-| `face_recognition` | `requirements-media.txt`, face scripts | Project repository advertises a Python face-recognition package built on dlib; package/license metadata should be verified before formal release. Source: https://github.com/ageitgey/face_recognition | Dependency only. Do not copy implementation. |
-| hdbscan / scikit-learn / scipy | `requirements-media.txt`, face clustering and analysis helpers | Package-manager dependencies with permissive license signals, but transitive/native wheels should be reviewed from the pinned constraints snapshot. Sources: https://github.com/scikit-learn-contrib/hdbscan, https://scikit-learn.org/, https://scipy.org/ | Operator-installed dependencies. Keep out of source and verify pinned metadata before release. |
-| igraph / leidenalg | `requirements-media.txt`, `requirements-media.constraints.txt`, community-detection scripts | GPL-family package signals: `python-igraph` is labeled GPL-2.0/GPL-2.0-or-later by upstream sources, and `leidenalg` package metadata/GitHub text signals GPL-3.0-or-later. Sources: https://github.com/igraph/python-igraph, https://igraph.org/c/html/0.10.2/igraph-Licenses.html, and https://github.com/vtraag/leidenalg | Optional media/genealogy tier only. Keep operator-installed, do not vendor, and treat as a copyleft release-signoff item before a permissive public tag. |
-| spaCy `en_core_web_sm` | `config/setup.php`, media/full setup doctor | Hugging Face model card/license file reports MIT. Source: https://huggingface.co/spacy/en_core_web_sm | Operator downloads with `python -m spacy download en_core_web_sm`. |
-| OpenAI Whisper | `requirements-gpu.txt`, transcription setup | Whisper code and model weights are released under MIT per upstream README. Source: https://github.com/openai/whisper | Operator-installed dependency/model cache; do not vendor weights. |
-| PyTorch / torchvision | `requirements-gpu.txt`, `requirements-gpu.constraints.txt` | Runtime wheels vary by CPU/CUDA index and platform. The current GPU constraints are a default PyPI/Linux/Python 3.12 resolver snapshot and may not match another CUDA host. Source: https://pytorch.org/ | Operator-installed runtime. Public docs should tell users to choose a matching wheel/index or regenerate host-specific constraints. |
-| NVIDIA CUDA Python package family | `requirements-gpu.constraints.txt` when default PyPI resolves CUDA wheels | CUDA package terms and host fit are separate from the PLOS source license and can change with the PyTorch wheel/index. Source: https://developer.nvidia.com/cuda-toolkit | Do not bundle CUDA packages or model caches. Treat as release-signoff items for GPU installs. |
-| Transformers / sentence-transformers | `requirements-gpu.txt`, embedding scripts | Library code is package-manager managed; downloaded models carry separate model-card terms. Sources: https://github.com/huggingface/transformers and https://www.sbert.net/ | Keep libraries as dependencies and model weights external. |
-
-## Python Constraint Snapshots
-
-| File | Basis | Release posture |
+| Asset | Recorded upstream signal and primary source | Release handling |
 | --- | --- | --- |
-| `requirements-core.constraints.txt` | Passing public smoke environment on 2026-04-27. | Core public reproducibility aid. Keep aligned with `scripts/public-smoke.sh` and CI. |
-| `requirements-media.constraints.txt` | Resolver-only dry run on Linux x86_64, Python 3.12, default PyPI indexes plus local media install proof. | Useful for repeatability; native face/NLP/graph posture is recorded in `docs/native-ml-package-review.md`, but foreign clean-host install evidence is still needed. |
-| `requirements-gpu.constraints.txt` | Resolver-only dry run on Linux x86_64, Python 3.12, default PyPI indexes. | Platform-sensitive. Review PyTorch/CUDA/model package terms in `docs/native-ml-package-review.md` and regenerate for host-specific CUDA wheels before treating as production install evidence. |
+| Ollama runtime | MIT runtime source: https://github.com/ollama/ollama | Install separately. Each served model has its own terms. |
+| Llama 3.1 family (`llama3.1:8b`) | Llama 3.1 Community License, not a standard OSS license: https://github.com/meta-llama/llama-models/blob/main/models/llama3_1/MODEL_CARD.md | Do not describe as MIT/Apache. Verify the exact model and redistribution conditions. |
+| Nomic embedding model | `nomic-ai/nomic-embed-text-v1.5` model card records Apache-2.0: https://huggingface.co/nomic-ai/nomic-embed-text-v1.5 | Operator-downloaded weights; preserve the model-card source. |
+| LLaVA-family vision models | Base model and derivative terms vary: https://github.com/haotian-liu/LLaVA | Verify the exact tag and base model; do not assume one family-wide license. |
+| `BAAI/bge-base-en-v1.5` | Model card records MIT: https://huggingface.co/BAAI/bge-base-en-v1.5 | Operator-downloaded model, not vendored. |
+| `sentence-transformers/all-MiniLM-L6-v2` | Model card records Apache-2.0: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2 | Operator-downloaded model, not vendored. |
+| `Qwen/Qwen3-Reranker-0.6B` | Model card records Apache-2.0: https://huggingface.co/Qwen/Qwen3-Reranker-0.6B | Verify exact artifact identity and terms. Installation does not promote a model into an application route. |
+| Colibri runtime | Apache-2.0 upstream/fork records: https://github.com/JustVugg/colibri/releases/tag/v1.1.1 and https://github.com/bherald/colibri; additional release reference https://github.com/JustVugg/colibri/releases/tag/v1.10.1 | Preserve applicable Apache notices, modification records and source availability. Do not bundle local/custom binaries or treat upstream release metadata as installation proof. |
+| GLM-5.2 and community conversion | Community conversion card records MIT and identifies the official base: https://huggingface.co/mastouri/GLM-5.2-colibri-E8-IQ3-with-int8-mtp and https://huggingface.co/zai-org/GLM-5.2 | Review both converted artifact and base-model terms; runtime licensing does not relicense weights. No routing/quality claim follows from the card. |
 
-The 2026-04-28 license audit confirmed these files are present and still flags
-the media/GPU tiers as operator-installed extras, not redistributable binary or
-model bundles.
+Model names remain configurable; the authoritative source for actual public
+defaults is the shipped configuration and `.env.example`, not this catalogue.
+Tags can change their underlying artifact. A source release's model examples
+are not redistributed assets or measurements of another operator's system.
 
-## Optional External/Cloud Providers
+## Media, face, graph and speech dependencies
 
-| Provider | PLOS relationship | Public-release posture |
+| Asset | Recorded signal and source | Release handling |
 | --- | --- | --- |
-| Claude Code CLI / Anthropic | Optional AIService provider/fallback in private or explicitly enabled installs. | Do not make it required for public core. CLI auth files and Claude memory stay private. |
-| OpenAI, Gemini, Mistral, Groq, OpenRouter, Cohere, SambaNova, Cerebras | Optional external provider rows/config. | Public defaults should remain disabled or placeholder-only; users bring API keys and accept service terms. |
+| dlib code | Boost Software License signal: http://dlib.net/ | Dependency install only; review model/data terms separately. |
+| dlib face model files | dlib-hosted assets referenced in `docs/FACE-RECOGNITION.md` | Keep external. Verify the exact downloaded file and its terms rather than inherit the library's code license. |
+| `face_recognition` | Package source: https://github.com/ageitgey/face_recognition | Verify pinned package/license metadata; keep package-manager installation. |
+| hdbscan, scikit-learn, scipy | Permissive package signals: https://github.com/scikit-learn-contrib/hdbscan, https://scikit-learn.org/, https://scipy.org/ | Review pinned transitive/native-wheel terms and host compatibility. |
+| igraph / leidenalg | `python-igraph` GPL-2.0/GPL-2.0-or-later signals; leidenalg GPL-3.0-or-later signals: https://github.com/igraph/python-igraph, https://igraph.org/c/html/0.10.2/igraph-Licenses.html, https://github.com/vtraag/leidenalg | Optional graph tier. Review applicable copyleft obligations before distribution; do not erase this watch item from a permissively licensed source release. |
+| spaCy `en_core_web_sm` | Model-card/license MIT signal: https://huggingface.co/spacy/en_core_web_sm | Operator-downloaded pipeline with separately checked asset identity. |
+| OpenAI Whisper | MIT code/model terms recorded in upstream README: https://github.com/openai/whisper | Separate runtime/model installation; do not vendor weights. |
+| PyTorch / torchvision | Platform/index-specific runtime wheels: https://pytorch.org/ | Choose a compatible CPU/CUDA wheel set; regenerate constraints where needed. |
+| NVIDIA CUDA package family | Separate NVIDIA component terms: https://developer.nvidia.com/cuda-toolkit | GPU release watch item; no bundled CUDA package/cache. |
+| Transformers / sentence-transformers | Libraries: https://github.com/huggingface/transformers and https://www.sbert.net/ | Libraries use package terms; downloaded model weights have their own model-card terms. |
 
-## Release Rules
+## Dependency snapshots and external providers
 
-1. Do not commit model binaries, `.dat` face model files, generated model caches,
-   or provider credentials.
-2. Keep model names configurable. Public defaults are suggestions, not bundled
-   assets.
-3. If the public README recommends a specific model, this map must include a
-   source URL and current license signal for that exact model/tag.
-4. Treat Ollama tags as pointers. The tag may resolve to a base model with a
-   different license than the runtime.
-5. Run `php artisan setup:doctor --profile=gpu` to detect missing model/runtime
-   prerequisites; warnings are install guidance, not redistributed assets.
+Keep `requirements-core.constraints.txt`, `requirements-media.constraints.txt`
+and `requirements-gpu.constraints.txt` aligned with their intended profiles.
+A resolver snapshot is not clean-host installation evidence. Media/native/GPU
+packages need platform, license and artifact review in addition to resolution.
+See [Python constraints](python-constraints-license-snapshot.md) and
+[native/ML review](native-ml-package-review.md).
+
+External providers are optional. Public configuration must contain disabled
+routes or placeholders, never provider credentials or account-specific access,
+billing or subscription claims. Operators supply their own authorized accounts
+and accept the relevant service terms.
+
+## Release checks
+
+1. Keep binaries, model caches, face `.dat` files and credentials out of Git.
+2. Record a primary model-card source and exact applicable terms for each
+   recommended model/tag, including converted/base components.
+3. Preserve copyright, license, attribution, modification and source-availability
+   obligations where applicable. Runtime and weight licenses remain distinct.
+4. Review the dependency snapshots and optional copyleft/GPU/model watch items.
+5. Run the documented setup/smoke checks on the intended install profile;
+   warnings guide installation and do not establish redistribution rights.

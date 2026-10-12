@@ -1,0 +1,44 @@
+{
+  "schema": "public_nightly_planning_example.v1",
+  "product_release": "2.1",
+  "native_workflow_importable": false,
+  "enabled": false,
+  "schedule": null,
+  "external_delivery_enabled": false,
+  "fictional_dataset": true,
+  "steps": [
+    {
+      "stage": "preserve_sources",
+      "expected": "retain original synthetic source text and source hashes"
+    },
+    {
+      "stage": "extract_and_index",
+      "approval": "local dataset/index scope supplied by operator",
+      "expected": "preserved content, source identity, extraction/chunking provenance"
+    },
+    {
+      "stage": "retrieve",
+      "expected": "read full relevant windows; inspect source references and contradictory notices"
+    },
+    {
+      "stage": "draft_and_review",
+      "expected": "proposed summary only; no autonomous approval or identity decisions"
+    },
+    {
+      "stage": "optional_joplin",
+      "enabled": false,
+      "completion": "exact destination/body read-back; queued means pending, device sync unverified"
+    },
+    {
+      "stage": "optional_pushover",
+      "enabled": false,
+      "payload": "synthetic sources=2; pending review=1; verified note writes=0",
+      "completion": "provider response retained; normal acknowledgement not promised; suppressed/unknown remain explicit"
+    },
+    {
+      "stage": "final_report",
+      "completion": "each enabled stage terminal and delivery/readback recorded; optional disabled channels labelled not requested"
+    }
+  ],
+  "resume_policy": "inspect exact durable identity on unknown outcome; never auto-replay side effects"
+}

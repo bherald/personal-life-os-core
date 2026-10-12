@@ -20,9 +20,6 @@ return [
     // Whisper GPU lock — mutual exclusion with Ollama
     'whisper_gpu' => (int) env('LOCK_TTL_WHISPER_GPU', 900), // 15 min
 
-    // Claude CLI slot TTL — max duration per slot
-    'claude_slot' => (int) env('LOCK_TTL_CLAUDE_SLOT', 180), // 3 min
-
     // Compute router GPU lock — mutual exclusion per GPU instance
     'compute_gpu' => (int) env('LOCK_TTL_COMPUTE_GPU', 300), // 5 min
 

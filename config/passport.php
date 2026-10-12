@@ -1,5 +1,13 @@
 <?php
 
+// The application owner builds the config cache. Web workers may not read the
+// owner-private key files, but can safely use this public verification material.
+// Keep the private signing key on its existing path and honor explicit overrides.
+$passportPublicKey = env('PASSPORT_PUBLIC_KEY');
+if (! $passportPublicKey && is_readable(storage_path('oauth-public.key'))) {
+    $passportPublicKey = file_get_contents(storage_path('oauth-public.key'));
+}
+
 return [
 
     /*
@@ -28,7 +36,7 @@ return [
 
     'private_key' => env('PASSPORT_PRIVATE_KEY'),
 
-    'public_key' => env('PASSPORT_PUBLIC_KEY'),
+    'public_key' => $passportPublicKey,
 
     /*
     |--------------------------------------------------------------------------

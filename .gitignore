@@ -25,6 +25,7 @@ CLAUDE.md
 /auth.json
 /node_modules
 /mcp-server/node_modules
+/mcp-server/dist
 /public/build
 /public/hot
 /public/storage
@@ -56,3 +57,22 @@ scheduled-jobs-*.png
 .claude/settings.local.json
 __pycache__/
 *.pyc
+
+# Private browser scratch and relocated local review captures
+/.playwright-mcp/
+/wix-youtube-card-live-desktop.png
+
+# Historical private documents are outside Git; retain only their indexes.
+/docs/reviews/*
+!/docs/reviews/README.md
+/docs/papers-and-newsletters/*
+!/docs/papers-and-newsletters/README.md
+
+/storage/app/private/public-presence-review/
+/A-handoff.md
+/B-handoff.md
+/docs/plos-cli-glm-memory-review.md
+/docs/plos-colibri-central-storage.md
+
+# Local Python smoke environment; never release dependencies.
+.venv/

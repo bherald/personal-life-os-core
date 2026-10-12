@@ -66,8 +66,8 @@ class MyHeritageProvider extends AbstractGenealogyProvider
         if (! $this->automationEnabled()) {
             return [
                 'success' => false,
-                'manual_only' => true,
-                'manual_required' => true,
+                'provider_specific' => true,
+                'operator_review_required' => true,
                 'policy' => 'private_personal_adapter_disabled',
                 'error' => 'MyHeritage screenshot automation is private/personal-gated and disabled for this install',
                 'provider' => self::PROVIDER_ID,

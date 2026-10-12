@@ -2,11 +2,13 @@
 
 namespace App\Services\Genealogy;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\AIService;
 use App\Services\ContentExtractionService;
 use App\Services\FaceRegionService;
 use App\Services\NextcloudFileApiService;
 use Exception;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -470,13 +472,16 @@ class GenealogyMediaService
                 continue;
             }
 
-            // Get face region coordinates for queue/link
-            $faceRegionData = [
+            // FaceRegionService returns MWG center coordinates. Normalize once
+            // before lookup and queueing so every current registry region uses
+            // the same top-left coordinate basis, independent of producer.
+            $rawFaceRegion = [
                 'x' => $region['x'] ?? null,
                 'y' => $region['y'] ?? null,
                 'w' => $region['w'] ?? null,
                 'h' => $region['h'] ?? null,
             ];
+            $faceRegionData = $this->normalizedFaceRegionFromMwgCenter($rawFaceRegion);
 
             $match = $this->findPersonByFaceName($personName, $media->tree_id);
 
@@ -485,6 +490,7 @@ class GenealogyMediaService
                 $matchType = $match['match_type'];
                 $confidence = $match['confidence'];
                 $details = $match['details'];
+                $details['metadata_region_claim'] = ['coordinate_convention' => 'mwg_center', 'region' => $rawFaceRegion];
 
                 // Check if this fuzzy match needs human approval
                 if ($this->matchRequiresApproval($matchType)) {
@@ -511,85 +517,39 @@ class GenealogyMediaService
                     continue;
                 }
 
+                $bridgeResult = [];
                 $fileRegistryFaceId = $this->resolveFileRegistryFaceId($mediaId, $personName, $faceRegionData);
                 if ($fileRegistryFaceId !== null) {
-                    $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink(
+                    $bridgeResult = app(FaceLinkBridgeService::class)->syncAutomaticFaceLink(
                         $fileRegistryFaceId,
                         (int) $person->id,
                         $mediaId
                     );
 
                     if ($bridgeResult['success'] ?? false) {
-                        Log::info('Auto-linked face region to person via bridge', [
+                        Log::info('Retained confirmed face region during metadata scan', [
                             'person_id' => $person->id,
-                            'person_name' => $person->given_name.' '.$person->surname,
                             'media_id' => $mediaId,
                             'file_registry_face_id' => $fileRegistryFaceId,
-                            'face_name' => $personName,
-                            'match_type' => $matchType,
-                            'confidence' => $confidence,
-                            'person_media_action' => $bridgeResult['person_media_action'] ?? null,
                         ]);
 
                         continue;
                     }
-
-                    Log::warning('GenealogyMediaService: Face bridge failed during auto-link; falling back to media link only', [
-                        'media_id' => $mediaId,
-                        'file_registry_face_id' => $fileRegistryFaceId,
-                        'person_id' => $person->id,
-                        'error' => $bridgeResult['error'] ?? $bridgeResult['warning'] ?? 'unknown',
-                    ]);
                 }
 
-                // High-confidence match - auto-link when no file-registry face is available yet
-                $existing = DB::selectOne(
-                    'SELECT id FROM genealogy_person_media WHERE person_id = ? AND media_id = ?',
-                    [$person->id, $mediaId]
+                // A metadata name or a bridge failure cannot create identity,
+                // restore a removed association, or replace its selected crop.
+                $details['automatic_link_blocked'] = $bridgeResult['reason'] ?? 'operator_identity_confirmation_required';
+                $this->queueFaceMatchForApproval(
+                    $media->tree_id,
+                    $mediaId,
+                    $personName,
+                    $person,
+                    $matchType,
+                    $confidence,
+                    $details,
+                    $faceRegionData
                 );
-
-                if ($existing) {
-                    $sql = 'UPDATE genealogy_person_media SET
-                                face_region_x = ?,
-                                face_region_y = ?,
-                                face_region_w = ?,
-                                face_region_h = ?,
-                                face_confirmed = 1
-                            WHERE person_id = ? AND media_id = ?';
-
-                    DB::update($sql, [
-                        $faceRegionData['x'],
-                        $faceRegionData['y'],
-                        $faceRegionData['w'],
-                        $faceRegionData['h'],
-                        $person->id,
-                        $mediaId,
-                    ]);
-                } else {
-                    $sql = 'INSERT INTO genealogy_person_media (
-                                person_id, media_id,
-                                face_region_x, face_region_y, face_region_w, face_region_h,
-                                face_confirmed, created_at
-                            ) VALUES (?, ?, ?, ?, ?, ?, 1, NOW())';
-
-                    DB::insert($sql, [
-                        $person->id,
-                        $mediaId,
-                        $faceRegionData['x'],
-                        $faceRegionData['y'],
-                        $faceRegionData['w'],
-                        $faceRegionData['h'],
-                    ]);
-                }
-
-                Log::info('Auto-linked face region to person', [
-                    'person_id' => $person->id,
-                    'person_name' => $person->given_name.' '.$person->surname,
-                    'media_id' => $mediaId,
-                    'face_name' => $personName,
-                    'match_type' => $matchType,
-                    'confidence' => $confidence,
-                ]);
             } else {
                 // No match at all - queue with no suggested person for manual review
                 $this->queueFaceMatchForApproval(
@@ -599,7 +559,8 @@ class GenealogyMediaService
                     null,  // No suggested person
                     'no_match',
                     0,
-                    ['method' => 'No matching person found in database'],
+                    ['method' => 'No matching person found in database',
+                        'metadata_region_claim' => ['coordinate_convention' => 'mwg_center', 'region' => $rawFaceRegion]],
                     $faceRegionData
                 );
 
@@ -858,51 +819,192 @@ class GenealogyMediaService
         ?array $faceRegion = null
     ): void {
         try {
-            // Check if already queued
-            $existing = DB::selectOne(
-                'SELECT id, status, file_registry_face_id FROM genealogy_face_match_queue
-                 WHERE media_id = ? AND face_name = ?',
-                [$mediaId, $faceName]
-            );
-            $fileRegistryFaceId = $this->resolveFileRegistryFaceId($mediaId, $faceName, $faceRegion);
+            $media = DB::selectOne('SELECT id, tree_id, nextcloud_path, original_path FROM genealogy_media WHERE id = ?', [$mediaId]);
+            if (! $media || (int) $media->tree_id !== $treeId) {
+                Log::warning('Face proposal was not queued because its media tree could not be verified.', ['media_id' => $mediaId]);
 
-            if ($existing) {
-                if (empty($existing->file_registry_face_id) && $fileRegistryFaceId !== null) {
-                    DB::update(
-                        'UPDATE genealogy_face_match_queue
-                         SET file_registry_face_id = ?, updated_at = NOW()
-                         WHERE id = ?',
-                        [$fileRegistryFaceId, $existing->id]
-                    );
-                }
-
-                // Already in queue, skip
                 return;
             }
 
-            DB::insert(
-                "INSERT INTO genealogy_face_match_queue
-                 (tree_id, media_id, file_registry_face_id, face_name, suggested_person_id, match_type,
-                  confidence_score, face_region, match_details, status, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())",
-                [
-                    $treeId,
-                    $mediaId,
-                    $fileRegistryFaceId,
-                    $faceName,
-                    $suggestedPerson?->id,
-                    $matchType,
-                    $confidence,
-                    $faceRegion ? json_encode($faceRegion) : null,
-                    json_encode($details),
-                ]
-            );
+            $suggestedPersonId = filter_var($suggestedPerson?->id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: null;
+            $holdReason = null;
+            if ($suggestedPerson !== null && $suggestedPersonId === null) {
+                $holdReason = 'suggested_person_tree_mismatch';
+            } elseif ($suggestedPersonId !== null) {
+                $person = DB::selectOne('SELECT id FROM genealogy_persons WHERE id = ? AND tree_id = ?', [$suggestedPersonId, $treeId]);
+                if (! $person) {
+                    $holdReason = 'suggested_person_tree_mismatch';
+                }
+            }
+
+            $fileRegistryFaceId = $this->resolveFileRegistryFaceId($mediaId, $faceName, $faceRegion);
+
+            $evidenceFace = $fileRegistryFaceId !== null ? DB::selectOne('SELECT frf.*, fr.current_path, fr.status AS file_status, fr.asset_uuid
+                FROM file_registry_faces frf JOIN file_registry fr ON fr.id = frf.file_registry_id WHERE frf.id = ?', [$fileRegistryFaceId]) : null;
+            $proof = $holdReason === null && $evidenceFace ? app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($evidenceFace)
+                : ['success' => false, 'reason' => 'face_source_provenance_missing'];
+            if ($proof['success'] ?? false) {
+                $incoming = $faceRegion;
+                foreach (['x', 'y', 'w', 'h'] as $axis) {
+                    if (! is_numeric($incoming[$axis] ?? null)
+                        || abs((float) $incoming[$axis] - $proof['region'][$axis]) > (float) config('genealogy.face_region_match_tolerance', 0.00015)) {
+                        $proof = ['success' => false, 'reason' => 'face_region_changed'];
+                        break;
+                    }
+                }
+            }
+            if (($proof['success'] ?? false)
+                && (! is_string($evidenceFace->asset_uuid ?? null)
+                    || ! preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iD', $evidenceFace->asset_uuid))) {
+                $proof = ['success' => false, 'reason' => 'source_asset_uuid_unavailable'];
+            }
+            if (($proof['success'] ?? false)
+                && ! $this->faceSourceBelongsToMedia($proof['source_path'] ?? null, $media)) {
+                $proof = ['success' => false, 'reason' => 'face_media_source_mismatch'];
+            }
+            if ($proof['success'] ?? false) {
+                $faceRegion = $proof['region'];
+                $details['source_sha256'] = $proof['source_sha256'];
+                $details['source_path'] = $proof['source_path'];
+                $details['face_region_convention'] = 'normalized_top_left';
+            }
+
+            $verified = (bool) ($proof['success'] ?? false);
+            $generationKey = $verified
+                ? $this->verifiedFaceQueueGenerationKey($treeId, $mediaId, (string) $evidenceFace->asset_uuid,
+                    $proof['source_sha256'], $faceRegion, $suggestedPersonId,
+                    $suggestedPersonId === null ? 'unmatched_face' : 'identity_suggestion')
+                : $this->inspectionFaceQueueGenerationKey($treeId, $mediaId, $evidenceFace?->asset_uuid,
+                    $fileRegistryFaceId, $faceRegion, $holdReason ?? 'face_source_provenance_missing');
+
+            DB::transaction(function () use ($treeId, $mediaId, $fileRegistryFaceId, $faceName, &$suggestedPersonId,
+                &$matchType, &$confidence, &$faceRegion, &$details, &$holdReason, &$generationKey, &$verified,
+                &$proof, &$evidenceFace): void {
+                if ($verified) {
+                    try {
+                        $lockedMedia = DB::table('genealogy_media')->where('id', $mediaId)->lockForUpdate()->first();
+                        if (! $lockedMedia || (int) $lockedMedia->tree_id !== $treeId
+                            || ! $this->faceSourceBelongsToMedia($proof['source_path'], $lockedMedia)) {
+                            throw new \RuntimeException('Media owner or source path changed before queue insert.');
+                        }
+                        if ($suggestedPersonId !== null && ! DB::table('genealogy_persons')->where('id', $suggestedPersonId)
+                            ->where('tree_id', $treeId)->lockForUpdate()->exists()) {
+                            throw new \RuntimeException('Suggested person owner changed before queue insert.');
+                        }
+                        $lockedFace = DB::table('file_registry_faces as frf')
+                            ->join('file_registry as fr', 'fr.id', '=', 'frf.file_registry_id')
+                            ->where('frf.id', $fileRegistryFaceId)->lockForUpdate()
+                            ->first(['frf.*', 'fr.current_path', 'fr.status as file_status', 'fr.asset_uuid']);
+                        $currentProof = $lockedFace
+                            ? app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($lockedFace)
+                            : ['success' => false];
+                        if (! ($currentProof['success'] ?? false)
+                            || ! $this->sameVerifiedFaceQueueProof($evidenceFace, $lockedFace, $proof, $currentProof)
+                            || ! $this->faceSourceBelongsToMedia($currentProof['source_path'] ?? null, $lockedMedia)) {
+                            throw new \RuntimeException('Current face evidence changed before queue insert.');
+                        }
+                        $evidenceFace = $lockedFace;
+                        $proof = $currentProof;
+                        $faceRegion = $currentProof['region'];
+                        $details['source_sha256'] = $currentProof['source_sha256'];
+                        $details['source_path'] = $currentProof['source_path'];
+                        $details['face_region_convention'] = 'normalized_top_left';
+
+                        if ($suggestedPersonId !== null) {
+                            app(FaceLinkBridgeService::class)->assertFaceIdentityProposalNotPreviouslyRejected(
+                                $fileRegistryFaceId, $treeId, $mediaId, $suggestedPersonId, $faceRegion
+                            );
+                        }
+                        app(FaceLinkBridgeService::class)->assertFaceRegionNotDismissed($evidenceFace, $treeId, $mediaId);
+                    } catch (QueryException $exception) {
+                        throw $exception;
+                    } catch (\RuntimeException $exception) {
+                        $holdReason = match ($exception->getMessage()) {
+                            'Recorded person rejection requires separate reconciliation.' => 'operator_identity_rejected',
+                            'This current source region was rejected as Not a face.' => 'operator_face_region_dismissed',
+                            'Media owner or source path changed before queue insert.' => 'media_source_scope_changed',
+                            'Suggested person owner changed before queue insert.' => 'suggested_person_tree_mismatch',
+                            default => 'current_face_evidence_changed',
+                        };
+                        $verified = false;
+                    }
+                }
+
+                if (! $verified) {
+                    $holdReason ??= $proof['reason'] ?? 'face_source_provenance_missing';
+                    $claims = [];
+                    foreach (['source_sha256', 'source_path', 'face_region_convention'] as $claim) {
+                        if (array_key_exists($claim, $details)) {
+                            $claims[$claim] = $details[$claim];
+                            unset($details[$claim]);
+                        }
+                    }
+                    if (($proof['success'] ?? false) && $claims === []) {
+                        $claims = ['source_sha256' => $proof['source_sha256'] ?? null,
+                            'source_path' => $proof['source_path'] ?? null,
+                            'face_region_convention' => $proof['face_region_convention'] ?? null];
+                    }
+                    if ($claims !== []) {
+                        $details['unverified_source_claims'] = ['state' => 'held', 'claims' => $claims];
+                    }
+                    if (! is_array($details['metadata'] ?? null)) {
+                        $details['metadata'] = [];
+                    }
+                    if (! is_array($details['metadata']['audit_hold'] ?? null)) {
+                        $details['metadata']['audit_hold'] = [];
+                    }
+                    $details['metadata']['audit_hold']['reason_codes'] = [$holdReason];
+                    $details['evidence_hold_reason'] = $holdReason;
+                    $suggestedPersonId = null;
+                    $matchType = 'no_match';
+                    $confidence = 0;
+                    $generationKey = $this->inspectionFaceQueueGenerationKey($treeId, $mediaId, $evidenceFace?->asset_uuid,
+                        $fileRegistryFaceId, $faceRegion, $holdReason);
+                }
+
+                if (DB::selectOne('SELECT id FROM genealogy_face_match_queue WHERE evidence_generation_key = ? LIMIT 1', [$generationKey])) {
+                    return;
+                }
+                if ($verified && $this->hasExactLegacyFaceQueueGeneration($treeId, $mediaId, $suggestedPersonId,
+                    $proof['source_sha256'], $proof['source_path'], $faceRegion)) {
+                    return;
+                }
+
+                try {
+                    DB::table('genealogy_face_match_queue')->insert([
+                        'tree_id' => $treeId,
+                        'media_id' => $mediaId,
+                        'file_registry_face_id' => $fileRegistryFaceId,
+                        'face_name' => $faceName,
+                        'suggested_person_id' => $suggestedPersonId,
+                        'match_type' => $matchType,
+                        'confidence_score' => $confidence,
+                        'face_region' => $faceRegion ? json_encode($faceRegion, JSON_THROW_ON_ERROR) : null,
+                        'match_details' => json_encode($details, JSON_THROW_ON_ERROR),
+                        'evidence_generation_key' => $generationKey,
+                        'status' => 'pending',
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ]);
+                    if ($verified) {
+                        $current = $this->nextcloudApi->computeFileHash($proof['source_path']);
+                        if (! ($current['success'] ?? false) || ! is_string($current['hash'] ?? null)
+                            || ! hash_equals($proof['source_sha256'], $current['hash'])) {
+                            throw new \RuntimeException('Photo changed while the face proposal was being queued.');
+                        }
+                    }
+                } catch (QueryException $exception) {
+                    if (! $this->isFaceQueueGenerationDuplicate($exception)) {
+                        throw $exception;
+                    }
+                }
+            });
 
             Log::info('Queued fuzzy face match for approval', [
                 'media_id' => $mediaId,
                 'face_name' => $faceName,
                 'file_registry_face_id' => $fileRegistryFaceId,
-                'suggested_person_id' => $suggestedPerson?->id,
+                'suggested_person_id' => $suggestedPersonId,
                 'match_type' => $matchType,
                 'confidence' => $confidence,
             ]);
@@ -914,6 +1016,170 @@ class GenealogyMediaService
                 'error' => $e->getMessage(),
             ]);
         }
+    }
+
+    private function verifiedFaceQueueGenerationKey(int $treeId, int $mediaId, string $assetUuid, string $sourceSha256,
+        ?array $region, ?int $suggestedPersonId, string $proposalType): string
+    {
+        $canonicalRegion = $this->canonicalFaceQueueRegion($region);
+        if ($canonicalRegion === null || ! preg_match('/^[a-f0-9]{64}$/D', $sourceSha256)) {
+            throw new \RuntimeException('Verified face queue generation evidence is invalid.');
+        }
+
+        return hash('sha256', json_encode([
+            'schema' => 'plos.genealogy_face_match_generation.v1',
+            'kind' => 'verified',
+            'semantic_version' => (string) config('genealogy.face_match_queue_generation.semantic_version', 'v1'),
+            'tree_id' => $treeId,
+            'media_id' => $mediaId,
+            'asset_uuid' => strtolower($assetUuid),
+            'source_sha256' => $sourceSha256,
+            'region' => $canonicalRegion,
+            'suggested_person_id' => $suggestedPersonId,
+            'proposal_type' => $proposalType,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    private function inspectionFaceQueueGenerationKey(int $treeId, int $mediaId, mixed $assetUuid, ?int $fileRegistryFaceId,
+        ?array $region, string $holdReason): string
+    {
+        return hash('sha256', json_encode([
+            'schema' => 'plos.genealogy_face_match_generation.v1',
+            'kind' => 'inspection_only',
+            'semantic_version' => (string) config('genealogy.face_match_queue_generation.semantic_version', 'v1'),
+            'tree_id' => $treeId,
+            'media_id' => $mediaId,
+            'asset_uuid' => is_string($assetUuid) ? strtolower($assetUuid) : null,
+            'face_registry_id' => $fileRegistryFaceId,
+            'observed_region' => $this->canonicalFaceQueueRegion($region),
+            'hold_reason' => $holdReason,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    private function canonicalFaceQueueRegion(?array $region): ?array
+    {
+        if (! is_array($region)) {
+            return null;
+        }
+        $canonical = [];
+        foreach (['x', 'y', 'w', 'h'] as $axis) {
+            if (! is_numeric($region[$axis] ?? null) || ! is_finite((float) $region[$axis])) {
+                return null;
+            }
+            $canonical[$axis] = number_format((float) $region[$axis], 8, '.', '');
+        }
+        $x = (float) $canonical['x'];
+        $y = (float) $canonical['y'];
+        $w = (float) $canonical['w'];
+        $h = (float) $canonical['h'];
+        if ($x < 0 || $y < 0 || $w <= 0 || $h <= 0 || $x + $w > 1 || $y + $h > 1) {
+            return null;
+        }
+
+        return $canonical;
+    }
+
+    private function normalizedFaceRegionFromMwgCenter(array $region): ?array
+    {
+        foreach (['x', 'y', 'w', 'h'] as $axis) {
+            if (! is_numeric($region[$axis] ?? null) || ! is_finite((float) $region[$axis])) {
+                return null;
+            }
+        }
+
+        $width = (float) $region['w'];
+        $height = (float) $region['h'];
+        $normalized = [
+            'x' => (float) $region['x'] - ($width / 2),
+            'y' => (float) $region['y'] - ($height / 2),
+            'w' => $width,
+            'h' => $height,
+        ];
+
+        return $this->canonicalFaceQueueRegion($normalized) === null ? null : $normalized;
+    }
+
+    private function faceSourceBelongsToMedia(mixed $sourcePath, object $media): bool
+    {
+        $sourcePath = $this->canonicalFaceMediaPath($sourcePath);
+        if ($sourcePath === null) {
+            return false;
+        }
+        foreach ([$media->nextcloud_path ?? null, $media->original_path ?? null] as $mediaPath) {
+            if ($this->canonicalFaceMediaPath($mediaPath) === $sourcePath) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function canonicalFaceMediaPath(mixed $path): ?string
+    {
+        if (! is_string($path) || $path === '' || str_contains($path, "\0") || str_contains($path, '\\')
+            || in_array('..', explode('/', $path), true)) {
+            return null;
+        }
+
+        return '/'.ltrim($path, '/');
+    }
+
+    private function hasExactLegacyFaceQueueGeneration(int $treeId, int $mediaId, ?int $suggestedPersonId,
+        string $sourceSha256, string $sourcePath, ?array $region): bool
+    {
+        $rows = DB::select(
+            'SELECT match_details, face_region FROM genealogy_face_match_queue
+             WHERE tree_id = ? AND media_id = ?
+               AND ((suggested_person_id IS NULL AND ? IS NULL) OR suggested_person_id = ?)
+               AND evidence_generation_key IS NULL',
+            [$treeId, $mediaId, $suggestedPersonId, $suggestedPersonId]
+        );
+        $canonicalRegion = $this->canonicalFaceQueueRegion($region);
+        if ($canonicalRegion === null) {
+            return false;
+        }
+
+        foreach ($rows as $row) {
+            $details = is_string($row->match_details ?? null) ? json_decode($row->match_details, true) : null;
+            $storedRegion = is_string($row->face_region ?? null) ? json_decode($row->face_region, true) : null;
+            if (! is_array($details) || ! is_array($storedRegion)
+                || ($details['source_sha256'] ?? null) !== $sourceSha256
+                || ($details['source_path'] ?? null) !== $sourcePath
+                || ($details['face_region_convention'] ?? null) !== 'normalized_top_left'
+                || $this->canonicalFaceQueueRegion($storedRegion) !== $canonicalRegion) {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private function sameVerifiedFaceQueueProof(?object $initialFace, ?object $currentFace, array $initialProof, array $currentProof): bool
+    {
+        if ($initialFace === null || $currentFace === null
+            || empty($currentFace->source_current) || ! empty($currentFace->superseded_at)
+            || ! empty($currentFace->hidden) || ($currentFace->file_status ?? null) !== 'active'
+            || ($currentFace->face_region_convention ?? null) !== 'normalized_top_left'
+            || ($initialFace->asset_uuid ?? null) !== ($currentFace->asset_uuid ?? null)
+            || ($initialProof['source_sha256'] ?? null) !== ($currentProof['source_sha256'] ?? null)
+            || $this->canonicalFaceMediaPath($initialProof['source_path'] ?? null) !== $this->canonicalFaceMediaPath($currentProof['source_path'] ?? null)
+            || $this->canonicalFaceQueueRegion($initialProof['region'] ?? null) !== $this->canonicalFaceQueueRegion($currentProof['region'] ?? null)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private function isFaceQueueGenerationDuplicate(QueryException $exception): bool
+    {
+        $state = (string) ($exception->errorInfo[0] ?? '');
+        $message = strtolower($exception->getMessage());
+        $namedGenerationKey = str_contains($message, 'genealogy_face_match_queue_generation_unique')
+            || str_contains($message, 'genealogy_face_match_queue.evidence_generation_key');
+
+        return $namedGenerationKey && in_array($state, ['23000', '23505'], true);
     }
 
     private function resolveFileRegistryFaceId(int $mediaId, string $faceName, ?array $faceRegion = null): ?int
@@ -940,7 +1206,7 @@ class GenealogyMediaService
         $faces = DB::select(
             'SELECT id, person_name, region_x, region_y, region_w, region_h
              FROM file_registry_faces
-             WHERE file_registry_id = ? AND hidden = 0
+             WHERE file_registry_id = ? AND hidden = 0 AND source_current = 1 AND superseded_at IS NULL
              ORDER BY id',
             [$media->file_registry_id]
         );
@@ -1739,9 +2005,7 @@ class GenealogyMediaService
         }
 
         // Get media record
-        $sql = 'SELECT id, tree_id, nextcloud_path, file_format, local_filename, title,
-                       analysis_status, file_exists, mime_type
-                FROM genealogy_media WHERE id = ?';
+        $sql = 'SELECT * FROM genealogy_media WHERE id = ?';
         $media = DB::selectOne($sql, [$mediaId]);
 
         if (! $media) {
@@ -1752,11 +2016,17 @@ class GenealogyMediaService
             return ['success' => false, 'error' => 'Media file not available in Nextcloud'];
         }
 
-        // Mark as processing
-        DB::update(
-            "UPDATE genealogy_media SET analysis_status = 'processing', updated_at = NOW() WHERE id = ?",
-            [$mediaId]
+        // Claim the same source without replacing a concurrent analysis or operator edit.
+        $analysisClaim = 'processing:'.bin2hex(random_bytes(16));
+        $claimed = DB::update(
+            "UPDATE genealogy_media SET analysis_status = 'processing', analysis_error = ?, updated_at = NOW()
+             WHERE id = ? AND file_exists = 1 AND nextcloud_path = ?
+               AND analysis_status <> 'processing' AND COALESCE(updated_at, '') = ?",
+            [$analysisClaim, $mediaId, $media->nextcloud_path, $media->updated_at ?? '']
         );
+        if ($claimed !== 1) {
+            return ['success' => false, 'error' => 'Media changed or analysis is already processing'];
+        }
 
         try {
             // Download file from Nextcloud to temp location
@@ -1766,6 +2036,10 @@ class GenealogyMediaService
             }
 
             try {
+                $sourceHash = hash_file('sha256', $localTempPath);
+                if (! is_string($sourceHash)) {
+                    throw new Exception('Media source hash unavailable');
+                }
                 // Run content extraction
                 $extractionResult = $this->extractionService->extract($localTempPath, [
                     'use_vision' => true,
@@ -1773,20 +2047,24 @@ class GenealogyMediaService
                     'extract_faces' => true,
                 ]);
 
-                // Process extraction results
+                if (! ($extractionResult['success'] ?? false)) {
+                    throw new Exception('Media extraction did not complete');
+                }
+                // Process extraction results without writing identities or queues yet.
                 $updateData = $this->processExtractionResults($extractionResult, $media);
 
                 // Generate AI description if vision is available
                 if ($this->isImageExtension($media->file_format)) {
                     $aiDescription = $this->generateMediaDescription($localTempPath);
+                    if (! $aiDescription) {
+                        throw new Exception('Media scene analysis did not complete');
+                    }
                     if ($aiDescription) {
                         $updateData['ai_description'] = $aiDescription;
 
                         // Extract subject tags from AI description
                         $subjectTags = $this->extractSubjectTags($aiDescription, $media->title);
-                        if (! empty($subjectTags)) {
-                            $updateData['subject_tags'] = json_encode($subjectTags);
-                        }
+                        $updateData['subject_tags'] = json_encode($subjectTags);
                     }
                 }
 
@@ -1795,7 +2073,12 @@ class GenealogyMediaService
                 $updateData['analyzed_at'] = now();
                 $updateData['analysis_error'] = null;
 
-                $this->updateMediaMetadata($mediaId, $updateData);
+                if (! $this->publishCurrentMediaAnalysis($media, $updateData, $sourceHash, $analysisClaim)) {
+                    throw new Exception('Media source changed before analysis publication');
+                }
+                if (! empty($extractionResult['faces'])) {
+                    $this->storeFaceRegions($mediaId, $extractionResult['faces']);
+                }
 
                 return [
                     'success' => true,
@@ -1814,14 +2097,18 @@ class GenealogyMediaService
             }
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('Media analysis failed', [
                 'media_id' => $mediaId,
                 'error' => $e->getMessage(),
             ]);
 
             DB::update(
-                "UPDATE genealogy_media SET analysis_status = 'failed', analysis_error = ?, updated_at = NOW() WHERE id = ?",
-                [substr($e->getMessage(), 0, 500), $mediaId]
+                "UPDATE genealogy_media SET analysis_status = 'failed', analysis_error = ?, updated_at = NOW()
+                 WHERE id = ? AND nextcloud_path = ? AND analysis_status = 'processing' AND analysis_error = ?",
+                [substr($e->getMessage(), 0, 500), $mediaId, $media->nextcloud_path, $analysisClaim]
             );
 
             return ['success' => false, 'error' => $e->getMessage()];
@@ -1965,7 +2252,7 @@ class GenealogyMediaService
             $updateData['exif_data'] = json_encode($exif);
 
             // Extract specific EXIF fields
-            if (! empty($exif['date_taken'])) {
+            if (empty($media->date_taken) && ! empty($exif['date_taken'])) {
                 try {
                     $dateTaken = $this->parseExifDate($exif['date_taken']);
                     if ($dateTaken) {
@@ -1988,11 +2275,6 @@ class GenealogyMediaService
             if (! empty($exif['camera_model'])) {
                 $updateData['camera_model'] = substr($exif['camera_model'], 0, 100);
             }
-        }
-
-        // Process face regions if detected
-        if (! empty($extractionResult['faces'])) {
-            $this->storeFaceRegions($media->id, $extractionResult['faces']);
         }
 
         return $updateData;
@@ -2047,7 +2329,7 @@ and any text visible in the photo (signs, documents, etc.).
 EOT;
 
             $result = $this->aiService->processImage(
-                base64_encode($imageData),
+                $imageData,
                 $prompt,
                 [
                     'sensitive_data' => true,
@@ -2060,6 +2342,9 @@ EOT;
             }
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::warning('AI description generation failed', [
                 'file' => basename($filePath),
                 'error' => $e->getMessage(),
@@ -2121,6 +2406,60 @@ EOT;
         return [];
     }
 
+    /** Publish inferred metadata only for the captured current source; retain previous evidence. */
+    private function publishCurrentMediaAnalysis(object $snapshot, array $data, string $sourceHash, string $analysisClaim): bool
+    {
+        return DB::transaction(function () use ($snapshot, $data, $sourceHash, $analysisClaim): bool {
+            $current = DB::selectOne('SELECT * FROM genealogy_media WHERE id = ? FOR UPDATE', [$snapshot->id]);
+            if (! $current || ! $current->file_exists || $current->analysis_status !== 'processing'
+                || $current->analysis_error !== $analysisClaim
+                || $current->nextcloud_path !== $snapshot->nextcloud_path
+                || (int) $current->tree_id !== (int) $snapshot->tree_id) {
+                return false;
+            }
+            foreach (['ai_description', 'exif_data', 'analyzed_at', 'date_taken'] as $field) {
+                if (($current->$field ?? null) !== ($snapshot->$field ?? null)) {
+                    return false;
+                }
+            }
+            $physical = $this->nextcloudApi->computeFileHash($current->nextcloud_path);
+            if (! ($physical['success'] ?? false) || ! is_string($physical['hash'] ?? null)
+                || ! hash_equals($sourceHash, $physical['hash'])) {
+                return false;
+            }
+            $previous = json_decode($current->exif_data ?? '{}', true);
+            if (! is_array($previous)) {
+                // Do not overwrite malformed source evidence during an automated refresh.
+                return false;
+            }
+            $exif = json_decode($data['exif_data'] ?? '{}', true);
+            if (! is_array($exif)) {
+                return false;
+            }
+            $history = $previous['_plos_analysis_history'] ?? [];
+            if (! is_array($history)) {
+                return false;
+            }
+            if (! empty($current->exif_data) || ! empty($current->ai_description) || ! empty($current->analyzed_at)) {
+                unset($previous['_plos_analysis_history']);
+                $history[] = [
+                    'ai_description' => $current->ai_description ?? null,
+                    'subject_tags' => $current->subject_tags ?? null,
+                    'analyzed_at' => $current->analyzed_at ?? null,
+                    'source_metadata' => $previous,
+                ];
+            }
+            $exif['_plos_analysis_history'] = $history;
+            $exif['_plos_analysis'] = ['source_sha256' => $sourceHash, 'identity_approved' => false,
+                'recorded_at' => now()->utc()->toIso8601String()];
+            $data['exif_data'] = json_encode($exif, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $data['rag_indexed_at'] = null;
+            $this->updateMediaMetadata((int) $snapshot->id, $data);
+
+            return true;
+        });
+    }
+
     /**
      * Update media metadata in database
      */
@@ -2130,7 +2469,7 @@ EOT;
             'ai_description', 'subject_tags', 'exif_data',
             'date_taken', 'gps_latitude', 'gps_longitude',
             'camera_make', 'camera_model',
-            'analysis_status', 'analyzed_at', 'analysis_error',
+            'analysis_status', 'analyzed_at', 'analysis_error', 'rag_indexed_at',
         ];
 
         $setClauses = [];
@@ -2160,7 +2499,9 @@ EOT;
     public function resetAnalysisStatus(int $mediaId): bool
     {
         $affected = DB::update(
-            "UPDATE genealogy_media SET analysis_status = 'pending', analysis_error = NULL, updated_at = NOW() WHERE id = ?",
+            "UPDATE genealogy_media SET analysis_status = 'pending', analysis_error = NULL, updated_at = NOW()
+             WHERE id = ? AND COALESCE(analysis_status, '') <> 'processing'
+               AND COALESCE(analysis_error, '') NOT LIKE 'processing:%'",
             [$mediaId]
         );
 
@@ -2174,7 +2515,8 @@ EOT;
     {
         return DB::update(
             "UPDATE genealogy_media SET analysis_status = 'pending', analysis_error = NULL, updated_at = NOW()
-             WHERE tree_id = ? AND analysis_status = 'failed'",
+             WHERE tree_id = ? AND analysis_status = 'failed'
+               AND COALESCE(analysis_error, '') NOT LIKE 'processing:%'",
             [$treeId]
         );
     }
@@ -3172,6 +3514,7 @@ XML;
             'error_details' => [],
             'matches' => [],
             'deletions' => [],
+            'photo_review_required' => [],
         ];
 
         // Get all family surnames for the tree
@@ -3224,6 +3567,20 @@ XML;
 
         foreach ($unlinkedMedia as $media) {
             $results['processed']++;
+
+            $extension = strtolower(pathinfo($media->local_filename ?? $media->nextcloud_path ?? '', PATHINFO_EXTENSION));
+            $imageExtensions = array_merge((array) config('file_types.image', []), (array) config('file_types.image_raw', []));
+            if (($media->media_type ?? null) === 'photo'
+                || str_starts_with(strtolower($media->mime_type ?? ''), 'image/')
+                || in_array($extension, $imageExtensions, true)
+                || in_array(strtolower($media->file_format ?? ''), $imageExtensions, true)) {
+                // Missing face detections and AI name confidence cannot justify
+                // deleting a photograph or creating its gallery associations.
+                $results['skipped']++;
+                $results['photo_review_required'][] = ['media_id' => (int) $media->id, 'reason' => 'photo_requires_source_and_operator_review'];
+
+                continue;
+            }
 
             try {
                 // First try simple surname matching in filename/path
@@ -3679,7 +4036,7 @@ PROMPT;
         foreach ($mediaItems as $media) {
             try {
                 // Get face regions for this media
-                $personMediaSql = 'SELECT pm.face_region_x, pm.face_region_y,
+                $personMediaSql = 'SELECT pm.person_id, pm.face_region_x, pm.face_region_y,
                                           pm.face_region_w, pm.face_region_h,
                                           p.given_name, p.surname
                                    FROM genealogy_person_media pm
@@ -3690,7 +4047,8 @@ PROMPT;
 
                 $personMedia = DB::select($personMediaSql, [$media->id]);
 
-                if (empty($personMedia)) {
+                $confirmedRegions = $this->operatorApprovedRegionsForMedia($media->id, $personMedia);
+                if ($confirmedRegions === []) {
                     $results['skipped']++;
 
                     continue;
@@ -3709,17 +4067,15 @@ PROMPT;
                 }
 
                 try {
-                    // Convert to array format
-                    $pmArray = array_map(fn ($pm) => (array) $pm, $personMedia);
-
-                    // Write face regions with retry
-                    $writeResult = $this->faceRegionService->syncFaceRegionsFromDatabase($tempPath, $pmArray);
+                    // Merge only individually approved names; retain all other
+                    // source regions, including unnamed regions.
+                    $writeResult = ['success' => $this->faceRegionService->mergeConfirmedFaceRegions($tempPath, $confirmedRegions)];
 
                     if ($writeResult['success']) {
                         // Upload modified file back to Nextcloud
                         $uploadSuccess = $this->uploadToNextcloud($tempPath, $media->nextcloud_path);
 
-                        if ($uploadSuccess) {
+                        if ($uploadSuccess['success'] ?? false) {
                             // Mark as synced
                             DB::update(
                                 "UPDATE genealogy_media SET face_sync_status = 'synced', face_sync_at = NOW() WHERE id = ?",
@@ -3730,7 +4086,7 @@ PROMPT;
                             Log::info('GenealogyMediaService: Face regions synced to Nextcloud', [
                                 'media_id' => $media->id,
                                 'path' => $media->nextcloud_path,
-                                'regions_count' => count($personMedia),
+                                'regions_count' => count($confirmedRegions),
                             ]);
                         } else {
                             $results['failed']++;
@@ -3775,6 +4131,110 @@ PROMPT;
         $results['total_processed'] = $results['synced'] + $results['failed'] + $results['skipped'];
 
         return $results;
+    }
+
+    public function writeApprovedFaceRegionsToNextcloud(int $mediaId): array
+    {
+        if (! config('metadata_writeback.enabled', false) || ! config('metadata_writeback.in_place_enabled', false)) {
+            return ['success' => false, 'error' => 'Metadata writeback disabled', 'http_status' => 403];
+        }
+        if (! $this->faceRegionService) {
+            return ['success' => false, 'error' => 'Face region service unavailable', 'http_status' => 503];
+        }
+        $tempPath = null;
+        try {
+            $media = DB::selectOne('SELECT id, tree_id, nextcloud_path FROM genealogy_media WHERE id = ?', [$mediaId]);
+            if (! $media) {
+                return ['success' => false, 'error' => 'Media not found', 'http_status' => 404];
+            }
+            if (! $media->nextcloud_path) {
+                return ['success' => false, 'error' => 'Media has no Nextcloud path', 'http_status' => 400];
+            }
+            $personMedia = DB::select('SELECT pm.person_id, pm.face_region_x, pm.face_region_y,
+                    pm.face_region_w, pm.face_region_h, p.given_name, p.surname
+                FROM genealogy_person_media pm
+                JOIN genealogy_persons p ON p.id = pm.person_id AND p.tree_id = ?
+                WHERE pm.media_id = ? AND pm.face_confirmed = 1 AND pm.face_region_x IS NOT NULL',
+                [(int) $media->tree_id, $mediaId]);
+            $regions = $this->operatorApprovedRegionsForMedia($mediaId, $personMedia);
+            if ($regions === []) {
+                return ['success' => false, 'error' => 'No individually approved face regions; operator review required', 'http_status' => 409];
+            }
+            $tempPath = $this->downloadFromNextcloud($media->nextcloud_path);
+            if (! $tempPath || ! is_file($tempPath)) {
+                return ['success' => false, 'error' => 'Failed to download from Nextcloud', 'http_status' => 502];
+            }
+            // Keep a private exact preimage even if writing or uploading fails.
+            $preimage = $tempPath.'_original';
+            if (! chmod($tempPath, 0600) || ! copy($tempPath, $preimage) || ! chmod($preimage, 0600)) {
+                return ['success' => false, 'error' => 'Failed to retain private metadata preimage', 'http_status' => 500];
+            }
+            if (! $this->faceRegionService->mergeConfirmedFaceRegions($tempPath, $regions)) {
+                return ['success' => false, 'error' => 'Face region preservation/write failed', 'http_status' => 500];
+            }
+            $uploaded = $this->uploadToNextcloud($tempPath, $media->nextcloud_path);
+            if (! ($uploaded['success'] ?? false)) {
+                return ['success' => false, 'error' => $uploaded['error'] ?? 'Failed to upload to Nextcloud', 'http_status' => 502];
+            }
+
+            return ['success' => true, 'media_id' => $mediaId, 'faces_written' => count($regions),
+                'nextcloud_path' => $media->nextcloud_path, 'preimage_sha256' => hash_file('sha256', $preimage)];
+        } catch (\Throwable $e) {
+            Log::warning('GenealogyMediaService: Approved face metadata write failed', ['media_id' => $mediaId, 'error' => $e->getMessage()]);
+
+            return ['success' => false, 'error' => 'Approved face metadata write failed', 'http_status' => 500];
+        } finally {
+            if (is_string($tempPath) && is_file($tempPath)) {
+                @unlink($tempPath);
+            }
+        }
+    }
+
+    private function operatorApprovedRegionsForMedia(int $mediaId, array $personMedia): array
+    {
+        if ($personMedia === []) {
+            return [];
+        }
+
+        $faces = DB::select(
+            'SELECT f.id, f.genealogy_person_id, f.region_x, f.region_y, f.region_w, f.region_h
+             FROM file_registry_faces f
+             JOIN file_registry fr ON fr.id = f.file_registry_id
+             JOIN genealogy_media gm ON gm.id = ?
+             WHERE (fr.current_path = gm.nextcloud_path OR fr.original_path = gm.original_path)
+               AND f.verified = 1 AND COALESCE(f.hidden, 0) = 0 AND f.source_current = 1 AND f.superseded_at IS NULL
+               AND f.genealogy_person_id IS NOT NULL',
+            [$mediaId]
+        );
+        $regions = [];
+        $tolerance = (float) config('genealogy.face_region_match_tolerance');
+        foreach ($personMedia as $person) {
+            foreach ($faces as $face) {
+                if ((int) $face->genealogy_person_id !== (int) $person->person_id) {
+                    continue;
+                }
+                foreach (['x', 'y', 'w', 'h'] as $axis) {
+                    if ($face->{'region_'.$axis} === null || $person->{'face_region_'.$axis} === null
+                        || abs((float) $face->{'region_'.$axis} - (float) $person->{'face_region_'.$axis}) > $tolerance) {
+                        continue 2;
+                    }
+                }
+                $evidence = app(FaceLinkBridgeService::class)->syncAutomaticFaceLink((int) $face->id, (int) $person->person_id, $mediaId);
+                if (! ($evidence['success'] ?? false) || ! ($evidence['operator_approved'] ?? false)) {
+                    continue;
+                }
+                $regions[] = [
+                    'name' => trim($person->given_name.' '.$person->surname),
+                    'x' => (float) $face->region_x + (float) $face->region_w / 2,
+                    'y' => (float) $face->region_y + (float) $face->region_h / 2,
+                    'w' => (float) $face->region_w,
+                    'h' => (float) $face->region_h,
+                ];
+                break;
+            }
+        }
+
+        return $regions;
     }
 
     /**

@@ -2,12 +2,14 @@
 
 namespace App\Services;
 
-use Exception;
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Jobs\ProcessAgentTask;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use Throwable;
 
 /**
  * Distributed Agent Service
@@ -20,34 +22,51 @@ class DistributedAgentService
 {
     // Agent statuses
     public const STATUS_ONLINE = 'online';
+
     public const STATUS_OFFLINE = 'offline';
+
     public const STATUS_BUSY = 'busy';
+
     public const STATUS_DRAINING = 'draining';
 
     // Task statuses
     public const TASK_PENDING = 'pending';
+
     public const TASK_ASSIGNED = 'assigned';
+
     public const TASK_RUNNING = 'running';
+
     public const TASK_COMPLETED = 'completed';
+
     public const TASK_FAILED = 'failed';
+
     public const TASK_CANCELLED = 'cancelled';
 
     // Batch statuses
     public const BATCH_PENDING = 'pending';
+
     public const BATCH_RUNNING = 'running';
+
     public const BATCH_COMPLETED = 'completed';
+
     public const BATCH_FAILED = 'failed';
+
     public const BATCH_CANCELLED = 'cancelled';
 
     // Redis keys
     private const REDIS_AGENT_PREFIX = 'distributed_agent:';
+
     private const REDIS_TASK_LOCK_PREFIX = 'task_lock:';
+
     private const REDIS_AGENT_HEARTBEAT_PREFIX = 'agent_heartbeat:';
 
     // Configuration
     private int $heartbeatIntervalSeconds = 30;
+
     private int $agentTimeoutSeconds = 90;
+
     private int $taskTimeoutSeconds = 300;
+
     private int $maxTaskRetries = 3;
 
     public function __construct()
@@ -65,10 +84,10 @@ class DistributedAgentService
     /**
      * Register a new agent node
      *
-     * @param string $nodeName Hostname or identifier
-     * @param array $capabilities List of capabilities this agent supports
-     * @param int $maxConcurrentTasks Maximum tasks agent can handle
-     * @param array $metadata Additional metadata
+     * @param  string  $nodeName  Hostname or identifier
+     * @param  array  $capabilities  List of capabilities this agent supports
+     * @param  int  $maxConcurrentTasks  Maximum tasks agent can handle
+     * @param  array  $metadata  Additional metadata
      * @return array Agent registration data
      */
     public function registerAgent(
@@ -80,11 +99,11 @@ class DistributedAgentService
         $agentId = Str::uuid()->toString();
         $now = now();
 
-        $sql = "
+        $sql = '
             INSERT INTO distributed_agents
             (agent_id, node_name, status, capabilities, metadata, max_concurrent_tasks, last_heartbeat_at, registered_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ";
+        ';
 
         DB::insert($sql, [
             $agentId,
@@ -128,15 +147,14 @@ class DistributedAgentService
      */
     public function unregisterAgent(string $agentId): bool
     {
-        // Reassign any pending tasks
-        $this->reassignAgentTasks($agentId);
-
-        // Update status to offline
-        $sql = "UPDATE distributed_agents SET status = ?, updated_at = ? WHERE agent_id = ?";
+        // Stop new assignments before releasing this agent's tasks.
+        $sql = 'UPDATE distributed_agents SET status = ?, updated_at = ? WHERE agent_id = ?';
         $affected = DB::update($sql, [self::STATUS_OFFLINE, now(), $agentId]);
 
+        $this->reassignAgentTasks($agentId);
+
         // Remove from Redis
-        Cache::forget(self::REDIS_AGENT_PREFIX . $agentId);
+        Cache::forget(self::REDIS_AGENT_PREFIX.$agentId);
 
         Log::info('Agent unregistered', ['agent_id' => $agentId]);
 
@@ -146,33 +164,34 @@ class DistributedAgentService
     /**
      * Discover available agents with optional capability filter
      *
-     * @param array $requiredCapabilities Filter by capabilities
-     * @param bool $includeOffline Include offline agents in results
+     * @param  array  $requiredCapabilities  Filter by capabilities
+     * @param  bool  $includeOffline  Include offline agents in results
      * @return array List of agents
      */
     public function discoverAgents(array $requiredCapabilities = [], bool $includeOffline = false): array
     {
-        $sql = "SELECT * FROM distributed_agents WHERE 1=1";
+        $sql = 'SELECT * FROM distributed_agents WHERE 1=1';
         $params = [];
 
-        if (!$includeOffline) {
-            $sql .= " AND status IN (?, ?)";
+        if (! $includeOffline) {
+            $sql .= ' AND status IN (?, ?)';
             $params[] = self::STATUS_ONLINE;
             $params[] = self::STATUS_BUSY;
         }
 
-        $sql .= " ORDER BY current_load ASC, last_heartbeat_at DESC";
+        $sql .= ' ORDER BY current_load ASC, last_heartbeat_at DESC';
         $agents = DB::select($sql, $params);
 
         // Filter by capabilities if specified
-        if (!empty($requiredCapabilities)) {
+        if (! empty($requiredCapabilities)) {
             $agents = array_filter($agents, function ($agent) use ($requiredCapabilities) {
                 $agentCapabilities = json_decode($agent->capabilities ?? '[]', true);
                 foreach ($requiredCapabilities as $required) {
-                    if (!in_array($required, $agentCapabilities)) {
+                    if (! in_array($required, $agentCapabilities)) {
                         return false;
                     }
                 }
+
                 return true;
             });
         }
@@ -200,11 +219,11 @@ class DistributedAgentService
     {
         $now = now();
 
-        $sql = "
+        $sql = '
             UPDATE distributed_agents
             SET last_heartbeat_at = ?, status = ?, updated_at = ?
             WHERE agent_id = ? AND status != ?
-        ";
+        ';
 
         $affected = DB::update($sql, [
             $now,
@@ -217,13 +236,13 @@ class DistributedAgentService
         if ($affected > 0) {
             // Update Redis cache
             Cache::put(
-                self::REDIS_AGENT_HEARTBEAT_PREFIX . $agentId,
+                self::REDIS_AGENT_HEARTBEAT_PREFIX.$agentId,
                 $now->timestamp,
                 $this->agentTimeoutSeconds
             );
 
             // Record health metrics if provided
-            if (!empty($metrics)) {
+            if (! empty($metrics)) {
                 $this->recordHealthMetrics($agentId, $metrics);
             }
         }
@@ -238,9 +257,9 @@ class DistributedAgentService
     /**
      * Submit a task for distributed execution
      *
-     * @param string $taskType Type of task
-     * @param array $payload Task payload
-     * @param array $options Additional options (priority, capabilities, timeout)
+     * @param  string  $taskType  Type of task
+     * @param  array  $payload  Task payload
+     * @param  array  $options  Additional options (priority, capabilities, timeout)
      * @return array Task submission result
      */
     public function submitTask(string $taskType, array $payload, array $options = []): array
@@ -252,11 +271,11 @@ class DistributedAgentService
         $timeoutSeconds = $options['timeout'] ?? $this->taskTimeoutSeconds;
         $maxRetries = $options['max_retries'] ?? $this->maxTaskRetries;
 
-        $sql = "
+        $sql = '
             INSERT INTO distributed_tasks
             (task_id, task_type, payload, required_capabilities, status, priority, max_retries, timeout_at, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ";
+        ';
 
         DB::insert($sql, [
             $taskId,
@@ -292,15 +311,15 @@ class DistributedAgentService
     /**
      * Assign a task to the best available agent
      *
-     * @param string $taskId Task ID to assign
+     * @param  string  $taskId  Task ID to assign
      * @return array|null Assigned agent info or null if no agent available
      */
     public function assignTask(string $taskId): ?array
     {
         // Get task details
-        $task = DB::selectOne("SELECT * FROM distributed_tasks WHERE task_id = ?", [$taskId]);
+        $task = DB::selectOne('SELECT * FROM distributed_tasks WHERE task_id = ?', [$taskId]);
 
-        if (!$task || $task->status !== self::TASK_PENDING) {
+        if (! $task || $task->status !== self::TASK_PENDING) {
             return null;
         }
 
@@ -309,19 +328,20 @@ class DistributedAgentService
         // Find best agent using load balancing
         $agent = $this->selectBestAgent($requiredCapabilities);
 
-        if (!$agent) {
+        if (! $agent) {
             Log::warning('No available agent for task', [
                 'task_id' => $taskId,
                 'required_capabilities' => $requiredCapabilities,
             ]);
+
             return null;
         }
 
         // Acquire lock to prevent race conditions
-        $lockKey = self::REDIS_TASK_LOCK_PREFIX . $taskId;
+        $lockKey = self::REDIS_TASK_LOCK_PREFIX.$taskId;
         $lock = Cache::lock($lockKey, 10);
 
-        if (!$lock->get()) {
+        if (! $lock->get()) {
             return null; // Another process is handling this task
         }
 
@@ -329,11 +349,11 @@ class DistributedAgentService
             $now = now();
 
             // Assign task to agent
-            $sql = "
+            $sql = '
                 UPDATE distributed_tasks
-                SET assigned_agent_id = ?, status = ?, assigned_at = ?, updated_at = ?
-                WHERE task_id = ? AND status = ?
-            ";
+                SET assigned_agent_id = ?, status = ?, assigned_at = ?, updated_at = ?, assignment_generation = assignment_generation + 1
+                WHERE task_id = ? AND status = ? AND retry_count = ? AND assignment_generation = ?
+            ';
 
             $affected = DB::update($sql, [
                 $agent['id'],
@@ -342,17 +362,19 @@ class DistributedAgentService
                 $now,
                 $taskId,
                 self::TASK_PENDING,
+                (int) $task->retry_count,
+                (int) $task->assignment_generation,
             ]);
 
             if ($affected > 0) {
                 // Increment agent load
                 DB::update(
-                    "UPDATE distributed_agents SET current_load = current_load + 1, updated_at = ? WHERE id = ?",
+                    'UPDATE distributed_agents SET current_load = current_load + 1, updated_at = ? WHERE id = ?',
                     [$now, $agent['id']]
                 );
 
                 // Dispatch job to Horizon queue for the assigned agent
-                $this->dispatchTaskToAgent($taskId, $agent['agent_id']);
+                $this->dispatchTaskToAgent($taskId, $agent['agent_id'], (int) $task->retry_count, (int) $task->assignment_generation + 1);
 
                 Log::info('Task assigned', [
                     'task_id' => $taskId,
@@ -377,7 +399,7 @@ class DistributedAgentService
     /**
      * Select the best agent using weighted load balancing
      *
-     * @param array $requiredCapabilities Required capabilities
+     * @param  array  $requiredCapabilities  Required capabilities
      * @return array|null Best agent or null
      */
     private function selectBestAgent(array $requiredCapabilities = []): ?array
@@ -417,11 +439,12 @@ class DistributedAgentService
                 : 0.5;
 
             $agent['score'] = ($loadRatio * 0.5) + ($performanceScore * 0.3) + ($reliabilityScore * 0.2);
+
             return $agent;
         }, $availableAgents);
 
         // Sort by score (ascending)
-        usort($scoredAgents, fn($a, $b) => $a['score'] <=> $b['score']);
+        usort($scoredAgents, fn ($a, $b) => $a['score'] <=> $b['score']);
 
         return $scoredAgents[0] ?? null;
     }
@@ -429,13 +452,18 @@ class DistributedAgentService
     /**
      * Mark task as started by agent
      */
-    public function startTask(string $taskId, string $agentId): bool
+    public function startTask(string $taskId, string $agentId, int $attempt = 0, ?int $assignmentGeneration = null): bool
     {
-        $sql = "
+        if ($assignmentGeneration === null || $assignmentGeneration < 1) {
+            return false;
+        }
+        $sql = '
             UPDATE distributed_tasks
             SET status = ?, started_at = ?, updated_at = ?
-            WHERE task_id = ? AND status = ?
-        ";
+            WHERE task_id = ? AND status = ? AND retry_count = ?
+                AND assigned_agent_id = (SELECT id FROM distributed_agents WHERE agent_id = ?)
+                AND assignment_generation = ?
+        ';
 
         $affected = DB::update($sql, [
             self::TASK_RUNNING,
@@ -443,6 +471,9 @@ class DistributedAgentService
             now(),
             $taskId,
             self::TASK_ASSIGNED,
+            $attempt,
+            $agentId,
+            $assignmentGeneration,
         ]);
 
         if ($affected > 0) {
@@ -456,22 +487,29 @@ class DistributedAgentService
     /**
      * Complete a task with result
      */
-    public function completeTask(string $taskId, array $result, int $durationMs = 0): bool
+    public function completeTask(string $taskId, array $result, int $durationMs, string $agentId, int $attempt, ?int $assignmentGeneration = null): bool
     {
         $now = now();
 
         // Get task to find assigned agent
-        $task = DB::selectOne("SELECT * FROM distributed_tasks WHERE task_id = ?", [$taskId]);
+        $task = DB::selectOne('SELECT * FROM distributed_tasks WHERE task_id = ?', [$taskId]);
 
-        if (!$task) {
+        if (! $task) {
+            return false;
+        }
+        $agent = DB::selectOne('SELECT id FROM distributed_agents WHERE agent_id = ?', [$agentId]);
+        if ($assignmentGeneration === null || $assignmentGeneration < 1
+            || (int) $task->assignment_generation !== $assignmentGeneration
+            || ! $agent || (int) $agent->id !== (int) $task->assigned_agent_id
+            || $attempt !== (int) $task->retry_count) {
             return false;
         }
 
-        $sql = "
+        $sql = '
             UPDATE distributed_tasks
             SET status = ?, result = ?, completed_at = ?, updated_at = ?
-            WHERE task_id = ? AND status = ?
-        ";
+            WHERE task_id = ? AND status = ? AND assigned_agent_id = ? AND retry_count = ? AND assignment_generation = ?
+        ';
 
         $affected = DB::update($sql, [
             self::TASK_COMPLETED,
@@ -480,6 +518,9 @@ class DistributedAgentService
             $now,
             $taskId,
             self::TASK_RUNNING,
+            $task->assigned_agent_id,
+            (int) $task->retry_count,
+            (int) $task->assignment_generation,
         ]);
 
         if ($affected > 0 && $task->assigned_agent_id) {
@@ -501,27 +542,50 @@ class DistributedAgentService
     /**
      * Fail a task with error
      */
-    public function failTask(string $taskId, string $errorMessage, bool $canRetry = true): bool
+    public function failTask(string $taskId, string|Throwable $errorMessage, bool $canRetry = true, ?string $agentId = null, ?int $attempt = null, ?int $assignmentGeneration = null): bool
     {
+        if ($errorMessage instanceof Throwable) {
+            // Typed custody/admission stops survive wrappers; text is never replay authority.
+            $canRetry = $canRetry && ! InferenceAdmissionException::isAdmissionFailure($errorMessage);
+            $errorMessage = $errorMessage->getMessage();
+        }
         $now = now();
 
-        $task = DB::selectOne("SELECT * FROM distributed_tasks WHERE task_id = ?", [$taskId]);
+        $task = DB::selectOne('SELECT * FROM distributed_tasks WHERE task_id = ?', [$taskId]);
 
-        if (!$task) {
+        if (! $task) {
             return false;
+        }
+        if (($agentId === null) !== ($attempt === null)
+            || ($assignmentGeneration !== null && $assignmentGeneration !== (int) $task->assignment_generation)
+            || ($agentId !== null && ($assignmentGeneration === null || $assignmentGeneration < 1))
+            || ! in_array($task->status, [self::TASK_ASSIGNED, self::TASK_RUNNING], true)) {
+            return false;
+        }
+        if ($agentId !== null) {
+            $agent = DB::selectOne('SELECT id FROM distributed_agents WHERE agent_id = ?', [$agentId]);
+            if (! $agent || (int) $agent->id !== (int) $task->assigned_agent_id
+                || $attempt !== (int) $task->retry_count
+                || $assignmentGeneration !== (int) $task->assignment_generation) {
+                return false;
+            }
         }
 
         // Check if we should retry
         if ($canRetry && $task->retry_count < $task->max_retries) {
             // Increment retry count and reset to pending
-            $sql = "
+            $sql = '
                 UPDATE distributed_tasks
-                SET status = ?, retry_count = retry_count + 1, assigned_agent_id = NULL,
+                SET status = ?, retry_count = retry_count + 1, assignment_generation = assignment_generation + 1, assigned_agent_id = NULL,
                     error_message = ?, updated_at = ?
-                WHERE task_id = ?
-            ";
+                WHERE task_id = ? AND status = ? AND assigned_agent_id = ? AND retry_count = ? AND assignment_generation = ?
+            ';
 
-            DB::update($sql, [self::TASK_PENDING, $errorMessage, $now, $taskId]);
+            $affected = DB::update($sql, [self::TASK_PENDING, $errorMessage, $now, $taskId,
+                $task->status, $task->assigned_agent_id, (int) $task->retry_count, (int) $task->assignment_generation]);
+            if ($affected === 0) {
+                return false;
+            }
 
             // Dispatch for reassignment
             $this->dispatchTaskAssignment($taskId);
@@ -533,13 +597,17 @@ class DistributedAgentService
             ]);
         } else {
             // Mark as failed permanently
-            $sql = "
+            $sql = '
                 UPDATE distributed_tasks
                 SET status = ?, error_message = ?, completed_at = ?, updated_at = ?
-                WHERE task_id = ?
-            ";
+                WHERE task_id = ? AND status = ? AND assigned_agent_id = ? AND retry_count = ? AND assignment_generation = ?
+            ';
 
-            DB::update($sql, [self::TASK_FAILED, $errorMessage, $now, $now, $taskId]);
+            $affected = DB::update($sql, [self::TASK_FAILED, $errorMessage, $now, $now, $taskId,
+                $task->status, $task->assigned_agent_id, (int) $task->retry_count, (int) $task->assignment_generation]);
+            if ($affected === 0) {
+                return false;
+            }
 
             // Update batch if applicable
             $this->updateBatchProgress($taskId, true);
@@ -564,21 +632,21 @@ class DistributedAgentService
     /**
      * Create a batch of tasks for distributed execution
      *
-     * @param array $tasks Array of task definitions
-     * @param array $options Batch options
+     * @param  array  $tasks  Array of task definitions
+     * @param  array  $options  Batch options
      * @return array Batch info
      */
     public function createBatch(array $tasks, array $options = []): array
     {
         $batchId = Str::uuid()->toString();
-        $batchName = $options['name'] ?? 'Batch ' . substr($batchId, 0, 8);
+        $batchName = $options['name'] ?? 'Batch '.substr($batchId, 0, 8);
         $now = now();
 
-        $sql = "
+        $sql = '
             INSERT INTO distributed_task_batches
             (batch_id, batch_name, total_tasks, status, options, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
-        ";
+        ';
 
         DB::insert($sql, [
             $batchId,
@@ -589,7 +657,7 @@ class DistributedAgentService
             $now,
         ]);
 
-        $batchDbId = DB::selectOne("SELECT id FROM distributed_task_batches WHERE batch_id = ?", [$batchId])->id;
+        $batchDbId = DB::selectOne('SELECT id FROM distributed_task_batches WHERE batch_id = ?', [$batchId])->id;
 
         // Create individual tasks
         $taskIds = [];
@@ -603,17 +671,17 @@ class DistributedAgentService
             $taskIds[] = $taskResult['task_id'];
 
             // Link task to batch
-            $taskDbId = DB::selectOne("SELECT id FROM distributed_tasks WHERE task_id = ?", [$taskResult['task_id']])->id;
+            $taskDbId = DB::selectOne('SELECT id FROM distributed_tasks WHERE task_id = ?', [$taskResult['task_id']])->id;
 
             DB::insert(
-                "INSERT INTO distributed_task_batch_items (batch_id, task_id, sequence_order) VALUES (?, ?, ?)",
+                'INSERT INTO distributed_task_batch_items (batch_id, task_id, sequence_order) VALUES (?, ?, ?)',
                 [$batchDbId, $taskDbId, $index]
             );
         }
 
         // Update batch status and dispatch tasks
         DB::update(
-            "UPDATE distributed_task_batches SET status = ? WHERE batch_id = ?",
+            'UPDATE distributed_task_batches SET status = ? WHERE batch_id = ?',
             [self::BATCH_RUNNING, $batchId]
         );
 
@@ -641,21 +709,21 @@ class DistributedAgentService
      */
     public function getBatchStatus(string $batchId): ?array
     {
-        $batch = DB::selectOne("SELECT * FROM distributed_task_batches WHERE batch_id = ?", [$batchId]);
+        $batch = DB::selectOne('SELECT * FROM distributed_task_batches WHERE batch_id = ?', [$batchId]);
 
-        if (!$batch) {
+        if (! $batch) {
             return null;
         }
 
         // Get task statuses
-        $sql = "
+        $sql = '
             SELECT dt.status, COUNT(*) as count
             FROM distributed_tasks dt
             INNER JOIN distributed_task_batch_items bi ON dt.id = bi.task_id
             INNER JOIN distributed_task_batches b ON bi.batch_id = b.id
             WHERE b.batch_id = ?
             GROUP BY dt.status
-        ";
+        ';
 
         $statusCounts = DB::select($sql, [$batchId]);
         $counts = array_column($statusCounts, 'count', 'status');
@@ -677,16 +745,16 @@ class DistributedAgentService
     /**
      * Aggregate results from completed batch
      */
-    public function aggregateBatchResults(string $batchId, callable $aggregator = null): array
+    public function aggregateBatchResults(string $batchId, ?callable $aggregator = null): array
     {
-        $sql = "
+        $sql = '
             SELECT dt.*
             FROM distributed_tasks dt
             INNER JOIN distributed_task_batch_items bi ON dt.id = bi.task_id
             INNER JOIN distributed_task_batches b ON bi.batch_id = b.id
             WHERE b.batch_id = ? AND dt.status = ?
             ORDER BY bi.sequence_order
-        ";
+        ';
 
         $completedTasks = DB::select($sql, [$batchId, self::TASK_COMPLETED]);
 
@@ -713,7 +781,7 @@ class DistributedAgentService
 
         // Store aggregated results
         DB::update(
-            "UPDATE distributed_task_batches SET aggregated_results = ? WHERE batch_id = ?",
+            'UPDATE distributed_task_batches SET aggregated_results = ? WHERE batch_id = ?',
             [json_encode($aggregated), $batchId]
         );
 
@@ -732,10 +800,10 @@ class DistributedAgentService
         $cutoffTime = now()->subSeconds($this->agentTimeoutSeconds);
 
         // Find timed-out agents
-        $sql = "
+        $sql = '
             SELECT * FROM distributed_agents
             WHERE status IN (?, ?) AND last_heartbeat_at < ?
-        ";
+        ';
 
         $timedOutAgents = DB::select($sql, [
             self::STATUS_ONLINE,
@@ -754,7 +822,7 @@ class DistributedAgentService
 
             // Mark agent as offline
             DB::update(
-                "UPDATE distributed_agents SET status = ?, updated_at = ? WHERE id = ?",
+                'UPDATE distributed_agents SET status = ?, updated_at = ? WHERE id = ?',
                 [self::STATUS_OFFLINE, now(), $agent->id]
             );
 
@@ -782,10 +850,10 @@ class DistributedAgentService
         $now = now();
 
         // Find timed-out tasks
-        $sql = "
+        $sql = '
             SELECT * FROM distributed_tasks
             WHERE status IN (?, ?) AND timeout_at < ?
-        ";
+        ';
 
         $timedOutTasks = DB::select($sql, [
             self::TASK_ASSIGNED,
@@ -803,7 +871,9 @@ class DistributedAgentService
             ]);
 
             // Fail the task (will retry if possible)
-            $this->failTask($task->task_id, 'Task execution timed out', true);
+            if (! $this->failTask($task->task_id, 'Task execution timed out', true, assignmentGeneration: (int) $task->assignment_generation)) {
+                continue;
+            }
 
             $recovered[] = [
                 'task_id' => $task->task_id,
@@ -823,17 +893,17 @@ class DistributedAgentService
      */
     private function reassignAgentTasks(string $agentId): int
     {
-        $agent = DB::selectOne("SELECT id FROM distributed_agents WHERE agent_id = ?", [$agentId]);
+        $agent = DB::selectOne('SELECT id FROM distributed_agents WHERE agent_id = ?', [$agentId]);
 
-        if (!$agent) {
+        if (! $agent) {
             return 0;
         }
 
         // Find tasks assigned to this agent that aren't completed
-        $sql = "
-            SELECT task_id FROM distributed_tasks
+        $sql = '
+            SELECT task_id, status, retry_count, assignment_generation FROM distributed_tasks
             WHERE assigned_agent_id = ? AND status IN (?, ?)
-        ";
+        ';
 
         $tasks = DB::select($sql, [$agent->id, self::TASK_ASSIGNED, self::TASK_RUNNING]);
 
@@ -842,10 +912,13 @@ class DistributedAgentService
 
         foreach ($tasks as $task) {
             // Reset task to pending for reassignment
-            DB::update(
-                "UPDATE distributed_tasks SET status = ?, assigned_agent_id = NULL, updated_at = ? WHERE task_id = ?",
-                [self::TASK_PENDING, $now, $task->task_id]
+            $affected = DB::update(
+                'UPDATE distributed_tasks SET status = ?, assigned_agent_id = NULL, assignment_generation = assignment_generation + 1, assigned_at = NULL, started_at = NULL, updated_at = ? WHERE task_id = ? AND assigned_agent_id = ? AND status = ? AND retry_count = ? AND assignment_generation = ?',
+                [self::TASK_PENDING, $now, $task->task_id, $agent->id, $task->status, (int) $task->retry_count, (int) $task->assignment_generation]
             );
+            if ($affected === 0) {
+                continue;
+            }
 
             // Dispatch for reassignment
             $this->dispatchTaskAssignment($task->task_id);
@@ -860,17 +933,17 @@ class DistributedAgentService
      */
     private function recordHealthMetrics(string $agentId, array $metrics): void
     {
-        $agent = DB::selectOne("SELECT id, current_load FROM distributed_agents WHERE agent_id = ?", [$agentId]);
+        $agent = DB::selectOne('SELECT id, current_load FROM distributed_agents WHERE agent_id = ?', [$agentId]);
 
-        if (!$agent) {
+        if (! $agent) {
             return;
         }
 
-        $sql = "
+        $sql = '
             INSERT INTO distributed_agent_health
             (agent_id, cpu_usage, memory_usage, active_tasks, avg_response_time_ms, tasks_per_minute, custom_metrics, recorded_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ";
+        ';
 
         DB::insert($sql, [
             $agent->id,
@@ -893,7 +966,7 @@ class DistributedAgentService
      */
     public function getSystemLoad(): array
     {
-        $sql = "
+        $sql = '
             SELECT
                 COUNT(*) as total_agents,
                 SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as online_agents,
@@ -902,7 +975,7 @@ class DistributedAgentService
                 SUM(max_concurrent_tasks) as total_capacity
             FROM distributed_agents
             WHERE status != ?
-        ";
+        ';
 
         $agentStats = DB::selectOne($sql, [
             self::STATUS_ONLINE,
@@ -910,12 +983,12 @@ class DistributedAgentService
             self::STATUS_OFFLINE,
         ]);
 
-        $sql = "
+        $sql = '
             SELECT status, COUNT(*) as count
             FROM distributed_tasks
             WHERE created_at > ?
             GROUP BY status
-        ";
+        ';
 
         $taskStats = DB::select($sql, [now()->subHours(24)]);
         $taskCounts = array_column($taskStats, 'count', 'status');
@@ -946,7 +1019,7 @@ class DistributedAgentService
      */
     public function drainAgent(string $agentId): bool
     {
-        $sql = "UPDATE distributed_agents SET status = ?, updated_at = ? WHERE agent_id = ? AND status != ?";
+        $sql = 'UPDATE distributed_agents SET status = ?, updated_at = ? WHERE agent_id = ? AND status != ?';
         $affected = DB::update($sql, [self::STATUS_DRAINING, now(), $agentId, self::STATUS_OFFLINE]);
 
         Log::info('Agent draining', ['agent_id' => $agentId]);
@@ -961,7 +1034,7 @@ class DistributedAgentService
     private function cacheAgentState(string $agentId, array $state): void
     {
         Cache::put(
-            self::REDIS_AGENT_PREFIX . $agentId,
+            self::REDIS_AGENT_PREFIX.$agentId,
             $state,
             $this->agentTimeoutSeconds * 2
         );
@@ -970,13 +1043,13 @@ class DistributedAgentService
     private function updateAgentBusyStatus(string $agentId): void
     {
         $agent = DB::selectOne(
-            "SELECT current_load, max_concurrent_tasks FROM distributed_agents WHERE agent_id = ?",
+            'SELECT current_load, max_concurrent_tasks FROM distributed_agents WHERE agent_id = ?',
             [$agentId]
         );
 
         if ($agent && $agent->current_load >= $agent->max_concurrent_tasks) {
             DB::update(
-                "UPDATE distributed_agents SET status = ?, updated_at = ? WHERE agent_id = ?",
+                'UPDATE distributed_agents SET status = ?, updated_at = ? WHERE agent_id = ?',
                 [self::STATUS_BUSY, now(), $agentId]
             );
         }
@@ -988,7 +1061,7 @@ class DistributedAgentService
 
         if ($success) {
             // Update completion stats with running average for duration
-            $sql = "
+            $sql = '
                 UPDATE distributed_agents
                 SET current_load = GREATEST(0, current_load - 1),
                     total_tasks_completed = total_tasks_completed + 1,
@@ -996,18 +1069,18 @@ class DistributedAgentService
                     status = CASE WHEN current_load <= 1 THEN ? ELSE status END,
                     updated_at = ?
                 WHERE id = ?
-            ";
+            ';
 
             DB::update($sql, [$durationMs, self::STATUS_ONLINE, $now, $agentDbId]);
         } else {
-            $sql = "
+            $sql = '
                 UPDATE distributed_agents
                 SET current_load = GREATEST(0, current_load - 1),
                     total_tasks_failed = total_tasks_failed + 1,
                     status = CASE WHEN current_load <= 1 THEN ? ELSE status END,
                     updated_at = ?
                 WHERE id = ?
-            ";
+            ';
 
             DB::update($sql, [self::STATUS_ONLINE, $now, $agentDbId]);
         }
@@ -1016,17 +1089,17 @@ class DistributedAgentService
     private function updateBatchProgress(string $taskId, bool $failed = false): void
     {
         // Find batch containing this task
-        $sql = "
+        $sql = '
             SELECT b.batch_id
             FROM distributed_task_batches b
             INNER JOIN distributed_task_batch_items bi ON b.id = bi.batch_id
             INNER JOIN distributed_tasks t ON bi.task_id = t.id
             WHERE t.task_id = ?
-        ";
+        ';
 
         $result = DB::selectOne($sql, [$taskId]);
 
-        if (!$result) {
+        if (! $result) {
             return;
         }
 
@@ -1034,24 +1107,24 @@ class DistributedAgentService
 
         if ($failed) {
             DB::update(
-                "UPDATE distributed_task_batches SET failed_tasks = failed_tasks + 1 WHERE batch_id = ?",
+                'UPDATE distributed_task_batches SET failed_tasks = failed_tasks + 1 WHERE batch_id = ?',
                 [$batchId]
             );
         } else {
             DB::update(
-                "UPDATE distributed_task_batches SET completed_tasks = completed_tasks + 1 WHERE batch_id = ?",
+                'UPDATE distributed_task_batches SET completed_tasks = completed_tasks + 1 WHERE batch_id = ?',
                 [$batchId]
             );
         }
 
         // Check if batch is complete
-        $batch = DB::selectOne("SELECT * FROM distributed_task_batches WHERE batch_id = ?", [$batchId]);
+        $batch = DB::selectOne('SELECT * FROM distributed_task_batches WHERE batch_id = ?', [$batchId]);
 
         if ($batch && ($batch->completed_tasks + $batch->failed_tasks) >= $batch->total_tasks) {
             $finalStatus = $batch->failed_tasks > 0 ? self::BATCH_FAILED : self::BATCH_COMPLETED;
 
             DB::update(
-                "UPDATE distributed_task_batches SET status = ?, completed_at = ? WHERE batch_id = ?",
+                'UPDATE distributed_task_batches SET status = ?, completed_at = ? WHERE batch_id = ?',
                 [$finalStatus, now(), $batchId]
             );
 
@@ -1075,9 +1148,9 @@ class DistributedAgentService
         }, '', 'default');
     }
 
-    private function dispatchTaskToAgent(string $taskId, string $agentId): void
+    private function dispatchTaskToAgent(string $taskId, string $agentId, int $attempt, int $assignmentGeneration): void
     {
-        \App\Jobs\ProcessAgentTask::dispatch($taskId, $agentId);
+        ProcessAgentTask::dispatch($taskId, $agentId, $attempt, $assignmentGeneration);
 
         Log::info('Task dispatched via ProcessAgentTask', [
             'task_id' => $taskId,
@@ -1090,9 +1163,9 @@ class DistributedAgentService
      */
     public function getTask(string $taskId): ?array
     {
-        $task = DB::selectOne("SELECT * FROM distributed_tasks WHERE task_id = ?", [$taskId]);
+        $task = DB::selectOne('SELECT * FROM distributed_tasks WHERE task_id = ?', [$taskId]);
 
-        if (!$task) {
+        if (! $task) {
             return null;
         }
 
@@ -1104,6 +1177,7 @@ class DistributedAgentService
             'status' => $task->status,
             'priority' => $task->priority,
             'retry_count' => $task->retry_count,
+            'assignment_generation' => $task->assignment_generation,
             'max_retries' => $task->max_retries,
             'result' => json_decode($task->result ?? 'null', true),
             'error_message' => $task->error_message,
@@ -1119,9 +1193,9 @@ class DistributedAgentService
      */
     public function getAgent(string $agentId): ?array
     {
-        $agent = DB::selectOne("SELECT * FROM distributed_agents WHERE agent_id = ?", [$agentId]);
+        $agent = DB::selectOne('SELECT * FROM distributed_agents WHERE agent_id = ?', [$agentId]);
 
-        if (!$agent) {
+        if (! $agent) {
             return null;
         }
 

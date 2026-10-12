@@ -242,7 +242,7 @@ class NightlyOpsCommand extends Command
 
         $ai = $this->safeQuery($q,
             "SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND ai_analyzed_at IS NULL
-             AND (ai_analysis_version IS NULL OR (ai_analysis_version != 'skipped' AND ai_analysis_version NOT LIKE 'fail:%'))
+             AND (ai_analysis_version IS NULL OR (ai_analysis_version != 'skipped' AND ai_analysis_version NOT LIKE 'fail:%' AND ai_analysis_version != 'processing' AND ai_analysis_version NOT LIKE 'processing:%'))
              AND extension IN ('jpg','jpeg','png','gif','bmp','webp','tiff','tif','heic','heif','pdf','doc','docx','rtf','odt','txt','xls','xlsx','csv','ppt','pptx')");
 
         $rag = $this->safeQuery($q,
@@ -255,6 +255,7 @@ class NightlyOpsCommand extends Command
              WHERE status = 'active'
              AND extension IN ('jpg','jpeg','png','gif','bmp','webp','tiff','tif','heic','heif')
              AND date_taken IS NOT NULL
+             AND (COALESCE(date_taken_precision, 'exact') = 'exact' OR (date_taken_precision = 'year' AND date_taken_source = 'user_manual'))
              AND date_taken_source NOT LIKE 'exif_%'
              AND (exif_written IS NULL OR exif_written = 0)
              AND date_taken_confidence >= 0.3");

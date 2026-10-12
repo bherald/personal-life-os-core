@@ -41,11 +41,13 @@ class FaceMigrateEmbeddingsCommand extends Command
         $limit = (int) $this->option('limit');
         $dryRun = $this->option('dry-run');
 
-        // Count source data
-        $totalFaces = DB::selectOne('SELECT COUNT(*) as cnt FROM file_registry_faces')->cnt;
+        // This lifecycle migration is limited to current source rows. It does
+        // not infer provenance for legacy/history records.
+        $totalFaces = DB::selectOne('SELECT COUNT(*) as cnt FROM file_registry_faces WHERE source_current = 1 AND superseded_at IS NULL')->cnt;
         $withEmbedding = DB::selectOne("
             SELECT COUNT(*) as cnt FROM file_registry_faces
-            WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
+            WHERE source_current = 1 AND superseded_at IS NULL
+              AND embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
         ")->cnt;
         $withoutEmbedding = $totalFaces - $withEmbedding;
 
@@ -153,7 +155,8 @@ class FaceMigrateEmbeddingsCommand extends Command
         if ($limit === 0) {
             $count = DB::selectOne("
                 SELECT COUNT(*) as cnt FROM file_registry_faces
-                WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
+                WHERE source_current = 1 AND superseded_at IS NULL
+                  AND embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
             ")->cnt;
             $bar = $this->output->createProgressBar($count);
             $bar->setFormat(' %current%/%max% [%bar%] %percent:3s%% %elapsed:6s%/%estimated:-6s%');
@@ -164,9 +167,10 @@ class FaceMigrateEmbeddingsCommand extends Command
 
             $faces = DB::select("
                 SELECT id, file_registry_id, region_x, region_y, region_w, region_h,
-                       confidence, embedding, person_name, source
+                       confidence, embedding, updated_at
                 FROM file_registry_faces
-                WHERE embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
+                WHERE source_current = 1 AND superseded_at IS NULL
+                  AND embedding IS NOT NULL AND embedding != '' AND embedding != '[]'
                 ORDER BY id
                 LIMIT ? OFFSET ?
             ", [$currentBatch, $offset]);
@@ -176,6 +180,29 @@ class FaceMigrateEmbeddingsCommand extends Command
             }
 
             $offset += count($faces);
+            $ids = array_map(fn ($face) => (int) $face->id, $faces);
+            $currentFaces = DB::select('SELECT id, file_registry_id, region_x, region_y, region_w, region_h,
+                    confidence, embedding, updated_at
+                FROM file_registry_faces
+                WHERE id IN ('.implode(',', array_fill(0, count($ids), '?')).')
+                  AND source_current = 1 AND superseded_at IS NULL
+                  AND embedding IS NOT NULL AND embedding != \'\' AND embedding != \'[]\'
+                ORDER BY id', $ids);
+            $currentById = [];
+            foreach ($currentFaces as $currentFace) {
+                $currentById[(int) $currentFace->id] = $currentFace;
+            }
+            $faces = array_values(array_filter($faces, function ($face) use ($currentById) {
+                $current = $currentById[(int) $face->id] ?? null;
+
+                return $current
+                    && (int) $current->file_registry_id === (int) $face->file_registry_id
+                    && $current->embedding === $face->embedding
+                    && (string) $current->updated_at === (string) $face->updated_at;
+            }));
+            if (empty($faces)) {
+                continue;
+            }
             $values = [];
             $params = [];
 
@@ -205,7 +232,7 @@ class FaceMigrateEmbeddingsCommand extends Command
                 }
 
                 $embeddingStr = '['.implode(',', $embedding).']';
-                $values[] = '(?, ?, ?::vector, ?, ?, ?, ?, ?, NOW(), NOW())';
+                $values[] = '(?, ?, ?::vector, ?, ?, ?, ?, ?, TRUE, NULL, NOW(), NOW())';
                 $params[] = $face->file_registry_id;
                 $params[] = $face->id; // file_registry_face_id
                 $params[] = $embeddingStr;
@@ -221,10 +248,10 @@ class FaceMigrateEmbeddingsCommand extends Command
                     $sql = 'INSERT INTO face_embeddings
                             (file_registry_id, file_registry_face_id, embedding,
                              region_x, region_y, region_w, region_h, quality_score,
-                             created_at, updated_at)
+                             source_current, superseded_at, created_at, updated_at)
                             VALUES '.implode(', ', $values).'
                             ON CONFLICT (file_registry_face_id)
-                            WHERE file_registry_face_id IS NOT NULL
+                            WHERE file_registry_face_id IS NOT NULL AND source_current IS TRUE AND superseded_at IS NULL
                             DO NOTHING';
 
                     DB::connection('pgsql_rag')->insert($sql, $params);
@@ -245,6 +272,20 @@ class FaceMigrateEmbeddingsCommand extends Command
     private function insertRowByRow(array $faces, $bar): void
     {
         foreach ($faces as $face) {
+            $current = DB::selectOne('SELECT id, file_registry_id, region_x, region_y, region_w, region_h,
+                    confidence, embedding, updated_at
+                FROM file_registry_faces
+                WHERE id = ? AND file_registry_id = ? AND source_current = 1 AND superseded_at IS NULL
+                  AND embedding IS NOT NULL AND embedding != \'\' AND embedding != \'[]\'',
+                [$face->id, $face->file_registry_id]);
+            if (! $current || $current->embedding !== $face->embedding
+                || (string) $current->updated_at !== (string) $face->updated_at) {
+                $this->skipped++;
+                $bar?->advance();
+
+                continue;
+            }
+            $face = $current;
             $embedding = json_decode($face->embedding, true);
             if (! is_array($embedding) || count($embedding) !== 128) {
                 $this->skipped++;
@@ -258,12 +299,12 @@ class FaceMigrateEmbeddingsCommand extends Command
             try {
                 DB::connection('pgsql_rag')->insert('
                     INSERT INTO face_embeddings
-                    (file_registry_id, file_registry_face_id, embedding,
+                     (file_registry_id, file_registry_face_id, embedding,
                      region_x, region_y, region_w, region_h, quality_score,
-                     created_at, updated_at)
-                    VALUES (?, ?, ?::vector, ?, ?, ?, ?, ?, NOW(), NOW())
+                     source_current, superseded_at, created_at, updated_at)
+                    VALUES (?, ?, ?::vector, ?, ?, ?, ?, ?, TRUE, NULL, NOW(), NOW())
                     ON CONFLICT (file_registry_face_id)
-                    WHERE file_registry_face_id IS NOT NULL
+                    WHERE file_registry_face_id IS NOT NULL AND source_current IS TRUE AND superseded_at IS NULL
                     DO NOTHING
                 ', [
                     $face->file_registry_id,
@@ -294,6 +335,7 @@ class FaceMigrateEmbeddingsCommand extends Command
             FROM file_registry_faces frf
             JOIN file_registry fr ON fr.id = frf.file_registry_id
             WHERE (frf.embedding IS NULL OR frf.embedding = '' OR frf.embedding = '[]')
+              AND frf.source_current = 1 AND frf.superseded_at IS NULL
             AND fr.current_path IS NOT NULL
             LIMIT 100
         ");
@@ -368,10 +410,18 @@ class FaceMigrateEmbeddingsCommand extends Command
             if ($bestMatch && ! empty($bestMatch['embedding']) && count($bestMatch['embedding']) === 128) {
                 $embJson = json_encode($bestMatch['embedding']);
 
-                // Update MySQL
-                DB::update('
-                    UPDATE file_registry_faces SET embedding = ?, updated_at = NOW() WHERE id = ?
-                ', [$embJson, $face->id]);
+                // Update only if the row remains current and empty after
+                // detection; never refresh a historical face record.
+                $updated = DB::update("
+                    UPDATE file_registry_faces SET embedding = ?, updated_at = NOW()
+                    WHERE id = ? AND file_registry_id = ? AND source_current = 1 AND superseded_at IS NULL
+                      AND (embedding IS NULL OR embedding = '' OR embedding = '[]')
+                ", [$embJson, $face->id, $face->file_registry_id]);
+                if ($updated !== 1) {
+                    $failed++;
+
+                    continue;
+                }
 
                 // Insert into pgvector
                 $embStr = '['.implode(',', $bestMatch['embedding']).']';
@@ -382,10 +432,10 @@ class FaceMigrateEmbeddingsCommand extends Command
                         INSERT INTO face_embeddings
                         (file_registry_id, file_registry_face_id, embedding,
                          region_x, region_y, region_w, region_h,
-                         created_at, updated_at)
-                        VALUES (?, ?, ?::vector, ?, ?, ?, ?, NOW(), NOW())
+                         source_current, superseded_at, created_at, updated_at)
+                        VALUES (?, ?, ?::vector, ?, ?, ?, ?, TRUE, NULL, NOW(), NOW())
                         ON CONFLICT (file_registry_face_id)
-                        WHERE file_registry_face_id IS NOT NULL
+                        WHERE file_registry_face_id IS NOT NULL AND source_current IS TRUE AND superseded_at IS NULL
                         DO NOTHING
                     ', [
                         $face->file_registry_id,

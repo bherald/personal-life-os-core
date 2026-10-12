@@ -59,6 +59,95 @@ class NextcloudFileApiService
         $this->dataPath = config('services.nextcloud.data_path') ?: null;
     }
 
+    public const REGISTRY_SCAN_ROOT_CONFIG_KEY = 'files.registry_scan_root';
+
+    /** Resolve the operator-owned scan scope without changing folders or guessing a root. */
+    public function configuredLibraryRoot(): string
+    {
+        $configured = app(SystemConfigService::class)->get(
+            self::REGISTRY_SCAN_ROOT_CONFIG_KEY,
+            config('services.nextcloud.library_root', '/Library')
+        );
+        if (! is_string($configured) || trim($configured) === '' || str_contains($configured, "\0")
+            || str_contains($configured, '\\') || preg_match('~(?:^|/)\.{1,2}(?:/|$)~', $configured)) {
+            throw new \RuntimeException('File registry scan root held: invalid configured scope.');
+        }
+        $parts = array_values(array_filter(explode('/', trim($configured, '/')), fn ($part) => $part !== ''));
+        if ($parts === []) {
+            throw new \RuntimeException('File registry scan root held: an explicit non-root scan scope is required.');
+        }
+        $maximumParts = max(1, min(64, (int) config('file_registry.scan_root.max_components', 32)));
+        $maximumEntries = max(1, min(100000, (int) config('file_registry.scan_root.max_directory_entries', 10000)));
+        $maximumSeconds = max(0.001, min(30.0, (float) config('file_registry.scan_root.max_seconds', 2.0)));
+        $started = microtime(true);
+        if (count($parts) > $maximumParts || ! $this->dataPath || ! is_dir($this->dataPath)) {
+            throw new \RuntimeException('File registry scan root held: configured local root unavailable.');
+        }
+        $root = realpath($this->dataPath);
+        if ($root === false || ! is_readable($root)) {
+            throw new \RuntimeException('File registry scan root held: configured local root unavailable.');
+        }
+        $current = $root;
+        $resolved = [];
+        $inspected = 0;
+        $containedDirectory = static function (string $candidate) use ($root): bool {
+            $real = realpath($candidate);
+
+            return $real !== false && ($real === $root || str_starts_with($real, $root.DIRECTORY_SEPARATOR))
+                && is_dir($real) && is_readable($real);
+        };
+        foreach ($parts as $part) {
+            if (microtime(true) - $started >= $maximumSeconds) {
+                throw new \RuntimeException('File registry scan root held: resolution time bound reached.');
+            }
+            $exact = $current.DIRECTORY_SEPARATOR.$part;
+            if (file_exists($exact) || is_link($exact)) {
+                if (! $containedDirectory($exact)) {
+                    throw new \RuntimeException('File registry scan root held: scope is not a contained readable directory.');
+                }
+                $selected = $part;
+            } else {
+                $handle = @opendir($current);
+                if ($handle === false) {
+                    throw new \RuntimeException('File registry scan root held: directory resolution unavailable.');
+                }
+                $matches = [];
+                try {
+                    while (($entry = readdir($handle)) !== false) {
+                        if ($entry === '.' || $entry === '..') {
+                            continue;
+                        }
+                        if (++$inspected > $maximumEntries || microtime(true) - $started >= $maximumSeconds) {
+                            throw new \RuntimeException('File registry scan root held: directory resolution bound reached.');
+                        }
+                        if (strcasecmp($entry, $part) === 0) {
+                            if (! $containedDirectory($current.DIRECTORY_SEPARATOR.$entry)) {
+                                throw new \RuntimeException('File registry scan root held: case match is not a contained readable directory.');
+                            }
+                            $matches[] = $entry;
+                            if (count($matches) > 1) {
+                                throw new \RuntimeException('File registry scan root held: ambiguous directory case.');
+                            }
+                        }
+                    }
+                } finally {
+                    closedir($handle);
+                }
+                if (count($matches) !== 1) {
+                    throw new \RuntimeException('File registry scan root held: configured directory missing.');
+                }
+                $selected = $matches[0];
+            }
+            $current .= DIRECTORY_SEPARATOR.$selected;
+            $resolved[] = $selected;
+        }
+        if (! $containedDirectory($current)) {
+            throw new \RuntimeException('File registry scan root held: resolved directory unavailable.');
+        }
+
+        return '/'.implode('/', $resolved);
+    }
+
     /**
      * Resolve Nextcloud path to local filesystem path.
      * Returns null if direct access not available or path doesn't exist.
@@ -111,37 +200,75 @@ class NextcloudFileApiService
      * Get file info including Nextcloud's internal fileid
      *
      * @param  string  $path  Path relative to user root
+     * @param  bool  $requireFileId  Require exact DAV ID bound to an unchanged local regular file; localOnly never permits DAV.
      * @return array File info with fileid, size, mime_type, etc.
      */
-    public function getFileInfo(string $path): array
+    public function getFileInfo(string $path, bool $localOnly = false, bool $requireFileId = false): array
     {
         $path = '/'.ltrim($path, '/');
 
-        // Filesystem-first: stat() is ~1000x faster than WebDAV PROPFIND
-        $localFile = $this->localPath($path);
-        if ($localFile) {
-            try {
-                $stat = stat($localFile);
-                if ($stat !== false) {
-                    return [
-                        'success' => true,
-                        'path' => $path,
-                        'fileid' => null, // Not available from filesystem — populated later via WebDAV if needed
-                        'size' => $stat['size'],
-                        'mime_type' => $this->guessMimeType(basename($localFile)) ?? mime_content_type($localFile) ?: null,
-                        'etag' => null,
-                        'last_modified' => gmdate('D, d M Y H:i:s \G\M\T', $stat['mtime']),
-                        'source' => 'filesystem',
-                    ];
-                }
-            } catch (Exception $e) {
-                // Fall through to WebDAV
-                Log::debug('NextcloudFileApi: filesystem stat failed, falling back to WebDAV', ['path' => $path, 'error' => $e->getMessage()]);
+        // Local proof never falls through to DAV after an unsafe or changing source.
+        $local = $this->localSourceSnapshot($path, allowDirectory: true);
+        if ($local !== null) {
+            if (! ($local['success'] ?? false)) {
+                return $local;
             }
+            $localFile = $local['resolved'];
+            $isDirectory = ($local['source_fingerprint']['mode'] & 0170000) === 0040000;
+            $mime = $isDirectory ? 'httpd/unix-directory' : ($this->guessMimeType(basename($localFile)) ?? @mime_content_type($localFile) ?: null);
+            if (! $this->localSourceUnchanged($local)) {
+                return $this->localSourceHeld($path, 'source_changed');
+            }
+            $stat = $local['source_fingerprint'];
+
+            $info = [
+                'success' => true,
+                'path' => $path,
+                'fileid' => null, // Filesystem cannot prove a Nextcloud fileid.
+                'size' => $stat['size'],
+                'mime_type' => $mime,
+                'etag' => null,
+                'last_modified' => gmdate('D, d M Y H:i:s \G\M\T', $stat['mtime']),
+                'source' => 'filesystem',
+                'is_directory' => $isDirectory,
+                'source_fingerprint' => $stat,
+            ];
+            if (! $requireFileId) {
+                return $info;
+            }
+            if ($localOnly || $isDirectory) {
+                return $this->localSourceHeld($path, 'fileid_proof_unavailable');
+            }
+            $dav = $this->getDavFileInfo($path, true);
+            if (! ($dav['success'] ?? false) || ! is_int($dav['fileid'] ?? null) || $dav['fileid'] < 1
+                || ($dav['size'] ?? null) !== $stat['size']) {
+                return $this->localSourceHeld($path, 'fileid_proof_unavailable');
+            }
+            if (! $this->localSourceUnchanged($local)) {
+                return $this->localSourceHeld($path, 'source_changed');
+            }
+            $info['fileid'] = $dav['fileid'];
+            $info['fileid_evidence'] = ['source' => 'webdav', 'path' => $path, 'size' => $dav['size'],
+                'etag' => $dav['etag'] ?? null, 'last_modified' => $dav['last_modified'] ?? null];
+
+            return $info;
         }
 
-        // WebDAV fallback
-        $url = "{$this->baseUrl}/remote.php/dav/files/{$this->username}{$path}";
+        if ($requireFileId) {
+            return $this->localSourceHeld($path, 'local_source_unavailable');
+        }
+        if ($localOnly) {
+            return $this->localSourceHeld($path, 'local_source_unavailable');
+        }
+
+        return $this->getDavFileInfo($path);
+    }
+
+    private function getDavFileInfo(string $path, bool $exactFile = false): array
+    {
+        $url = $exactFile
+            ? $this->baseUrl.'/remote.php/dav/files/'.rawurlencode($this->username).implode('/', array_map('rawurlencode', explode('/', $path)))
+            : "{$this->baseUrl}/remote.php/dav/files/{$this->username}{$path}";
 
         try {
             $xml = <<<'XML'
@@ -159,12 +286,14 @@ class NextcloudFileApiService
 </d:propfind>
 XML;
 
-            $response = $this->http()
-                ->withHeaders([
-                    'Content-Type' => 'application/xml; charset=utf-8',
-                    'Depth' => '0',
-                ])
-                ->send('PROPFIND', $url, ['body' => $xml]);
+            $request = $this->http();
+            if ($exactFile) {
+                $request->withOptions(['allow_redirects' => false])->timeout(max(1, min(self::HTTP_TIMEOUT,
+                    (int) config('services.nextcloud.fileid_proof_timeout_seconds'))));
+            }
+            $response = $request->withHeaders([
+                'Content-Type' => 'application/xml; charset=utf-8', 'Depth' => '0',
+            ])->send('PROPFIND', $url, ['body' => $xml]);
 
             if (! $response->successful()) {
                 return [
@@ -174,7 +303,11 @@ XML;
                 ];
             }
 
-            return $this->parsePropfindResponse($response->body(), $path);
+            if ($exactFile && strlen($response->body()) > max(1, (int) config('services.nextcloud.fileid_proof_max_response_bytes'))) {
+                return ['success' => false, 'path' => $path, 'error' => 'DAV identity response exceeds bound.'];
+            }
+
+            return $this->parsePropfindResponse($response->body(), $path, $exactFile ? $url : null);
 
         } catch (Exception $e) {
             Log::error('NextcloudFileApi: getFileInfo failed', [
@@ -193,12 +326,12 @@ XML;
     /**
      * Parse PROPFIND response for file properties
      */
-    private function parsePropfindResponse(string $xml, string $path): array
+    private function parsePropfindResponse(string $xml, string $path, ?string $expectedUrl = null): array
     {
         try {
             libxml_use_internal_errors(true);
             $dom = new \DOMDocument;
-            $loaded = $dom->loadXML($xml);
+            $loaded = $dom->loadXML($xml, LIBXML_NONET);
 
             if (! $loaded) {
                 return ['success' => false, 'error' => 'Failed to parse XML', 'path' => $path];
@@ -214,6 +347,33 @@ XML;
                 return ['success' => false, 'error' => 'No response element', 'path' => $path];
             }
 
+            if ($expectedUrl !== null) {
+                $hrefs = $xpath->query('./d:href', $response);
+                if ($dom->doctype !== null || $xpath->query('//d:response')->length !== 1 || $hrefs->length !== 1) {
+                    return ['success' => false, 'path' => $path, 'error' => 'Ambiguous DAV source.'];
+                }
+                $href = trim($hrefs->item(0)->nodeValue);
+                $actual = parse_url($href);
+                $expected = parse_url($expectedUrl);
+                if ($actual === false || $expected === false || isset($actual['query']) || isset($actual['fragment'])
+                    || rawurldecode($actual['path'] ?? '') !== rawurldecode($expected['path'] ?? '')
+                    || (isset($actual['host']) && (($actual['host'] ?? null) !== ($expected['host'] ?? null)
+                        || ($actual['scheme'] ?? null) !== ($expected['scheme'] ?? null)
+                        || ($actual['port'] ?? null) !== ($expected['port'] ?? null)))) {
+                    return ['success' => false, 'path' => $path, 'error' => 'DAV path does not match source.'];
+                }
+                $props = $xpath->query('./d:propstat[normalize-space(d:status)="HTTP/1.1 200 OK" or normalize-space(d:status)="HTTP/2 200 OK"]/d:prop', $response);
+                $ids = $xpath->query('./oc:fileid', $props->item(0));
+                $sizes = $xpath->query('./d:getcontentlength', $props->item(0));
+                if ($props->length !== 1 || $ids->length !== 1 || $sizes->length !== 1
+                    || ! preg_match('/^[1-9][0-9]*$/D', trim($ids->item(0)->nodeValue))
+                    || ! preg_match('/^(0|[1-9][0-9]*)$/D', trim($sizes->item(0)->nodeValue))
+                    || filter_var(trim($ids->item(0)->nodeValue), FILTER_VALIDATE_INT) === false
+                    || filter_var(trim($sizes->item(0)->nodeValue), FILTER_VALIDATE_INT) === false) {
+                    return ['success' => false, 'path' => $path, 'error' => 'DAV file identity or size is unavailable.'];
+                }
+                $response = $props->item(0);
+            }
             $fileidNode = $xpath->query('.//oc:fileid', $response)->item(0);
             $sizeNode = $xpath->query('.//d:getcontentlength', $response)->item(0);
             $ocSizeNode = $xpath->query('.//oc:size', $response)->item(0);
@@ -506,27 +666,78 @@ XML;
      * @param  string  $path  Path relative to user root
      * @return array Result with hash
      */
-    public function computeFileHash(string $path): array
+    public function computeFileHash(string $path, ?float $deadline = null, bool $localOnly = false): array
     {
         $path = '/'.ltrim($path, '/');
 
-        // Filesystem-first: hash_file() is dramatically faster than streaming over WebDAV
-        $localFile = $this->localPath($path);
-        if ($localFile) {
-            try {
-                $hash = hash_file('sha256', $localFile);
-                if ($hash !== false) {
-                    return [
-                        'success' => true,
-                        'hash' => $hash,
-                        'path' => $path,
-                        'size' => filesize($localFile),
-                        'source' => 'filesystem',
-                    ];
-                }
-            } catch (Exception $e) {
-                Log::debug('NextcloudFileApi: filesystem hash failed, falling back to WebDAV', ['path' => $path]);
+        if ($deadline !== null && (! is_finite($deadline) || hrtime(true) / 1e9 >= $deadline)) {
+            return $this->localSourceHeld($path, 'hash_deadline_exceeded', retryable: true);
+        }
+
+        $local = $this->localSourceSnapshot($path);
+        if ($local !== null) {
+            if (! ($local['success'] ?? false)) {
+                return $local;
             }
+            $handle = @fopen($local['resolved'], 'rb');
+            if ($handle === false) {
+                return $this->localSourceHeld($path, 'source_unreadable');
+            }
+            try {
+                $opened = $this->localSourceFingerprint(fstat($handle));
+                if ($opened !== $local['source_fingerprint'] || ! $this->localSourceUnchanged($local)) {
+                    return $this->localSourceHeld($path, 'source_changed');
+                }
+                $context = hash_init('sha256');
+                if ($deadline === null) {
+                    $read = hash_update_stream($context, $handle, $opened['size']);
+                } else {
+                    // Bound the work between deadline checks without buffering the complete file.
+                    // Kernel reads can still block; the owning job retains its external timeout.
+                    $chunkBytes = filter_var(config('file_registry.discovery.hash_chunk_bytes'), FILTER_VALIDATE_INT,
+                        ['options' => ['min_range' => 1, 'max_range' => 1048576]]);
+                    if ($chunkBytes === false) {
+                        return $this->localSourceHeld($path, 'hash_chunk_policy_unavailable');
+                    }
+                    $read = 0;
+                    while ($read < $opened['size']) {
+                        if (hrtime(true) / 1e9 >= $deadline) {
+                            return $this->localSourceHeld($path, 'hash_deadline_exceeded', retryable: true);
+                        }
+                        $remaining = min($chunkBytes, $opened['size'] - $read);
+                        $chunkRead = hash_update_stream($context, $handle, $remaining);
+                        if ($chunkRead !== $remaining) {
+                            return $this->localSourceHeld($path, 'source_changed');
+                        }
+                        $read += $chunkRead;
+                    }
+                    if (hrtime(true) / 1e9 >= $deadline) {
+                        return $this->localSourceHeld($path, 'hash_deadline_exceeded', retryable: true);
+                    }
+                }
+                if ($read !== $opened['size'] || $this->localSourceFingerprint(fstat($handle)) !== $opened
+                    || ! $this->localSourceUnchanged($local)) {
+                    return $this->localSourceHeld($path, 'source_changed');
+                }
+
+                return [
+                    'success' => true,
+                    'hash' => hash_final($context),
+                    'path' => $path,
+                    'size' => $read,
+                    'source' => 'filesystem',
+                    'source_fingerprint' => $opened,
+                ];
+            } catch (\Throwable $e) {
+                return $this->localSourceHeld($path, 'source_unreadable_or_changed');
+            } finally {
+                fclose($handle);
+            }
+        }
+
+        if ($localOnly || $deadline !== null) {
+            // A bounded native intake must not switch to an unbounded remote body read.
+            return $this->localSourceHeld($path, 'local_source_unavailable', retryable: true);
         }
 
         // WebDAV fallback
@@ -569,6 +780,64 @@ XML;
                 'path' => $path,
             ];
         }
+    }
+
+    /** Null retains the existing DAV fallback only when no local source is available. */
+    private function localSourceSnapshot(string $path, bool $allowDirectory = false): ?array
+    {
+        if (! $this->dataPath) {
+            return null;
+        }
+        if (str_contains($path, "\0") || str_contains($path, '\\') || preg_match('~(?:^|/)\.{1,2}(?:/|$)~', $path)) {
+            return $this->localSourceHeld($path, 'not_contained_regular_file');
+        }
+        $candidate = rtrim($this->dataPath, '/').'/'.ltrim($path, '/');
+        clearstatcache(true, $candidate);
+        if (! file_exists($candidate) && ! is_link($candidate)) {
+            return null;
+        }
+        $root = realpath($this->dataPath);
+        $resolved = realpath($candidate);
+        if ($root === false || $resolved === false
+            || (! str_starts_with($resolved, rtrim($root, '/').'/') && ! ($allowDirectory && $resolved === $root))) {
+            return $this->localSourceHeld($path, 'not_contained_regular_file');
+        }
+        clearstatcache(true, $resolved);
+        $fingerprint = $this->localSourceFingerprint(@stat($resolved), $allowDirectory);
+        if ($fingerprint === null) {
+            return $this->localSourceHeld($path, 'not_contained_regular_file');
+        }
+
+        return ['success' => true, 'path' => $path, 'candidate' => $candidate, 'resolved' => $resolved,
+            'root' => $root, 'source_fingerprint' => $fingerprint, 'allow_directory' => $allowDirectory];
+    }
+
+    private function localSourceFingerprint(array|false $stat, bool $allowDirectory = false): ?array
+    {
+        if ($stat === false || (($stat['mode'] & 0170000) !== 0100000
+            && ! ($allowDirectory && ($stat['mode'] & 0170000) === 0040000))) {
+            return null;
+        }
+
+        return array_intersect_key($stat, array_flip(['dev', 'ino', 'mode', 'size', 'mtime', 'ctime']));
+    }
+
+    private function localSourceUnchanged(array $local): bool
+    {
+        clearstatcache(true, $local['candidate']);
+        clearstatcache(true, $local['resolved']);
+        clearstatcache(true, $this->dataPath);
+
+        return realpath($this->dataPath) === $local['root']
+            && realpath($local['candidate']) === $local['resolved']
+            && $this->localSourceFingerprint(@stat($local['resolved']), $local['allow_directory']) === $local['source_fingerprint'];
+    }
+
+    private function localSourceHeld(string $path, string $reason, bool $retryable = false): array
+    {
+        return ['success' => false, 'path' => $path, 'source' => 'filesystem',
+            'error' => 'Local source proof unavailable: '.$reason, 'reason' => $reason,
+            'review_required' => ! $retryable, 'retryable' => $retryable];
     }
 
     /**

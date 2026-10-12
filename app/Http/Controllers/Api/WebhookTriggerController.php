@@ -11,15 +11,19 @@ class WebhookTriggerController extends Controller
 {
     public function handle(string $token, Request $request, WebhookTriggerService $service): JsonResponse
     {
-        if (!$service->validateRequest($token, $request)) {
+        if (! $service->validateRequest($token, $request)) {
             return response()->json([
                 'success' => false,
                 'error' => 'Invalid webhook request',
             ], 401);
         }
 
-        $result = $service->triggerWorkflow($token, $request->all());
-        if (!($result['success'] ?? false)) {
+        $result = $service->triggerWorkflow(
+            $token,
+            $request->all(),
+            $service->resolveDeliveryId($request)
+        );
+        if (! ($result['success'] ?? false)) {
             return response()->json($result, 422);
         }
 

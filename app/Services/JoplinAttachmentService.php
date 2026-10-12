@@ -216,7 +216,6 @@ class JoplinAttachmentService
             $extractResult = $this->extractionService->extract($tempFile, [
                 'use_vision' => ! $isPdf,
                 'use_ocr' => true,
-                'use_claude' => ! $isPdf,
                 'extract_entities' => ! $isPdf,
                 // Some PDFs can wedge Tika long enough to exhaust the queue job.
                 // For Joplin PDFs, prefer text/OCR and skip AI enrichment in the queue path.

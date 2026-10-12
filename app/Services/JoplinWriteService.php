@@ -4,6 +4,8 @@ namespace App\Services;
 
 use App\Support\JoplinPaths;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -113,8 +115,24 @@ class JoplinWriteService
                 }
             }
 
-            // Generate unique ID (32-char hex, Joplin format)
-            $noteId = $this->generateJoplinId();
+            // Stable YouTube identity survives queue replay, lost acknowledgements and host races.
+            $videoId = ($options['metadata']['source'] ?? null) === 'youtube_automation'
+                ? ($options['metadata']['video_id'] ?? '') : null;
+            if ($videoId !== null && (! is_string($videoId) || ! preg_match('/^[A-Za-z0-9_-]{11}$/D', $videoId))) {
+                throw new \RuntimeException('Invalid YouTube video identity');
+            }
+            $noteId = $videoId === null ? $this->generateJoplinId()
+                : substr(hash('sha256', 'plos.youtube.note:'.$videoId), 0, 32);
+            if ($videoId !== null) {
+                if ($this->reviewSnapshot($noteId.'.md') !== null) {
+                    return $this->existingYouTubeResult($this->readService->getNote($noteId, true), $videoId);
+                }
+                $existing = $this->readService->findYouTubeVideoNote($videoId);
+                if ($existing !== null) {
+                    return $this->existingYouTubeResult($existing, $videoId);
+                }
+                $options['metadata']['source_url'] = 'https://www.youtube.com/watch?v='.$videoId;
+            }
 
             // Get current timestamp
             $now = $this->getJoplinTimestamp();
@@ -132,7 +150,20 @@ class JoplinWriteService
             ]);
 
             // Write to WebDAV
-            $success = $this->writeFile($this->joplinPath.$noteId.'.md', $noteContent);
+            if ($videoId !== null) {
+                try {
+                    $this->reviewPut($noteId.'.md', $noteContent, null);
+                } catch (\Exception $e) {
+                    // Another host may have won, or the successful PUT acknowledgement was lost.
+                    if ($this->reviewSnapshot($noteId.'.md') !== null) {
+                        return $this->existingYouTubeResult($this->readService->getNote($noteId, true), $videoId);
+                    }
+                    throw $e;
+                }
+                $success = true;
+            } else {
+                $success = $this->writeFile($this->joplinPath.$noteId.'.md', $noteContent);
+            }
 
             if (! $success) {
                 throw new \Exception('Failed to write note file to WebDAV');
@@ -169,6 +200,20 @@ class JoplinWriteService
                 $this->lockHandler->releaseLock($lock);
             }
         }
+    }
+
+    private function existingYouTubeResult(?array $note, string $videoId): array
+    {
+        if ($note === null || $note['type'] !== 1 || $this->readService->youtubeVideoId($note) !== $videoId) {
+            throw new \RuntimeException('Existing YouTube identity conflicts; preserved without overwrite');
+        }
+
+        return [
+            'success' => true, 'queued' => false, 'reused' => true,
+            'note_id' => $note['id'], 'title' => $note['title'],
+            'parent_id' => $note['parent_id'], 'created_time' => $note['created_time'],
+            'path' => $this->joplinPath.$note['id'].'.md',
+        ];
     }
 
     /**
@@ -485,6 +530,7 @@ class JoplinWriteService
         $lines[] = 'share_id: ';
         $lines[] = 'master_key_id: ';
         $lines[] = 'icon: '.($data['metadata']['icon'] ?? '');
+        $lines[] = 'source_url: '.($data['metadata']['source_url'] ?? '');
         $lines[] = 'user_data: ';
         $lines[] = 'deleted_time: 0';
         $lines[] = 'type_: '.$data['type'];
@@ -521,6 +567,362 @@ class JoplinWriteService
             ->put($url);
 
         return $response->successful();
+    }
+
+    /** Refuse a target requiring client-side encryption; do not inspect or expose key material. */
+    public function assertReviewTargetCompatible(): void
+    {
+        $response = $this->http()->get($this->baseUrl.'/remote.php/dav/files/'.rawurlencode($this->username).$this->joplinPath.'info.json');
+        if (! $response->successful() || $response->json('version') !== 3 || $response->json('e2ee.value') !== false) {
+            throw new \RuntimeException('Review target requires a supported unencrypted v3 sync format; client encryption is not bypassed');
+        }
+    }
+
+    /** Fresh sync-target read for managed mirrors; never a cached/local-file assertion. */
+    public function reviewSnapshot(string $relative): ?array
+    {
+        $url = $this->reviewUrl($relative);
+        $response = $this->http()->get($url);
+        if ($response->status() === 404) {
+            return null;
+        }
+        if (! $response->successful()) {
+            throw new \RuntimeException('Review WebDAV read failed: HTTP '.$response->status());
+        }
+
+        return ['body' => $response->body(), 'etag' => $response->header('ETag'), 'hash' => hash('sha256', $response->body())];
+    }
+
+    /** Conditional WebDAV write prevents overwriting an edit between read and write. */
+    public function reviewPut(string $relative, string $body, ?array $previous): array
+    {
+        if ($previous !== null && empty($previous['etag'])) {
+            throw new \RuntimeException('Review target has no ETag; refusing unconditional overwrite');
+        }
+        $request = $this->http()->withHeaders($previous === null ? ['If-None-Match' => '*'] : ['If-Match' => $previous['etag']]);
+        $response = $request->withBody($body, 'application/octet-stream')->put($this->reviewUrl($relative));
+        if (! $response->successful()) {
+            throw new \RuntimeException('Review conditional write failed: HTTP '.$response->status());
+        }
+        $verified = $this->reviewSnapshot($relative);
+        if (! $verified || ! hash_equals(hash('sha256', $body), $verified['hash'])) {
+            throw new \RuntimeException('Review read-back mismatch');
+        }
+
+        return $verified;
+    }
+
+    /** Conditional delete for an item owned by a managed mirror. */
+    public function reviewDelete(string $relative, array $previous): void
+    {
+        if (empty($previous['etag']) || empty($previous['hash'])) {
+            throw new \RuntimeException('Review delete requires a verified ETag and digest');
+        }
+
+        $response = $this->http()
+            ->withHeaders(['If-Match' => $previous['etag']])
+            ->delete($this->reviewUrl($relative));
+        if (! $response->successful()) {
+            throw new \RuntimeException('Review conditional delete failed: HTTP '.$response->status());
+        }
+        if ($this->reviewSnapshot($relative) !== null) {
+            throw new \RuntimeException('Review delete read-back mismatch');
+        }
+    }
+
+    public function reviewNoteWire(string $id, string $title, string $body, string $parent, string $created): string
+    {
+        return $this->buildNoteContent([
+            'id' => $id, 'parent_id' => $parent, 'title' => $title, 'content' => $body,
+            'created_time' => $created, 'updated_time' => $this->getJoplinTimestamp(), 'type' => 1,
+        ]);
+    }
+
+    /** Compare operator-visible note fields while ignoring client-normalized wire metadata. */
+    public function reviewNoteSemanticallyMatches(string $wire, string $title, string $body, ?string $parent): bool
+    {
+        $note = $this->reviewNoteFields($wire);
+        if (! $note || $note['title'] !== $title) {
+            return false;
+        }
+
+        return ($parent === null || $note['parent_id'] === $parent)
+            && $note['type'] === '1'
+            && trim($note['content'], "\n") === trim(str_replace(["\r\n", "\r"], "\n", $body), "\n");
+    }
+
+    public function reviewNoteParent(string $wire): ?string
+    {
+        return $this->reviewNoteFields($wire)['parent_id'] ?? null;
+    }
+
+    /** Read exact body bytes, removing only the sync format's structural separators. */
+    public function reviewNoteExactFields(string $wire, string $noteId): array
+    {
+        if (! preg_match('/^[a-f0-9]{32}$/D', $noteId)
+            || ! preg_match('/\A([^\r\n]+)(\r?\n)\2/', $wire, $header)) {
+            throw new \RuntimeException('Invalid Joplin note framing');
+        }
+        $separator = $header[2].$header[2];
+        $boundary = strrpos($wire, $separator.'id: '.$noteId.$header[2]);
+        if ($boundary === false || ($boundary < strlen($header[0])
+            && $boundary + strlen($separator) !== strlen($header[0]))) {
+            throw new \RuntimeException('Missing Joplin note footer');
+        }
+        $offset = $boundary + strlen($separator);
+        $fields = [];
+        foreach (explode($header[2], substr($wire, $offset)) as $line) {
+            if (preg_match('/^(id|parent_id|type_|created_time|updated_time|user_updated_time):[ \t]*(.*)$/D', $line, $match)) {
+                if (array_key_exists($match[1], $fields)) {
+                    throw new \RuntimeException('Ambiguous Joplin note footer');
+                }
+                $fields[$match[1]] = $match[2];
+            }
+        }
+        if (($fields['id'] ?? null) !== $noteId || ($fields['type_'] ?? null) !== '1'
+            || ! isset($fields['parent_id'], $fields['updated_time'], $fields['created_time'])) {
+            throw new \RuntimeException('Incomplete Joplin note footer');
+        }
+
+        return $fields + [
+            'title' => $header[1],
+            'content' => substr($wire, strlen($header[0]), max(0, $boundary - strlen($header[0]))),
+            'footer_offset' => $offset,
+        ];
+    }
+
+    /** Caller holds the sync lock; retain source body and all unrelated wire properties. */
+    public function reviewMoveNote(string $noteId, string $parentId, string $expectedUpdated): void
+    {
+        if (! preg_match('/^[a-f0-9]{32}$/D', $parentId)) {
+            throw new \RuntimeException('Invalid Joplin move target');
+        }
+        $snapshot = $this->reviewSnapshot($noteId.'.md');
+        if ($snapshot === null) {
+            throw new \RuntimeException('Joplin move source is missing');
+        }
+        $fields = $this->reviewNoteExactFields($snapshot['body'], $noteId);
+        if ($fields['updated_time'] !== $expectedUpdated) {
+            throw new \RuntimeException('Joplin move source changed since inventory');
+        }
+        if ($fields['parent_id'] === $parentId) {
+            return;
+        }
+        $now = $this->getJoplinTimestamp();
+        $footer = preg_replace_callback('/^(parent_id|updated_time|user_updated_time):[^\r\n]*/m',
+            fn (array $match): string => $match[1].': '.($match[1] === 'parent_id' ? $parentId : $now),
+            substr($snapshot['body'], $fields['footer_offset']));
+        $wire = substr($snapshot['body'], 0, $fields['footer_offset']).$footer;
+        $this->reviewPut($noteId.'.md', $wire, $snapshot);
+    }
+
+    private function reviewNoteFields(string $wire): ?array
+    {
+        $wire = str_replace(["\r\n", "\r"], "\n", $wire);
+        $lines = explode("\n", $wire);
+        $titleIndex = null;
+        foreach ($lines as $index => $line) {
+            if (trim($line) !== '') {
+                $titleIndex = $index;
+                break;
+            }
+        }
+        $metadataIndex = null;
+        foreach ($lines as $index => $line) {
+            if (preg_match('/^id:\s*[a-f0-9]{32}$/D', $line)) {
+                $metadataIndex = $index;
+                break;
+            }
+        }
+        if ($titleIndex === null || $metadataIndex === null || $metadataIndex <= $titleIndex) {
+            return null;
+        }
+        $metadata = [];
+        foreach (array_slice($lines, $metadataIndex) as $line) {
+            if (preg_match('/^(id|parent_id|type_):\s*(.*)$/D', $line, $match)) {
+                $metadata[$match[1]] = $match[2];
+            }
+        }
+
+        return [
+            'title' => trim($lines[$titleIndex]),
+            'content' => implode("\n", array_slice($lines, $titleIndex + 1, $metadataIndex - $titleIndex - 1)),
+            'parent_id' => $metadata['parent_id'] ?? null,
+            'type' => $metadata['type_'] ?? null,
+        ];
+    }
+
+    public function reviewNotebookWire(string $id, string $title, string $parent): string
+    {
+        return $this->buildNoteContent([
+            'id' => $id, 'parent_id' => $parent, 'title' => $title, 'content' => '',
+            'created_time' => $this->getJoplinTimestamp(), 'updated_time' => $this->getJoplinTimestamp(), 'type' => 2,
+        ]);
+    }
+
+    /** Immutable resources: changing a source creates a new resource, preserving older notes/history. */
+    public function reviewResource(string $id, string $filename, string $mime, string $bytes): void
+    {
+        $binary = $this->reviewSnapshot('.resource/'.$id);
+        if ($binary && ! hash_equals(hash('sha256', $bytes), $binary['hash'])) {
+            throw new \RuntimeException('Review resource identity collision');
+        }
+        if (! $binary) {
+            $this->reviewPut('.resource/'.$id, $bytes, null);
+        }
+        $meta = $this->reviewSnapshot($id.'.md');
+        if ($meta) {
+            if (! str_ends_with($meta['body'], 'type_: 4') || ! str_contains($meta['body'], "\nid: ".$id."\n")) {
+                throw new \RuntimeException('Review resource metadata collision');
+            }
+
+            return;
+        }
+        $this->reviewPut($id.'.md', $this->reviewResourceWire($id, $filename, $mime, $bytes), null);
+    }
+
+    private function reviewResourceWire(string $id, string $filename, string $mime, string $bytes): string
+    {
+        $now = $this->getJoplinTimestamp();
+        $wire = $filename."\n\nid: ".$id."\nmime: ".$mime."\nfilename: ".$filename
+            ."\ncreated_time: ".$now."\nupdated_time: ".$now."\nuser_created_time: ".$now."\nuser_updated_time: ".$now
+            ."\nfile_extension: ".pathinfo($filename, PATHINFO_EXTENSION)."\nencryption_cipher_text: \nencryption_applied: 0"
+            ."\nencryption_blob_encrypted: 0\nsize: ".strlen($bytes)."\nshare_id: \nmaster_key_id: \nuser_data: \ntype_: 4";
+
+        return $wire;
+    }
+
+    /** Bounded independent DAV requests through Laravel's existing HTTP transport. */
+    private function reviewPool(array $tasks, int $concurrency, int $timeout): array
+    {
+        $results = Http::pool(function (Pool $pool) use ($tasks, $timeout) {
+            foreach ($tasks as $path => $task) {
+                $request = $pool->as($path)->connectTimeout(self::HTTP_CONNECT_TIMEOUT)->timeout($timeout)
+                    ->withBasicAuth($this->username, $this->password);
+                if ($task['method'] === 'GET') {
+                    $request->get($this->reviewUrl($path));
+                } elseif ($task['method'] === 'DELETE') {
+                    $previous = $task['previous'];
+                    if (empty($previous['etag']) || empty($previous['hash'])) {
+                        throw new \RuntimeException('Review batch delete requires a verified receipt');
+                    }
+                    $request->withHeaders(['If-Match' => $previous['etag']])->delete($this->reviewUrl($path));
+                } else {
+                    $previous = $task['previous'];
+                    if ($previous !== null && empty($previous['etag'])) {
+                        throw new \RuntimeException('Review ETag unavailable');
+                    }
+                    $request->withHeaders($previous === null ? ['If-None-Match' => '*'] : ['If-Match' => $previous['etag']])
+                        ->withBody($task['body'], 'application/octet-stream')->put($this->reviewUrl($path));
+                }
+            }
+        }, $concurrency);
+        foreach ($results as $response) {
+            if (! $response instanceof Response) {
+                throw new \RuntimeException('Review batch transport failed; resume from receipts');
+            }
+        }
+
+        return $results;
+    }
+
+    public function reviewSnapshots(array $paths, int $concurrency, int $timeout): array
+    {
+        if (! $paths) {
+            return [];
+        }
+        $tasks = array_fill_keys($paths, ['method' => 'GET']);
+        $out = [];
+        foreach ($this->reviewPool($tasks, $concurrency, $timeout) as $path => $response) {
+            if ($response->status() === 404) {
+                $out[$path] = null;
+
+                continue;
+            }
+            if (! $response->successful()) {
+                throw new \RuntimeException('Review batch read failed: HTTP '.$response->status());
+            }
+            $out[$path] = ['body' => $response->body(), 'etag' => $response->header('ETag'), 'hash' => hash('sha256', $response->body())];
+        }
+
+        return $out;
+    }
+
+    public function reviewPuts(array $updates, int $concurrency, int $timeout): array
+    {
+        if (! $updates) {
+            return [];
+        }
+        $tasks = array_map(fn ($item) => ['method' => 'PUT'] + $item, $updates);
+        foreach ($this->reviewPool($tasks, $concurrency, $timeout) as $response) {
+            if (! $response->successful()) {
+                throw new \RuntimeException('Review batch conditional write failed: HTTP '.$response->status());
+            }
+        }
+        $verified = $this->reviewSnapshots(array_keys($updates), $concurrency, $timeout);
+        foreach ($updates as $path => $item) {
+            if (! $verified[$path] || hash('sha256', $item['body']) !== $verified[$path]['hash']) {
+                throw new \RuntimeException('Review batch read-back mismatch');
+            }
+        }
+
+        return $verified;
+    }
+
+    public function reviewDeletes(array $snapshots, int $concurrency, int $timeout): void
+    {
+        if (! $snapshots) {
+            return;
+        }
+        $tasks = array_map(fn ($previous) => ['method' => 'DELETE', 'previous' => $previous], $snapshots);
+        foreach ($this->reviewPool($tasks, $concurrency, $timeout) as $response) {
+            if (! $response->successful()) {
+                throw new \RuntimeException('Review batch conditional delete failed: HTTP '.$response->status());
+            }
+        }
+        foreach ($this->reviewSnapshots(array_keys($snapshots), $concurrency, $timeout) as $remote) {
+            if ($remote !== null) {
+                throw new \RuntimeException('Review batch delete read-back mismatch');
+            }
+        }
+    }
+
+    public function reviewResources(array $items, int $concurrency, int $timeout): void
+    {
+        $paths = [];
+        foreach ($items as $item) {
+            $paths[] = '.resource/'.$item['id'];
+            $paths[] = $item['id'].'.md';
+        }
+        $snapshots = $this->reviewSnapshots($paths, $concurrency, $timeout);
+        $updates = [];
+        foreach ($items as $item) {
+            ['id' => $id, 'filename' => $filename, 'mime' => $mime, 'bytes' => $bytes] = $item;
+            $binary = $snapshots['.resource/'.$id];
+            $meta = $snapshots[$id.'.md'];
+            if ($binary && hash('sha256', $bytes) !== $binary['hash']) {
+                throw new \RuntimeException('Review resource identity collision');
+            }
+            if ($meta && (! str_ends_with($meta['body'], 'type_: 4') || ! str_contains($meta['body'], "\nid: ".$id."\n"))) {
+                throw new \RuntimeException('Review resource metadata collision');
+            }
+            if (! $binary) {
+                $updates['.resource/'.$id] = ['body' => $bytes, 'previous' => null];
+            }
+            if (! $meta) {
+                $updates[$id.'.md'] = ['body' => $this->reviewResourceWire($id, $filename, $mime, $bytes), 'previous' => null];
+            }
+        }
+        $this->reviewPuts($updates, $concurrency, $timeout);
+    }
+
+    private function reviewUrl(string $relative): string
+    {
+        if (! preg_match('~^(?:[a-f0-9]{32}\.md|\.resource/[a-f0-9]{32})$~D', $relative)) {
+            throw new \InvalidArgumentException('Invalid managed Joplin item path');
+        }
+
+        return $this->baseUrl.'/remote.php/dav/files/'.rawurlencode($this->username).$this->joplinPath.$relative;
     }
 
     /**

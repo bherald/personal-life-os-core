@@ -169,6 +169,16 @@ class GenealogyReviewPacketDecisionService
                     'error' => $validationGuardError,
                 ];
             }
+
+            if ($this->isFacePhotoRepairPacket($row, $details)) {
+                $reviewability = app(GenealogyReviewPacketFocusService::class)->facePhotoReviewability($details, true);
+                if (! ($reviewability['ready'] ?? false)) {
+                    return [
+                        'success' => false,
+                        'error' => 'Face/photo packet is diagnostic only: '.(string) ($reviewability['blocker_label'] ?? 'candidate comparison evidence is incomplete').'.',
+                    ];
+                }
+            }
         }
 
         return DB::transaction(function () use (
@@ -263,6 +273,17 @@ class GenealogyReviewPacketDecisionService
      */
     private function materializeSafeResearchTasks(object $row, array $details): array
     {
+        if ($this->isFacePhotoRepairPacket($row, $details)) {
+            return [
+                'success' => true,
+                'status' => 'not_implemented',
+                'materialized_count' => 0,
+                'reused_count' => 0,
+                'research_task_ids' => [],
+                'existing_research_task_ids' => [],
+            ];
+        }
+
         $operations = $this->safeResearchTaskOperations($details);
         if ($operations === []) {
             return [
@@ -458,6 +479,47 @@ class GenealogyReviewPacketDecisionService
         }
 
         return $this->limitText($question ?? (string) ($row->summary ?? $row->title ?? ''), 1000);
+    }
+
+    /**
+     * Face/photo repair packets stay operator-review only. The non-face research
+     * task runner intentionally refuses these prompts, so do not create queued
+     * tasks that can only accumulate.
+     *
+     * @param  array<string, mixed>  $details
+     */
+    private function isFacePhotoRepairPacket(object $row, array $details): bool
+    {
+        if ($this->text($row->finding_type ?? null) === 'face_person_source_repair_plan') {
+            return true;
+        }
+
+        $packet = is_array($details['packet'] ?? null) ? $details['packet'] : $details;
+        $metadata = is_array($packet['metadata'] ?? null) ? $packet['metadata'] : [];
+
+        $markers = [
+            $packet['finding_type'] ?? null,
+            $packet['packet_identity_scope'] ?? null,
+            $metadata['origin'] ?? null,
+            $metadata['finding_type'] ?? null,
+        ];
+
+        foreach ($markers as $marker) {
+            $text = $this->text($marker);
+            if ($text === null) {
+                continue;
+            }
+
+            if (in_array($text, [
+                'face_person_source_repair_plan',
+                'face_photo_provenance_repair',
+                'ops:face-person-source-repair-plan',
+            ], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

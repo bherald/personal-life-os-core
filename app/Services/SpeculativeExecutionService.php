@@ -44,9 +44,10 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
         'arbitration_lock_seconds' => 300,
         'request_flag_ttl_seconds' => 3600,
         'auto_disable_ttl_seconds' => 86400,
+        'max_speculative_queue' => 2,
+        'speculative_variance_threshold' => 1.0,
+        'speculative_min_uplift' => 10.0,
     ];
-
-    // N82: runtime thresholds read from config/agents.php
 
     private ?AIService $aiService = null;
 
@@ -58,6 +59,7 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
         if ($this->aiService === null) {
             $this->aiService = app(AIService::class);
         }
+
         return $this->aiService;
     }
 
@@ -71,7 +73,7 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
     public function execute(string $agentId, string $task, array $options = []): array
     {
         $startTime = microtime(true);
-        $specRunId = 'spec_' . Str::random(12);
+        $specRunId = 'spec_'.Str::random(12);
         $triggerType = $options['trigger_type'] ?? 'manual';
 
         // Select 2 modes to compare
@@ -115,7 +117,7 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
         DB::update("UPDATE speculative_executions SET status = 'running' WHERE spec_run_id = ?", [$specRunId]);
         Cache::put("{$prefix}:status", 'running', $this->coordinationTtlSeconds());
 
-        Log::info("SpeculativeExecution: Dispatched", [
+        Log::info('SpeculativeExecution: Dispatched', [
             'spec_run_id' => $specRunId,
             'agent_id' => $agentId,
             'branch_a' => $modeA,
@@ -151,7 +153,7 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
     public function selectModes(string $agentId, string $task): array
     {
         // 1. Check benchmark data for this agent
-        $benchStats = DB::select("
+        $benchStats = DB::select('
             SELECT workflow_mode,
                    AVG(accuracy_score) as avg_accuracy,
                    AVG(completeness_score) as avg_completeness,
@@ -159,11 +161,11 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
                    AVG(duration_ms) as avg_duration,
                    COUNT(*) as runs
             FROM agent_benchmarks
-            WHERE agent_id = ? AND accuracy_score IS NOT NULL
+            WHERE agent_id = ? AND accuracy_score IS NOT NULL AND promotion_eligible = 1
             GROUP BY workflow_mode
             HAVING runs >= 2
             ORDER BY (AVG(accuracy_score) + AVG(completeness_score) + AVG(relevance_score)) DESC
-        ", [$agentId]);
+        ', [$agentId]);
 
         if (count($benchStats) >= 2) {
             // Pick top scorer vs runner-up for head-to-head
@@ -174,12 +176,12 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
         $allModes = ['agentic', 'hybrid', 'deterministic'];
         $modesWithProcedures = [];
         foreach ($allModes as $mode) {
-            $found = DB::selectOne("
+            $found = DB::selectOne('
                 SELECT 1 FROM agent_procedures
                 WHERE agent_id = ?
                   AND trigger_pattern LIKE ?
                 LIMIT 1
-            ", [$agentId, "%{$mode}%"]);
+            ', [$agentId, "%{$mode}%"]);
             if ($found) {
                 $modesWithProcedures[] = $mode;
             }
@@ -202,7 +204,7 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
     public function arbitrate(string $specRunId): array
     {
         $run = $this->getRun($specRunId);
-        if (!$run) {
+        if (! $run) {
             throw new \RuntimeException("Speculative run not found: {$specRunId}");
         }
 
@@ -215,19 +217,19 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
         $resultA = json_decode(Cache::get("{$prefix}:branch_a:result") ?? '{}', true);
         $resultB = json_decode(Cache::get("{$prefix}:branch_b:result") ?? '{}', true);
 
-        $successA = !empty($resultA['success']);
-        $successB = !empty($resultB['success']);
+        $successA = ! empty($resultA['success']);
+        $successB = ! empty($resultB['success']);
 
         // If one branch failed, the other wins automatically
-        if ($successA && !$successB) {
+        if ($successA && ! $successB) {
             return $this->recordWinner($specRunId, $run, 'branch_a', $resultA, $resultB,
                 'Branch B failed, Branch A wins by default', 0);
         }
-        if (!$successA && $successB) {
+        if (! $successA && $successB) {
             return $this->recordWinner($specRunId, $run, 'branch_b', $resultA, $resultB,
                 'Branch A failed, Branch B wins by default', 0);
         }
-        if (!$successA && !$successB) {
+        if (! $successA && ! $successB) {
             return $this->recordFailure($specRunId, 'Both branches failed');
         }
 
@@ -254,8 +256,8 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
             // Parse judge response
             $judgment = $this->parseJudgment($content);
 
-            if (!$judgment) {
-                Log::warning("SpeculativeExecution: Could not parse arbitration response", [
+            if (! $judgment) {
+                Log::warning('SpeculativeExecution: Could not parse arbitration response', [
                     'spec_run_id' => $specRunId,
                     'response' => substr($content, 0, 500),
                 ]);
@@ -285,9 +287,9 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
             $uplift = $loserTotal > 0 ? round(($winnerTotal - $loserTotal) / $loserTotal * 100, 2) : 0;
 
             // Update arbitration tokens
-            DB::update("
+            DB::update('
                 UPDATE speculative_executions SET arbitration_tokens = ? WHERE spec_run_id = ?
-            ", [$tokens, $specRunId]);
+            ', [$tokens, $specRunId]);
 
             // Store benchmark entries for both branches
             $this->storeBenchmarkEntries($specRunId, $run, $resultA, $resultB, $scoresA, $scoresB);
@@ -301,14 +303,14 @@ class SpeculativeExecutionService implements ReviewApprovalHandler
             return $result;
 
         } catch (\Throwable $e) {
-            Log::error("SpeculativeExecution: Arbitration LLM call failed", [
+            Log::error('SpeculativeExecution: Arbitration LLM call failed', [
                 'spec_run_id' => $specRunId,
                 'error' => $e->getMessage(),
             ]);
 
             // Graceful degradation: pick branch A as winner
             return $this->recordWinner($specRunId, $run, 'branch_a', $resultA, $resultB,
-                'Arbitration failed; defaulting to branch A. Error: ' . $e->getMessage(), 0);
+                'Arbitration failed; defaulting to branch A. Error: '.$e->getMessage(), 0);
         }
     }
 
@@ -377,27 +379,29 @@ PROMPT;
     private function extractResponse(array $result): string
     {
         // AgentLoopService returns various shapes
-        if (!empty($result['response'])) {
+        if (! empty($result['response'])) {
             return $result['response'];
         }
-        if (!empty($result['final_response'])) {
+        if (! empty($result['final_response'])) {
             return $result['final_response'];
         }
-        if (!empty($result['summary'])) {
+        if (! empty($result['summary'])) {
             return $result['summary'];
         }
-        if (!empty($result['episodes'])) {
+        if (! empty($result['episodes'])) {
             // Build from episodes
             $parts = [];
             foreach ($result['episodes'] as $ep) {
                 if (is_string($ep)) {
                     $parts[] = $ep;
-                } elseif (is_array($ep) && !empty($ep['content'])) {
+                } elseif (is_array($ep) && ! empty($ep['content'])) {
                     $parts[] = $ep['content'];
                 }
             }
+
             return implode("\n", $parts);
         }
+
         return json_encode($result);
     }
 
@@ -441,7 +445,7 @@ PROMPT;
 
         $winningResult = $winner === 'branch_a' ? $resultA : $resultB;
 
-        Log::info("SpeculativeExecution: Completed", [
+        Log::info('SpeculativeExecution: Completed', [
             'spec_run_id' => $specRunId,
             'winner' => $winner,
             'winning_mode' => $winningMode,
@@ -474,7 +478,7 @@ PROMPT;
 
         Cache::put("speculative:{$specRunId}:status", 'failed', $this->coordinationTtlSeconds());
 
-        Log::warning("SpeculativeExecution: Failed", [
+        Log::warning('SpeculativeExecution: Failed', [
             'spec_run_id' => $specRunId,
             'reason' => $reason,
         ]);
@@ -497,23 +501,23 @@ PROMPT;
         array $scoresA,
         array $scoresB
     ): void {
-        $benchmarkRunId = 'spec_bench_' . Str::random(8);
+        $benchmarkRunId = 'spec_bench_'.Str::random(8);
 
         foreach (['branch_a' => [$resultA, $scoresA, $run->branch_a_mode],
-                   'branch_b' => [$resultB, $scoresB, $run->branch_b_mode]] as $branch => [$result, $scores, $mode]) {
+            'branch_b' => [$resultB, $scoresB, $run->branch_b_mode]] as $branch => [$result, $scores, $mode]) {
             try {
                 $responseSummary = mb_substr($this->extractResponse($result), 0, 1000);
-                $tokensField = $branch . '_tokens';
-                $durationField = $branch . '_duration_ms';
+                $tokensField = $branch.'_tokens';
+                $durationField = $branch.'_duration_ms';
 
-                DB::insert("
+                DB::insert('
                     INSERT INTO agent_benchmarks
                         (run_id, agent_id, task_key, task_description, workflow_mode,
                          tokens_used, duration_ms, iterations, tool_calls_count,
                          accuracy_score, completeness_score, relevance_score,
                          response_summary, success, is_speculative, spec_run_id, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NOW())
-                ", [
+                ', [
                     $benchmarkRunId,
                     $run->agent_id,
                     $run->task_key ?? $this->deriveTaskKey($run->task_description),
@@ -532,9 +536,9 @@ PROMPT;
                 ]);
 
                 // Cross-reference benchmark ID back to speculative_executions
-                $lastId = DB::selectOne("SELECT LAST_INSERT_ID() as id")?->id;
+                $lastId = DB::selectOne('SELECT LAST_INSERT_ID() as id')?->id;
                 if ($lastId) {
-                    $benchCol = $branch . '_benchmark_id';
+                    $benchCol = $branch.'_benchmark_id';
                     DB::update("UPDATE speculative_executions SET {$benchCol} = ? WHERE spec_run_id = ?", [
                         $lastId, $specRunId,
                     ]);
@@ -564,13 +568,13 @@ PROMPT;
         }
 
         // 2. Check GPU contention
-        if (!$this->isGpuAvailable()) {
+        if (! $this->isGpuAvailable()) {
             return false;
         }
 
         // 3. Check speculative queue depth
         try {
-            if (Queue::size('speculative') >= config('agents.max_speculative_queue', 2)) {
+            if (Queue::size('speculative') >= $this->maxSpeculativeQueue()) {
                 return false;
             }
         } catch (\Throwable $e) {
@@ -579,7 +583,7 @@ PROMPT;
 
         // 4. Check benchmark variance for this agent
         $variance = $this->getBenchmarkVariance($agentId);
-        if ($variance && $variance->acc_stddev > config('agents.speculative_variance_threshold', 1.0)) {
+        if ($variance && $variance->acc_stddev > $this->speculativeVarianceThreshold()) {
             return true;
         }
 
@@ -596,16 +600,16 @@ PROMPT;
      */
     private function getBenchmarkVariance(string $agentId): ?object
     {
-        return DB::selectOne("
+        return DB::selectOne('
             SELECT
                 STDDEV(accuracy_score) as acc_stddev,
                 STDDEV(completeness_score) as comp_stddev,
                 STDDEV(relevance_score) as rel_stddev,
                 COUNT(*) as total
             FROM agent_benchmarks
-            WHERE agent_id = ? AND accuracy_score IS NOT NULL
+            WHERE agent_id = ? AND accuracy_score IS NOT NULL AND promotion_eligible = 1
               AND created_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
-        ", [$agentId]);
+        ', [$agentId]);
     }
 
     /**
@@ -655,9 +659,16 @@ PROMPT;
      */
     private function isGpuAvailable(): bool
     {
-        if (Cache::has('ollama_busy_lock')) return false;
-        if (Cache::has('whisper_gpu_lock')) return false;
-        if (Cache::has('embedding_training_gpu_lock')) return false;
+        if (Cache::has('ollama_busy_lock')) {
+            return false;
+        }
+        if (Cache::has('whisper_gpu_lock')) {
+            return false;
+        }
+        if (Cache::has('embedding_training_gpu_lock')) {
+            return false;
+        }
+
         return true;
     }
 
@@ -680,17 +691,19 @@ PROMPT;
             ) recent
         ", [$agentId]);
 
-        if (!$stats || $stats->total_runs < 5) {
+        if (! $stats || $stats->total_runs < 5) {
             return; // Not enough data
         }
 
-        if ($stats->avg_uplift < config('agents.speculative_min_uplift', 10.0)) {
+        $upliftThreshold = $this->speculativeMinUplift();
+
+        if ($stats->avg_uplift < $upliftThreshold) {
             Cache::put("speculative_disabled:{$agentId}", true, $this->autoDisableTtlSeconds());
 
-            Log::warning("SpeculativeExecution: Auto-disabled for agent", [
+            Log::warning('SpeculativeExecution: Auto-disabled for agent', [
                 'agent_id' => $agentId,
                 'avg_uplift' => round($stats->avg_uplift, 2),
-                'threshold' => config('agents.speculative_min_uplift', 10.0),
+                'threshold' => $upliftThreshold,
                 'runs_evaluated' => $stats->total_runs,
                 'cooldown_hours' => $this->autoDisableTtlSeconds() / 3600,
             ]);
@@ -704,7 +717,7 @@ PROMPT;
      */
     public function getRun(string $specRunId): ?object
     {
-        return DB::selectOne("SELECT * FROM speculative_executions WHERE spec_run_id = ?", [$specRunId]);
+        return DB::selectOne('SELECT * FROM speculative_executions WHERE spec_run_id = ?', [$specRunId]);
     }
 
     /**
@@ -713,7 +726,9 @@ PROMPT;
     public function getResult(string $specRunId): ?array
     {
         $run = $this->getRun($specRunId);
-        if (!$run) return null;
+        if (! $run) {
+            return null;
+        }
 
         if (in_array($run->status, ['pending', 'running', 'arbitrating'])) {
             return null; // Still in progress
@@ -747,7 +762,7 @@ PROMPT;
     public function cancel(string $specRunId): bool
     {
         $run = $this->getRun($specRunId);
-        if (!$run || !in_array($run->status, ['pending', 'running'])) {
+        if (! $run || ! in_array($run->status, ['pending', 'running'])) {
             return false;
         }
 
@@ -757,7 +772,8 @@ PROMPT;
 
         Cache::put("speculative:{$specRunId}:status", 'cancelled', $this->coordinationTtlSeconds());
 
-        Log::info("SpeculativeExecution: Cancelled", ['spec_run_id' => $specRunId]);
+        Log::info('SpeculativeExecution: Cancelled', ['spec_run_id' => $specRunId]);
+
         return true;
     }
 
@@ -794,7 +810,7 @@ PROMPT;
                 AVG(quality_uplift_pct) as avg_uplift
             FROM speculative_executions
             {$where}
-            " . ($where ? 'AND' : 'WHERE') . " status = 'completed' AND winning_mode IS NOT NULL
+            ".($where ? 'AND' : 'WHERE')." status = 'completed' AND winning_mode IS NOT NULL
             GROUP BY winning_mode
             ORDER BY wins DESC
         ", $params);
@@ -813,8 +829,8 @@ PROMPT;
 
         // Disabled agents
         $disabledAgents = [];
-        if (!$agentId) {
-            $agents = DB::select("SELECT DISTINCT agent_id FROM speculative_executions");
+        if (! $agentId) {
+            $agents = DB::select('SELECT DISTINCT agent_id FROM speculative_executions');
             foreach ($agents as $agent) {
                 if (Cache::has("speculative_disabled:{$agent->agent_id}")) {
                     $disabledAgents[] = $agent->agent_id;
@@ -866,14 +882,14 @@ PROMPT;
     public function onApprove(int $itemId, array $details): array
     {
         $specRunId = $details['spec_run_id'] ?? null;
-        if (!$specRunId) {
+        if (! $specRunId) {
             return ['success' => false, 'error' => 'Missing spec_run_id'];
         }
 
         $overrideWinner = $details['override_winner'] ?? null;
         if ($overrideWinner && in_array($overrideWinner, ['branch_a', 'branch_b', 'tie'])) {
             $run = $this->getRun($specRunId);
-            if (!$run) {
+            if (! $run) {
                 return ['success' => false, 'error' => 'Run not found'];
             }
 
@@ -946,7 +962,7 @@ PROMPT;
         }
 
         $run = $this->getRun($specRunId);
-        if (!$run) {
+        if (! $run) {
             return ['success' => false, 'error' => 'Run not found'];
         }
 
@@ -965,6 +981,7 @@ PROMPT;
     public function speculativeStats(array $params): array
     {
         $agentId = $params['agent_id'] ?? null;
+
         return ['success' => true, 'stats' => $this->getStats($agentId)];
     }
 
@@ -979,6 +996,7 @@ PROMPT;
         }
 
         $cancelled = $this->cancel($specRunId);
+
         return ['success' => $cancelled, 'spec_run_id' => $specRunId];
     }
 
@@ -994,6 +1012,7 @@ PROMPT;
             array_filter(explode(' ', strtolower(preg_replace('/[^a-zA-Z0-9\s]/', '', $task)))),
             0, 4
         );
+
         return implode('_', $words) ?: 'unknown';
     }
 
@@ -1012,11 +1031,34 @@ PROMPT;
         return $this->runtimePolicyInt('auto_disable_ttl_seconds');
     }
 
+    private function maxSpeculativeQueue(): int
+    {
+        return $this->runtimePolicyInt('max_speculative_queue');
+    }
+
+    private function speculativeVarianceThreshold(): float
+    {
+        return $this->runtimePolicyFloat('speculative_variance_threshold');
+    }
+
+    private function speculativeMinUplift(): float
+    {
+        return $this->runtimePolicyFloat('speculative_min_uplift');
+    }
+
     private function runtimePolicyInt(string $key): int
     {
         return $this->positiveInt(
             $this->runtimePolicy()[$key] ?? null,
             (int) self::DEFAULT_RUNTIME_POLICY[$key]
+        );
+    }
+
+    private function runtimePolicyFloat(string $key): float
+    {
+        return $this->nonNegativeFloat(
+            $this->runtimePolicy()[$key] ?? null,
+            (float) self::DEFAULT_RUNTIME_POLICY[$key]
         );
     }
 
@@ -1051,5 +1093,16 @@ PROMPT;
         $intValue = (int) $value;
 
         return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    private function nonNegativeFloat(mixed $value, float $fallback): float
+    {
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $floatValue = (float) $value;
+
+        return $floatValue >= 0.0 ? $floatValue : $fallback;
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -14,7 +15,6 @@ class LogAnalysisService
         'horizon.log',
         'horizon-error.log',
         'scheduler-bg.log',
-        'agent-proxy.log',
         'queue-worker-error.log',
         'mcp-server.log',
         'queue.log',
@@ -59,8 +59,8 @@ class LogAnalysisService
 
         $files = [];
         foreach (self::KNOWN_LOG_FILES as $filename) {
-            $path = $this->logsPath . '/' . $filename;
-            if (!file_exists($path)) {
+            $path = $this->logsPath.'/'.$filename;
+            if (! file_exists($path)) {
                 continue;
             }
 
@@ -77,6 +77,7 @@ class LogAnalysisService
                     'in_window' => false,
                     'estimated_errors' => 0,
                 ];
+
                 continue;
             }
 
@@ -106,11 +107,12 @@ class LogAnalysisService
             if ($a['estimated_errors'] !== $b['estimated_errors']) {
                 return $b['estimated_errors'] - $a['estimated_errors'];
             }
+
             return strcmp($b['modified'], $a['modified']);
         });
 
         $totalErrors = array_sum(array_column($files, 'estimated_errors'));
-        $activeFiles = count(array_filter($files, fn($f) => $f['in_window']));
+        $activeFiles = count(array_filter($files, fn ($f) => $f['in_window']));
 
         return [
             'success' => true,
@@ -121,7 +123,7 @@ class LogAnalysisService
                 'total_estimated_errors' => $totalErrors,
                 'files' => $files,
             ],
-            'result_text' => "Scanned {$this->logsPath}: " . count($files) . " log files found, {$activeFiles} active in last {$hoursBack}h, ~{$totalErrors} errors estimated.",
+            'result_text' => "Scanned {$this->logsPath}: ".count($files)." log files found, {$activeFiles} active in last {$hoursBack}h, ~{$totalErrors} errors estimated.",
         ];
     }
 
@@ -135,8 +137,8 @@ class LogAnalysisService
         $severityFilter = $params['severity'] ?? 'all'; // all|error|critical|warning
         $hoursBack = $params['hours_back'] ?? 2;
 
-        $path = $this->logsPath . '/' . $filename;
-        if (!file_exists($path)) {
+        $path = $this->logsPath.'/'.$filename;
+        if (! file_exists($path)) {
             return [
                 'success' => false,
                 'result' => [],
@@ -153,19 +155,20 @@ class LogAnalysisService
             // Check if this is a new log entry (starts with timestamp)
             $isNewEntry = preg_match(self::LARAVEL_LOG_PATTERN, $line, $matches);
 
-            if (!$isNewEntry && strpos($filename, 'horizon') !== false) {
+            if (! $isNewEntry && strpos($filename, 'horizon') !== false) {
                 $isNewEntry = preg_match(self::HORIZON_FAIL_PATTERN, $line, $matches);
                 if ($isNewEntry) {
                     $matches[2] = 'ERROR'; // Normalize horizon FAIL to ERROR
                 }
             }
 
-            if (!$isNewEntry && !preg_match(self::LARAVEL_LOG_PATTERN, $line)) {
+            if (! $isNewEntry && ! preg_match(self::LARAVEL_LOG_PATTERN, $line)) {
                 // Continuation line (stack trace, context)
                 if ($currentError !== null) {
-                    $currentError['stack_trace'] .= "\n" . $line;
+                    $currentError['stack_trace'] .= "\n".$line;
                     $currentError['line_count']++;
                 }
+
                 continue;
             }
 
@@ -174,8 +177,9 @@ class LogAnalysisService
                 $errors[] = $currentError;
             }
 
-            if (!$isNewEntry) {
+            if (! $isNewEntry) {
                 $currentError = null;
+
                 continue;
             }
 
@@ -184,14 +188,16 @@ class LogAnalysisService
 
             // Time filter
             try {
-                $entryTime = \Carbon\Carbon::parse($timestamp);
+                $entryTime = Carbon::parse($timestamp);
                 if ($entryTime->lt($cutoff)) {
                     $currentError = null;
+
                     continue;
                 }
             } catch (\Throwable $e) {
                 Log::debug('LogAnalysisService: log entry timestamp parse failed', ['error' => $e->getMessage()]);
                 $currentError = null;
+
                 continue;
             }
 
@@ -201,6 +207,7 @@ class LogAnalysisService
                 $filterRank = ['critical' => 3, 'error' => 2, 'warning' => 1];
                 if (($severityRank[$level] ?? 0) < ($filterRank[$severityFilter] ?? 0)) {
                     $currentError = null;
+
                     continue;
                 }
             }
@@ -226,7 +233,7 @@ class LogAnalysisService
         // Trim stack traces to reasonable length
         foreach ($errors as &$error) {
             if (strlen($error['stack_trace']) > 500) {
-                $error['stack_trace'] = mb_substr($error['stack_trace'], 0, 500) . "\n... (truncated)";
+                $error['stack_trace'] = mb_substr($error['stack_trace'], 0, 500)."\n... (truncated)";
             }
         }
         unset($error);
@@ -244,9 +251,9 @@ class LogAnalysisService
                 'by_severity' => $bySeverity,
                 'errors' => array_slice($errors, 0, 50), // Cap at 50 for LLM context size
             ],
-            'result_text' => "Parsed {$filename}: {$errorCount} errors in last {$hoursBack}h" .
-                ($errorCount > 50 ? " (showing 50)" : "") . ". " .
-                implode(', ', array_map(fn($k, $v) => "{$v} {$k}", array_keys($bySeverity), $bySeverity)),
+            'result_text' => "Parsed {$filename}: {$errorCount} errors in last {$hoursBack}h".
+                ($errorCount > 50 ? ' (showing 50)' : '').'. '.
+                implode(', ', array_map(fn ($k, $v) => "{$v} {$k}", array_keys($bySeverity), $bySeverity)),
         ];
     }
 
@@ -259,7 +266,7 @@ class LogAnalysisService
         if (empty($errors)) {
             // If no errors passed, parse from file
             $parseResult = $this->parseLogErrors($params);
-            if (!$parseResult['success']) {
+            if (! $parseResult['success']) {
                 return $parseResult;
             }
             $errors = $parseResult['result']['errors'] ?? [];
@@ -272,7 +279,7 @@ class LogAnalysisService
             $normalized = $this->normalizeSignature($message);
             $hash = hash('sha256', $normalized);
 
-            if (!isset($clusters[$hash])) {
+            if (! isset($clusters[$hash])) {
                 $clusters[$hash] = [
                     'signature_hash' => substr($hash, 0, 12),
                     'normalized_message' => mb_substr($normalized, 0, 300),
@@ -299,7 +306,7 @@ class LogAnalysisService
 
         // Sort by count descending
         $clusterList = array_values($clusters);
-        usort($clusterList, fn($a, $b) => $b['count'] - $a['count']);
+        usort($clusterList, fn ($a, $b) => $b['count'] - $a['count']);
 
         return [
             'success' => true,
@@ -309,8 +316,8 @@ class LogAnalysisService
                 'dedup_ratio' => count($errors) > 0 ? round(1 - count($clusterList) / count($errors), 2) : 0,
                 'clusters' => $clusterList,
             ],
-            'result_text' => count($errors) . " errors deduplicated to " . count($clusterList) .
-                " unique signatures (" . round((1 - count($clusterList) / max(count($errors), 1)) * 100) . "% dedup).",
+            'result_text' => count($errors).' errors deduplicated to '.count($clusterList).
+                ' unique signatures ('.round((1 - count($clusterList) / max(count($errors), 1)) * 100).'% dedup).',
         ];
     }
 
@@ -330,7 +337,7 @@ class LogAnalysisService
             'hours_back' => $hoursBack,
         ]);
 
-        if (!$parseResult['success']) {
+        if (! $parseResult['success']) {
             return $parseResult;
         }
 
@@ -355,7 +362,7 @@ class LogAnalysisService
         // Fill buckets
         foreach ($errors as $error) {
             try {
-                $ts = \Carbon\Carbon::parse($error['timestamp']);
+                $ts = Carbon::parse($error['timestamp']);
                 $minutesAgo = $now->diffInMinutes($ts);
                 $bucketIndex = (int) floor($minutesAgo / $bucketMinutes);
                 $bucketStart = $now->copy()->subMinutes(($bucketIndex + 1) * $bucketMinutes);
@@ -368,6 +375,7 @@ class LogAnalysisService
                 }
             } catch (\Throwable $e) {
                 Log::debug('LogAnalysisService: trend bucket calculation failed', ['error' => $e->getMessage()]);
+
                 continue;
             }
         }
@@ -401,8 +409,8 @@ class LogAnalysisService
                 'older_avg_per_bucket' => round($olderAvg, 1),
                 'buckets' => $bucketList,
             ],
-            'result_text' => "Timeline for {$filename}: " . count($errors) . " errors over {$hoursBack}h, trend: {$trend} " .
-                "(recent avg: " . round($recentAvg, 1) . "/bucket, older avg: " . round($olderAvg, 1) . "/bucket).",
+            'result_text' => "Timeline for {$filename}: ".count($errors)." errors over {$hoursBack}h, trend: {$trend} ".
+                '(recent avg: '.round($recentAvg, 1).'/bucket, older avg: '.round($olderAvg, 1).'/bucket).',
         ];
     }
 
@@ -418,8 +426,8 @@ class LogAnalysisService
         $allErrors = [];
 
         foreach ($files as $filename) {
-            $path = $this->logsPath . '/' . $filename;
-            if (!file_exists($path)) {
+            $path = $this->logsPath.'/'.$filename;
+            if (! file_exists($path)) {
                 continue;
             }
 
@@ -429,7 +437,7 @@ class LogAnalysisService
                 'hours_back' => $hoursBack,
             ]);
 
-            if (!$parseResult['success']) {
+            if (! $parseResult['success']) {
                 continue;
             }
 
@@ -457,9 +465,10 @@ class LogAnalysisService
             $used[$i] = true;
 
             try {
-                $baseTime = \Carbon\Carbon::parse($allErrors[$i]['timestamp']);
+                $baseTime = Carbon::parse($allErrors[$i]['timestamp']);
             } catch (\Throwable $e) {
                 Log::debug('LogAnalysisService: correlation base timestamp parse failed', ['error' => $e->getMessage()]);
+
                 continue;
             }
 
@@ -469,7 +478,7 @@ class LogAnalysisService
                 }
 
                 try {
-                    $compareTime = \Carbon\Carbon::parse($allErrors[$j]['timestamp']);
+                    $compareTime = Carbon::parse($allErrors[$j]['timestamp']);
                     $diffSeconds = abs($baseTime->diffInSeconds($compareTime));
 
                     if ($diffSeconds > $windowSeconds) {
@@ -483,6 +492,7 @@ class LogAnalysisService
                     }
                 } catch (\Throwable $e) {
                     Log::debug('LogAnalysisService: correlation compare timestamp parse failed', ['error' => $e->getMessage()]);
+
                     continue;
                 }
             }
@@ -493,7 +503,7 @@ class LogAnalysisService
                     'timestamp' => $allErrors[$i]['timestamp'],
                     'files_involved' => $filesInvolved,
                     'error_count' => count($group),
-                    'errors' => array_map(fn($e) => [
+                    'errors' => array_map(fn ($e) => [
                         'file' => $e['source_file'],
                         'level' => $e['level'],
                         'message' => mb_substr($e['message'], 0, 200),
@@ -513,8 +523,8 @@ class LogAnalysisService
                 'correlation_groups' => count($correlations),
                 'correlations' => array_slice($correlations, 0, 50),
             ],
-            'result_text' => "Cross-log correlation: " . count($allErrors) . " errors across " . count($files) .
-                " files, found " . count($correlations) . " correlated groups (within {$windowSeconds}s window).",
+            'result_text' => 'Cross-log correlation: '.count($allErrors).' errors across '.count($files).
+                ' files, found '.count($correlations)." correlated groups (within {$windowSeconds}s window).",
         ];
     }
 
@@ -541,11 +551,11 @@ class LogAnalysisService
             'hours_back' => $baselineHours,
         ]);
 
-        if (!$currentResult['success'] || !$baselineResult['success']) {
+        if (! $currentResult['success'] || ! $baselineResult['success']) {
             return [
                 'success' => false,
                 'result' => [],
-                'result_text' => "Failed to parse log files for comparison.",
+                'result_text' => 'Failed to parse log files for comparison.',
             ];
         }
 
@@ -570,7 +580,7 @@ class LogAnalysisService
         $resolved = [];
 
         foreach ($currentByHash as $hash => $cluster) {
-            if (!isset($baselineByHash[$hash])) {
+            if (! isset($baselineByHash[$hash])) {
                 $newErrors[] = $cluster;
             } else {
                 // Compare rates (normalize to per-hour)
@@ -587,7 +597,7 @@ class LogAnalysisService
         }
 
         foreach ($baselineByHash as $hash => $cluster) {
-            if (!isset($currentByHash[$hash]) && $cluster['count'] >= 3) {
+            if (! isset($currentByHash[$hash]) && $cluster['count'] >= 3) {
                 $resolved[] = $cluster;
             }
         }
@@ -609,8 +619,8 @@ class LogAnalysisService
                     'resolved_count' => count($resolved),
                 ],
             ],
-            'result_text' => "Baseline comparison for {$filename}: " . count($newErrors) . " new errors, " .
-                count($spikes) . " spikes (3x+), " . count($resolved) . " resolved since baseline.",
+            'result_text' => "Baseline comparison for {$filename}: ".count($newErrors).' new errors, '.
+                count($spikes).' spikes (3x+), '.count($resolved).' resolved since baseline.',
         ];
     }
 
@@ -626,13 +636,13 @@ class LogAnalysisService
         $status = $params['status'] ?? 'completed';
 
         try {
-            DB::insert("
+            DB::insert('
                 INSERT INTO log_analysis_snapshots
                 (scanned_at, files_scanned, total_errors, unique_signatures,
                  bugs_found, config_issues_found, transient_count, alert_by_design_count,
                  status, signature_details, findings_summary, created_at, updated_at)
                 VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
-            ", [
+            ', [
                 $scanResult['total_files'] ?? 0,
                 $scanResult['total_estimated_errors'] ?? 0,
                 count($signatureDetails),
@@ -645,7 +655,7 @@ class LogAnalysisService
                 $findingsSummary,
             ]);
 
-            $id = DB::selectOne("SELECT LAST_INSERT_ID() as id")->id;
+            $id = DB::selectOne('SELECT LAST_INSERT_ID() as id')->id;
 
             return [
                 'success' => true,
@@ -654,10 +664,11 @@ class LogAnalysisService
             ];
         } catch (\Throwable $e) {
             Log::error('LogAnalysisService: Failed to save snapshot', ['error' => $e->getMessage()]);
+
             return [
                 'success' => false,
                 'result' => [],
-                'result_text' => "Failed to save snapshot: " . $e->getMessage(),
+                'result_text' => 'Failed to save snapshot: '.$e->getMessage(),
             ];
         }
     }
@@ -673,6 +684,7 @@ class LogAnalysisService
         }
         // Collapse whitespace
         $normalized = preg_replace('/\s+/', ' ', trim($normalized));
+
         return $normalized;
     }
 
@@ -681,14 +693,14 @@ class LogAnalysisService
      */
     private function tailFile(string $file, int $lines): array
     {
-        if (!file_exists($file)) {
+        if (! file_exists($file)) {
             return [];
         }
 
         $result = [];
         $fp = fopen($file, 'r');
 
-        if (!$fp) {
+        if (! $fp) {
             return [];
         }
 
@@ -710,7 +722,7 @@ class LogAnalysisService
                     $buffer = '';
                 }
             } else {
-                $buffer = $char . $buffer;
+                $buffer = $char.$buffer;
             }
         }
 
@@ -719,6 +731,7 @@ class LogAnalysisService
         }
 
         fclose($fp);
+
         return $result;
     }
 }

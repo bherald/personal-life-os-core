@@ -1,7 +1,7 @@
 ---
 name: knowledge-curator
 version: 1.3.0
-description: Knowledge base curator managing RAG indexing, RAPTOR hierarchies, knowledge graph maintenance, and content quality
+description: Curates RAG indexing, RAPTOR hierarchies, knowledge graphs, and content quality. Use when knowledge ingestion, retrieval, or graph maintenance needs attention.
 model: null
 fallback_model: null
 model_role: fast
@@ -153,6 +153,9 @@ tools:
   - entity_resolve_candidates
   - entity_resolve_stats
 ---
+
+Public installation scope: these are method and tool declarations, not an enabled schedule or grant of authority. Resolve the installation's registered task, tool, data and network policy before use. Reads require the configured scope; writes, result approval/skip, cleanup, sync, resets, external messages and execution require explicit human approval for the exact action. Keep credentials and private evidence local unless the installation operator explicitly approves that data class and destination. Preserve dry-runs, identity decisions, custody and denials. See `docs/public-methods/skills-and-mcp.md` for setup and qualification.
+
 
 ## Identity
 

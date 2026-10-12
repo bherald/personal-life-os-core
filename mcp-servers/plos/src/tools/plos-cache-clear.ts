@@ -8,9 +8,9 @@ export const plosCacheClearInput = z.object({
   restart_workers: z.coerce.boolean().optional().default(false)
     .describe('Also terminate Horizon and restart queue workers'),
   flush_redis: z.coerce.boolean().optional().default(false)
-    .describe('Also flush the Redis database'),
+    .describe('Legacy option: always held; global Redis flushing is not permitted'),
   confirm_disruptive: z.coerce.boolean().optional().default(false)
-    .describe('Required when flush_redis or restart_workers is true'),
+    .describe('Required when restart_workers is true; does not authorize Redis flushing'),
 });
 
 export type PlosCacheClearInput = z.infer<typeof plosCacheClearInput>;
@@ -20,21 +20,20 @@ export async function plosCacheClear(input: PlosCacheClearInput, context?: ToolC
   const remotePath = CONFIG.paths.remoteRoot;
   const sshPrefix = sshCmd();
 
-  if ((restart_workers || flush_redis) && !confirm_disruptive) {
-    return 'BLOCKED: confirm_disruptive=true is required when restart_workers or flush_redis is requested';
+  if (flush_redis) {
+    return 'HELD: global_redis_flush_not_permitted';
+  }
+  if (restart_workers && !confirm_disruptive) {
+    return 'BLOCKED: confirm_disruptive=true is required when restart_workers is requested';
   }
 
   const steps: Array<{ label: string; cmd: string }> = [
-    { label: 'cache:clear', cmd: 'php artisan cache:clear' },
+    { label: 'ops:release-cache-invalidate', cmd: 'php artisan ops:release-cache-invalidate --json' },
     { label: 'config:clear', cmd: 'php artisan config:clear' },
     { label: 'route:clear', cmd: 'php artisan route:clear' },
     { label: 'view:clear', cmd: 'php artisan view:clear' },
     { label: 'event:clear', cmd: 'php artisan event:clear' },
   ];
-
-  if (flush_redis) {
-    steps.push({ label: 'redis FLUSHDB', cmd: 'redis-cli FLUSHDB' });
-  }
 
   if (restart_workers) {
     steps.push(
@@ -47,7 +46,7 @@ export async function plosCacheClear(input: PlosCacheClearInput, context?: ToolC
   const chainedCmds = steps.map(s => s.cmd).join(' && ');
   const fullCmd = `${sshPrefix} "cd -- ${shellQuote(remotePath)} && ${chainedCmds}"`;
 
-  logger.info('Cache clear', { restart_workers, flush_redis, steps: steps.length });
+  logger.info('Scoped cache invalidation', { restart_workers, flush_redis, steps: steps.length });
 
   const results: string[] = [];
   try {
@@ -64,9 +63,9 @@ export async function plosCacheClear(input: PlosCacheClearInput, context?: ToolC
       results.push(`\n[stderr] ${stderr.trim()}`);
     }
 
-    return `[REMOTE] Cache clear complete (${steps.length} steps)\n\n${results.join('\n')}`;
+    return `[REMOTE] Scoped cache invalidation complete (${steps.length} steps)\n\n${results.join('\n')}`;
   } catch (err: unknown) {
     const error = err as { stdout?: string; stderr?: string; message?: string; code?: number };
-    return `[ERROR] Cache clear failed at step\nExit code: ${error.code}\n\n${error.stdout?.trim() || ''}\n${error.stderr?.trim() || error.message}`;
+    return `[ERROR] Scoped cache invalidation failed; remaining steps held\nExit code: ${error.code}\n\n${error.stdout?.trim() || ''}\n${error.stderr?.trim() || error.message}`;
   }
 }

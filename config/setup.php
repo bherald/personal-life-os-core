@@ -346,7 +346,10 @@ return [
                 'name' => 'playwright.chromium',
                 'engine' => 'playwright',
                 'required' => false,
-                'install_hint' => 'npx playwright install --with-deps chromium',
+                'env_keys' => ['PLAYWRIGHT_EXECUTABLE_PATH'],
+                'fallback_paths' => ['/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium'],
+                'fallback_bins' => ['google-chrome', 'chromium-browser', 'chromium', 'chrome'],
+                'install_hint' => 'set PLAYWRIGHT_EXECUTABLE_PATH, install Chrome/Chromium, or run npx playwright install --with-deps chromium',
             ],
             [
                 'name' => 'puppeteer.chrome',

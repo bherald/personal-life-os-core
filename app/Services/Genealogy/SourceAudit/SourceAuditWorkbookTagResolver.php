@@ -127,7 +127,7 @@ class SourceAuditWorkbookTagResolver
             'record_id' => $personId,
             'tree_id' => $treeId,
             'label' => $this->personLabel($person),
-            'record_url' => url('/genealogy?person='.$personId),
+            'record_url' => url('/genealogy?tree_id='.$treeId.'&person='.$personId),
             'person_id' => $personId,
             'family_id' => null,
         ];
@@ -168,7 +168,7 @@ class SourceAuditWorkbookTagResolver
             'record_id' => (int) $family->id,
             'tree_id' => $treeId,
             'label' => trim($this->personLabel($husband).' + '.$this->personLabel($wife), ' +') ?: 'Family '.$family->id,
-            'record_url' => $personId > 0 ? url('/genealogy?person='.$personId) : url('/genealogy'),
+            'record_url' => $personId > 0 ? url('/genealogy?tree_id='.$treeId.'&person='.$personId) : url('/genealogy'),
             'person_id' => $personId > 0 ? $personId : null,
             'family_id' => (int) $family->id,
         ];

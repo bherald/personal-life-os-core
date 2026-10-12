@@ -8,6 +8,13 @@ core public stack is tracked in `docs/public-release-readiness.md`.
 
 ## Verifying an Install
 
+Keep the repository's root `AGENTS.md` in the installed source tree when using
+the optional local `offline:dev-assist` surface. It is developer-authored
+repository guidance, not generated state: it must be a regular non-symlinked,
+nonempty UTF-8 file no larger than 4,500 bytes. The assistant fails closed when
+that contract is absent or invalid and never falls back to parent, nested,
+home-directory, or external-agent memory.
+
 Run `php artisan setup:doctor` after `composer install` and `cp .env.example .env`. The command is read-only — it does not install anything, it does not write outside its report, and service/database probes stay local to the configured install. Useful invocations:
 
 ```bash
@@ -68,7 +75,7 @@ Use public install tiers plus one private/operator profile for this working tree
 - **Media PLOS**: core plus file/media extraction, thumbnails, OCR, face detection/clustering, and metadata checks.
 - **GPU PLOS**: media plus host-specific PyTorch/CUDA, local transcription, embeddings, transformer, and heavier model workloads.
 - **Full PLOS**: core plus media/GPU-capable tooling, same-host Nextcloud files, genealogy intake, browser automation, search, Joplin/Thunderbird adapters, and optional local GPU acceleration.
-- **Personal PLOS**: full plus operator-local credentials and adapters such as Pushover, local Thunderbird bridge, private Joplin/Nextcloud paths, and opt-in private genealogy adapters. This profile is for private installs, not public CI. FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, and FindMyPast automation are intentionally not part of either public or private setup; keep them manual/browser-only source references. Newspapers.com remains private/personal-gated for operator-owned access, and MyHeritage automation is disabled unless explicitly enabled for a private install.
+- **Personal PLOS**: full plus operator-local credentials and adapters such as Pushover, local Thunderbird bridge, private Joplin/Nextcloud paths, and opt-in private genealogy adapters. This profile is for private installs, not public CI. FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, FindMyPast, Newspapers.com, and MyHeritage are provider-specific genealogy sources: public setup should not advertise autonomous access, while private installs may enable configured adapters or operator-visible capture routes.
 
 Do not require every media/genealogy dependency for a minimal first boot. Public setup should make optional modules fail visibly but cleanly when their tools are not installed.
 
@@ -78,12 +85,17 @@ Full-profile modules should advertise their runtime checks in the UI or installe
 
 Public documentation should describe the bells and whistles as optional install layers, not as core requirements. Pushover is the mobile notification/review adapter; it is seeded disabled and becomes active only when an operator provides credentials and enables it. Nextcloud is the preferred same-host or LAN file/calendar/contact/media layer, with WebDAV as a compatibility path. Joplin and Thunderbird are interoperability adapters for operator-managed local data, not bundled services. Ollama, Tika, SearXNG, browser automation, media/face tooling, and genealogy source adapters are similarly additive: useful for the full PLOS experience, but not required for a first core boot.
 
+OpenTelemetry collectors are optional external services. Core PLOS emits and
+locally validates content-free OTLP JSON without installing a protobuf runtime,
+generated protocol package, collector, or unattended exporter. A collector
+pilot requires separate authentication, network, retention, and privacy review.
+
 ## Required Core Runtime
 
 - Linux host, preferably Ubuntu or Debian for first public support.
 - PHP 8.3 recommended. Composer allows PHP `^8.2`, but the current operating baseline is PHP 8.3.
 - Composer 2.
-- Node.js 20+ and npm for Vite/Vue assets.
+- Node.js 22 LTS and npm 10.9+ for Vite/Vue assets.
 - `ripgrep` for public-release audit scripts and `python3-venv` for
   bare-metal smoke-test virtual environments on Debian/Ubuntu hosts.
 - MySQL or MariaDB for Laravel transactional tables.
@@ -226,6 +238,43 @@ Install these for the full media/RAG/genealogy stack:
 - Optional `yt-dlp` for YouTube transcript/media fallback paths.
 - Optional `openai-whisper` Python package or compatible `whisper` CLI for audio/video transcription and YouTube transcript fallback paths.
 
+`whisper.cpp` is monitored but is not installed or selected by these public
+prerequisites. Any alternate ASR runtime and its exact model artifact require a
+separate license review, host installation, same-fixture benchmark, and
+`content:stt-candidate-eval` operator review. The command's built-in example
+checks only the artifact contract and must not be cited as runtime evidence.
+
+Piper remains the optional local TTS baseline. Kokoro ONNX and NISQA are not
+public-install prerequisites and are not installed by PLOS. Any TTS challenger
+must separately review and pin runtime code, model, voice, fixture, and
+assessor terms, then pass same-host `audio:tts-candidate-eval` evidence before
+operator route review. The built-in example is synthetic contract validation,
+not a benchmark, license review, model admission, or installation instruction.
+
+For an isolated local Whisper CLI that reuses a host-compatible system PyTorch
+install, run `scripts/install-whisper-runtime.sh --prefetch-model`. The installer
+prints the `WHISPER_PATH`, `WHISPER_MODEL`, `WHISPER_MODEL_DIR`, and
+`WHISPER_DEVICE` values to place in the deployment environment; clear Laravel's
+config cache after changing them. The explicit model directory lets web and
+worker process users share prefetched weights without resolving different home
+directories. The installer defaults to a self-contained CPU venv and installs
+Torch from the official PyTorch CPU wheel index so PHP-FPM and queue users do
+not depend on another user's Python site packages. Use `WHISPER_DEVICE=cuda`
+only when the host Python/PyTorch build already supports the GPU's compute
+capability. The model cache is operator-installed and remains outside the
+repository.
+
+Transcription deadlines are duration-aware. `WHISPER_TIMEOUT` (default `300`)
+and `WHISPER_PREPARATION_TIMEOUT` (default `120`) are safe floors when duration
+is unknown. `WHISPER_TIMEOUT_PER_AUDIO_SECOND` (default `10`) and
+`WHISPER_TIMEOUT_CAP` (default `43200`) bound transcription; the corresponding
+preparation values are `WHISPER_PREPARATION_TIMEOUT_PER_MEDIA_SECOND` (default
+`0.5`) and `WHISPER_PREPARATION_TIMEOUT_CAP` (default `21600`).
+`WHISPER_DURATION_PROBE_TIMEOUT` (default `10`) bounds `ffprobe`. Install both
+`ffmpeg` and `ffprobe`; probe failure falls back to the floors. CUDA work uses
+the owner-scoped GPU lock, whose effective lifetime is extended for the
+calculated transcription deadline.
+
 ## Python Packages
 
 Python dependencies are split into tiered requirement files:
@@ -301,7 +350,11 @@ Normal app setup uses `npm install` and `npm run build`, but full functionality 
 - Puppeteer browser cache or a configured system Chrome/Chromium path.
 - `PUPPETEER_EXECUTABLE_PATH` or equivalent env config for hardened/server deployments.
 - Optional Node browser helper servers under `scripts/browser-server`.
-- Optional MCP packages from `package.json`, including filesystem, memory, puppeteer, sequential-thinking, Nextcloud, and graphlit MCP packages.
+- MCP packages from `package.json`, including exact locked filesystem, memory,
+  puppeteer, sequential-thinking, Nextcloud, and Everything runtimes. Use
+  `npm ci`/the committed lock; PLOS denies invocation-time `npx` resolution and
+  verifies exact manifest, lock integrity, installed version, and binary
+  ownership before catalog discovery or invocation.
 - Legacy `mcp-server/` workspace requires its own `cd mcp-server && npm ci && npm run build` if it remains in the public edition. It has a separate lockfile and a small direct dependency surface: MCP SDK, dotenv, Express, MySQL, ws, Zod, TypeScript, and Node types.
 
 ## Local AI and External Services
@@ -320,7 +373,6 @@ Optional services:
 - Thunderbird MCP/service for local email workflows. Treat this as a local-device bridge, not a cloud email sync dependency.
 - Pushover or other notification provider.
 - External LLM providers for non-private escalation, explicitly disabled by default for sensitive personal data.
-- Optional Claude Code CLI for high-capability local subprocess fallback and development orchestration. Prompts should be sent through stdin when used from automation.
 - `setup:doctor --profile=personal` includes operator-local checks for Pushover, local Thunderbird, and private Joplin/Nextcloud path configuration. FamilySearch OAuth and Ancestry login/API checks are intentionally absent because those integrations are not reliable or allowed for automated use. Newspapers.com and MyHeritage are private opt-ins, not public defaults; run `php artisan config:clear` after changing their opt-in env flags. Public CI should use `core`, `media`, `gpu`, or `full`.
 
 ## Known Verification Gaps
@@ -352,3 +404,7 @@ Before publishing:
 - Present Joplin, PhotoPrism, LibrePhotos, Gramps, Gramps Web, and webtrees as workflow/interoperability references only. Do not copy GPL/AGPL code unless PLOS intentionally adopts a compatible license.
 - Treat face metadata writeback as a PLOS feature based on open metadata standards and ExifTool-compatible fields, with consent, backup, and dry-run modes.
 - Publish fake fixtures and sample media only. Never ship real family tree data, private photos, email, health records, or personal documents.
+
+## Browser compatibility for v2.1
+
+Use Safari 16.4+, Chrome 111+ or Firefox 128+ with the Tailwind 4 frontend. [Qualification scope](public-release/ui-dependency-upgrade-2026-10-12.md) records the compiled Chromium fixture checks and remaining browser/route checks.

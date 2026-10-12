@@ -120,8 +120,9 @@ class SafeScrapingService
             return ['success' => false, 'error' => 'Invalid URL'];
         }
 
-        if ($this->isManualOnlyDomain($domain)) {
-            return $this->manualOnlyDomainResponse($domain, $url);
+        $providerSpecificDomain = $this->providerSpecificDomainFor($domain);
+        if ($providerSpecificDomain !== null && $this->shouldEnforceProviderSpecificDomains()) {
+            return $this->providerSpecificDomainResponse($domain, $url);
         }
 
         // Check global rate limit
@@ -213,6 +214,12 @@ class SafeScrapingService
             $result['source_id'] = $source['id'];
             $result['method'] = $method;
             $result['response_time_ms'] = $responseTime;
+            if ($providerSpecificDomain !== null) {
+                $result['provider_specific_advisory'] = true;
+                $result['provider_specific_domain'] = $providerSpecificDomain;
+                $result['operator_review_required'] = false;
+                $result['policy'] = $result['policy'] ?? 'provider_specific_private_route_allowed';
+            }
 
             return $result;
 
@@ -1022,33 +1029,38 @@ JS;
         return true;
     }
 
-    private function isManualOnlyDomain(string $domain): bool
+    private function shouldEnforceProviderSpecificDomains(): bool
     {
-        foreach ((array) config('scraping.manual_only_domains', []) as $manualOnlyDomain) {
-            $manualOnlyDomain = preg_replace('/^www\./', '', strtolower(trim((string) $manualOnlyDomain)));
+        return (bool) config('scraping.enforce_provider_specific_domains', config('scraping.enforce_manual_only_domains', false));
+    }
 
-            if ($manualOnlyDomain === '') {
+    private function providerSpecificDomainFor(string $domain): ?string
+    {
+        foreach ((array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', [])) as $providerDomain) {
+            $providerDomain = preg_replace('/^www\./', '', strtolower(trim((string) $providerDomain)));
+
+            if ($providerDomain === '') {
                 continue;
             }
 
-            if ($domain === $manualOnlyDomain || str_ends_with($domain, ".{$manualOnlyDomain}")) {
-                return true;
+            if ($domain === $providerDomain || str_ends_with($domain, ".{$providerDomain}")) {
+                return $providerDomain;
             }
         }
 
-        return false;
+        return null;
     }
 
-    private function manualOnlyDomainResponse(string $domain, string $url): array
+    private function providerSpecificDomainResponse(string $domain, string $url): array
     {
         return [
             'success' => false,
-            'error' => 'Domain is manual-only; automated scraping is disabled',
+            'error' => 'Domain is provider-specific; automated scraping is disabled by strict policy',
             'domain' => $domain,
             'url' => $url,
-            'manual_only' => true,
-            'manual_required' => true,
-            'policy' => 'manual_only_domain',
+            'provider_specific' => true,
+            'operator_review_required' => true,
+            'policy' => 'provider_specific_domain',
             'external_content_policy' => [
                 'treat_as_data' => true,
                 'robots_bypassed' => false,

@@ -251,11 +251,15 @@ class TreeManagementService
      */
     public function getRecentAdditions(int $treeId, int $limit = 10): array
     {
-        $sql = "SELECT id, 'person' as type, CONCAT(given_name, ' ', surname) as name, created_at
+        $sql = "SELECT id, 'person' as type,
+                       COALESCE(NULLIF(TRIM(CONCAT_WS(' ', given_name, surname)), ''), 'Unnamed person') as name,
+                       created_at
                 FROM genealogy_persons
                 WHERE tree_id = ?
                 UNION ALL
-                SELECT id, 'media' as type, title as name, created_at
+                SELECT id, 'media' as type,
+                       COALESCE(NULLIF(TRIM(title), ''), NULLIF(TRIM(local_filename), ''), 'Untitled media') as name,
+                       created_at
                 FROM genealogy_media
                 WHERE tree_id = ?
                 ORDER BY created_at DESC

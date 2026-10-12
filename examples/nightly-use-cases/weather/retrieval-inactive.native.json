@@ -1,0 +1,54 @@
+{
+  "schema": "plos.portable_workflow.v2",
+  "dsl_version": "2.0",
+  "source": {
+    "product": "PLOS",
+    "format": "native-portable-workflow"
+  },
+  "workflow": {
+    "name": "Fictional weather outlook review retrieval stage",
+    "description": "PLOS v2.1 inactive synthetic retrieval stage only; no scheduler, corpus ingestion, model execution, Joplin or Pushover delivery is performed.",
+    "schedule": null,
+    "active": false,
+    "current_version": 1,
+    "error_handling": "stop",
+    "retry": null,
+    "defaults": [],
+    "nodes": [
+      {
+        "node_type": "RAGSearch",
+        "node_order": 0,
+        "timeout_seconds": 60,
+        "compensation_handler": null,
+        "compensation_config": null,
+        "configs": [
+          {
+            "key": "query",
+            "value": "Compare the invented weather outlooks without averaging or asserting observations.",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "document_type",
+            "value": "public_demo_weather",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "limit",
+            "value": "2",
+            "requires_runtime_value": false
+          }
+        ]
+      }
+    ]
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "workflow_sha256": "1236d93aff90ddae189b22a026120e91e845ff31ecf68d761bbf3283bfdf7e07"
+  },
+  "warnings": [],
+  "posture": {
+    "secrets_included": false,
+    "imported_active": false,
+    "import_requires_execute_and_confirm": true
+  }
+}

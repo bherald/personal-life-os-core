@@ -20,7 +20,7 @@
     <!-- Alert Messages -->
     <div v-if="alert.show" :class="alertClasses" class="mb-6 p-4 rounded-lg">
       <div class="flex items-start">
-        <div class="flex-shrink-0">
+        <div class="shrink-0">
           <svg v-if="alert.type === 'success'" class="h-5 w-5 text-green-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
             <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
           </svg>
@@ -32,7 +32,7 @@
           <p class="text-sm font-medium">{{ alert.message }}</p>
         </div>
         <div class="ml-auto pl-3">
-          <button @click="alert.show = false" class="inline-flex rounded-md p-1.5 focus:outline-none focus:ring-2 focus:ring-offset-2">
+          <button @click="alert.show = false" class="inline-flex rounded-md p-1.5 focus:outline-hidden focus:ring-2 focus:ring-offset-2">
             <span class="sr-only">Dismiss</span>
             <svg class="h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
               <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
@@ -61,7 +61,7 @@
         <div v-if="!connectionStatus.connected" class="space-y-4">
           <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <div class="flex">
-              <div class="flex-shrink-0">
+              <div class="shrink-0">
                 <svg class="h-5 w-5 text-blue-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                   <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
                 </svg>
@@ -95,7 +95,7 @@
         <div v-else class="space-y-4">
           <div class="bg-green-50 border border-green-200 rounded-lg p-4">
             <div class="flex">
-              <div class="flex-shrink-0">
+              <div class="shrink-0">
                 <svg class="h-5 w-5 text-green-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                   <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd" />
                 </svg>
@@ -220,7 +220,7 @@
                   {{ keyword }}
                   <button
                     @click="removeKeyword(index)"
-                    class="ml-2 inline-flex items-center p-0.5 rounded-full text-blue-400 hover:bg-blue-200 hover:text-blue-600 focus:outline-none"
+                    class="ml-2 inline-flex items-center p-0.5 rounded-full text-blue-400 hover:bg-blue-200 hover:text-blue-600 focus:outline-hidden"
                   >
                     <svg class="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
                       <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />

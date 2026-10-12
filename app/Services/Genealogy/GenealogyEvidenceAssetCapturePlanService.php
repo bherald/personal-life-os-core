@@ -355,6 +355,8 @@ class GenealogyEvidenceAssetCapturePlanService
             'capture_actions' => $this->safeActions($candidate['capture_actions'] ?? []),
             'identity_fit' => $this->safeIdentityFit($candidate['identity_fit'] ?? null),
             'locator_hash' => $this->safeHash($candidate['locator_hash'] ?? null),
+            'locator_identity_mode' => $this->safeString($candidate['locator_identity_mode'] ?? 'exact_locator'),
+            'source_generation_present' => (bool) ($candidate['source_generation_present'] ?? false),
             'host' => $this->safeHost($candidate['host'] ?? null),
             'extension' => $this->safeString($candidate['extension'] ?? 'unknown'),
             'target_storage' => 'ft_reference_area',

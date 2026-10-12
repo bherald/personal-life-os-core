@@ -8,14 +8,14 @@
           v-for="r in ranges"
           :key="r.value"
           @click="selectedRange = r.value"
-          class="px-3 py-1 text-xs font-semibold uppercase rounded-r-full transition-colors"
+          class="px-3 py-1 text-xs font-semibold uppercase rounded transition-colors"
           :class="selectedRange === r.value
             ? 'bg-ops-lilac text-black'
             : 'bg-ops-plum/30 text-ops-text-muted hover:bg-ops-plum/50'"
         >
           {{ r.label }}
         </button>
-        <button @click="loadReports" class="bg-ops-orange text-black px-3 py-1 rounded-r-full hover:bg-ops-peach font-semibold uppercase text-xs ml-2">
+        <button @click="loadReports" class="bg-ops-orange text-black px-3 py-1 rounded hover:bg-ops-peach font-semibold uppercase text-xs ml-2">
           Refresh
         </button>
       </div>
@@ -29,26 +29,38 @@
 
     <template v-else-if="data">
       <!-- Stats Row -->
-      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        <div class="bg-black border-2 border-ops-plum rounded-r-full p-4 text-center">
+      <div class="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">
+        <div class="bg-black border border-ops-plum rounded p-3">
           <div class="text-2xl font-bold text-ops-sky">{{ data.totals?.active_agents ?? 0 }}</div>
           <div class="text-xs text-ops-text-muted uppercase">Active Agents</div>
         </div>
-        <div class="bg-black border-2 border-ops-plum rounded-r-full p-4 text-center">
+        <div class="bg-black border border-ops-plum rounded p-3">
           <div class="text-2xl font-bold text-ops-green">{{ data.totals?.total_runs ?? 0 }}</div>
           <div class="text-xs text-ops-text-muted uppercase">Total Runs</div>
         </div>
-        <div class="bg-black border-2 border-ops-plum rounded-r-full p-4 text-center">
+        <div class="bg-black border border-ops-plum rounded p-3">
           <div class="text-2xl font-bold text-ops-butterscotch">{{ data.totals?.completed ?? 0 }}</div>
           <div class="text-xs text-ops-text-muted uppercase">Completed</div>
         </div>
-        <div class="bg-black border-2 border-ops-plum rounded-r-full p-4 text-center">
+        <div class="bg-black border border-ops-plum rounded p-3">
           <div class="text-2xl font-bold" :class="(data.totals?.errors ?? 0) > 0 ? 'text-ops-alert' : 'text-ops-green'">{{ data.totals?.errors ?? 0 }}</div>
           <div class="text-xs text-ops-text-muted uppercase">Errors</div>
         </div>
-        <div class="bg-black border-2 border-ops-plum rounded-r-full p-4 text-center">
+        <div class="bg-black border border-ops-plum rounded p-3">
           <div class="text-2xl font-bold text-ops-peach">{{ data.totals?.tool_calls ?? 0 }}</div>
           <div class="text-xs text-ops-text-muted uppercase">Tool Calls</div>
+        </div>
+        <div class="bg-black border border-ops-plum rounded p-3">
+          <div class="text-2xl font-bold text-ops-green">{{ data.totals?.review_accepted ?? 0 }}</div>
+          <div class="text-xs text-ops-text-muted uppercase">Accepted</div>
+        </div>
+        <div class="bg-black border border-ops-plum rounded p-3">
+          <div class="text-2xl font-bold" :class="(data.totals?.pending_reviews ?? 0) > 0 ? 'text-ops-butterscotch' : 'text-ops-green'">{{ data.totals?.pending_reviews ?? 0 }}</div>
+          <div class="text-xs text-ops-text-muted uppercase">Pending Review</div>
+        </div>
+        <div class="bg-black border border-ops-plum rounded p-3">
+          <div class="text-2xl font-bold" :class="yieldColor(data.totals?.avg_useful_yield_score)">{{ formatScore(data.totals?.avg_useful_yield_score) }}</div>
+          <div class="text-xs text-ops-text-muted uppercase">Useful Yield</div>
         </div>
       </div>
 
@@ -79,8 +91,8 @@
           <div class="flex justify-between text-[10px] text-ops-text-muted mt-1">
             <span>{{ data.timeline[0]?.period }}</span>
             <span class="flex gap-4">
-              <span><span class="inline-block w-2 h-2 bg-ops-green/80 rounded-sm mr-1"></span>Completed</span>
-              <span><span class="inline-block w-2 h-2 bg-ops-alert/80 rounded-sm mr-1"></span>Errors</span>
+              <span><span class="inline-block w-2 h-2 bg-ops-green/80 rounded-xs mr-1"></span>Completed</span>
+              <span><span class="inline-block w-2 h-2 bg-ops-alert/80 rounded-xs mr-1"></span>Errors</span>
             </span>
             <span>{{ data.timeline[data.timeline.length - 1]?.period }}</span>
           </div>
@@ -88,11 +100,12 @@
       </div>
 
       <!-- Per-Agent Cards -->
-      <div class="bg-black border-2 border-ops-plum rounded-r-lg overflow-hidden">
+      <div class="bg-black border border-ops-plum rounded overflow-hidden">
         <div class="bg-ops-plum/30 px-4 py-2">
           <h3 class="text-sm font-bold text-ops-lilac uppercase tracking-wider">Per-Agent Summary</h3>
         </div>
-        <table class="w-full text-sm">
+        <div class="overflow-x-auto">
+        <table class="w-full min-w-[70rem] text-sm">
           <thead class="bg-ops-plum/20">
             <tr>
               <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-left">Agent</th>
@@ -101,6 +114,9 @@
               <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right">Errors</th>
               <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right">Tools</th>
               <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right hidden sm:table-cell">Avg Time</th>
+              <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right">Accepted / Declined</th>
+              <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right">Pending</th>
+              <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right">Yield</th>
               <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right">Health</th>
               <th class="text-xs font-medium text-ops-lilac uppercase px-4 py-2 text-right hidden md:table-cell">Last Active</th>
             </tr>
@@ -123,6 +139,13 @@
               <td class="px-4 py-2 text-right" :class="agent.errors > 0 ? 'text-ops-alert' : 'text-ops-text-muted'">{{ agent.errors }}</td>
               <td class="px-4 py-2 text-right text-ops-text-muted">{{ agent.tool_calls }}</td>
               <td class="px-4 py-2 text-right text-ops-text-muted hidden sm:table-cell">{{ formatDuration(agent.avg_duration_ms) }}</td>
+              <td class="px-4 py-2 text-right text-ops-text-muted">
+                <span class="text-ops-green">{{ agent.review_accepted ?? 0 }}</span>
+                <span> / </span>
+                <span :class="(agent.review_declined ?? 0) > 0 ? 'text-ops-alert' : ''">{{ agent.review_declined ?? 0 }}</span>
+              </td>
+              <td class="px-4 py-2 text-right" :class="(agent.pending_reviews ?? 0) > 0 ? 'text-ops-butterscotch' : 'text-ops-text-muted'">{{ agent.pending_reviews ?? 0 }}</td>
+              <td class="px-4 py-2 text-right font-semibold" :class="yieldColor(agent.useful_yield_score)" :title="agent.yield_basis">{{ formatScore(agent.useful_yield_score) }}</td>
               <td class="px-4 py-2 text-right">
                 <span
                   class="inline-block w-2.5 h-2.5 rounded-full"
@@ -133,10 +156,11 @@
               <td class="px-4 py-2 text-right text-ops-text-muted text-xs hidden md:table-cell">{{ timeAgo(agent.last_activity) }}</td>
             </tr>
             <tr v-if="!data.agents?.length">
-              <td colspan="8" class="px-4 py-6 text-center text-ops-text-muted">No agent activity in selected range</td>
+              <td colspan="11" class="px-4 py-6 text-center text-ops-text-muted">No agent activity in selected range</td>
             </tr>
           </tbody>
         </table>
+        </div>
 
         <!-- Expanded agent detail: tool breakdown + recent episodes -->
         <div v-if="expandedAgent" class="border-t-2 border-ops-plum bg-ops-plum/5 px-4 py-3 space-y-3">
@@ -180,10 +204,11 @@
 
       <!-- Agent Handoffs -->
       <div v-if="handoffs" class="bg-black border-2 border-ops-plum rounded-r-lg overflow-hidden">
-        <div class="bg-ops-plum/30 px-4 py-2 flex justify-between items-center">
+        <div class="bg-ops-plum/30 px-4 py-2 flex flex-wrap justify-between items-center gap-2">
           <h3 class="text-sm font-bold text-ops-lilac uppercase tracking-wider">Agent Handoffs</h3>
-          <div class="flex gap-3 text-xs">
+          <div class="flex flex-wrap justify-end gap-x-3 gap-y-1 text-xs">
             <span class="text-ops-sky">{{ handoffs.stats?.total_handoffs ?? 0 }} total</span>
+            <span class="text-ops-butterscotch">{{ handoffs.stats?.active ?? 0 }} active</span>
             <span class="text-ops-green">{{ handoffs.stats?.completed ?? 0 }} completed</span>
             <span :class="(handoffs.stats?.failed ?? 0) > 0 ? 'text-ops-alert' : 'text-ops-text-muted'">{{ handoffs.stats?.failed ?? 0 }} failed</span>
             <span class="text-ops-text-muted">{{ handoffs.agents?.length ?? 0 }} registered agents</span>
@@ -194,12 +219,13 @@
         <div v-if="handoffs.history?.length" class="divide-y divide-ops-plum/20">
           <div v-for="h in handoffs.history.slice(0, 10)" :key="h.handoff_id" class="px-4 py-2 flex items-center gap-3 text-sm">
             <span
-              class="inline-block w-2 h-2 rounded-full flex-shrink-0"
+              class="inline-block w-2 h-2 rounded-full shrink-0"
               :class="h.status === 'completed' ? 'bg-ops-green' : h.status === 'failed' ? 'bg-ops-alert' : 'bg-ops-butterscotch'"
             ></span>
             <span class="text-ops-peach font-semibold">{{ h.source_agent_id }}</span>
             <span class="text-ops-text-muted">&rarr;</span>
             <span class="text-ops-sky font-semibold">{{ h.target_agent_id }}</span>
+            <span class="text-ops-butterscotch text-[10px] font-semibold uppercase">{{ h.status }}</span>
             <span class="text-ops-text-muted text-xs flex-1 truncate">{{ h.reason }}</span>
             <span v-if="h.duration_ms" class="text-ops-text-muted text-xs">{{ formatDuration(h.duration_ms) }}</span>
             <span class="text-ops-text-muted text-xs">{{ timeAgo(h.created_at) }}</span>
@@ -342,16 +368,31 @@ function agentTools(agentId) {
 
 function healthColor(agent) {
   if (agent.errors > 0 && agent.completed === 0) return 'bg-ops-alert'
-  if (agent.errors > 0) return 'bg-ops-butterscotch'
+  if ((agent.useful_yield_score ?? 100) < 40) return 'bg-ops-alert'
+  if (agent.errors > 0 || (agent.useful_yield_score ?? 100) < 70) return 'bg-ops-butterscotch'
   if (agent.completed > 0) return 'bg-ops-green'
   return 'bg-ops-text-muted'
 }
 
 function healthLabel(agent) {
   if (agent.errors > 0 && agent.completed === 0) return 'Failing'
-  if (agent.errors > 0) return 'Degraded'
+  if ((agent.useful_yield_score ?? 100) < 40) return 'Low useful yield'
+  if (agent.errors > 0 || (agent.useful_yield_score ?? 100) < 70) return 'Degraded'
   if (agent.completed > 0) return 'Healthy'
   return 'Idle'
+}
+
+function yieldColor(score) {
+  if (score === null || score === undefined) return 'text-ops-text-muted'
+  const value = Number(score)
+  if (value >= 80) return 'text-ops-green'
+  if (value >= 60) return 'text-ops-butterscotch'
+  return 'text-ops-alert'
+}
+
+function formatScore(score) {
+  if (score === null || score === undefined) return '-'
+  return Number(score).toFixed(0)
 }
 
 function formatDuration(ms) {

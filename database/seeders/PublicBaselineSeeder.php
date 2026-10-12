@@ -16,7 +16,6 @@ class PublicBaselineSeeder extends Seeder
         $this->seedSystemConfigs();
         $this->seedLocalAiRows();
         $this->seedModelProfiles();
-        $this->seedOptionalCloudProviders();
         $this->seedPublicGenealogyProviders();
 
         Cache::forget('llm_model_profiles');
@@ -164,110 +163,6 @@ class PublicBaselineSeeder extends Seeder
                 'use_cases' => json_encode($useCases, JSON_UNESCAPED_SLASHES),
                 'enabled' => true,
                 'notes' => 'Seeded by PublicBaselineSeeder. Tune after pulling local models.',
-            ]);
-        }
-    }
-
-    private function seedOptionalCloudProviders(): void
-    {
-        foreach ([
-            [
-                'instance_id' => 'groq_free',
-                'instance_name' => 'Groq API',
-                'instance_type' => 'custom',
-                'base_url' => 'https://api.groq.com/openai/v1',
-                'api_key_env' => 'GROQ_API_KEY',
-                'priority' => 60,
-                'rate_limit_rpm' => 30,
-                'rate_limit_tpm' => 15000,
-                'capabilities' => ['text_generation' => true, 'chat' => true, 'vision' => false, 'embedding' => false, 'tool_calling' => true],
-                'models' => ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
-                'default_model' => 'llama-3.3-70b-versatile',
-                'provider_type' => 'groq',
-            ],
-            [
-                'instance_id' => 'openrouter_free',
-                'instance_name' => 'OpenRouter',
-                'instance_type' => 'custom',
-                'base_url' => 'https://openrouter.ai/api/v1',
-                'api_key_env' => 'OPENROUTER_API_KEY',
-                'priority' => 70,
-                'rate_limit_rpm' => 20,
-                'rate_limit_tpm' => 10000,
-                'capabilities' => ['text_generation' => true, 'chat' => true, 'vision' => true, 'embedding' => false, 'tool_calling' => true],
-                'models' => ['deepseek/deepseek-r1:free', 'google/gemini-2.0-flash-exp:free'],
-                'default_model' => 'deepseek/deepseek-r1:free',
-                'provider_type' => 'openrouter',
-            ],
-            [
-                'instance_id' => 'gemini_free',
-                'instance_name' => 'Google Gemini API',
-                'instance_type' => 'google_gemini',
-                'base_url' => 'https://generativelanguage.googleapis.com/v1beta/openai',
-                'api_key_env' => 'GEMINI_API_KEY',
-                'priority' => 75,
-                'rate_limit_rpm' => 10,
-                'rate_limit_tpm' => 250000,
-                'capabilities' => ['text_generation' => true, 'chat' => true, 'vision' => true, 'embedding' => true, 'tool_calling' => true],
-                'models' => ['gemini-2.5-flash', 'gemini-2.0-flash'],
-                'default_model' => 'gemini-2.5-flash',
-                'provider_type' => 'gemini',
-            ],
-            [
-                'instance_id' => 'mistral_free',
-                'instance_name' => 'Mistral API',
-                'instance_type' => 'custom',
-                'base_url' => 'https://api.mistral.ai/v1',
-                'api_key_env' => 'MISTRAL_API_KEY',
-                'priority' => 85,
-                'rate_limit_rpm' => 2,
-                'rate_limit_tpm' => 500000,
-                'capabilities' => ['text_generation' => true, 'chat' => true, 'vision' => true, 'embedding' => true, 'tool_calling' => true],
-                'models' => ['mistral-small-latest', 'mistral-large-latest'],
-                'default_model' => 'mistral-small-latest',
-                'provider_type' => 'mistral',
-            ],
-        ] as $provider) {
-            $this->insertIfMissing('llm_instances', ['instance_id' => $provider['instance_id']], [
-                'instance_name' => $provider['instance_name'],
-                'instance_type' => $provider['instance_type'],
-                'base_url' => $provider['base_url'],
-                'api_key_env' => $provider['api_key_env'],
-                'priority' => $provider['priority'],
-                'is_active' => false,
-                'routability' => 'bench_only',
-                'gpu_target' => 'none',
-                'compat_runtime_family' => $provider['provider_type'],
-                'compat_backend' => 'openai_compat',
-                'compat_status' => 'provisional',
-                'is_healthy' => false,
-                'health_score' => 0,
-                'capabilities' => json_encode($provider['capabilities'], JSON_UNESCAPED_SLASHES),
-                'is_censored' => true,
-                'allows_private_data' => false,
-                'data_privacy_scope' => 'public_only',
-                'privacy_notes' => 'Optional public/free cloud provider. Do not send private or sensitive PLOS data.',
-                'supported_models' => json_encode($provider['models'], JSON_UNESCAPED_SLASHES),
-                'context_length' => 128000,
-                'rate_limit_rpm' => $provider['rate_limit_rpm'],
-                'rate_limit_tpm' => $provider['rate_limit_tpm'],
-                'success_rate' => null,
-                'circuit_state' => 'closed',
-                'max_concurrent' => 1,
-                'cost_tier' => 'external',
-                'config' => json_encode([
-                    'provider_type' => $provider['provider_type'],
-                    'api_format' => 'openai_compatible',
-                    'default_model' => $provider['default_model'],
-                    'models' => [
-                        'standard' => $provider['default_model'],
-                        'quality' => $provider['default_model'],
-                        'fast' => $provider['models'][0],
-                    ],
-                    'privacy_scope' => 'public_only',
-                    'notes' => 'Optional public add-on. Disabled until the operator adds a key and intentionally enables the row. Do not send private data.',
-                ], JSON_UNESCAPED_SLASHES),
-                'notes' => 'Optional cloud provider. Public baseline leaves this disabled. Public-only until intentionally enabled.',
             ]);
         }
     }

@@ -1,31 +1,32 @@
 <template>
-  <div class="min-h-screen bg-[#1a1a1a]">
+  <div class="decision-calendar min-h-screen">
     <div class="max-w-7xl mx-auto px-4 py-6">
       <!-- Header -->
-      <div class="flex justify-between items-center mb-6">
+      <div class="decision-calendar-header flex justify-between items-center mb-6">
         <div>
-          <h2 class="text-3xl font-bold text-[#e0e0e0] border-b-2 border-accent pb-2">Calendar</h2>
-          <p class="text-[#95a5a6] mt-1">Nextcloud CalDAV Integration</p>
+          <h2 class="text-3xl font-bold pb-2">Calendar</h2>
+          <p class="text-theme-secondary mt-1">Nextcloud CalDAV Integration</p>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="decision-calendar-actions flex items-center gap-3">
           <!-- Cache Status Indicator -->
           <div v-if="cacheInfo" class="flex items-center gap-2 text-sm">
-            <span v-if="cacheInfo.fromCache" class="px-2 py-1 bg-[#27ae60]/20 text-[#27ae60] rounded text-xs">
+            <span v-if="cacheInfo.fromCache" class="px-2 py-1 bg-ops-accent-soft text-ops-success rounded text-xs">
               Cached
             </span>
             <span v-else class="px-2 py-1 bg-accent/20 text-accent rounded text-xs">
               Fresh
             </span>
-            <span v-if="cacheInfo.lastUpdated" class="text-[#666]">
+            <span v-if="cacheInfo.lastUpdated" class="text-theme-secondary">
               {{ formatCacheTime(cacheInfo.lastUpdated) }}
             </span>
           </div>
 
           <!-- Calendar Selector -->
           <select
+            v-if="calendars.length > 0"
             v-model="selectedCalendars"
             multiple
-            class="px-4 py-2 bg-[#2d2d2d] border border-[#444] rounded-lg text-[#e0e0e0] focus:outline-none focus:ring-2 focus:ring-accent"
+            class="px-4 py-2 form-select"
           >
             <option v-for="cal in calendars" :key="cal.id" :value="cal.id">
               {{ cal.displayName }}
@@ -45,7 +46,7 @@
           <!-- Force Refresh Button -->
           <button
             @click="refreshEvents(true)"
-            class="px-3 py-2 bg-[#e67e22] hover:bg-[#d35400] text-white rounded-lg text-sm flex items-center gap-2 transition-colors"
+            class="btn-secondary text-sm flex items-center gap-2"
             :disabled="loading"
             title="Force refresh from Nextcloud (bypasses cache)"
           >
@@ -60,7 +61,7 @@
       <!-- Loading State -->
       <div v-if="initialLoading" class="card text-center py-12">
         <div class="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-accent"></div>
-        <p class="mt-4 text-[#95a5a6]">Loading calendars...</p>
+        <p class="mt-4 text-theme-secondary">Loading calendars...</p>
       </div>
 
       <!-- Error State -->
@@ -83,25 +84,25 @@
       </div>
 
       <!-- Event Detail Modal -->
-      <div v-if="selectedEvent" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="selectedEvent = null">
-        <div class="bg-[#2d2d2d] rounded-lg shadow-xl max-w-md w-full mx-4 border border-[#444]">
+      <div v-if="selectedEvent" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="selectedEvent = null">
+        <div class="bg-theme-secondary rounded-lg shadow-xl max-w-md w-full mx-4 border border-theme">
           <div class="p-6">
             <div class="flex justify-between items-start mb-4">
-              <h3 class="text-xl font-semibold text-[#e0e0e0]">{{ selectedEvent.title }}</h3>
-              <button @click="selectedEvent = null" class="text-[#95a5a6] hover:text-[#e0e0e0]">
+              <h3 class="text-xl font-semibold text-theme-primary">{{ selectedEvent.title }}</h3>
+              <button @click="selectedEvent = null" class="text-theme-secondary hover:text-theme-primary">
                 <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                 </svg>
               </button>
             </div>
 
-            <div class="space-y-3 text-[#95a5a6]">
+            <div class="space-y-3 text-theme-secondary">
               <div class="flex items-start gap-3">
                 <svg class="w-5 h-5 mt-0.5 text-accent" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
                 </svg>
                 <div>
-                  <p class="text-[#e0e0e0]">{{ formatEventDate(selectedEvent) }}</p>
+                  <p class="text-theme-primary">{{ formatEventDate(selectedEvent) }}</p>
                   <p v-if="!selectedEvent.allDay" class="text-sm">{{ formatEventTime(selectedEvent) }}</p>
                 </div>
               </div>
@@ -347,30 +348,40 @@ watch(selectedCalendars, () => {
 </script>
 
 <style>
-/* FullCalendar Dark Theme Overrides */
+/* FullCalendar theme overrides */
+.decision-calendar {
+  min-width: 0;
+  background: var(--desk-canvas);
+  color: var(--desk-ink);
+}
+.decision-calendar-header { gap: 1rem; }
+.decision-calendar-header h2 { border-bottom: 0; color: var(--desk-ink); }
+.decision-calendar-actions { flex-wrap: wrap; }
+.decision-calendar .card { min-width: 0; }
 .fc-dark-theme {
-  --fc-border-color: #444;
-  --fc-button-bg-color: #3498db;
-  --fc-button-border-color: #3498db;
-  --fc-button-hover-bg-color: #2980b9;
-  --fc-button-hover-border-color: #2980b9;
-  --fc-button-active-bg-color: #2471a3;
-  --fc-button-active-border-color: #2471a3;
-  --fc-event-bg-color: #3498db;
-  --fc-event-border-color: #3498db;
-  --fc-today-bg-color: rgba(52, 152, 219, 0.1);
-  --fc-page-bg-color: #2d2d2d;
-  --fc-neutral-bg-color: #1a1a1a;
-  --fc-list-event-hover-bg-color: #34495e;
+  --fc-border-color: var(--color-border);
+  --fc-button-text-color: var(--desk-ink);
+  --fc-button-bg-color: var(--desk-paper);
+  --fc-button-border-color: var(--desk-line);
+  --fc-button-hover-bg-color: var(--desk-teal-soft);
+  --fc-button-hover-border-color: var(--desk-teal);
+  --fc-button-active-bg-color: var(--desk-teal-soft);
+  --fc-button-active-border-color: var(--desk-teal);
+  --fc-event-bg-color: var(--color-accent);
+  --fc-event-border-color: var(--color-accent);
+  --fc-today-bg-color: var(--color-bg-tertiary);
+  --fc-page-bg-color: var(--color-bg-secondary);
+  --fc-neutral-bg-color: var(--color-bg-secondary);
+  --fc-list-event-hover-bg-color: var(--color-bg-secondary);
 }
 
 .fc-dark-theme .fc {
-  background-color: #2d2d2d;
+  background-color: var(--color-bg-secondary);
   border-radius: 0.5rem;
 }
 
 .fc-dark-theme .fc-toolbar-title {
-  color: #e0e0e0 !important;
+  color: var(--color-text-secondary) !important;
   font-size: 1.5rem !important;
 }
 
@@ -378,19 +389,19 @@ watch(selectedCalendars, () => {
 .fc-dark-theme .fc-daygrid-day-number,
 .fc-dark-theme .fc-list-day-text,
 .fc-dark-theme .fc-list-day-side-text {
-  color: #e0e0e0 !important;
+  color: var(--color-text-secondary) !important;
 }
 
 .fc-dark-theme .fc-daygrid-day {
-  background-color: #2d2d2d;
+  background-color: var(--color-bg-secondary);
 }
 
 .fc-dark-theme .fc-daygrid-day:hover {
-  background-color: #34495e;
+  background-color: var(--color-bg-hover);
 }
 
 .fc-dark-theme .fc-day-today {
-  background-color: rgba(52, 152, 219, 0.15) !important;
+  background-color: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-primary));
 }
 
 .fc-dark-theme .fc-daygrid-day-frame {
@@ -408,19 +419,19 @@ watch(selectedCalendars, () => {
 }
 
 .fc-dark-theme .fc-list-event {
-  background-color: #2d2d2d;
+  background-color: var(--color-bg-secondary);
 }
 
 .fc-dark-theme .fc-list-event:hover td {
-  background-color: #34495e;
+  background-color: var(--color-bg-hover);
 }
 
 .fc-dark-theme .fc-list-event-title a {
-  color: #e0e0e0 !important;
+  color: var(--color-text-secondary) !important;
 }
 
 .fc-dark-theme .fc-list-event-time {
-  color: #95a5a6 !important;
+  color: var(--color-text-secondary) !important;
 }
 
 .fc-dark-theme .fc-timegrid-slot {
@@ -428,16 +439,16 @@ watch(selectedCalendars, () => {
 }
 
 .fc-dark-theme .fc-timegrid-slot-label {
-  color: #95a5a6;
+  color: var(--color-text-secondary);
 }
 
 .fc-dark-theme .fc-scrollgrid {
-  border-color: #444;
+  border-color: var(--color-border);
 }
 
 .fc-dark-theme .fc-scrollgrid td,
 .fc-dark-theme .fc-scrollgrid th {
-  border-color: #444;
+  border-color: var(--color-border);
 }
 
 .fc-dark-theme .fc-button {
@@ -446,29 +457,42 @@ watch(selectedCalendars, () => {
 }
 
 .fc-dark-theme .fc-button-primary:disabled {
-  background-color: #34495e;
-  border-color: #34495e;
+  background-color: var(--color-bg-secondary);
+  border-color: var(--color-border);
+  color: var(--desk-muted);
+  opacity: 1;
 }
 
 .fc-dark-theme .fc-day-other .fc-daygrid-day-number {
-  color: #666 !important;
+  color: var(--color-text-secondary) !important;
 }
 
 .fc-dark-theme .fc-popover {
-  background-color: #2d2d2d;
-  border-color: #444;
+  background-color: var(--color-bg-secondary);
+  border-color: var(--color-border);
 }
 
 .fc-dark-theme .fc-popover-header {
-  background-color: #1a1a1a;
-  color: #e0e0e0;
+  background-color: var(--color-bg-secondary);
+  color: var(--color-text-primary);
 }
 
 .fc-dark-theme .fc-more-link {
-  color: #3498db;
+  color: var(--color-accent);
 }
 
 .fc-dark-theme .fc-now-indicator {
-  border-color: #e74c3c;
+  border-color: var(--ops-danger);
+}
+@media (max-width: 640px) {
+  .decision-calendar-header { align-items: flex-start; flex-direction: column; }
+  .decision-calendar-actions { width: 100%; }
+  .fc-dark-theme .fc-header-toolbar { display: flex; flex-wrap: wrap; gap: 10px; }
+  .fc-dark-theme .fc-toolbar-chunk:nth-child(2) { order: -1; width: 100%; text-align: center; }
+  .fc-dark-theme .fc-toolbar-chunk:nth-child(3) { width: 100%; }
+  .fc-dark-theme .fc-button-group { display: flex; width: 100%; }
+  .fc-dark-theme .fc-button-group .fc-button { flex: 1; min-width: 0; padding: 0.35em 0.2em; font-size: 0.75rem; }
+  .fc-dark-theme .fc-toolbar-title { font-size: 1.15rem !important; }
+  .fc-dark-theme .fc-daygrid-day-frame { min-height: 72px; }
 }
 </style>

@@ -1,0 +1,3 @@
+<?php
+// Intentionally invalid synthetic syntax fixture; never executed.
+function plosSyntheticTotal(int $units): int { return $units * ; }

@@ -2,10 +2,11 @@
 
 namespace App\Services;
 
+use App\Support\SensitiveTextTelemetry;
+use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Evidence Retriever Service
@@ -29,9 +30,14 @@ use Exception;
  */
 class EvidenceRetrieverService
 {
+    private const PRIVATE_TEXT_TELEMETRY_SCOPE = 'evidence-retrieval';
+
     private AIService $aiService;
+
     private RAGService $ragService;
+
     private SearXNGService $searxngService;
+
     private ?DomainCredibilityService $domainCredibilityService = null;
 
     /** @var int Default queries to generate per claim */
@@ -80,21 +86,22 @@ class EvidenceRetrieverService
         if ($this->domainCredibilityService === null) {
             $this->domainCredibilityService = app(DomainCredibilityService::class);
         }
+
         return $this->domainCredibilityService;
     }
 
     /**
      * Retrieve evidence for a claim from all available sources
      *
-     * @param string $claim The claim to find evidence for
-     * @param array $options Options:
-     *   - query_count: int - Number of search queries to generate (default: 3)
-     *   - max_results: int - Max total evidence items (default: 20)
-     *   - sources: array - Which sources to search ['rag', 'web', 'research']
-     *   - time_range: string - Web search time range (day, week, month, year)
-     *   - skip_dedup: bool - Skip deduplication (default: false)
-     *   - min_credibility: float - Minimum credibility score (default: 0.3)
-     *   - contradiction_search: bool - Run dedicated contradiction queries (FC-3, default: true)
+     * @param  string  $claim  The claim to find evidence for
+     * @param  array  $options  Options:
+     *                          - query_count: int - Number of search queries to generate (default: 3)
+     *                          - max_results: int - Max total evidence items (default: 20)
+     *                          - sources: array - Which sources to search ['rag', 'web', 'research']
+     *                          - time_range: string - Web search time range (day, week, month, year)
+     *                          - skip_dedup: bool - Skip deduplication (default: false)
+     *                          - min_credibility: float - Minimum credibility score (default: 0.3)
+     *                          - contradiction_search: bool - Run dedicated contradiction queries (FC-3, default: true)
      * @return array Evidence items ranked by relevance
      */
     public function retrieve(string $claim, array $options = []): array
@@ -127,8 +134,8 @@ class EvidenceRetrieverService
             $stats['queries_generated'] = count($queries);
 
             Log::info('EvidenceRetriever: Generated queries', [
-                'claim' => substr($claim, 0, 100),
-                'queries' => $queries,
+                ...SensitiveTextTelemetry::content($claim, self::PRIVATE_TEXT_TELEMETRY_SCOPE, 'claim'),
+                'query_count' => count($queries),
             ]);
 
             // Step 2: Search each source
@@ -173,8 +180,8 @@ class EvidenceRetrieverService
                 $stats['source_timings']['contradiction'] = round((microtime(true) - $sourceStart) * 1000);
 
                 Log::info('EvidenceRetriever: Contradiction search complete', [
-                    'claim' => substr($claim, 0, 80),
-                    'queries' => $contradictionEvidence['queries_generated'],
+                    ...SensitiveTextTelemetry::content($claim, self::PRIVATE_TEXT_TELEMETRY_SCOPE, 'claim'),
+                    'query_count' => $contradictionEvidence['queries_generated'],
                     'results' => $contradictionEvidence['result_count'],
                 ]);
             }
@@ -187,11 +194,11 @@ class EvidenceRetrieverService
             // Step 4: Filter by minimum credibility
             $filteredEvidence = array_filter(
                 $scoredEvidence,
-                fn($e) => ($e['credibility_score'] ?? 0.5) >= $minCredibility
+                fn ($e) => ($e['credibility_score'] ?? 0.5) >= $minCredibility
             );
 
             // Step 5: Deduplicate
-            if (!$skipDedup) {
+            if (! $skipDedup) {
                 $filteredEvidence = $this->deduplicateEvidence(array_values($filteredEvidence));
             }
 
@@ -203,7 +210,7 @@ class EvidenceRetrieverService
             $duration = round((microtime(true) - $startTime) * 1000);
 
             Log::info('EvidenceRetriever: Retrieval complete', [
-                'claim' => substr($claim, 0, 80),
+                ...SensitiveTextTelemetry::content($claim, self::PRIVATE_TEXT_TELEMETRY_SCOPE, 'claim'),
                 'results' => count($rankedEvidence),
                 'duration_ms' => $duration,
                 'stats' => $stats,
@@ -221,8 +228,8 @@ class EvidenceRetrieverService
 
         } catch (Exception $e) {
             Log::error('EvidenceRetriever: Retrieval failed', [
-                'claim' => substr($claim, 0, 100),
-                'error' => $e->getMessage(),
+                ...SensitiveTextTelemetry::content($claim, self::PRIVATE_TEXT_TELEMETRY_SCOPE, 'claim'),
+                'exception_class' => $e::class,
             ]);
 
             return [
@@ -238,14 +245,14 @@ class EvidenceRetrieverService
     /**
      * Generate diverse search queries for a claim (Loki pattern)
      *
-     * @param string $claim The claim to generate queries for
-     * @param int $count Number of queries to generate
+     * @param  string  $claim  The claim to generate queries for
+     * @param  int  $count  Number of queries to generate
      * @return array Array of search query strings
      */
     public function generateQueries(string $claim, int $count = 3): array
     {
         // Check cache first
-        $cacheKey = 'evidence_queries:' . md5($claim . $count);
+        $cacheKey = 'evidence_queries:'.md5($claim.$count);
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
             return $cached;
@@ -274,10 +281,11 @@ PROMPT;
             'max_tokens' => 200,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             Log::warning('EvidenceRetriever: Query generation failed, using claim as query', [
                 'error' => $result['error'] ?? 'unknown',
             ]);
+
             return [$claim];
         }
 
@@ -304,12 +312,12 @@ PROMPT;
      * this generates queries that explicitly seek disproving evidence:
      * negated claims, alternative explanations, debunking sources.
      *
-     * @param string $claim The claim to find contradictions for
+     * @param  string  $claim  The claim to find contradictions for
      * @return array Array of contradiction-seeking query strings
      */
     public function generateContradictionQueries(string $claim): array
     {
-        $cacheKey = 'contradiction_queries:' . md5($claim);
+        $cacheKey = 'contradiction_queries:'.md5($claim);
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
             return $cached;
@@ -343,10 +351,11 @@ PROMPT;
             'use_cache' => false,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             Log::warning('EvidenceRetriever: Contradiction query generation failed', [
                 'error' => $result['error'] ?? 'unknown',
             ]);
+
             // Fallback: simple negation
             return [$this->buildNegatedQuery($claim)];
         }
@@ -368,24 +377,25 @@ PROMPT;
     /**
      * Build a simple negated query as fallback when LLM is unavailable
      *
-     * @param string $claim The claim to negate
+     * @param  string  $claim  The claim to negate
      * @return string Negated query
      */
     private function buildNegatedQuery(string $claim): string
     {
         $terms = $this->extractKeyTerms($claim);
         if (empty($terms)) {
-            return $claim . ' false debunked';
+            return $claim.' false debunked';
         }
-        return implode(' ', array_slice($terms, 0, 3)) . ' false debunked';
+
+        return implode(' ', array_slice($terms, 0, 3)).' false debunked';
     }
 
     /**
      * Run the contradiction evidence search across enabled sources (FC-3)
      *
-     * @param string $claim The claim to find contradictions for
-     * @param array $sources Enabled source types
-     * @param string $timeRange Web search time range
+     * @param  string  $claim  The claim to find contradictions for
+     * @param  array  $sources  Enabled source types
+     * @param  string  $timeRange  Web search time range
      * @return array ['evidence' => [...], 'queries' => [...], 'queries_generated' => int, 'result_count' => int]
      */
     private function searchContradictionEvidence(string $claim, array $sources, string $timeRange): array
@@ -424,8 +434,8 @@ PROMPT;
     /**
      * Search RAG index for relevant evidence
      *
-     * @param string $claim Original claim for context
-     * @param array $queries Search queries
+     * @param  string  $claim  Original claim for context
+     * @param  array  $queries  Search queries
      * @return array Evidence items from RAG
      */
     private function searchRAG(string $claim, array $queries): array
@@ -477,8 +487,8 @@ PROMPT;
                 }
             } catch (Exception $e) {
                 Log::warning('EvidenceRetriever: RAG search failed for query', [
-                    'query' => $query,
-                    'error' => $e->getMessage(),
+                    ...SensitiveTextTelemetry::query($query, self::PRIVATE_TEXT_TELEMETRY_SCOPE),
+                    'exception_class' => $e::class,
                 ]);
             }
         }
@@ -489,14 +499,15 @@ PROMPT;
     /**
      * Search web via SearXNG for evidence
      *
-     * @param array $queries Search queries
-     * @param string $timeRange Time range filter
+     * @param  array  $queries  Search queries
+     * @param  string  $timeRange  Time range filter
      * @return array Evidence items from web search
      */
     private function searchWeb(array $queries, string $timeRange = ''): array
     {
-        if (!$this->searxngService->isAvailable()) {
+        if (! $this->searxngService->isAvailable()) {
             Log::warning('EvidenceRetriever: SearXNG not available, skipping web search');
+
             return [];
         }
 
@@ -512,7 +523,7 @@ PROMPT;
                     $timeRange
                 );
 
-                if (!$results['success'] || empty($results['results'])) {
+                if (! $results['success'] || empty($results['results'])) {
                     continue;
                 }
 
@@ -520,7 +531,7 @@ PROMPT;
                     $url = $result['url'] ?? '';
 
                     // Skip duplicates within web results
-                    if (!empty($url) && isset($seenUrls[$url])) {
+                    if (! empty($url) && isset($seenUrls[$url])) {
                         continue;
                     }
                     $seenUrls[$url] = true;
@@ -546,8 +557,8 @@ PROMPT;
                 }
             } catch (Exception $e) {
                 Log::warning('EvidenceRetriever: Web search failed for query', [
-                    'query' => $query,
-                    'error' => $e->getMessage(),
+                    ...SensitiveTextTelemetry::query($query, self::PRIVATE_TEXT_TELEMETRY_SCOPE),
+                    'exception_class' => $e::class,
                 ]);
             }
         }
@@ -558,8 +569,8 @@ PROMPT;
     /**
      * Search cached research results for relevant evidence
      *
-     * @param string $claim Original claim
-     * @param array $queries Search queries
+     * @param  string  $claim  Original claim
+     * @param  array  $queries  Search queries
      * @return array Evidence from research cache
      */
     private function searchCachedResearch(string $claim, array $queries): array
@@ -579,8 +590,8 @@ PROMPT;
             $params = [];
 
             foreach ($terms as $index => $term) {
-                $placeholders[] = "content ILIKE ?";
-                $params[] = '%' . $term . '%';
+                $placeholders[] = 'content ILIKE ?';
+                $params[] = '%'.$term.'%';
             }
 
             $whereClause = implode(' OR ', $placeholders);
@@ -624,8 +635,8 @@ PROMPT;
     /**
      * Score evidence items for credibility and relevance
      *
-     * @param array $evidence Raw evidence items
-     * @param string $claim The claim being verified
+     * @param  array  $evidence  Raw evidence items
+     * @param  string  $claim  The claim being verified
      * @return array Evidence with scores added
      */
     private function scoreEvidence(array $evidence, string $claim): array
@@ -654,8 +665,8 @@ PROMPT;
     /**
      * Calculate base relevance score for an evidence item
      *
-     * @param array $item Evidence item
-     * @param string $claim Original claim
+     * @param  array  $item  Evidence item
+     * @param  string  $claim  Original claim
      * @return float Relevance score 0-1
      */
     private function calculateRelevanceScore(array $item, string $claim): float
@@ -671,13 +682,15 @@ PROMPT;
                 // Use search rank and search score
                 $rankScore = 1 - (($item['retrieval_rank'] ?? 10) / 20);
                 $searchScore = $item['search_score'] ?? 0.5;
+
                 return ($rankScore + $searchScore) / 2;
 
             case 'research':
                 // Use stored relevance and quality scores
                 $relevance = $item['relevance_score'] ?? 0.5;
                 $quality = $item['quality_score'] ?? 0.5;
-                return ($relevance * 0.6 + $quality * 0.4);
+
+                return $relevance * 0.6 + $quality * 0.4;
 
             default:
                 return 0.5;
@@ -687,7 +700,7 @@ PROMPT;
     /**
      * Get credibility score for a domain (from shared domain_credibility table)
      *
-     * @param string $domain Domain name
+     * @param  string  $domain  Domain name
      * @return float Credibility score 0-1
      */
     public function getCredibilityScore(string $domain): float
@@ -698,7 +711,7 @@ PROMPT;
     /**
      * Get recency score based on content age
      *
-     * @param array $item Evidence item
+     * @param  array  $item  Evidence item
      * @return float Recency score 0-1
      */
     private function getRecencyScore(array $item): float
@@ -711,7 +724,7 @@ PROMPT;
 
         try {
             $date = new \DateTime($dateStr);
-            $now = new \DateTime();
+            $now = new \DateTime;
             $diff = $now->diff($date);
             $days = $diff->days;
 
@@ -733,7 +746,7 @@ PROMPT;
     /**
      * Deduplicate evidence items using URL and semantic similarity
      *
-     * @param array $evidence Evidence items to deduplicate
+     * @param  array  $evidence  Evidence items to deduplicate
      * @return array Deduplicated evidence
      */
     private function deduplicateEvidence(array $evidence): array
@@ -751,7 +764,7 @@ PROMPT;
             $snippet = $item['snippet'] ?? '';
 
             // Layer 1: Exact URL deduplication
-            if (!empty($url)) {
+            if (! empty($url)) {
                 $normalizedUrl = $this->normalizeUrl($url);
                 if (isset($seenUrls[$normalizedUrl])) {
                     continue;
@@ -786,7 +799,7 @@ PROMPT;
                 }
             }
 
-            if (!$dominated) {
+            if (! $dominated) {
                 $unique[] = $item;
             }
         }
@@ -797,8 +810,8 @@ PROMPT;
     /**
      * Rank evidence by combined score
      *
-     * @param array $evidence Scored evidence items
-     * @param int $limit Maximum items to return
+     * @param  array  $evidence  Scored evidence items
+     * @param  int  $limit  Maximum items to return
      * @return array Ranked and limited evidence
      */
     private function rankEvidence(array $evidence, int $limit): array
@@ -821,8 +834,8 @@ PROMPT;
     /**
      * Persist evidence to database
      *
-     * @param int $claimId Associated claim ID
-     * @param array $evidence Evidence items to persist
+     * @param  int  $claimId  Associated claim ID
+     * @param  array  $evidence  Evidence items to persist
      * @return int Number of items persisted
      */
     public function persistEvidence(int $claimId, array $evidence): int
@@ -831,12 +844,12 @@ PROMPT;
 
         foreach ($evidence as $item) {
             try {
-                DB::connection('pgsql_rag')->insert("
+                DB::connection('pgsql_rag')->insert('
                     INSERT INTO evidence (
                         claim_id, snippet, source_url, source_title, source_domain,
                         credibility_score, retrieval_query, retrieval_rank, retrieval_intent, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ", [
+                ', [
                     $claimId,
                     $item['snippet'] ?? '',
                     $item['source_url'] ?? '',
@@ -862,19 +875,19 @@ PROMPT;
     /**
      * Get existing evidence for a claim
      *
-     * @param int $claimId Claim ID
-     * @param float $minCredibility Minimum credibility score
+     * @param  int  $claimId  Claim ID
+     * @param  float  $minCredibility  Minimum credibility score
      * @return array Evidence records
      */
     public function getEvidenceForClaim(int $claimId, float $minCredibility = 0.0): array
     {
-        return DB::connection('pgsql_rag')->select("
+        return DB::connection('pgsql_rag')->select('
             SELECT *
             FROM evidence
             WHERE claim_id = ?
               AND credibility_score >= ?
             ORDER BY credibility_score DESC, nli_score DESC
-        ", [$claimId, $minCredibility]);
+        ', [$claimId, $minCredibility]);
     }
 
     /**
@@ -884,9 +897,9 @@ PROMPT;
      */
     public function getStats(): array
     {
-        $totalCount = DB::connection('pgsql_rag')->select("
+        $totalCount = DB::connection('pgsql_rag')->select('
             SELECT COUNT(*) as count FROM evidence
-        ")[0]->count ?? 0;
+        ')[0]->count ?? 0;
 
         $byDomain = DB::connection('pgsql_rag')->select("
             SELECT source_domain, COUNT(*) as count, AVG(credibility_score) as avg_credibility
@@ -897,11 +910,11 @@ PROMPT;
             LIMIT 20
         ");
 
-        $byNliLabel = DB::connection('pgsql_rag')->select("
+        $byNliLabel = DB::connection('pgsql_rag')->select('
             SELECT nli_label, COUNT(*) as count
             FROM evidence
             GROUP BY nli_label
-        ");
+        ');
 
         $byRetrievalIntent = DB::connection('pgsql_rag')->select("
             SELECT COALESCE(retrieval_intent, 'general') as intent, COUNT(*) as count
@@ -932,7 +945,7 @@ PROMPT;
 
         $decoded = json_decode($response, true);
 
-        if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($decoded)) {
             return [];
         }
 
@@ -968,7 +981,7 @@ PROMPT;
             return $text;
         }
 
-        return substr($text, 0, $maxLength - 3) . '...';
+        return substr($text, 0, $maxLength - 3).'...';
     }
 
     /**
@@ -981,6 +994,7 @@ PROMPT;
         $url = rtrim($url, '/');
         // Remove common tracking parameters
         $url = preg_replace('/[?&](utm_|fbclid|gclid)[^&]*/', '', $url);
+
         return $url;
     }
 
@@ -992,6 +1006,7 @@ PROMPT;
         $text = strtolower($text);
         $text = preg_replace('/[^a-z0-9\s]/', '', $text);
         $text = preg_replace('/\s+/', ' ', $text);
+
         return trim($text);
     }
 
@@ -1010,7 +1025,8 @@ PROMPT;
         $words = preg_split('/\s+/', strtolower($claim));
         $words = array_filter($words, function ($word) use ($stopwords) {
             $word = preg_replace('/[^a-z0-9]/', '', $word);
-            return strlen($word) > 2 && !in_array($word, $stopwords);
+
+            return strlen($word) > 2 && ! in_array($word, $stopwords);
         });
 
         // Return up to 5 significant terms

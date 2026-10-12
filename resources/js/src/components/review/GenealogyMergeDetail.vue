@@ -136,12 +136,12 @@ const confidenceClass = computed(() => {
 <style scoped>
 .merge-detail { display: flex; flex-direction: column; gap: 1rem; }
 .merge-state-warn {
-  background: rgba(204, 136, 0, 0.12);
-  border: 1px solid rgba(204, 136, 0, 0.40);
-  border-left: 4px solid #cc8800;
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  border: 1px solid var(--ops-warning);
+  border-left: 4px solid var(--ops-warning);
   padding: 0.6rem 0.75rem;
   border-radius: 0.375rem;
-  color: #ffd980;
+  color: var(--ops-warning);
   font-size: 0.85rem;
 }
 .merge-header {
@@ -151,7 +151,7 @@ const confidenceClass = computed(() => {
   justify-content: space-between;
   gap: 0.5rem;
 }
-.merge-title { font-size: 1.1rem; font-weight: 700; color: #ffb47a; margin: 0; }
+.merge-title { font-size: 1.1rem; font-weight: 700; color: var(--ops-warning); margin: 0; }
 .merge-meta { display: flex; gap: 0.4rem; align-items: center; }
 .meta-pill {
   font-size: 0.7rem;
@@ -161,11 +161,11 @@ const confidenceClass = computed(() => {
   padding: 0.15rem 0.5rem;
   border-radius: 0.25rem;
 }
-.meta-agent { background: rgba(99, 51, 153, 0.30); color: #d4c2f0; }
-.meta-merge { background: rgba(204, 136, 0, 0.30); color: #ffd980; }
-.conf-high  { background: rgba(0, 170, 0, 0.30);    color: #b5f5b5; }
-.conf-med   { background: rgba(204, 136, 0, 0.30);  color: #ffd980; }
-.conf-low   { background: rgba(204, 0, 0, 0.30);    color: #ffb5b5; }
+.meta-agent { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.meta-merge { background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary)); color: var(--ops-warning); }
+.conf-high  { background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));    color: var(--ops-success); }
+.conf-med   { background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));  color: var(--ops-warning); }
+.conf-low   { background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));    color: var(--ops-danger); }
 
 .merge-grid {
   display: grid;
@@ -178,15 +178,15 @@ const confidenceClass = computed(() => {
 .merge-col { display: flex; flex-direction: column; gap: 0.5rem; }
 .col-heading {
   font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #b39ddb;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-accent);
   font-weight: 600;
 }
 
 .diff-section {
-  background: rgba(0, 0, 0, 0.20);
-  border: 1px solid rgba(102, 102, 102, 0.30);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   overflow: hidden;
 }
@@ -195,26 +195,26 @@ const confidenceClass = computed(() => {
   grid-template-columns: 8rem 1fr 1.5fr auto;
   gap: 0.75rem;
   padding: 0.4rem 0.5rem;
-  background: rgba(99, 51, 153, 0.20);
+  background: var(--color-bg-tertiary);
   font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #b39ddb;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-accent);
   font-weight: 600;
 }
 .col-status { text-align: right; }
 
 .merge-impact {
-  background: rgba(99, 51, 153, 0.10);
-  border: 1px solid rgba(99, 51, 153, 0.30);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   padding: 0.75rem 1rem;
 }
 .impact-heading {
   font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #b39ddb;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-accent);
   font-weight: 600;
   margin-bottom: 0.5rem;
 }
@@ -222,24 +222,24 @@ const confidenceClass = computed(() => {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.85rem;
-  color: #f0e6ff;
+  color: var(--color-text-primary);
 }
 .impact-table th, .impact-table td {
   padding: 0.3rem 0.5rem;
   text-align: left;
-  border-bottom: 1px solid rgba(102, 102, 102, 0.20);
+  border-bottom: 1px solid var(--color-border);
 }
 .impact-table thead th {
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-weight: 600;
 }
 .impact-note {
   margin-top: 0.5rem;
   font-size: 0.7rem;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-style: italic;
 }
 .detail-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }

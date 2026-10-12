@@ -1,273 +1,79 @@
 <template>
-  <div class="p-4">
-    <!-- Header -->
-    <div class="flex items-center justify-between mb-4">
-      <span class="text-xs text-ops-text-muted uppercase tracking-wide">
-        {{ total }} unidentified face{{ total !== 1 ? 's' : '' }}
-      </span>
-      <div class="flex items-center gap-3">
-        <!-- Pagination controls -->
-        <div v-if="pages > 1" class="flex items-center gap-2 text-xs text-ops-text-muted">
-          <button
-            @click="changePage(currentPage - 1)"
-            :disabled="currentPage <= 1"
-            class="px-2 py-1 rounded border border-ops-plum/40 hover:border-ops-peach/40 disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            &lsaquo;
-          </button>
-          <span>{{ currentPage }} / {{ pages }}</span>
-          <button
-            @click="changePage(currentPage + 1)"
-            :disabled="currentPage >= pages"
-            class="px-2 py-1 rounded border border-ops-plum/40 hover:border-ops-peach/40 disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            &rsaquo;
-          </button>
-        </div>
-      </div>
+  <section class="unidentified-faces" :class="{ embedded }" aria-labelledby="unidentified-heading">
+    <header class="unidentified-heading"><div><h2 id="unidentified-heading">People to identify</h2><p>{{ total }} face{{ total !== 1 ? 's' : '' }} awaiting review. A photo can contain several faces.</p></div><button class="face-button" :disabled="loading" @click="reload">Refresh photos</button></header>
+    <p class="unidentified-guide">Open a photo, choose the face, then select the person you recognize. You can leave an unfamiliar face for later.</p>
+    <p v-if="unavailableCount" class="unidentified-guide" role="status">{{ unavailableCount }} photo{{ unavailableCount !== 1 ? 's' : '' }} on this page need preparation before review.</p>
+    <p v-if="loadError" class="unidentified-error" role="alert">{{ loadError }}</p>
+    <p v-else-if="loading" role="status">Loading photos…</p>
+    <p v-else-if="!faces.length" class="unidentified-empty">No unidentified faces in this view.</p>
+    <div v-if="!loading && !loadError" class="unidentified-grid" :aria-busy="loading">
+      <article v-for="(face, index) in faces" :key="faceReference(face)" :data-face-id="face.id" v-show="faceStates[faceReference(face)] !== 'unavailable'" class="unidentified-card" :class="{ selected: selectedReference === faceReference(face) }">
+        <button v-if="embedded" :disabled="faceStates[faceReference(face)] !== 'available'" class="unidentified-photo" :aria-label="`Open photo ${index + 1}: ${face.filename || 'unnamed photo'}`" @click="openFace(face)"><UnidentifiedFacePreview :key="`${faceReference(face)}:${previewGeneration}`" :face-id="face.id" :review-type="face.review_type || 'face'" :generation="previewGeneration" @state="updateFaceState(faceReference(face), $event)" /></button>
+        <a v-else :href="faceStates[faceReference(face)] === 'available' ? reviewUrl(face) : undefined" :aria-disabled="faceStates[faceReference(face)] !== 'available'" class="unidentified-photo" :aria-label="`Review photo ${index + 1}: ${face.filename || 'unnamed photo'}`"><UnidentifiedFacePreview :key="`${faceReference(face)}:${previewGeneration}`" :face-id="face.id" :review-type="face.review_type || 'face'" :generation="previewGeneration" @state="updateFaceState(faceReference(face), $event)" /></a>
+        <div class="unidentified-card-info"><h3>{{ face.filename || 'Photo without a filename' }}</h3><p>{{ face.review_type === 'registry_face' ? 'Name the highlighted face' : 'Choose the face in this photo' }}</p><button v-if="embedded" :disabled="faceStates[faceReference(face)] !== 'available'" class="face-button primary" @click="openFace(face)">Review this face →</button><a v-else-if="faceStates[faceReference(face)] === 'available'" :href="reviewUrl(face)" class="face-button primary">Review this face →</a></div>
+      </article>
     </div>
-
-    <!-- Batch actions bar -->
-    <div v-if="selectedIds.size > 0" class="mb-4 flex items-center gap-3 p-3 bg-ops-plum/30 rounded-lg">
-      <span class="text-ops-peach text-sm">{{ selectedIds.size }} selected</span>
-      <button @click="handleBatchDismiss" class="ops-btn ops-btn-plum text-xs">Dismiss Selected</button>
-      <button @click="selectedIds = new Set()" class="ops-btn ops-btn-plum text-xs">Clear</button>
-    </div>
-
-    <!-- Empty state -->
-    <div v-if="faces.length === 0 && !loading" class="text-center py-16 text-ops-text-muted">
-      <div class="text-4xl mb-3">✓</div>
-      <p class="text-lg">No unidentified faces</p>
-      <p class="text-sm mt-1 opacity-60">All faces have been reviewed</p>
-    </div>
-
-    <!-- Face grid -->
-    <div class="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 gap-3">
-      <div
-        v-for="face in faces"
-        :key="face.id"
-        class="group relative bg-ops-plum/20 rounded-lg overflow-hidden border transition-colors"
-        :class="selectedIds.has(face.id) ? 'border-ops-peach' : 'border-transparent hover:border-ops-peach/40'"
-        @click="toggleSelect(face.id)"
-      >
-        <!-- Selection checkbox -->
-        <div
-          class="absolute top-1 left-1 z-10 w-4 h-4 rounded border flex items-center justify-center transition-opacity"
-          :class="selectedIds.has(face.id) ? 'bg-ops-peach border-ops-peach opacity-100' : 'bg-black/50 border-white/40 opacity-0 group-hover:opacity-100'"
-        >
-          <svg v-if="selectedIds.has(face.id)" class="w-3 h-3 text-black" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-          </svg>
-        </div>
-
-        <!-- Face crop image -->
-        <div class="aspect-square relative overflow-hidden">
-          <img
-            :src="`/api/media/face-match-crop/${face.id}`"
-            alt="Unidentified face"
-            class="w-full h-full object-cover"
-            loading="lazy"
-            @error="onImgError"
-          />
-
-          <!-- Hover overlay with actions -->
-          <div class="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5 p-1" @click.stop>
-            <button
-              @click.stop="openLinkModal(face.id)"
-              class="w-full px-2 py-1 text-[10px] bg-ops-sky/90 text-black font-semibold rounded hover:bg-ops-sky leading-tight"
-              title="Link to a person"
-            >
-              Link
-            </button>
-            <button
-              @click.stop="handleDismiss(face.id)"
-              class="w-full px-2 py-1 text-[10px] bg-ops-plum text-ops-text font-semibold rounded hover:bg-ops-plum/80 leading-tight"
-              title="Dismiss this face"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-
-        <!-- Info -->
-        <div class="px-1.5 py-1">
-          <span class="text-[10px] text-ops-text-muted truncate block">
-            {{ face.filename || formatDate(face.created_at) }}
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Loading -->
-    <div v-if="loading" class="text-center py-8">
-      <div class="inline-block w-6 h-6 border-2 border-ops-peach border-t-transparent rounded-full animate-spin"></div>
-    </div>
-
-    <!-- Bottom pagination -->
-    <div v-if="pages > 1 && !loading" class="flex items-center justify-center gap-3 mt-6">
-      <button
-        @click="changePage(currentPage - 1)"
-        :disabled="currentPage <= 1"
-        class="ops-btn ops-btn-plum text-sm disabled:opacity-30 disabled:cursor-not-allowed"
-      >
-        Previous
-      </button>
-      <span class="text-xs text-ops-text-muted">Page {{ currentPage }} of {{ pages }}</span>
-      <button
-        @click="changePage(currentPage + 1)"
-        :disabled="currentPage >= pages"
-        class="ops-btn ops-btn-plum text-sm disabled:opacity-30 disabled:cursor-not-allowed"
-      >
-        Next
-      </button>
-    </div>
-
-    <!-- Link to Person Modal -->
-    <Teleport to="body">
-      <div v-if="showLinkModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70" @click.self="closeLinkModal">
-        <div class="bg-ops-black border border-ops-plum rounded-xl p-6 w-full max-w-sm mx-4 shadow-2xl">
-          <h3 class="text-ops-peach font-bold uppercase tracking-wide mb-4">Link Face to Person</h3>
-          <input
-            ref="personSearchInput"
-            v-model="personQuery"
-            @input="onPersonSearch"
-            placeholder="Search by name..."
-            class="w-full bg-ops-plum/30 border border-ops-plum/60 rounded px-3 py-2 text-sm text-ops-text placeholder-ops-text-muted/50 focus:outline-none focus:border-ops-peach mb-3"
-          />
-          <div v-if="personResults.length > 0" class="max-h-48 overflow-y-auto space-y-1">
-            <button
-              v-for="p in personResults"
-              :key="p.id"
-              @click="handleLink(p)"
-              class="w-full text-left px-3 py-2 rounded text-sm hover:bg-ops-plum/40 text-ops-text"
-            >
-              <span class="font-semibold">{{ p.given_name }} {{ p.surname }}</span>
-              <span v-if="p.birth_date || p.death_date" class="text-ops-text-muted text-xs ml-2">
-                {{ p.birth_date || '?' }} – {{ p.death_date || '' }}
-              </span>
-            </button>
-          </div>
-          <div v-else-if="personQuery.length >= 2 && !personSearching" class="text-sm text-ops-text-muted py-2">
-            No persons found
-          </div>
-          <div v-if="personSearching" class="text-sm text-ops-text-muted py-2">Searching...</div>
-          <div class="flex justify-end mt-4">
-            <button @click="closeLinkModal" class="ops-btn ops-btn-plum text-sm">Cancel</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-  </div>
+    <nav v-if="pages > 1" class="unidentified-pages" aria-label="Photo pages"><button class="face-button" :disabled="loading || currentPage <= 1" @click="changePage(currentPage - 1)">← Previous photos</button><span>Page {{ currentPage }} of {{ pages }}</span><button class="face-button" :disabled="loading || currentPage >= pages" @click="changePage(currentPage + 1)">Next photos →</button></nav>
+  </section>
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useFacesData } from '../../composables/useFacesData'
-
-const {
-  unidentifiedFaces: faces,
-  unidentifiedPage: currentPage,
-  unidentifiedTotal: total,
-  unidentifiedLoading: loading,
-  unidentifiedPages: pages,
-  loadUnidentified,
-  dismissUnidentified,
-  bulkDismissUnidentified,
-  linkUnidentified,
-  searchPersons,
-} = useFacesData()
-
-// Batch selection
-const selectedIds = ref(new Set())
-
-function toggleSelect(id) {
-  const next = new Set(selectedIds.value)
-  if (next.has(id)) {
-    next.delete(id)
-  } else {
-    next.add(id)
-  }
-  selectedIds.value = next
+import UnidentifiedFacePreview from './UnidentifiedFacePreview.vue'
+const props = defineProps({ embedded: Boolean, selectedReference: { type: String, default: '' } })
+const emit = defineEmits(['open', 'count', 'references'])
+const { unidentifiedFaces: faces, unidentifiedPage: currentPage, unidentifiedTotal: total, unidentifiedPendingTotal: pendingTotal, unidentifiedLoading: loading, unidentifiedPages: pages, loadUnidentified } = useFacesData()
+const loadError = ref('')
+const faceStates = ref({})
+const previewGeneration = ref(0)
+const availableReferences = computed(() => loading.value || loadError.value ? [] : faces.value.filter(face => faceStates.value[faceReference(face)] === 'available').map(face => faceReference(face)))
+const unavailableCount = computed(() => faces.value.filter(face => faceStates.value[faceReference(face)] === 'unavailable').length)
+function faceReference(face) { return face.review_type === 'registry_face' ? `registry_face:${face.id}` : `face:${face.id}` }
+function reviewUrl(face) { return `/reviews?mode=photos&ref=${encodeURIComponent(faceReference(face))}` }
+function updateFaceState(id, result) { if (result.generation === previewGeneration.value && faces.value.some(face => faceReference(face) === id) && faceStates.value[id] !== 'unavailable') faceStates.value[id] = result.state }
+function openFace(face) { if (faceStates.value[faceReference(face)] === 'available' && !loading.value && !loadError.value) emit('open', faceReference(face)) }
+async function reload() {
+  faceStates.value = {}; previewGeneration.value++
+  loadError.value = ''
+  if (await loadUnidentified(currentPage.value, 12, props.embedded) === false) loadError.value = 'The photos could not be loaded. Use Refresh photos to try again.'
 }
-
-async function handleBatchDismiss() {
-  const ids = [...selectedIds.value]
-  selectedIds.value = new Set()
-  await bulkDismissUnidentified(ids)
+async function changePage(page) {
+  if (loading.value || page < 1 || page > pages.value) return
+  faceStates.value = {}; previewGeneration.value++
+  loadError.value = ''
+  if (await loadUnidentified(page, 12, props.embedded) === false) loadError.value = 'The next photos could not be loaded. Use Refresh photos to try again.'
+  document.getElementById('unidentified-heading')?.scrollIntoView({ block: 'start' })
 }
-
-onMounted(() => {
-  if (faces.value.length === 0) {
-    loadUnidentified(1)
-  }
-})
-
-function changePage(page) {
-  if (page < 1 || page > pages.value) return
-  selectedIds.value = new Set()
-  loadUnidentified(page)
-  window.scrollTo({ top: 0, behavior: 'smooth' })
-}
-
-async function handleDismiss(id) {
-  selectedIds.value.delete(id)
-  await dismissUnidentified(id)
-}
-
-// Link to person modal
-const showLinkModal = ref(false)
-const linkTargetId = ref(null)
-const personQuery = ref('')
-const personResults = ref([])
-const personSearching = ref(false)
-const personSearchInput = ref(null)
-
-let searchTimer = null
-
-function openLinkModal(id) {
-  linkTargetId.value = id
-  personQuery.value = ''
-  personResults.value = []
-  showLinkModal.value = true
-  nextTick(() => personSearchInput.value?.focus())
-}
-
-function closeLinkModal() {
-  showLinkModal.value = false
-  linkTargetId.value = null
-  personQuery.value = ''
-  personResults.value = []
-}
-
-function onPersonSearch() {
-  clearTimeout(searchTimer)
-  if (personQuery.value.length < 2) {
-    personResults.value = []
-    return
-  }
-  personSearching.value = true
-  searchTimer = setTimeout(async () => {
-    personResults.value = await searchPersons(personQuery.value)
-    personSearching.value = false
-  }, 300)
-}
-
-async function handleLink(person) {
-  const id = linkTargetId.value
-  closeLinkModal()
-  await linkUnidentified(id, person.id)
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return ''
-  try {
-    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-  } catch {
-    return dateStr
-  }
-}
-
-function onImgError(e) {
-  e.target.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23333" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="14">?</text></svg>'
-}
+watch(pendingTotal, value => emit('count', value), { immediate: true })
+watch(availableReferences, value => emit('references', value), { immediate: true })
+function markUnavailable(reference) { if (faces.value.some(face => faceReference(face) === reference)) faceStates.value[reference] = 'unavailable' }
+defineExpose({ reload, markUnavailable })
+onMounted(reload)
 </script>
+
+<style scoped>
+.unidentified-faces { padding: 20px; color: var(--desk-ink); }
+.unidentified-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.unidentified-heading h2 { font-size: 24px; text-transform: none; margin: 0 0 6px; }
+.unidentified-heading p, .unidentified-guide { color: var(--desk-muted); font-size: 14px; line-height: 1.6; margin: 5px 0; }
+.unidentified-guide { background: var(--desk-teal-soft); border: 1px solid var(--desk-line); border-radius: 10px; padding: 14px 16px; margin-bottom: 20px; }
+.unidentified-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; }
+.unidentified-card { min-width: 0; background: var(--desk-paper); border: 1px solid var(--desk-line); border-radius: 12px; overflow: hidden; }
+.unidentified-card.selected { border-color: var(--desk-teal); background: var(--desk-teal-soft); }
+.unidentified-photo { display: block; width: 100%; padding: 0; border: 0; background: var(--desk-subtle); }
+.unidentified-card-info { padding: 14px; }
+.unidentified-card-info h3 { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; margin: 0; text-transform: none; }
+.unidentified-card-info p { color: var(--desk-muted); margin: 5px 0 12px; font-size: 13px; }
+.face-button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 10px 14px; border: 1px solid var(--desk-line); border-radius: 8px; background: var(--desk-paper); color: var(--desk-ink); font-size: 14px; font-weight: 650; }
+.face-button.primary { width: 100%; color: white; background: var(--desk-teal); border-color: var(--desk-teal); }
+.face-button:disabled { opacity: .55; cursor: not-allowed; }
+.face-button:focus-visible, .unidentified-photo:focus-visible { outline: 3px solid var(--desk-teal); outline-offset: 3px; }
+.unidentified-pages { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 14px; margin-top: 22px; }
+.unidentified-pages span { color: var(--desk-muted); font-size: 13px; }
+.unidentified-empty, .unidentified-error { padding: 18px; border: 1px solid var(--desk-line); border-radius: 8px; }
+.unidentified-held { color: var(--desk-amber); }
+.unidentified-error { color: var(--desk-red); background: var(--desk-red-soft); }
+.embedded { padding: 18px; }.embedded .unidentified-heading h2 { font-size: 18px; }.embedded .unidentified-grid { grid-template-columns: 1fr; }.embedded .unidentified-heading p, .embedded .unidentified-guide { font-size: 13px; }
+@media (max-width: 600px) { .unidentified-faces { padding: 14px; } .unidentified-grid { grid-template-columns: 1fr; } .unidentified-pages span { order: 3; width: 100%; text-align: center; } }
+</style>

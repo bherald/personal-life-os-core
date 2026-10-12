@@ -5,7 +5,11 @@ namespace App\Http\Controllers;
 use App\Jobs\ExecuteGenealogyFaceImportScan;
 use App\Jobs\ExecuteGenealogyFolderScan;
 use App\Jobs\ExecuteGenealogyMediaPathSync;
+use App\Jobs\GenealogyFaceScanJob;
+use App\Rules\NonEmptyUploadedFile;
+use App\Services\Genealogy\BatchOperationsService;
 use App\Services\Genealogy\FaceLinkBridgeService;
+use App\Services\Genealogy\FaceMatchReviewDecisionService;
 use App\Services\Genealogy\FANClusterService;
 use App\Services\Genealogy\GedcomExportService;
 use App\Services\Genealogy\GenealogyAIResearchService;
@@ -29,14 +33,24 @@ use App\Services\Genealogy\GenealogyPdfService;
 use App\Services\Genealogy\GenealogyResearchService;
 use App\Services\Genealogy\GenealogyService;
 use App\Services\Genealogy\GenealogyStagedPacketPreviewService;
+use App\Services\Genealogy\GenealogyTimelineService;
 use App\Services\Genealogy\NewspaperSearchService;
+use App\Services\Genealogy\PlaceAuthorityService;
+use App\Services\Genealogy\Providers\FindAGraveProvider;
 use App\Services\Genealogy\Providers\GenealogyProviderManager;
+use App\Services\Genealogy\RecordHintService;
 use App\Services\Genealogy\SourceAudit\SourceAuditWorkbookService;
+use App\Services\NextcloudFileApiService;
 use App\Services\RAGService;
+use App\Services\ThumbnailService;
+use App\Support\SpreadsheetSafeCsv;
 use Exception;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -226,7 +240,7 @@ class GenealogyController extends Controller
     {
         try {
             $request->validate([
-                'file' => 'required|file|mimes:ged,txt|max:102400', // 100MB max
+                'file' => ['required', 'file', new NonEmptyUploadedFile, 'mimes:ged,txt', 'max:102400'], // 100MB max
                 'tree_id' => 'nullable|integer|exists:genealogy_trees,id',
                 'tree_name' => 'nullable|string|max:255',
             ]);
@@ -3089,7 +3103,7 @@ class GenealogyController extends Controller
             );
 
             if ($fileRecord && $fileRecord->asset_uuid) {
-                $thumbnailService = app(\App\Services\ThumbnailService::class);
+                $thumbnailService = app(ThumbnailService::class);
 
                 // Check if mime type is supported for thumbnails
                 if ($thumbnailService->isSupportedMimeType($fileRecord->mime_type ?? '')) {
@@ -3113,7 +3127,7 @@ class GenealogyController extends Controller
             }
 
             // Fallback: Proxy the full browser-renderable image from Nextcloud.
-            $downloadResult = app(\App\Services\NextcloudFileApiService::class)->downloadFile($media['nextcloud_path']);
+            $downloadResult = app(NextcloudFileApiService::class)->downloadFile($media['nextcloud_path']);
 
             if (! $downloadResult['success']) {
                 return response($placeholder, 200)
@@ -3158,7 +3172,7 @@ class GenealogyController extends Controller
     {
         try {
             $request->validate([
-                'file' => 'required|file|max:102400', // 100MB max
+                'file' => ['required', 'file', new NonEmptyUploadedFile, 'max:102400'], // 100MB max
                 'title' => 'nullable|string|max:500',
                 'description' => 'nullable|string',
                 'date' => 'nullable|string|max:50',
@@ -3559,7 +3573,7 @@ class GenealogyController extends Controller
             $recursive = $request->input('recursive', true);
 
             // Dispatch the job
-            \App\Jobs\GenealogyFaceScanJob::dispatch($treeId, $folder, $recursive);
+            GenealogyFaceScanJob::dispatch($treeId, $folder, $recursive);
 
             return response()->json([
                 'success' => true,
@@ -3582,8 +3596,8 @@ class GenealogyController extends Controller
     public function getFaceScanStatus(int $treeId): JsonResponse
     {
         try {
-            $cacheKey = \App\Jobs\GenealogyFaceScanJob::getStatusCacheKey($treeId);
-            $status = \Illuminate\Support\Facades\Cache::get($cacheKey);
+            $cacheKey = GenealogyFaceScanJob::getStatusCacheKey($treeId);
+            $status = Cache::get($cacheKey);
 
             if (! $status) {
                 return response()->json([
@@ -4091,7 +4105,7 @@ class GenealogyController extends Controller
                 'end_year' => $request->input('end_year') ? (int) $request->input('end_year') : null,
             ];
 
-            $timelineService = new \App\Services\Genealogy\GenealogyTimelineService;
+            $timelineService = new GenealogyTimelineService;
             $timeline = $timelineService->getPersonTimeline($personId, $options);
 
             return response()->json($timeline);
@@ -4115,7 +4129,7 @@ class GenealogyController extends Controller
                 return response()->json(['success' => true, 'data' => []]);
             }
 
-            $placeService = new \App\Services\Genealogy\PlaceAuthorityService;
+            $placeService = new PlaceAuthorityService;
             $results = $placeService->searchPlaces($query, [
                 'limit' => $limit,
                 'place_type' => $placeType,
@@ -4152,7 +4166,7 @@ class GenealogyController extends Controller
     public function getPlace(int $placeId): JsonResponse
     {
         try {
-            $placeService = new \App\Services\Genealogy\PlaceAuthorityService;
+            $placeService = new PlaceAuthorityService;
             $result = $placeService->getPlaceWithHierarchy($placeId);
 
             if (! $result) {
@@ -4176,7 +4190,7 @@ class GenealogyController extends Controller
         try {
             $limit = $request->input('limit', 100);
 
-            $placeService = new \App\Services\Genealogy\PlaceAuthorityService;
+            $placeService = new PlaceAuthorityService;
             $results = $placeService->backfillEventPlaces($limit);
 
             return response()->json([
@@ -4210,7 +4224,7 @@ class GenealogyController extends Controller
                 'page' => $request->input('page', 1),
             ];
 
-            $provider = new \App\Services\Genealogy\Providers\FindAGraveProvider;
+            $provider = new FindAGraveProvider;
             $results = $provider->searchRecords($criteria, $options);
 
             return response()->json([
@@ -4228,7 +4242,7 @@ class GenealogyController extends Controller
     public function getFindAGraveMemorial(string $memorialId): JsonResponse
     {
         try {
-            $provider = new \App\Services\Genealogy\Providers\FindAGraveProvider;
+            $provider = new FindAGraveProvider;
             $memorial = $provider->getRecord($memorialId);
 
             if (! $memorial) {
@@ -4812,7 +4826,7 @@ class GenealogyController extends Controller
             $limit = (int) $request->query('limit', 50);
             $minConfidence = (float) $request->query('min_confidence', 0.5);
 
-            $service = app(\App\Services\Genealogy\RecordHintService::class);
+            $service = app(RecordHintService::class);
             $result = $service->generateTreeRecordHints($treeId, $limit, $minConfidence);
 
             return response()->json([
@@ -4830,7 +4844,7 @@ class GenealogyController extends Controller
     public function generatePersonRecordHints(int $personId): JsonResponse
     {
         try {
-            $service = app(\App\Services\Genealogy\RecordHintService::class);
+            $service = app(RecordHintService::class);
             $result = $service->generateRecordHints($personId);
 
             return response()->json([
@@ -4948,10 +4962,16 @@ class GenealogyController extends Controller
             $limit = (int) $request->query('limit', 50);
 
             $tasks = $this->genealogyService->getResearchTasks($treeId, $status, min($limit, 100));
+            $statusCounts = $this->genealogyService->getResearchTaskStatusCounts($treeId);
 
             return response()->json([
                 'success' => true,
                 'data' => $tasks,
+                'meta' => [
+                    'status_counts' => $statusCounts,
+                    'returned' => count($tasks),
+                    'limit' => min($limit, 100),
+                ],
             ]);
         } catch (Exception $e) {
             return $this->errorResponse('Failed to get research tasks', $e);
@@ -6063,7 +6083,7 @@ class GenealogyController extends Controller
     public function getClipping(int $id): JsonResponse
     {
         try {
-            $clipping = \Illuminate\Support\Facades\DB::selectOne('
+            $clipping = DB::selectOne('
                 SELECT * FROM genealogy_newspaper_clippings WHERE id = ?
             ', [$id]);
             if (! $clipping) {
@@ -6088,7 +6108,7 @@ class GenealogyController extends Controller
     public function deleteClipping(int $id): JsonResponse
     {
         try {
-            $deleted = \Illuminate\Support\Facades\DB::delete('
+            $deleted = DB::delete('
                 DELETE FROM genealogy_newspaper_clippings WHERE id = ?
             ', [$id]);
 
@@ -6134,7 +6154,7 @@ class GenealogyController extends Controller
     public function unlinkClippingFromPerson(int $clippingId, int $personId): JsonResponse
     {
         try {
-            $deleted = \Illuminate\Support\Facades\DB::delete('
+            $deleted = DB::delete('
                 DELETE FROM genealogy_person_clippings
                 WHERE clipping_id = ? AND person_id = ?
             ', [$clippingId, $personId]);
@@ -6449,157 +6469,16 @@ class GenealogyController extends Controller
      */
     public function writeFaceRegionsToFile(int $mediaId): JsonResponse
     {
-        try {
-            if (! config('metadata_writeback.enabled', false) || ! config('metadata_writeback.in_place_enabled', false)) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Metadata writeback disabled'],
-                ], 403);
-            }
-
-            // Get media with face regions
-            $media = DB::selectOne(
-                'SELECT m.*, m.nextcloud_path, m.local_filename
-                 FROM genealogy_media m WHERE m.id = ?',
-                [$mediaId]
-            );
-
-            if (! $media) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Media not found'],
-                ], 404);
-            }
-
-            if (! $media->nextcloud_path) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Media has no Nextcloud path'],
-                ], 400);
-            }
-
-            // Get all face regions for this media with person names
-            $faceRegions = DB::select(
-                'SELECT pm.face_region_x, pm.face_region_y, pm.face_region_w, pm.face_region_h,
-                        p.given_name, p.surname, p.suffix
-                 FROM genealogy_person_media pm
-                 JOIN genealogy_persons p ON p.id = pm.person_id
-                 WHERE pm.media_id = ?',
-                [$mediaId]
-            );
-
-            if (empty($faceRegions)) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'No face regions to write'],
-                ], 400);
-            }
-
-            // Download file from Nextcloud to temp location
-            $tempPath = sys_get_temp_dir().'/face_write_'.$mediaId.'_'.basename($media->local_filename ?? 'file.jpg');
-
-            $nextcloudApi = app(\App\Services\NextcloudApiService::class);
-            $downloaded = $nextcloudApi->downloadFile($media->nextcloud_path, $tempPath);
-
-            if (! $downloaded || ! file_exists($tempPath)) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Failed to download file from Nextcloud'],
-                ], 500);
-            }
-
-            // Get image dimensions
-            $imageInfo = @getimagesize($tempPath);
-            if (! $imageInfo) {
-                @unlink($tempPath);
-
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Could not read image dimensions'],
-                ], 400);
-            }
-
-            $imageWidth = $imageInfo[0];
-            $imageHeight = $imageInfo[1];
-
-            // Build ExifTool command to write face regions
-            // First clear existing regions, then add new ones
-            $exiftoolPath = '/usr/bin/exiftool';
-
-            // Clear existing regions first
-            $clearCmd = [$exiftoolPath, '-overwrite_original', '-XMP-mwg-rs:all=', $tempPath];
-            \Illuminate\Support\Facades\Process::timeout(30)->run($clearCmd);
-
-            // Add each face region using the same format as the Python program
-            foreach ($faceRegions as $face) {
-                $personName = trim($face->given_name.' '.$face->surname);
-                if ($face->suffix) {
-                    $personName .= ' '.$face->suffix;
-                }
-
-                // Convert normalized coordinates to the format expected by XMP-mwg-rs
-                $x = $face->face_x ?? 0.5;
-                $y = $face->face_y ?? 0.5;
-                $w = $face->face_w ?? 0.1;
-                $h = $face->face_h ?? 0.1;
-
-                $regionJson = json_encode([
-                    'Area' => [
-                        'X' => $x,
-                        'Y' => $y,
-                        'W' => $w,
-                        'H' => $h,
-                        'Unit' => 'normalized',
-                    ],
-                    'Name' => $personName,
-                    'Type' => 'Face',
-                ]);
-
-                $addCmd = [
-                    $exiftoolPath,
-                    '-overwrite_original',
-                    "-XMP-mwg-rs:RegionList+={$regionJson}",
-                    $tempPath,
-                ];
-                \Illuminate\Support\Facades\Process::timeout(30)->run($addCmd);
-            }
-
-            // Also set the applied region dimensions
-            $dimsCmd = [
-                $exiftoolPath,
-                '-overwrite_original',
-                "-XMP-mwg-rs:RegionAppliedToDimensionsW={$imageWidth}",
-                "-XMP-mwg-rs:RegionAppliedToDimensionsH={$imageHeight}",
-                '-XMP-mwg-rs:RegionAppliedToDimensionsUnit=pixel',
-                $tempPath,
-            ];
-            \Illuminate\Support\Facades\Process::timeout(30)->run($dimsCmd);
-
-            // Upload modified file back to Nextcloud
-            $uploaded = $nextcloudApi->uploadFile($tempPath, $media->nextcloud_path);
-
-            // Clean up temp file
-            @unlink($tempPath);
-
-            if (! $uploaded) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Failed to upload modified file to Nextcloud'],
-                ], 500);
-            }
-
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'media_id' => $mediaId,
-                    'faces_written' => count($faceRegions),
-                    'nextcloud_path' => $media->nextcloud_path,
-                ],
-                'message' => 'Face regions written to file successfully',
-            ]);
-        } catch (Exception $e) {
-            return $this->errorResponse('Failed to write face regions to file', $e);
+        $result = $this->mediaService->writeApprovedFaceRegionsToNextcloud($mediaId);
+        if (! ($result['success'] ?? false)) {
+            return response()->json(['success' => false, 'error' => ['message' => $result['error'] ?? 'Face region write failed']],
+                $result['http_status'] ?? 500);
         }
+
+        return response()->json(['success' => true, 'data' => [
+            'media_id' => $mediaId, 'faces_written' => $result['faces_written'],
+            'nextcloud_path' => $result['nextcloud_path'], 'preimage_sha256' => $result['preimage_sha256'],
+        ], 'message' => 'Approved face regions written to file successfully']);
     }
 
     // ========================================================================
@@ -6622,7 +6501,7 @@ class GenealogyController extends Controller
                 ], 400);
             }
 
-            $batchService = app(\App\Services\Genealogy\BatchOperationsService::class);
+            $batchService = app(BatchOperationsService::class);
             $result = $batchService->batchUpdatePersons($treeId, $personIds, $updates);
 
             return response()->json([
@@ -6650,7 +6529,7 @@ class GenealogyController extends Controller
                 ], 400);
             }
 
-            $batchService = app(\App\Services\Genealogy\BatchOperationsService::class);
+            $batchService = app(BatchOperationsService::class);
             $result = $batchService->batchDeletePersons($treeId, $personIds, $cascade);
 
             return response()->json([
@@ -6678,7 +6557,7 @@ class GenealogyController extends Controller
                 ], 400);
             }
 
-            $batchService = app(\App\Services\Genealogy\BatchOperationsService::class);
+            $batchService = app(BatchOperationsService::class);
             $result = $batchService->batchTagMedia($treeId, $mediaIds, $tags);
 
             return response()->json([
@@ -6706,7 +6585,7 @@ class GenealogyController extends Controller
                 ], 400);
             }
 
-            $batchService = app(\App\Services\Genealogy\BatchOperationsService::class);
+            $batchService = app(BatchOperationsService::class);
             $result = $batchService->batchLinkMediaToPerson($treeId, (int) $personId, $mediaIds);
 
             return response()->json([
@@ -6734,7 +6613,7 @@ class GenealogyController extends Controller
                 ], 400);
             }
 
-            $batchService = app(\App\Services\Genealogy\BatchOperationsService::class);
+            $batchService = app(BatchOperationsService::class);
             $result = $batchService->batchDeleteMedia($treeId, $mediaIds, $deleteFiles);
 
             return response()->json([
@@ -7246,6 +7125,26 @@ class GenealogyController extends Controller
                 [$treeId]
             );
 
+            $picturePacketRows = DB::table('agent_review_queue')
+                ->select(['finding_type', 'details', 'created_at'])
+                ->where('status', 'pending')
+                ->where('review_type', 'genealogy_review_packet')
+                ->where(function ($query): void {
+                    $query->where('finding_type', 'face_person_source_repair_plan')
+                        ->orWhereJsonContainsKey('details->packet->metadata->audit_hold')
+                        ->orWhereJsonContainsKey('details->metadata->audit_hold');
+                })
+                ->where(function ($query): void {
+                    $query->whereNull('expires_at')
+                        ->orWhere('expires_at', '>', now());
+                })
+                ->get();
+            $picturePacketReview = $this->summarizePictureReviewPackets(
+                $picturePacketRows,
+                $treeId,
+                now()
+            );
+
             return response()->json([
                 'success' => true,
                 'data' => [
@@ -7285,6 +7184,7 @@ class GenealogyController extends Controller
                     'bridge_issues' => [
                         'approved_missing_person_media' => (int) ($bridgeIssues->approved_missing_person_media ?? 0),
                     ],
+                    'source_packet_review' => $picturePacketReview,
                 ],
             ]);
         } catch (Exception $e) {
@@ -7293,104 +7193,124 @@ class GenealogyController extends Controller
     }
 
     /**
+     * Return only content-free queue pressure for tree-scoped picture packets.
+     *
+     * @param  iterable<int, object|array<string, mixed>>  $rows
+     * @return array<string, int|string|null|bool>
+     */
+    private function summarizePictureReviewPackets(
+        iterable $rows,
+        int $treeId,
+        Carbon $capturedAt,
+        int $staleAfterDays = 7
+    ): array {
+        $pendingTotal = 0;
+        $stalePending = 0;
+        $oldestCreatedAt = null;
+        $staleBefore = $capturedAt->copy()->subDays($staleAfterDays);
+
+        foreach ($rows as $row) {
+            $details = is_array($row)
+                ? ($row['details'] ?? null)
+                : ($row->details ?? null);
+            if ($this->pictureReviewPacketTreeId($details) !== $treeId) {
+                continue;
+            }
+            $decoded = is_string($details) ? json_decode($details, true) : $details;
+            $findingType = is_array($row) ? ($row['finding_type'] ?? null) : ($row->finding_type ?? null);
+            $hold = $decoded['packet']['metadata']['audit_hold'] ?? $decoded['metadata']['audit_hold'] ?? null;
+            if ($findingType !== 'face_person_source_repair_plan'
+                && (! is_array($hold) || $hold === [] || array_is_list($hold))) {
+                continue;
+            }
+
+            $createdAtValue = is_array($row)
+                ? ($row['created_at'] ?? null)
+                : ($row->created_at ?? null);
+            $createdAt = $this->pictureReviewPacketCreatedAt($createdAtValue, $capturedAt);
+
+            $pendingTotal++;
+            if ($createdAt !== null && $createdAt->lessThan($staleBefore)) {
+                $stalePending++;
+            }
+            if ($createdAt !== null && ($oldestCreatedAt === null || $createdAt->lessThan($oldestCreatedAt))) {
+                $oldestCreatedAt = $createdAt;
+            }
+        }
+
+        $oldestAgeDays = $oldestCreatedAt === null
+            ? null
+            : intdiv(max(0, $capturedAt->getTimestamp() - $oldestCreatedAt->getTimestamp()), 86400);
+
+        return [
+            'pending_total' => $pendingTotal,
+            'stale_pending' => $stalePending,
+            'stale_after_days' => $staleAfterDays,
+            'oldest_pending_created_at' => $oldestCreatedAt?->toIso8601String(),
+            'oldest_pending_age_days' => $oldestAgeDays,
+            'tree_scoped' => true,
+            'identity_writeback' => false,
+        ];
+    }
+
+    private function pictureReviewPacketTreeId(mixed $details): ?int
+    {
+        if (is_string($details)) {
+            $details = json_decode($details, true);
+        }
+        if (! is_array($details)) {
+            return null;
+        }
+
+        foreach ([
+            $details['tree_id'] ?? null,
+            $details['target_tree_id'] ?? null,
+            $details['identity']['tree_id'] ?? null,
+            $details['metadata']['filters']['tree_id'] ?? null,
+            $details['packet']['tree_id'] ?? null,
+            $details['packet']['target_tree_id'] ?? null,
+            $details['packet']['identity']['tree_id'] ?? null,
+            $details['packet']['metadata']['filters']['tree_id'] ?? null,
+        ] as $candidate) {
+            if (is_numeric($candidate) && (int) $candidate > 0) {
+                return (int) $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function pictureReviewPacketCreatedAt(mixed $value, Carbon $capturedAt): ?Carbon
+    {
+        if ($value instanceof Carbon) {
+            return $value->copy();
+        }
+        if (! is_string($value) || trim($value) === '') {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value, $capturedAt->getTimezone());
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /**
      * Approve a face match - creates person-media link
      */
     public function approveFaceMatch(Request $request, int $id): JsonResponse
     {
-        try {
-            $match = DB::selectOne(
-                'SELECT * FROM genealogy_face_match_queue WHERE id = ?',
-                [$id]
-            );
-
-            if (! $match) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Queue entry not found'],
-                ], 404);
-            }
-
-            if ($match->status !== 'pending') {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => "Entry already {$match->status}"],
-                ], 400);
-            }
-
-            if (! $match->suggested_person_id) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'No suggested person - use /link endpoint to specify a person'],
-                ], 400);
-            }
-
-            DB::beginTransaction();
-            $bridgeResult = null;
-
-            if ($match->file_registry_face_id) {
-                $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink(
-                    (int) $match->file_registry_face_id,
-                    (int) $match->suggested_person_id,
-                    $match->media_id ? (int) $match->media_id : null
-                );
-            }
-
-            if ((! ($bridgeResult['success'] ?? false)) && $match->media_id) {
-                // Decode face region from JSON
-                $faceRegion = $match->face_region ? json_decode($match->face_region, true) : [];
-                $this->markFileRegistryFaceLinked($match->file_registry_face_id ?? null, (int) $match->suggested_person_id);
-
-                // Check if link already exists
-                $existing = DB::selectOne(
-                    'SELECT id FROM genealogy_person_media WHERE person_id = ? AND media_id = ?',
-                    [$match->suggested_person_id, $match->media_id]
-                );
-
-                if (! $existing) {
-                    DB::insert(
-                        'INSERT INTO genealogy_person_media
-                         (person_id, media_id, face_region_x, face_region_y, face_region_w, face_region_h,
-                          face_confirmed, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, 1, NOW())',
-                        [
-                            $match->suggested_person_id,
-                            $match->media_id,
-                            $faceRegion['x'] ?? null,
-                            $faceRegion['y'] ?? null,
-                            $faceRegion['w'] ?? null,
-                            $faceRegion['h'] ?? null,
-                        ]
-                    );
-                }
-            }
-
-            // Update queue status
-            $notes = $request->get('notes', null);
-            DB::update(
-                "UPDATE genealogy_face_match_queue
-                 SET status = 'approved', reviewed_at = NOW(), review_notes = ?, updated_at = NOW()
-                 WHERE id = ?",
-                [$notes, $id]
-            );
-
-            DB::commit();
-
-            Log::info('Face match approved via API', [
-                'queue_id' => $id,
-                'person_id' => $match->suggested_person_id,
-                'media_id' => $match->media_id,
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Match approved and person linked to media',
-                'genealogy_bridge' => $bridgeResult,
-            ]);
-        } catch (Exception $e) {
-            DB::rollBack();
-
-            return $this->errorResponse('Failed to approve match', $e);
+        $request->validate(['notes' => 'nullable|string', 'face_region_convention' => 'nullable|string']);
+        $result = app(FaceMatchReviewDecisionService::class)->approve($id, $request->get('notes'), [
+            'decision_scope' => 'confirm_face_identity_link',
+            'face_region_convention' => $request->get('face_region_convention'),
+        ]);
+        if (! ($result['success'] ?? false)) {
+            return response()->json(['success' => false, 'error' => ['message' => $result['error'], 'code' => $result['error_code']]], $result['error_code'] === 'not_found' ? 404 : 409);
         }
+
+        return response()->json($result);
     }
 
     /**
@@ -7398,46 +7318,15 @@ class GenealogyController extends Controller
      */
     public function rejectFaceMatch(Request $request, int $id): JsonResponse
     {
-        try {
-            $match = DB::selectOne(
-                'SELECT * FROM genealogy_face_match_queue WHERE id = ?',
-                [$id]
-            );
-
-            if (! $match) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Queue entry not found'],
-                ], 404);
-            }
-
-            if ($match->status !== 'pending') {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => "Entry already {$match->status}"],
-                ], 400);
-            }
-
-            $notes = $request->get('notes', null);
-            DB::update(
-                "UPDATE genealogy_face_match_queue
-                 SET status = 'rejected', reviewed_at = NOW(), review_notes = ?, updated_at = NOW()
-                 WHERE id = ?",
-                [$notes, $id]
-            );
-
-            Log::info('Face match rejected via API', [
-                'queue_id' => $id,
-                'face_name' => $match->face_name,
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Match rejected',
-            ]);
-        } catch (Exception $e) {
-            return $this->errorResponse('Failed to reject match', $e);
+        $request->validate(['notes' => 'nullable|string']);
+        $result = app(FaceMatchReviewDecisionService::class)->reject($id, $request->get('notes'), [
+            'decision_scope' => 'reject_face_identity_suggestion',
+        ]);
+        if (! ($result['success'] ?? false)) {
+            return response()->json(['success' => false, 'error' => ['message' => $result['error'], 'code' => $result['error_code']]], 409);
         }
+
+        return response()->json($result);
     }
 
     /**
@@ -7445,118 +7334,19 @@ class GenealogyController extends Controller
      */
     public function linkFaceMatchToPerson(Request $request, int $id): JsonResponse
     {
-        try {
-            $request->validate([
-                'person_id' => 'required|integer',
-            ]);
-
-            $personId = (int) $request->get('person_id');
-
-            $match = DB::selectOne(
-                'SELECT * FROM genealogy_face_match_queue WHERE id = ?',
-                [$id]
-            );
-
-            if (! $match) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Queue entry not found'],
-                ], 404);
-            }
-
-            if ($match->status !== 'pending') {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => "Entry already {$match->status}"],
-                ], 400);
-            }
-
-            // Verify person exists in same tree
-            $person = DB::selectOne(
-                'SELECT id, given_name, surname FROM genealogy_persons WHERE id = ? AND tree_id = ?',
-                [$personId, $match->tree_id]
-            );
-
-            if (! $person) {
-                return response()->json([
-                    'success' => false,
-                    'error' => ['message' => 'Person not found in this tree'],
-                ], 404);
-            }
-
-            DB::beginTransaction();
-            $bridgeResult = null;
-
-            if ($match->file_registry_face_id) {
-                $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink(
-                    (int) $match->file_registry_face_id,
-                    $personId,
-                    $match->media_id ? (int) $match->media_id : null
-                );
-            }
-
-            if ((! ($bridgeResult['success'] ?? false)) && $match->media_id) {
-                // Decode face region from JSON
-                $faceRegion = $match->face_region ? json_decode($match->face_region, true) : [];
-                $this->markFileRegistryFaceLinked($match->file_registry_face_id ?? null, $personId);
-
-                // Check if link already exists
-                $existing = DB::selectOne(
-                    'SELECT id FROM genealogy_person_media WHERE person_id = ? AND media_id = ?',
-                    [$personId, $match->media_id]
-                );
-
-                if (! $existing) {
-                    DB::insert(
-                        'INSERT INTO genealogy_person_media
-                         (person_id, media_id, face_region_x, face_region_y, face_region_w, face_region_h,
-                          face_confirmed, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, 1, NOW())',
-                        [
-                            $personId,
-                            $match->media_id,
-                            $faceRegion['x'] ?? null,
-                            $faceRegion['y'] ?? null,
-                            $faceRegion['w'] ?? null,
-                            $faceRegion['h'] ?? null,
-                        ]
-                    );
-                }
-            }
-
-            // Update queue status with manual link info
-            $notes = $request->get('notes', "Manually linked to {$person->given_name} {$person->surname}");
-            DB::update(
-                "UPDATE genealogy_face_match_queue
-                 SET status = 'approved', suggested_person_id = ?, reviewed_at = NOW(),
-                     review_notes = ?, match_type = 'manual', updated_at = NOW()
-                 WHERE id = ?",
-                [$personId, $notes, $id]
-            );
-
-            DB::commit();
-
-            Log::info('Face match manually linked via API', [
-                'queue_id' => $id,
-                'person_id' => $personId,
-                'media_id' => $match->media_id,
-                'face_name' => $match->face_name,
-            ]);
-
-            return response()->json([
-                'success' => true,
-                'message' => "Face linked to {$person->given_name} {$person->surname}",
-                'data' => [
-                    'person_id' => $personId,
-                    'person_name' => "{$person->given_name} {$person->surname}",
-                    'genealogy_bridge' => $bridgeResult,
-                ],
-            ]);
-        } catch (Exception $e) {
-            DB::rollBack();
-
-            return $this->errorResponse('Failed to link face match', $e);
+        $request->validate(['person_id' => 'required|integer|min:1', 'notes' => 'nullable|string', 'face_region_convention' => 'nullable|string']);
+        $result = app(FaceMatchReviewDecisionService::class)->link($id, (int) $request->get('person_id'), $request->get('notes'), [
+            'decision_scope' => 'confirm_face_identity_link',
+            'face_region_convention' => $request->get('face_region_convention'),
+        ]);
+        if (! ($result['success'] ?? false)) {
+            return response()->json(['success' => false, 'error' => ['message' => $result['error'], 'code' => $result['error_code']]], $result['error_code'] === 'not_found' ? 404 : 409);
         }
+
+        return response()->json([
+            'success' => true, 'message' => $result['message'],
+            'data' => ['person_id' => $result['person_id'], 'person_name' => $result['person_name'], 'genealogy_bridge' => $result['genealogy_bridge']],
+        ]);
     }
 
     /**
@@ -7591,6 +7381,47 @@ class GenealogyController extends Controller
             }
 
             $oldName = $match->face_name ?? 'Unknown';
+            $faceRegion = $match->face_region ? json_decode($match->face_region, true) : null;
+            $currentFace = null;
+
+            if ($match->face_region && (! is_array($faceRegion) || ! isset($faceRegion['x']))) {
+                return response()->json([
+                    'success' => false,
+                    'error' => ['message' => 'The queue face region is malformed; review required.'],
+                ], 409);
+            }
+
+            if (is_array($faceRegion) && isset($faceRegion['x'])) {
+                $linkedFaceId = isset($match->file_registry_face_id) ? (int) $match->file_registry_face_id : 0;
+                if ($linkedFaceId < 1) {
+                    return response()->json([
+                        'success' => false,
+                        'error' => ['message' => 'The queue entry has no linked current face row; review required.'],
+                    ], 409);
+                }
+
+                $currentFace = DB::selectOne(
+                    'SELECT frf.id, frf.file_registry_id, frf.region_x, frf.region_y, frf.region_w, frf.region_h,
+                            frf.hidden, frf.source_sha256, frf.face_region_convention, frf.source_current, frf.superseded_at,
+                            fr.current_path, fr.status AS file_status
+                     FROM file_registry_faces frf
+                     JOIN file_registry fr ON fr.id = frf.file_registry_id
+                     WHERE frf.id = ? AND frf.source_current = 1 AND frf.superseded_at IS NULL
+                       AND frf.source_sha256 IS NOT NULL
+                       AND frf.face_region_convention = \'normalized_top_left\'',
+                    [$linkedFaceId]
+                );
+
+                $sourceEvidence = $currentFace
+                    ? app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($currentFace)
+                    : ['success' => false];
+                if (! ($sourceEvidence['success'] ?? false)) {
+                    return response()->json([
+                        'success' => false,
+                        'error' => ['message' => 'The linked face row is missing, stale, or superseded; review required.'],
+                    ], 409);
+                }
+            }
 
             // Check if target name already exists for this media (unique constraint: media_id + face_name)
             $existing = DB::selectOne(
@@ -7609,35 +7440,28 @@ class GenealogyController extends Controller
                     'target_name' => $newName,
                 ]);
             } else {
+                if ($currentFace) {
+                    $faceUpdated = DB::update(
+                        'UPDATE file_registry_faces
+                         SET person_name = ?, updated_at = NOW()
+                         WHERE id = ? AND source_current = 1 AND superseded_at IS NULL
+                           AND source_sha256 = ? AND face_region_convention = \'normalized_top_left\'',
+                        [$newName, (int) $currentFace->id, $currentFace->source_sha256]
+                    );
+                    if ($faceUpdated !== 1) {
+                        return response()->json([
+                            'success' => false,
+                            'error' => ['message' => 'The linked face generation changed during rename; review required.'],
+                        ], 409);
+                    }
+                }
+
                 DB::update(
                     "UPDATE genealogy_face_match_queue
                      SET face_name = ?, review_notes = CONCAT(COALESCE(review_notes, ''), 'Renamed from: ', ?), updated_at = NOW()
                      WHERE id = ?",
                     [$newName, $oldName, $id]
                 );
-            }
-
-            // Also update the face name in file_registry_faces if we can find the matching face
-            if ($match->face_region) {
-                $faceRegion = json_decode($match->face_region, true);
-                if ($faceRegion && isset($faceRegion['x'])) {
-                    // Find matching file_registry_faces entry by media → file_registry link
-                    $media = DB::selectOne(
-                        'SELECT fr.id as file_registry_id FROM genealogy_media gm
-                         JOIN file_registry fr ON fr.current_path = gm.nextcloud_path OR fr.original_path = gm.original_path
-                         WHERE gm.id = ? LIMIT 1',
-                        [$match->media_id]
-                    );
-
-                    if ($media) {
-                        DB::update(
-                            'UPDATE file_registry_faces
-                             SET person_name = ?, updated_at = NOW()
-                             WHERE file_registry_id = ? AND person_name = ?',
-                            [$newName, $media->file_registry_id, $oldName]
-                        );
-                    }
-                }
             }
 
             Log::info('Face match renamed via API', [
@@ -7662,29 +7486,6 @@ class GenealogyController extends Controller
     // ========================================================================
     // HELPERS
     // ========================================================================
-
-    private function markFileRegistryFaceLinked(mixed $fileRegistryFaceId, int $personId): void
-    {
-        if (empty($fileRegistryFaceId)) {
-            return;
-        }
-
-        DB::update(
-            'UPDATE file_registry_faces
-             SET genealogy_person_id = ?, verified = 1, updated_at = NOW()
-             WHERE id = ?',
-            [$personId, (int) $fileRegistryFaceId]
-        );
-
-        DB::update(
-            'UPDATE file_registry
-             SET exif_faces_written = 0
-             WHERE id = (
-                 SELECT file_registry_id FROM file_registry_faces WHERE id = ?
-             )',
-            [(int) $fileRegistryFaceId]
-        );
-    }
 
     /**
      * Standard error response
@@ -8107,9 +7908,11 @@ class GenealogyController extends Controller
     /**
      * Get research search history for a person from gps_research_logs.
      */
-    public function getPersonResearchLogs(Request $request, int $personId): JsonResponse
+    public function getPersonResearchLogs(Request $request, int $personId): JsonResponse|Response
     {
-        $limit = min((int) $request->query('limit', 50), 200);
+        $format = strtolower((string) $request->query('format', 'json'));
+        $maxLimit = $format === 'csv' ? 1000 : 200;
+        $limit = max(1, min((int) $request->query('limit', 50), $maxLimit));
         $repository = $request->query('repository');
         $negative = $request->query('negative');
 
@@ -8127,13 +7930,19 @@ class GenealogyController extends Controller
 
         $logs = DB::select("
             SELECT rl.*,
+                   p.given_name, p.surname,
                    rt.task_type, rt.question AS task_question
             FROM gps_research_logs rl
+            JOIN genealogy_persons p ON p.id = rl.person_id
             LEFT JOIN gps_research_tasks rt ON rt.id = rl.task_id
             {$where}
             ORDER BY rl.searched_at DESC
             LIMIT {$limit}
         ", $params);
+
+        if ($format === 'csv') {
+            return $this->researchLogsCsvResponse($logs, "research-logs-person-{$personId}.csv");
+        }
 
         $summary = DB::select('
             SELECT repository_searched,
@@ -8152,6 +7961,7 @@ class GenealogyController extends Controller
             'data' => [
                 'logs' => $logs,
                 'summary' => $summary,
+                'repository_summary' => $summary,
                 'total' => count($logs),
             ],
         ]);
@@ -8160,10 +7970,10 @@ class GenealogyController extends Controller
     /**
      * Get research search history for a tree. CSV export via ?format=csv
      */
-    public function getTreeResearchLogs(Request $request, int $treeId): JsonResponse
+    public function getTreeResearchLogs(Request $request, int $treeId): JsonResponse|Response
     {
-        $limit = min((int) $request->query('limit', 200), 1000);
-        $format = $request->query('format', 'json');
+        $limit = max(1, min((int) $request->query('limit', 200), 1000));
+        $format = strtolower((string) $request->query('format', 'json'));
 
         $logs = DB::select("
             SELECT rl.*,
@@ -8178,20 +7988,7 @@ class GenealogyController extends Controller
         ", [$treeId]);
 
         if ($format === 'csv') {
-            $csv = "Person,Repository,Search Terms,Negative,Date\n";
-            foreach ($logs as $row) {
-                $name = trim(($row->given_name ?? '').' '.($row->surname ?? ''));
-                $csv .= '"'.addslashes($name).'",'
-                    .'"'.addslashes($row->repository_searched ?? '').'",'
-                    .'"'.addslashes($row->search_terms ?? '').'",'
-                    .($row->negative_result ? 'Yes' : 'No').','
-                    .($row->searched_at ?? '')."\n";
-            }
-
-            return response($csv, 200, [
-                'Content-Type' => 'text/csv',
-                'Content-Disposition' => "attachment; filename=research-logs-tree-{$treeId}.csv",
-            ]);
+            return $this->researchLogsCsvResponse($logs, "research-logs-tree-{$treeId}.csv");
         }
 
         $summary = DB::select('
@@ -8213,6 +8010,28 @@ class GenealogyController extends Controller
                 'repository_summary' => $summary,
                 'total' => count($logs),
             ],
+        ]);
+    }
+
+    /**
+     * @param  array<int, object>  $logs
+     */
+    private function researchLogsCsvResponse(array $logs, string $filename): Response
+    {
+        $headers = ['Person', 'Repository', 'Search Terms', 'Negative', 'Date'];
+        $rows = array_map(static fn (object $row): array => [
+            'Person' => trim(($row->given_name ?? '').' '.($row->surname ?? '')),
+            'Repository' => $row->repository_searched ?? '',
+            'Search Terms' => $row->search_terms ?? '',
+            'Negative' => $row->negative_result ? 'Yes' : 'No',
+            'Date' => $row->searched_at ?? '',
+        ], $logs);
+
+        return response(SpreadsheetSafeCsv::encode($headers, $rows), 200, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+            'Cache-Control' => 'private, no-store, max-age=0',
+            'X-Content-Type-Options' => 'nosniff',
         ]);
     }
 

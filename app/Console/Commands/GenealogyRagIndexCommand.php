@@ -78,21 +78,6 @@ class GenealogyRagIndexCommand extends Command
             return 0;
         }
 
-        if (! $dryRun) {
-            $selectedPersonIds = array_map(
-                static fn (object $person): int => (int) $person->id,
-                $persons
-            );
-            $existingSelectedPersonIds = $reindex
-                ? $selectedPersonIds
-                : array_values(array_intersect($selectedPersonIds, $this->getExistingRagPersonIds($treeId)));
-
-            if ($existingSelectedPersonIds !== []) {
-                $deleted = $this->removeExistingPersonDocuments($existingSelectedPersonIds);
-                $this->info("Removed {$deleted} existing person RAG document(s) for selected batch.");
-            }
-        }
-
         $this->info('Found '.count($persons).' persons to index.');
 
         $ragService = app(RAGService::class);
@@ -128,7 +113,7 @@ class GenealogyRagIndexCommand extends Command
                     'genealogy_person',
                     'genealogy',
                     null,
-                    ['skip_dedup' => true]
+                    ['skip_dedup' => true, 'source_identity_upsert' => true]
                 );
 
                 if ($doc) {
@@ -247,48 +232,6 @@ class GenealogyRagIndexCommand extends Command
                 GROUP BY source_id";
 
         return DB::connection('pgsql_rag')->select($sql, $params);
-    }
-
-    private function removeExistingPersonDocuments(array $personIds): int
-    {
-        return $this->removeExistingRagDocuments('genealogy_person', 'genealogy_person', $personIds);
-    }
-
-    private function removeExistingRagDocuments(string $documentType, string $sourceType, array $sourceIds): int
-    {
-        $sourceIds = array_values(array_unique(array_filter(array_map(
-            static fn ($sourceId): string => (string) (int) $sourceId,
-            $sourceIds
-        ))));
-
-        if ($sourceIds === []) {
-            return 0;
-        }
-
-        $db = DB::connection('pgsql_rag');
-        $sourcePlaceholders = implode(',', array_fill(0, count($sourceIds), '?'));
-
-        $sql = "SELECT id
-                FROM rag_documents
-                WHERE document_type = ?
-                  AND source_type = ?
-                  AND source_id::text IN ({$sourcePlaceholders})";
-        $params = array_merge([$documentType, $sourceType], $sourceIds);
-
-        $documentIds = array_map(
-            static fn ($row) => (int) $row->id,
-            $db->select($sql, $params)
-        );
-
-        if (empty($documentIds)) {
-            return 0;
-        }
-
-        $placeholders = implode(',', array_fill(0, count($documentIds), '?'));
-        $db->delete("DELETE FROM rag_sentence_embeddings WHERE document_id IN ({$placeholders})", $documentIds);
-        $db->delete("DELETE FROM rag_chunk_hypotheticals WHERE document_id IN ({$placeholders})", $documentIds);
-
-        return $db->delete("DELETE FROM rag_documents WHERE id IN ({$placeholders})", $documentIds);
     }
 
     /**
@@ -692,8 +635,12 @@ class GenealogyRagIndexCommand extends Command
             {$where}
         ", $params);
 
-        $ragDocumentCount = count($this->getExistingRagPersonIds($treeId));
-        $missingRagDocuments = max(0, (int) $stats->total - $ragDocumentCount);
+        $personRows = DB::select('SELECT id FROM genealogy_persons'.$where, $params);
+        $personIds = array_map(static fn (object $person): int => (int) $person->id, $personRows);
+        $ragPersonIds = $this->getExistingRagPersonIds($treeId);
+        $ragDocumentCount = count($ragPersonIds);
+        $missingRagDocuments = count(array_diff($personIds, $ragPersonIds));
+        $orphanedRagDocuments = count(array_diff($ragPersonIds, $personIds));
 
         $this->table(['Metric', 'Value'], [
             ['Total persons', $stats->total],
@@ -701,6 +648,7 @@ class GenealogyRagIndexCommand extends Command
             ['MySQL rag_indexed_at pending', $stats->pending],
             ['PostgreSQL person RAG docs', $ragDocumentCount],
             ['Missing PostgreSQL person RAG docs', $missingRagDocuments],
+            ['Orphaned PostgreSQL person RAG docs', $orphanedRagDocuments],
             ['Living persons', $stats->living],
         ]);
 
@@ -754,15 +702,6 @@ class GenealogyRagIndexCommand extends Command
         $this->info('Found '.count($places).' places to index.');
         $ragService = app(RAGService::class);
         $indexed = 0;
-        $selectedPlaceIds = array_map(static fn (object $place): int => (int) $place->id, $places);
-
-        if (! $dryRun) {
-            $deleted = $this->removeExistingRagDocuments('genealogy_place', 'genealogy_place', $selectedPlaceIds);
-            if ($deleted > 0) {
-                $this->info("Removed {$deleted} existing place RAG document(s) for selected batch.");
-            }
-        }
-
         foreach ($places as $place) {
             $content = "Place: {$place->name}";
             if ($place->normalized_name && $place->normalized_name !== $place->name) {
@@ -799,7 +738,7 @@ class GenealogyRagIndexCommand extends Command
                     'genealogy_place',
                     'genealogy',
                     null,
-                    ['skip_dedup' => true]
+                    ['skip_dedup' => true, 'source_identity_upsert' => true]
                 );
 
                 if ($doc) {
@@ -857,15 +796,6 @@ class GenealogyRagIndexCommand extends Command
         $this->info('Found '.count($sources).' sources to index.');
         $ragService = app(RAGService::class);
         $indexed = 0;
-        $selectedSourceIds = array_map(static fn (object $source): int => (int) $source->id, $sources);
-
-        if (! $dryRun) {
-            $deleted = $this->removeExistingRagDocuments('genealogy_source', 'genealogy_source', $selectedSourceIds);
-            if ($deleted > 0) {
-                $this->info("Removed {$deleted} existing source RAG document(s) for selected batch.");
-            }
-        }
-
         foreach ($sources as $src) {
             $parts = ["Source: {$src->title}"];
             if ($src->author) {
@@ -913,7 +843,7 @@ class GenealogyRagIndexCommand extends Command
                     'genealogy_source',
                     'genealogy',
                     null,
-                    ['skip_dedup' => true]
+                    ['skip_dedup' => true, 'source_identity_upsert' => true]
                 );
 
                 if ($doc) {

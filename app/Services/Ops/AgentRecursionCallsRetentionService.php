@@ -16,13 +16,18 @@ class AgentRecursionCallsRetentionService
         int $batchSize = 10_000,
         int $maxRows = 50_000,
         int $sleepMs = 100,
+        ?int $maxRuntimeSeconds = null,
     ): array {
         $retentionDays = $retentionDays ?? (int) config('recursion.retention_days', 30);
         $retentionDays = max(1, $retentionDays);
         $batchSize = max(1, min(self::MAX_BATCH_SIZE, $batchSize));
         $maxRows = max(1, min(self::MAX_ROWS_PER_EXECUTION, $maxRows));
         $sleepMs = max(0, min(5_000, $sleepMs));
+        $maxRuntimeSeconds = $maxRuntimeSeconds === null
+            ? null
+            : max(1, min(3_600, $maxRuntimeSeconds));
         $cutoff = now()->subDays($retentionDays)->toDateTimeString();
+        $startedAt = hrtime(true);
 
         $payload = [
             'version' => 1,
@@ -35,6 +40,7 @@ class AgentRecursionCallsRetentionService
             'batch_size' => $batchSize,
             'max_rows' => $maxRows,
             'sleep_ms' => $sleepMs,
+            'max_runtime_seconds' => $maxRuntimeSeconds,
             'started_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
             'deleted_rows' => 0,
             'batches' => 0,
@@ -45,6 +51,7 @@ class AgentRecursionCallsRetentionService
                 'uses_created_at_index' => true,
                 'summary_table_preserved' => 'recursion_effectiveness',
                 'requires_execute_flag' => true,
+                'runtime_bounded' => $maxRuntimeSeconds !== null,
             ],
         ];
 
@@ -58,6 +65,11 @@ class AgentRecursionCallsRetentionService
         }
 
         while ($payload['deleted_rows'] < $maxRows) {
+            if ($this->runtimeBudgetReached($startedAt, $maxRuntimeSeconds)) {
+                $payload['stopped_reason'] = 'runtime_budget_reached';
+                break;
+            }
+
             $remainingAllowance = $maxRows - $payload['deleted_rows'];
             $limit = min($batchSize, $remainingAllowance);
             $deleted = $this->deleteBatch($cutoff, $limit);
@@ -90,6 +102,15 @@ class AgentRecursionCallsRetentionService
         $payload['status'] = $this->status($payload);
 
         return $payload;
+    }
+
+    private function runtimeBudgetReached(int $startedAt, ?int $maxRuntimeSeconds): bool
+    {
+        if ($maxRuntimeSeconds === null) {
+            return false;
+        }
+
+        return (hrtime(true) - $startedAt) / 1_000_000_000 >= $maxRuntimeSeconds;
     }
 
     private function environmentSummary(): array

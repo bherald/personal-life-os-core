@@ -3,15 +3,15 @@
 namespace App\Console\Commands;
 
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
  * Dev Sprint Mode — reduce framework load during development sessions.
  *
  * Disables non-essential agents and reduces frequencies to minimize
- * Claude CLI token consumption and GPU contention. Saves original
+ * provider utilization and GPU contention. Saves original
  * state for restore.
  *
  * Usage:
@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Log;
  *   php artisan dev:sprint --restore      Restore original schedules
  *   php artisan dev:sprint --status       Show current sprint state
  *
- * Sprint mode reduces agent-driven Claude calls by ~70% while keeping
+ * Sprint mode reduces agent-driven AI calls while keeping
  * stability monitoring (ai-ops, system-guardian, log-analyst, reports).
  */
 class DevSprintModeCommand extends Command
@@ -48,10 +48,10 @@ class DevSprintModeCommand extends Command
      * [name => new_cron_expression]
      */
     private const REDUCE_JOBS = [
-        'research_ops_agent'  => '0 */4 * * *',   // 30min → 4h
-        'workflow_ops_agent'  => '0 */4 * * *',   // 30min → 4h
-        'file_ops_agent'      => '0 */2 * * *',   // 30min → 2h
-        'youtube_ops_agent'   => '0 */4 * * *',   // 30min → 4h
+        'research_ops_agent' => '0 */4 * * *',   // 30min → 4h
+        'workflow_ops_agent' => '0 */4 * * *',   // 30min → 4h
+        'file_ops_agent' => '0 */2 * * *',   // 30min → 2h
+        'youtube_ops_agent' => '0 */4 * * *',   // 30min → 4h
     ];
 
     /**
@@ -61,8 +61,7 @@ class DevSprintModeCommand extends Command
         'ai_ops_agent',            // 15min — validates AI changes
         'system_guardian_agent',    // 30min — system health
         'log_analyst_agent',       // 2h — catches deploy errors
-        'daily_report',            // 5:50 AM
-        'midday_digest',           // 4 PM
+        'daily_report',            // 5:00 AM
         'genealogy_agent_research', // 4 AM daily
     ];
 
@@ -81,6 +80,7 @@ class DevSprintModeCommand extends Command
         }
 
         $this->showStatus();
+
         return 0;
     }
 
@@ -88,6 +88,7 @@ class DevSprintModeCommand extends Command
     {
         if (Cache::has(self::CACHE_KEY)) {
             $this->warn('Sprint mode already active. Use --restore first to deactivate.');
+
             return 1;
         }
 
@@ -96,20 +97,20 @@ class DevSprintModeCommand extends Command
 
         // Save and disable
         foreach (self::DISABLE_JOBS as $name) {
-            $job = DB::selectOne("SELECT id, enabled, cron_expression FROM scheduled_jobs WHERE name = ?", [$name]);
+            $job = DB::selectOne('SELECT id, enabled, cron_expression FROM scheduled_jobs WHERE name = ?', [$name]);
             if ($job) {
                 $originalState[$name] = ['enabled' => $job->enabled, 'cron' => $job->cron_expression];
-                DB::update("UPDATE scheduled_jobs SET enabled = 0, updated_at = NOW() WHERE name = ?", [$name]);
+                DB::update('UPDATE scheduled_jobs SET enabled = 0, updated_at = NOW() WHERE name = ?', [$name]);
                 $this->line("  DISABLED  {$name}");
             }
         }
 
         // Save and reduce frequency
         foreach (self::REDUCE_JOBS as $name => $newCron) {
-            $job = DB::selectOne("SELECT id, enabled, cron_expression FROM scheduled_jobs WHERE name = ?", [$name]);
+            $job = DB::selectOne('SELECT id, enabled, cron_expression FROM scheduled_jobs WHERE name = ?', [$name]);
             if ($job) {
                 $originalState[$name] = ['enabled' => $job->enabled, 'cron' => $job->cron_expression];
-                DB::update("UPDATE scheduled_jobs SET cron_expression = ?, updated_at = NOW() WHERE name = ?", [$newCron, $name]);
+                DB::update('UPDATE scheduled_jobs SET cron_expression = ?, updated_at = NOW() WHERE name = ?', [$newCron, $name]);
                 $this->line("  REDUCED   {$name}: {$job->cron_expression} → {$newCron}");
             }
         }
@@ -123,7 +124,7 @@ class DevSprintModeCommand extends Command
         $kept = count(self::KEEP_JOBS);
 
         $this->info("Sprint mode ACTIVATED: {$disabled} disabled, {$reduced} reduced, {$kept} unchanged.");
-        $this->info('Estimated ~70% reduction in agent-driven Claude CLI calls.');
+        $this->info('Agent-driven AI workload reduced for the sprint.');
         $this->line('Run: php artisan dev:sprint --restore  when done.');
 
         Log::info('Dev sprint mode activated', [
@@ -138,14 +139,15 @@ class DevSprintModeCommand extends Command
     {
         $originalState = Cache::get(self::CACHE_KEY);
 
-        if (!$originalState) {
+        if (! $originalState) {
             $this->warn('No sprint state saved. Sprint mode may not be active.');
+
             return 1;
         }
 
         foreach ($originalState as $name => $state) {
             DB::update(
-                "UPDATE scheduled_jobs SET enabled = ?, cron_expression = ?, updated_at = NOW() WHERE name = ?",
+                'UPDATE scheduled_jobs SET enabled = ?, cron_expression = ?, updated_at = NOW() WHERE name = ?',
                 [$state['enabled'], $state['cron'], $name]
             );
             $this->line("  RESTORED  {$name}: enabled={$state['enabled']}, cron={$state['cron']}");
@@ -155,7 +157,7 @@ class DevSprintModeCommand extends Command
         Cache::forget(self::CACHE_KEY);
         Cache::forget('dev_sprint_activated_at');
 
-        $this->info('Sprint mode DEACTIVATED. All ' . count($originalState) . ' jobs restored to original state.');
+        $this->info('Sprint mode DEACTIVATED. All '.count($originalState).' jobs restored to original state.');
         $this->line("Sprint was active since: {$activatedAt}");
 
         Log::info('Dev sprint mode deactivated', ['restored' => count($originalState)]);
@@ -177,7 +179,7 @@ class DevSprintModeCommand extends Command
         $this->line('');
         $this->line('KEEP (stability monitoring):');
         foreach (self::KEEP_JOBS as $name) {
-            $job = DB::selectOne("SELECT cron_expression, enabled FROM scheduled_jobs WHERE name = ?", [$name]);
+            $job = DB::selectOne('SELECT cron_expression, enabled FROM scheduled_jobs WHERE name = ?', [$name]);
             $status = $job ? ($job->enabled ? "ON  {$job->cron_expression}" : 'OFF') : 'NOT FOUND';
             $this->line("  {$name}: {$status}");
         }
@@ -185,7 +187,7 @@ class DevSprintModeCommand extends Command
         $this->line('');
         $this->line('DISABLE during sprint:');
         foreach (self::DISABLE_JOBS as $name) {
-            $job = DB::selectOne("SELECT cron_expression, enabled FROM scheduled_jobs WHERE name = ?", [$name]);
+            $job = DB::selectOne('SELECT cron_expression, enabled FROM scheduled_jobs WHERE name = ?', [$name]);
             $status = $job ? ($job->enabled ? "ON  {$job->cron_expression}" : 'OFF') : 'NOT FOUND';
             $this->line("  {$name}: {$status}");
         }
@@ -193,7 +195,7 @@ class DevSprintModeCommand extends Command
         $this->line('');
         $this->line('REDUCE during sprint:');
         foreach (self::REDUCE_JOBS as $name => $sprintCron) {
-            $job = DB::selectOne("SELECT cron_expression, enabled FROM scheduled_jobs WHERE name = ?", [$name]);
+            $job = DB::selectOne('SELECT cron_expression, enabled FROM scheduled_jobs WHERE name = ?', [$name]);
             $status = $job ? "ON  {$job->cron_expression}" : 'NOT FOUND';
             $this->line("  {$name}: {$status} (sprint: {$sprintCron})");
         }

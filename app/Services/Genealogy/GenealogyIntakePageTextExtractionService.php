@@ -49,6 +49,13 @@ class GenealogyIntakePageTextExtractionService
             }
         }
 
+        if (isset($result['htr_result']) && ($result['complete'] ?? null) === false) {
+            return $this->emptyResult('htr_source_incomplete') + [
+                'native_text' => (string) ($result['native_text'] ?? $result['text'] ?? ''),
+                'htr_result' => $result['htr_result'],
+            ];
+        }
+
         $htrTranscript = $this->extractHandwrittenText($document, $localPath);
         if ($htrTranscript !== '') {
             $quality = $this->assessQuality($htrTranscript, $document, 'htr_transcription');
@@ -121,6 +128,9 @@ class GenealogyIntakePageTextExtractionService
         }
 
         $result = $this->htr()->transcribe($localPath);
+        if (! HtrTranscriptionService::isCompleteTranscriptResult($result)) {
+            return '';
+        }
 
         return $this->normalizeText((string) ($result['text'] ?? ''));
     }

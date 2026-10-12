@@ -2,10 +2,11 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
-use Illuminate\Support\Facades\DB;
 
 /**
  * Browser Automation Service (Security Hardened)
@@ -30,54 +31,61 @@ use Illuminate\Support\Facades\DB;
 class BrowserAutomationService
 {
     private const PUPPETEER_PORT = 9222;
+
     private const PLAYWRIGHT_PORT = 9223;
+
     private const PUPPETEER_SCRIPT = 'scripts/browser-server/puppeteer-server.cjs';
+
     private const PLAYWRIGHT_SCRIPT = 'scripts/browser-server/playwright-server.cjs';
 
+    private const SERVER_LAUNCHER = 'scripts/browser-server/start-server.sh';
+
+    private const MAX_CONTENT_WINDOW_CHARS = 200000;
+
     private int $timeout;
+
     private string $screenshotPath;
-    private string $userAgent;
 
     private ?string $activeEngine = null;
-    private bool $allowlistSynced = false;
+
+    /** @var array<string, bool> */
+    private array $allowlistSynced = [];
 
     public function __construct()
     {
         $this->timeout = (int) config('data_removal.browser_automation_timeout', 30);
         $this->screenshotPath = storage_path('app/data-removal/screenshots');
-        $this->userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-
-        if (!file_exists($this->screenshotPath)) {
+        if (! file_exists($this->screenshotPath)) {
             mkdir($this->screenshotPath, 0755, true);
         }
     }
 
     /**
-     * Sync domain allowlist from database to Puppeteer server
+     * Sync domain allowlist from database to a browser server.
      * Called automatically on first navigation
      */
-    public function syncAllowlistFromDatabase(): bool
+    public function syncAllowlistFromDatabase(string $engine = 'puppeteer'): bool
     {
-        if ($this->allowlistSynced) {
+        if ($this->allowlistSynced[$engine] ?? false) {
             return true;
         }
 
-        if (!$this->isPuppeteerAvailable()) {
+        if (! in_array($engine, ['puppeteer', 'playwright'], true) || ! $this->isEngineAvailable($engine)) {
             return false;
         }
 
         try {
             // Get all active broker domains from database (raw SQL)
-            $brokers = DB::select("
+            $brokers = DB::select('
                 SELECT LOWER(domain) as domain
                 FROM data_brokers
                 WHERE is_active = 1
-            ");
+            ');
 
             $synced = 0;
             foreach ($brokers as $broker) {
                 try {
-                    Http::connectTimeout(1)->timeout(2)->post('http://127.0.0.1:' . self::PUPPETEER_PORT . '/allowlist', [
+                    $this->authorizedHttp()->connectTimeout(1)->timeout(2)->post($this->getEngineUrl($engine).'/allowlist', [
                         'domain' => $broker->domain,
                     ]);
                     $synced++;
@@ -89,15 +97,18 @@ class BrowserAutomationService
             Log::info('BrowserAutomation: Synced allowlist from database', [
                 'domains_synced' => $synced,
                 'total_brokers' => count($brokers),
+                'engine' => $engine,
             ]);
 
-            $this->allowlistSynced = true;
+            $this->allowlistSynced[$engine] = true;
+
             return true;
 
         } catch (\Exception $e) {
             Log::warning('BrowserAutomation: Failed to sync allowlist', [
                 'error' => $e->getMessage(),
             ]);
+
             return false;
         }
     }
@@ -105,14 +116,14 @@ class BrowserAutomationService
     /**
      * Add a single domain to the Puppeteer allowlist
      */
-    public function addToAllowlist(string $domain): bool
+    public function addToAllowlist(string $domain, string $engine = 'puppeteer'): bool
     {
-        if (!$this->isPuppeteerAvailable()) {
+        if (! in_array($engine, ['puppeteer', 'playwright'], true) || ! $this->isEngineAvailable($engine)) {
             return false;
         }
 
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->post('http://127.0.0.1:' . self::PUPPETEER_PORT . '/allowlist', [
+            $response = $this->authorizedHttp()->connectTimeout(1)->timeout(2)->post($this->getEngineUrl($engine).'/allowlist', [
                 'domain' => strtolower(trim($domain)),
             ]);
 
@@ -122,6 +133,7 @@ class BrowserAutomationService
                 'domain' => $domain,
                 'error' => $e->getMessage(),
             ]);
+
             return false;
         }
     }
@@ -129,14 +141,14 @@ class BrowserAutomationService
     /**
      * Get current Puppeteer allowlist
      */
-    public function getAllowlist(): array
+    public function getAllowlist(string $engine = 'puppeteer'): array
     {
-        if (!$this->isPuppeteerAvailable()) {
+        if (! in_array($engine, ['puppeteer', 'playwright'], true) || ! $this->isEngineAvailable($engine)) {
             return [];
         }
 
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->get('http://127.0.0.1:' . self::PUPPETEER_PORT . '/allowlist');
+            $response = $this->authorizedHttp()->connectTimeout(1)->timeout(2)->get($this->getEngineUrl($engine).'/allowlist');
             if ($response->successful()) {
                 return $response->json('domains') ?? [];
             }
@@ -152,14 +164,15 @@ class BrowserAutomationService
      */
     public function getSecurityStatus(): array
     {
-        if (!$this->isPuppeteerAvailable()) {
+        if (! $this->isPuppeteerAvailable()) {
             return ['available' => false];
         }
 
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->get('http://127.0.0.1:' . self::PUPPETEER_PORT . '/health');
+            $response = $this->authorizedHttp()->connectTimeout(1)->timeout(2)->get('http://127.0.0.1:'.self::PUPPETEER_PORT.'/health');
             if ($response->successful()) {
                 $health = $response->json();
+
                 return [
                     'available' => true,
                     'security' => $health['security'] ?? [],
@@ -178,6 +191,8 @@ class BrowserAutomationService
 
     /**
      * Check if Puppeteer server is running
+     *
+     * @phpstan-impure
      */
     public function isPuppeteerAvailable(): bool
     {
@@ -186,6 +201,8 @@ class BrowserAutomationService
 
     /**
      * Check if Playwright server is running
+     *
+     * @phpstan-impure
      */
     public function isPlaywrightAvailable(): bool
     {
@@ -198,11 +215,51 @@ class BrowserAutomationService
     private function checkServerHealth(int $port): bool
     {
         try {
-            $response = Http::connectTimeout(1)->timeout(2)->get("http://127.0.0.1:{$port}/health");
-            return $response->successful() && ($response->json('status') === 'ok');
+            $response = $this->authorizedHttp()->connectTimeout(1)->timeout(2)->get("http://127.0.0.1:{$port}/health");
+
+            return $response->successful()
+                && $this->healthPayloadMeetsContract((array) $response->json(), $port);
         } catch (\Exception $e) {
             return false;
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $health
+     */
+    private function healthPayloadMeetsContract(array $health, int $port): bool
+    {
+        if (($health['status'] ?? null) !== 'ok') {
+            return false;
+        }
+
+        $security = (array) ($health['security'] ?? []);
+        $sharedContract = ($security['authRequired'] ?? false) === true
+            && ($security['hostProtection'] ?? false) === true
+            && ($security['originProtection'] ?? false) === true
+            && ($security['topLevelNavigationAllowlist'] ?? false) === true
+            && ($security['documentRequestsScoped'] ?? false) === true
+            && ($security['ipLiteralAndLocalhostTargetsBlocked'] ?? false) === true
+            && ($security['topLevelDnsPublicAddressesRequired'] ?? false) === true
+            && ($security['dnsResolutionFailClosed'] ?? false) === true
+            && ($security['popupsBlocked'] ?? false) === true
+            && ($security['credentialApiEnabled'] ?? true) === false
+            && ($security['contentWindowing'] ?? false) === true
+            && (int) ($security['maxContentWindowChars'] ?? 0) === self::MAX_CONTENT_WINDOW_CHARS;
+
+        if (! $sharedContract) {
+            return false;
+        }
+
+        if ($port === self::PUPPETEER_PORT) {
+            return ($security['freshSessionPerNavigation'] ?? false) === true
+                && ($security['downloadBlocking'] ?? false) === true;
+        }
+
+        return ($security['freshContextPerNavigation'] ?? false) === true
+            && ($security['downloadsAccepted'] ?? true) === false
+            && ($security['serviceWorkersBlocked'] ?? false) === true
+            && ($security['arbitraryEvaluateEnabled'] ?? true) === false;
     }
 
     /**
@@ -212,12 +269,14 @@ class BrowserAutomationService
     {
         if ($this->isPuppeteerAvailable()) {
             Log::debug('BrowserAutomation: Puppeteer already running');
+
             return true;
         }
 
         $script = base_path(self::PUPPETEER_SCRIPT);
-        if (!file_exists($script)) {
+        if (! file_exists($script)) {
             Log::error('BrowserAutomation: Puppeteer script not found', ['path' => $script]);
+
             return false;
         }
 
@@ -225,26 +284,27 @@ class BrowserAutomationService
             'PUPPETEER_EXECUTABLE_PATH' => $this->getChromePath(),
             'SCREENSHOT_DIR' => $this->screenshotPath,
             'NODE_ENV' => 'production',
+            'BROWSER_AUTOMATION_TOKEN' => $this->automationToken(),
         ];
 
         Log::info('BrowserAutomation: Starting Puppeteer server', ['script' => $script, 'port' => self::PUPPETEER_PORT]);
 
-        Process::forever()
-            ->path(base_path())
-            ->env($env)
-            ->quietly()
-            ->start(['node', $script, (string) self::PUPPETEER_PORT]);
+        if (! $this->launchDetachedServer('puppeteer', $env)) {
+            return false;
+        }
 
         // Wait for startup
         for ($i = 0; $i < 10; $i++) {
             usleep(500000); // 500ms
             if ($this->isPuppeteerAvailable()) {
                 Log::info('BrowserAutomation: Puppeteer server started');
+
                 return true;
             }
         }
 
         Log::error('BrowserAutomation: Failed to start Puppeteer server');
+
         return false;
     }
 
@@ -255,38 +315,75 @@ class BrowserAutomationService
     {
         if ($this->isPlaywrightAvailable()) {
             Log::debug('BrowserAutomation: Playwright already running');
+
             return true;
         }
 
         $script = base_path(self::PLAYWRIGHT_SCRIPT);
-        if (!file_exists($script)) {
+        if (! file_exists($script)) {
             Log::error('BrowserAutomation: Playwright script not found', ['path' => $script]);
+
             return false;
         }
 
         $env = [
             'SCREENSHOT_DIR' => $this->screenshotPath,
             'NODE_ENV' => 'production',
+            'BROWSER_AUTOMATION_TOKEN' => $this->automationToken(),
+            'PLAYWRIGHT_EXECUTABLE_PATH' => $this->getChromePath(),
         ];
 
         Log::info('BrowserAutomation: Starting Playwright server', ['script' => $script, 'port' => self::PLAYWRIGHT_PORT]);
 
-        Process::forever()
-            ->path(base_path())
-            ->env($env)
-            ->quietly()
-            ->start(['node', $script, (string) self::PLAYWRIGHT_PORT]);
+        if (! $this->launchDetachedServer('playwright', $env)) {
+            return false;
+        }
 
         // Wait for startup
         for ($i = 0; $i < 10; $i++) {
             usleep(500000); // 500ms
             if ($this->isPlaywrightAvailable()) {
                 Log::info('BrowserAutomation: Playwright server started');
+
                 return true;
             }
         }
 
         Log::error('BrowserAutomation: Failed to start Playwright server');
+
+        return false;
+    }
+
+    /**
+     * Launch a persistent sidecar outside Symfony Process's object lifecycle.
+     *
+     * Symfony stops an asynchronous child when its Process object is destroyed,
+     * which occurs as soon as a short-lived Artisan or queue process returns.
+     */
+    private function launchDetachedServer(string $engine, array $env): bool
+    {
+        $launcher = base_path(self::SERVER_LAUNCHER);
+        if (! is_file($launcher)) {
+            Log::error('BrowserAutomation: Server launcher not found', ['path' => $launcher]);
+
+            return false;
+        }
+
+        $result = Process::timeout(10)
+            ->path(base_path())
+            ->env($env)
+            ->run(['bash', $launcher, $engine]);
+
+        if ($result->successful()) {
+            return true;
+        }
+
+        Log::error('BrowserAutomation: Detached server launcher failed', [
+            'engine' => $engine,
+            'exit_code' => $result->exitCode(),
+            'error' => trim($result->errorOutput()),
+        ]);
+
         return false;
     }
 
@@ -295,18 +392,7 @@ class BrowserAutomationService
      */
     private function getChromePath(): string
     {
-        // Check for Puppeteer's Chrome
-        $homeDir = $this->resolveRuntimeEnvValue('HOME') ?? '';
-        $puppeteerChrome = $homeDir !== ''
-            ? glob($homeDir . '/.cache/puppeteer/chrome/*/chrome-linux64/chrome')
-            : [];
-        if (!empty($puppeteerChrome)) {
-            // Sort and get latest version
-            rsort($puppeteerChrome);
-            return $puppeteerChrome[0];
-        }
-
-        // Fall back to system Chrome
+        // Prefer maintained system Chrome builds with a packaged sandbox.
         $systemPaths = [
             '/usr/bin/google-chrome',
             '/usr/bin/chromium-browser',
@@ -319,12 +405,23 @@ class BrowserAutomationService
             }
         }
 
+        // Fall back to Puppeteer's cached browser for isolated installs.
+        $homeDir = $this->resolveRuntimeEnvValue('HOME') ?? '';
+        $puppeteerChrome = $homeDir !== ''
+            ? glob($homeDir.'/.cache/puppeteer/chrome/*/chrome-linux64/chrome')
+            : [];
+        if (! empty($puppeteerChrome)) {
+            rsort($puppeteerChrome);
+
+            return $puppeteerChrome[0];
+        }
+
         return 'chrome';
     }
 
     private function resolveRuntimeEnvValue(?string $key): ?string
     {
-        if (!$key) {
+        if (! $key) {
             return null;
         }
 
@@ -334,7 +431,7 @@ class BrowserAutomationService
         }
 
         $value = $_ENV[$key] ?? $_SERVER[$key] ?? null;
-        if (!is_string($value) || $value === '') {
+        if (! is_string($value) || $value === '') {
             return null;
         }
 
@@ -365,10 +462,32 @@ class BrowserAutomationService
     private function getEngineUrl(string $engine): string
     {
         return match ($engine) {
-            'puppeteer' => 'http://127.0.0.1:' . self::PUPPETEER_PORT,
-            'playwright' => 'http://127.0.0.1:' . self::PLAYWRIGHT_PORT,
+            'puppeteer' => 'http://127.0.0.1:'.self::PUPPETEER_PORT,
+            'playwright' => 'http://127.0.0.1:'.self::PLAYWRIGHT_PORT,
             default => throw new \InvalidArgumentException("Unknown engine: {$engine}"),
         };
+    }
+
+    private function isEngineAvailable(string $engine): bool
+    {
+        return $engine === 'puppeteer'
+            ? $this->isPuppeteerAvailable()
+            : $this->isPlaywrightAvailable();
+    }
+
+    private function automationToken(): string
+    {
+        $key = (string) config('app.key');
+        if ($key === '') {
+            throw new \RuntimeException('APP_KEY is required for browser automation authentication.');
+        }
+
+        return hash_hmac('sha256', 'browser-automation-control-v1', $key);
+    }
+
+    private function authorizedHttp(): PendingRequest
+    {
+        return Http::withToken($this->automationToken());
     }
 
     /**
@@ -376,10 +495,10 @@ class BrowserAutomationService
      */
     private function request(string $engine, string $endpoint, array $data = []): array
     {
-        $url = $this->getEngineUrl($engine) . $endpoint;
+        $url = $this->getEngineUrl($engine).$endpoint;
 
         try {
-            $response = Http::connectTimeout(5)->timeout($this->timeout)
+            $response = $this->authorizedHttp()->connectTimeout(5)->timeout($this->timeout)
                 ->post($url, $data);
 
             if ($response->successful()) {
@@ -388,7 +507,7 @@ class BrowserAutomationService
 
             return [
                 'success' => false,
-                'error' => "HTTP {$response->status()}: " . $response->body(),
+                'error' => "HTTP {$response->status()}: ".$response->body(),
             ];
         } catch (\Exception $e) {
             Log::error('BrowserAutomation: Request failed', [
@@ -411,17 +530,17 @@ class BrowserAutomationService
     /**
      * Navigate to URL (Security Hardened)
      *
-     * @param string $url Target URL
-     * @param string|null $engine Specific engine or null for auto-select
-     * @param bool $freshSession Use fresh browser session (recommended for security)
-     * @param bool $bypassAllowlist Bypass domain allowlist (use with caution)
+     * @param  string  $url  Target URL
+     * @param  string|null  $engine  Specific engine or null for auto-select
+     * @param  bool  $freshSession  Use fresh browser session (recommended for security)
+     * @param  bool  $bypassAllowlist  Bypass domain allowlist (use with caution)
      * @return array Navigation result
      */
     public function navigate(string $url, ?string $engine = null, bool $freshSession = true, bool $bypassAllowlist = false): array
     {
         $engine = $engine ?? $this->getAvailableEngine();
 
-        if (!$engine) {
+        if (! $engine) {
             return [
                 'success' => false,
                 'error' => 'No browser engine available',
@@ -429,8 +548,8 @@ class BrowserAutomationService
         }
 
         // Security: Sync allowlist from database on first use
-        if ($engine === 'puppeteer' && !$this->allowlistSynced) {
-            $this->syncAllowlistFromDatabase();
+        if (! ($this->allowlistSynced[$engine] ?? false)) {
+            $this->syncAllowlistFromDatabase($engine);
         }
 
         Log::info('BrowserAutomation: Navigating', [
@@ -466,34 +585,60 @@ class BrowserAutomationService
     /**
      * Get page content
      *
-     * @param string $type Content type: 'html' or 'text'
+     * @param  string  $type  Content type: 'html' or 'text'
      * @return array Content result
      */
-    public function getContent(string $type = 'text'): array
-    {
-        if (!$this->activeEngine) {
+    public function getContent(
+        string $type = 'text',
+        int $offset = 0,
+        int $limit = self::MAX_CONTENT_WINDOW_CHARS,
+    ): array {
+        if (! $this->activeEngine) {
             return ['success' => false, 'error' => 'No active page'];
         }
 
-        return $this->request($this->activeEngine, '/content', ['type' => $type]);
+        return $this->request($this->activeEngine, '/content', [
+            'type' => $type,
+            'offset' => max(0, $offset),
+            'limit' => max(1, min($limit, self::MAX_CONTENT_WINDOW_CHARS)),
+        ]);
+    }
+
+    /**
+     * Get a capped accessibility snapshot for deterministic UI assertions.
+     * Returned page text is untrusted content and must never be treated as instructions.
+     */
+    public function accessibilitySnapshot(?string $selector = null): array
+    {
+        if (! $this->activeEngine) {
+            return ['success' => false, 'error' => 'No active page'];
+        }
+
+        if ($this->activeEngine !== 'playwright') {
+            return ['success' => false, 'error' => 'Accessibility snapshots require Playwright'];
+        }
+
+        return $this->request('playwright', '/snapshot', array_filter([
+            'selector' => $selector,
+        ], static fn ($value) => $value !== null));
     }
 
     /**
      * Take screenshot
      *
-     * @param string|null $name Screenshot name
-     * @param string|null $selector Element selector (optional)
-     * @param bool $fullPage Full page screenshot
+     * @param  string|null  $name  Screenshot name
+     * @param  string|null  $selector  Element selector (optional)
+     * @param  bool  $fullPage  Full page screenshot
      * @return array Screenshot result with path and base64
      */
     public function screenshot(?string $name = null, ?string $selector = null, bool $fullPage = false): array
     {
-        if (!$this->activeEngine) {
+        if (! $this->activeEngine) {
             return ['success' => false, 'error' => 'No active page'];
         }
 
         return $this->request($this->activeEngine, '/screenshot', [
-            'name' => $name ?? 'screenshot-' . time(),
+            'name' => $name ?? 'screenshot-'.time(),
             'selector' => $selector,
             'fullPage' => $fullPage,
         ]);
@@ -502,12 +647,12 @@ class BrowserAutomationService
     /**
      * Execute JavaScript
      *
-     * @param string $script JavaScript code
+     * @param  string  $script  JavaScript code
      * @return array Evaluation result
      */
     public function evaluate(string $script): array
     {
-        if (!$this->activeEngine) {
+        if (! $this->activeEngine) {
             return ['success' => false, 'error' => 'No active page'];
         }
 
@@ -517,13 +662,13 @@ class BrowserAutomationService
     /**
      * Fill form field
      *
-     * @param string $selector CSS selector
-     * @param string $value Value to fill
+     * @param  string  $selector  CSS selector
+     * @param  string  $value  Value to fill
      * @return array Fill result
      */
     public function fill(string $selector, string $value): array
     {
-        if (!$this->activeEngine) {
+        if (! $this->activeEngine) {
             return ['success' => false, 'error' => 'No active page'];
         }
 
@@ -536,12 +681,12 @@ class BrowserAutomationService
     /**
      * Click element
      *
-     * @param string $selector CSS selector
+     * @param  string  $selector  CSS selector
      * @return array Click result
      */
     public function click(string $selector): array
     {
-        if (!$this->activeEngine) {
+        if (! $this->activeEngine) {
             return ['success' => false, 'error' => 'No active page'];
         }
 
@@ -553,13 +698,13 @@ class BrowserAutomationService
     /**
      * Select dropdown option
      *
-     * @param string $selector CSS selector
-     * @param string $value Option value
+     * @param  string  $selector  CSS selector
+     * @param  string  $value  Option value
      * @return array Select result
      */
     public function select(string $selector, string $value): array
     {
-        if (!$this->activeEngine) {
+        if (! $this->activeEngine) {
             return ['success' => false, 'error' => 'No active page'];
         }
 
@@ -572,13 +717,13 @@ class BrowserAutomationService
     /**
      * Wait for selector
      *
-     * @param string $selector CSS selector
-     * @param int $timeout Timeout in milliseconds
+     * @param  string  $selector  CSS selector
+     * @param  int  $timeout  Timeout in milliseconds
      * @return array Wait result
      */
     public function waitFor(string $selector, int $timeout = 10000): array
     {
-        if (!$this->activeEngine) {
+        if (! $this->activeEngine) {
             return ['success' => false, 'error' => 'No active page'];
         }
 
@@ -595,7 +740,7 @@ class BrowserAutomationService
      */
     public function closePage(): array
     {
-        if (!$this->activeEngine) {
+        if (! $this->activeEngine) {
             return ['success' => true];
         }
 
@@ -618,20 +763,16 @@ class BrowserAutomationService
      */
     public function shutdownAll(): void
     {
-        if ($this->isPuppeteerAvailable()) {
-            try {
-                Http::connectTimeout(1)->timeout(2)->post('http://127.0.0.1:' . self::PUPPETEER_PORT . '/shutdown');
-            } catch (\Exception $e) {
-                // Ignore
-            }
+        try {
+            $this->authorizedHttp()->connectTimeout(1)->timeout(2)->post('http://127.0.0.1:'.self::PUPPETEER_PORT.'/shutdown');
+        } catch (\Exception $e) {
+            // Ignore
         }
 
-        if ($this->isPlaywrightAvailable()) {
-            try {
-                Http::connectTimeout(1)->timeout(2)->post('http://127.0.0.1:' . self::PLAYWRIGHT_PORT . '/shutdown');
-            } catch (\Exception $e) {
-                // Ignore
-            }
+        try {
+            $this->authorizedHttp()->connectTimeout(1)->timeout(2)->post('http://127.0.0.1:'.self::PLAYWRIGHT_PORT.'/shutdown');
+        } catch (\Exception $e) {
+            // Ignore
         }
     }
 
@@ -642,26 +783,30 @@ class BrowserAutomationService
     {
         $status = [
             'puppeteer' => [
-                'available' => $this->isPuppeteerAvailable(),
+                'available' => false,
+                'reachable' => false,
                 'port' => self::PUPPETEER_PORT,
             ],
             'playwright' => [
-                'available' => $this->isPlaywrightAvailable(),
+                'available' => false,
+                'reachable' => false,
                 'port' => self::PLAYWRIGHT_PORT,
             ],
             'active_engine' => $this->activeEngine,
         ];
 
-        // Get detailed health if available
         foreach (['puppeteer', 'playwright'] as $engine) {
-            if ($status[$engine]['available']) {
-                try {
-                    $port = $engine === 'puppeteer' ? self::PUPPETEER_PORT : self::PLAYWRIGHT_PORT;
-                    $health = Http::connectTimeout(1)->timeout(2)->get("http://127.0.0.1:{$port}/health")->json();
+            try {
+                $port = (int) $status[$engine]['port'];
+                $response = $this->authorizedHttp()->connectTimeout(1)->timeout(2)->get("http://127.0.0.1:{$port}/health");
+                if ($response->successful()) {
+                    $health = (array) $response->json();
+                    $status[$engine]['reachable'] = ($health['status'] ?? null) === 'ok';
+                    $status[$engine]['available'] = $this->healthPayloadMeetsContract($health, $port);
                     $status[$engine]['health'] = $health;
-                } catch (\Exception $e) {
-                    // Ignore
                 }
+            } catch (\Exception $e) {
+                // An unavailable sidecar is reported without leaking connection details.
             }
         }
 

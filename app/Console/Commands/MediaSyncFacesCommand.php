@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\FaceMatcherService;
 use App\Services\FaceRegionService;
+use App\Services\Genealogy\FaceLinkBridgeService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -44,7 +45,7 @@ class MediaSyncFacesCommand extends Command
         // Step 1: Always run face matching for unlinked faces
         $this->info('');
         $this->info('Step 1: Linking unmatched faces to genealogy...');
-        if (!$dryRun) {
+        if (! $dryRun) {
             $matchResults = $faceMatcher->processBatch($limit, $treeId);
             $this->table(['Metric', 'Count'], [
                 ['Processed', $matchResults['processed']],
@@ -71,7 +72,7 @@ class MediaSyncFacesCommand extends Command
         if ($this->option('sync-names')) {
             $this->info('');
             $this->info('Step 3: Syncing name changes to EXIF...');
-            $this->syncNamesToExif($faceRegion, $limit, $dryRun);
+            $this->syncNamesToExif($faceRegion, $limit, $treeId, $dryRun);
         }
 
         return Command::SUCCESS;
@@ -88,7 +89,7 @@ class MediaSyncFacesCommand extends Command
     ): void {
         // Find genealogy_media that might need refresh
         // Compare source (file_registry) face data with genealogy_media
-        $candidates = DB::select("
+        $candidates = DB::select('
             SELECT
                 gm.id as media_id,
                 gm.local_filename as genealogy_path,
@@ -110,14 +111,15 @@ class MediaSyncFacesCommand extends Command
             )
             ORDER BY gm.id ASC
             LIMIT ?
-        ", [$treeId, $limit]);
+        ', [$treeId, $limit]);
 
         if (empty($candidates)) {
             $this->info('No genealogy media needs refresh.');
+
             return;
         }
 
-        $this->info("Found " . count($candidates) . " media items that may need refresh.");
+        $this->info('Found '.count($candidates).' media items that may need refresh.');
 
         $stats = ['checked' => 0, 'refreshed' => 0, 'skipped' => 0, 'errors' => 0];
 
@@ -125,86 +127,41 @@ class MediaSyncFacesCommand extends Command
             $stats['checked']++;
 
             // Get faces from source file_registry_faces
-            $sourceFaces = DB::select("
+            $sourceFaces = DB::select('
                 SELECT person_name, genealogy_person_id, region_x, region_y, region_w, region_h
                 FROM file_registry_faces
                 WHERE file_registry_id = ?
-            ", [$media->file_registry_id]);
+            ', [$media->file_registry_id]);
 
             // Get faces already in genealogy_person_media
-            $genealogyFaces = DB::select("
+            $genealogyFaces = DB::select('
                 SELECT gpm.person_id, gp.given_name, gp.surname
                 FROM genealogy_person_media gpm
                 JOIN genealogy_persons gp ON gp.id = gpm.person_id
                 WHERE gpm.media_id = ?
-            ", [$media->media_id]);
+            ', [$media->media_id]);
 
             $genealogyPersonIds = array_column($genealogyFaces, 'person_id');
 
             // Find faces to add
             $facesToAdd = [];
             foreach ($sourceFaces as $face) {
-                if ($face->genealogy_person_id && !in_array($face->genealogy_person_id, $genealogyPersonIds)) {
+                if ($face->genealogy_person_id && ! in_array($face->genealogy_person_id, $genealogyPersonIds)) {
                     $facesToAdd[] = $face;
                 }
             }
 
             if (empty($facesToAdd)) {
                 $stats['skipped']++;
+
                 continue;
             }
 
-            if ($dryRun) {
-                $this->line("  Would add " . count($facesToAdd) . " faces to media #{$media->media_id}");
-                $stats['refreshed']++;
-                continue;
-            }
+            // Registry labels cannot recreate a person-photo association removed
+            // by an operator. Missing links require individual identity review.
+            $stats['skipped']++;
+            $this->line("  Media #{$media->media_id}: ".count($facesToAdd).' missing face links require operator review.');
 
-            // Add missing faces to genealogy_person_media
-            try {
-                foreach ($facesToAdd as $face) {
-                    // Check if already exists
-                    $existing = DB::selectOne("
-                        SELECT id FROM genealogy_person_media
-                        WHERE person_id = ? AND media_id = ?
-                    ", [$face->genealogy_person_id, $media->media_id]);
-
-                    if (!$existing) {
-                        DB::insert("
-                            INSERT INTO genealogy_person_media
-                            (person_id, media_id, face_region_x, face_region_y, face_region_w, face_region_h,
-                             face_confirmed, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, 1, NOW())
-                        ", [
-                            $face->genealogy_person_id,
-                            $media->media_id,
-                            $face->region_x,
-                            $face->region_y,
-                            $face->region_w,
-                            $face->region_h,
-                        ]);
-                    }
-                }
-
-                // Update last sync timestamp
-                DB::update("
-                    UPDATE genealogy_media SET last_face_sync_at = NOW() WHERE id = ?
-                ", [$media->media_id]);
-
-                $stats['refreshed']++;
-
-                Log::info('MediaSyncFaces: Refreshed genealogy media', [
-                    'media_id' => $media->media_id,
-                    'faces_added' => count($facesToAdd),
-                ]);
-
-            } catch (\Exception $e) {
-                $stats['errors']++;
-                Log::warning('MediaSyncFaces: Error refreshing media', [
-                    'media_id' => $media->media_id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
         }
 
         $this->table(['Metric', 'Count'], [
@@ -220,12 +177,14 @@ class MediaSyncFacesCommand extends Command
      *
      * When a person's name changes in genealogy, update the EXIF face name
      */
-    private function syncNamesToExif(FaceRegionService $faceRegion, int $limit, bool $dryRun): void
+    private function syncNamesToExif(FaceRegionService $faceRegion, int $limit, int $treeId, bool $dryRun): void
     {
         // Find faces where person_name differs from linked genealogy_person name
         $mismatches = DB::select("
             SELECT
                 frf.id as face_id,
+                frf.genealogy_person_id,
+                frf.region_x, frf.region_y, frf.region_w, frf.region_h,
                 frf.person_name as exif_name,
                 CONCAT(gp.given_name, ' ', gp.surname) as genealogy_name,
                 fr.current_path,
@@ -233,42 +192,57 @@ class MediaSyncFacesCommand extends Command
             FROM file_registry_faces frf
             JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
             JOIN file_registry fr ON fr.id = frf.file_registry_id
-            WHERE frf.genealogy_person_id IS NOT NULL
+            WHERE gp.tree_id = ?
+            AND frf.genealogy_person_id IS NOT NULL
             AND frf.person_name != CONCAT(gp.given_name, ' ', gp.surname)
             LIMIT ?
-        ", [$limit]);
+        ", [$treeId, $limit]);
 
         if (empty($mismatches)) {
             $this->info('No name mismatches to sync.');
+
             return;
         }
 
-        $this->info("Found " . count($mismatches) . " name mismatches.");
+        $this->info('Found '.count($mismatches).' name mismatches.');
 
-        $stats = ['updated' => 0, 'errors' => 0];
+        $stats = ['updated' => 0, 'review' => 0, 'errors' => 0];
 
         foreach ($mismatches as $mismatch) {
+            $approval = app(FaceLinkBridgeService::class)->syncAutomaticFaceLink(
+                (int) $mismatch->face_id, (int) $mismatch->genealogy_person_id
+            );
+            $path = $this->resolveSourcePath((string) $mismatch->current_path);
+            if (! ($approval['success'] ?? false) || ! ($approval['operator_approved'] ?? false) || $path === null) {
+                $stats['review']++;
+                $this->line("  Face #{$mismatch->face_id}: name writeback requires operator review or a valid Nextcloud source.");
+
+                continue;
+            }
             if ($dryRun) {
                 $this->line("  Would update: \"{$mismatch->exif_name}\" → \"{$mismatch->genealogy_name}\"");
                 $this->line("    File: {$mismatch->current_path}");
+
                 continue;
             }
 
             try {
                 // Update face region in EXIF using FaceRegionService
-                $result = $faceRegion->updateFaceRegion(
-                    $mismatch->current_path,
-                    $mismatch->exif_name,
-                    ['name' => $mismatch->genealogy_name]
-                );
+                $result = $faceRegion->mergeConfirmedFaceRegions($path, [[
+                    'name' => trim($mismatch->genealogy_name),
+                    'x' => (float) $mismatch->region_x + (float) $mismatch->region_w / 2,
+                    'y' => (float) $mismatch->region_y + (float) $mismatch->region_h / 2,
+                    'w' => (float) $mismatch->region_w,
+                    'h' => (float) $mismatch->region_h,
+                ]]);
 
-                if ($result['success']) {
+                if ($result) {
                     // Update database record
-                    DB::update("
+                    DB::update('
                         UPDATE file_registry_faces
                         SET person_name = ?, updated_at = NOW()
                         WHERE id = ?
-                    ", [$mismatch->genealogy_name, $mismatch->face_id]);
+                    ', [$mismatch->genealogy_name, $mismatch->face_id]);
 
                     $stats['updated']++;
 
@@ -290,12 +264,30 @@ class MediaSyncFacesCommand extends Command
             }
         }
 
-        if (!$dryRun) {
+        if (! $dryRun) {
             $this->table(['Metric', 'Count'], [
                 ['Updated', $stats['updated']],
+                ['Review', $stats['review']],
                 ['Errors', $stats['errors']],
             ]);
         }
+    }
+
+    private function resolveSourcePath(string $path): ?string
+    {
+        $configuredRoot = trim((string) config('services.nextcloud.data_path', ''));
+        $root = $configuredRoot !== '' ? realpath($configuredRoot) : false;
+        if ($root === false || ! is_dir($root)) {
+            return null;
+        }
+        foreach ([$path, rtrim($root, '/').'/'.ltrim($path, '/')] as $candidate) {
+            $resolved = realpath($candidate);
+            if ($resolved !== false && is_file($resolved) && str_starts_with($resolved, rtrim($root, '/').'/')) {
+                return $resolved;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -307,14 +299,14 @@ class MediaSyncFacesCommand extends Command
         $this->info('====================');
 
         // Linking status
-        $linkStats = DB::selectOne("
+        $linkStats = DB::selectOne('
             SELECT
                 COUNT(*) as total,
                 SUM(CASE WHEN genealogy_person_id IS NOT NULL THEN 1 ELSE 0 END) as linked,
                 SUM(CASE WHEN genealogy_person_id IS NULL THEN 1 ELSE 0 END) as unlinked,
                 SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) as verified
             FROM file_registry_faces
-        ");
+        ');
 
         $this->newLine();
         $this->info('Face Registry Status:');
@@ -335,12 +327,12 @@ class MediaSyncFacesCommand extends Command
                 AND frf.person_name != CONCAT(gp.given_name, ' ', gp.surname)
             ");
         } catch (\Exception $e) {
-            $mismatchCount = (object)['cnt' => 0];
+            $mismatchCount = (object) ['cnt' => 0];
         }
 
         // Genealogy media needing refresh
         try {
-            $refreshCount = DB::selectOne("
+            $refreshCount = DB::selectOne('
                 SELECT COUNT(*) as cnt
                 FROM genealogy_media gm
                 JOIN file_registry fr ON fr.current_path = gm.nextcloud_path
@@ -350,9 +342,9 @@ class MediaSyncFacesCommand extends Command
                     gm.last_face_sync_at IS NULL
                     OR fr.face_scan_at > gm.last_face_sync_at
                 )
-            ", [$treeId]);
+            ', [$treeId]);
         } catch (\Exception $e) {
-            $refreshCount = (object)['cnt' => 0];
+            $refreshCount = (object) ['cnt' => 0];
         }
 
         $this->newLine();
@@ -363,12 +355,12 @@ class MediaSyncFacesCommand extends Command
         ]);
 
         // Match queue
-        $queueStats = DB::select("
+        $queueStats = DB::select('
             SELECT status, COUNT(*) as cnt
             FROM genealogy_face_match_queue
             WHERE tree_id = ?
             GROUP BY status
-        ", [$treeId]);
+        ', [$treeId]);
 
         $this->newLine();
         $this->info('Match Queue:');

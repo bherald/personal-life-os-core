@@ -482,7 +482,7 @@ class DataRemovalOpsService
 
     /**
      * Trigger broker health check for degraded/broken brokers.
-     * Read-only operation that checks opt-out page availability.
+     * Non-destructive probe that records broker availability telemetry.
      */
     public function triggerBrokerHealthCheck(int $brokerId = 0): array
     {
@@ -496,7 +496,7 @@ class DataRemovalOpsService
                     return ['error' => "Broker ID {$brokerId} not found"];
                 }
 
-                $result = $healthService->checkBroker($brokerId);
+                $result = $healthService->checkBrokerHealth($brokerId);
                 return [
                     'checked' => 1,
                     'results' => [[
@@ -520,7 +520,7 @@ class DataRemovalOpsService
             $results = [];
             foreach ($problematic as $broker) {
                 try {
-                    $result = $healthService->checkBroker($broker->id);
+                    $result = $healthService->checkBrokerHealth($broker->id);
                     $results[] = [
                         'broker_id' => $broker->id,
                         'name' => $broker->name,

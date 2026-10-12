@@ -1,5 +1,6 @@
 <?php
 
+use App\Logging\RedactSensitiveLogContext;
 use Monolog\Handler\NullHandler;
 use Monolog\Handler\StreamHandler;
 use Monolog\Handler\SyslogUdpHandler;
@@ -36,6 +37,13 @@ return [
         'trace' => env('LOG_DEPRECATIONS_TRACE', false),
     ],
 
+    'source_audit' => [
+        // AST-classified dynamic message expressions are an explicit cleanup
+        // backlog. New sites fail the release audit instead of raising this cap.
+        'dynamic_message_sites_max' => 139,
+        'placeholder_template_message_sites_max' => 0,
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | Log Channels
@@ -60,6 +68,7 @@ return [
 
         'single' => [
             'driver' => 'single',
+            'tap' => [RedactSensitiveLogContext::class],
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
@@ -67,14 +76,16 @@ return [
 
         'daily' => [
             'driver' => 'daily',
+            'tap' => [RedactSensitiveLogContext::class],
             'path' => storage_path('logs/laravel.log'),
             'level' => env('LOG_LEVEL', 'debug'),
-            'days' => env('LOG_DAILY_DAYS', 14),
+            'days' => env('LOG_DAILY_DAYS', 7),
             'replace_placeholders' => true,
         ],
 
         'slack' => [
             'driver' => 'slack',
+            'tap' => [RedactSensitiveLogContext::class],
             'url' => env('LOG_SLACK_WEBHOOK_URL'),
             'username' => env('LOG_SLACK_USERNAME', 'Laravel Log'),
             'emoji' => env('LOG_SLACK_EMOJI', ':boom:'),
@@ -84,6 +95,7 @@ return [
 
         'papertrail' => [
             'driver' => 'monolog',
+            'tap' => [RedactSensitiveLogContext::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'handler' => env('LOG_PAPERTRAIL_HANDLER', SyslogUdpHandler::class),
             'handler_with' => [
@@ -96,6 +108,7 @@ return [
 
         'stderr' => [
             'driver' => 'monolog',
+            'tap' => [RedactSensitiveLogContext::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'handler' => StreamHandler::class,
             'handler_with' => [
@@ -107,6 +120,7 @@ return [
 
         'syslog' => [
             'driver' => 'syslog',
+            'tap' => [RedactSensitiveLogContext::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'facility' => env('LOG_SYSLOG_FACILITY', LOG_USER),
             'replace_placeholders' => true,
@@ -114,12 +128,14 @@ return [
 
         'errorlog' => [
             'driver' => 'errorlog',
+            'tap' => [RedactSensitiveLogContext::class],
             'level' => env('LOG_LEVEL', 'debug'),
             'replace_placeholders' => true,
         ],
 
         'null' => [
             'driver' => 'monolog',
+            'tap' => [RedactSensitiveLogContext::class],
             'handler' => NullHandler::class,
         ],
 
@@ -130,6 +146,7 @@ return [
         // Human review queue for failed extractions (no alerts, just log for manual review)
         'extraction_failures' => [
             'driver' => 'daily',
+            'tap' => [RedactSensitiveLogContext::class],
             'path' => storage_path('logs/extraction-failures.log'),
             'level' => 'info',
             'days' => 30,

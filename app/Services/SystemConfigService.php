@@ -31,6 +31,16 @@ class SystemConfigService
     private array $localCache = [];
 
     /**
+     * Process-local versions let one service instance invalidate other instances in the same worker.
+     *
+     * @var array<string, int>
+     */
+    private static array $cacheGenerations = [];
+
+    /** @var array<string, int> */
+    private array $localCacheGenerations = [];
+
+    /**
      * Get a configuration value.
      *
      * Lookup order: local memory → Redis → MySQL → default.
@@ -42,9 +52,13 @@ class SystemConfigService
     public function get(string $key, mixed $default = null): mixed
     {
         // 1. Local memory (zero-cost repeated reads in same request)
-        if (array_key_exists($key, $this->localCache)) {
+        if (
+            array_key_exists($key, $this->localCache)
+            && ($this->localCacheGenerations[$key] ?? -1) === $this->cacheGeneration($key)
+        ) {
             return $this->localCache[$key];
         }
+        unset($this->localCache[$key], $this->localCacheGenerations[$key]);
 
         // 2. Redis cache
         try {
@@ -55,6 +69,7 @@ class SystemConfigService
                     Cache::forget(self::CACHE_PREFIX.$key);
                 } else {
                     $this->localCache[$key] = $value;
+                    $this->localCacheGenerations[$key] = $this->cacheGeneration($key);
 
                     return $value;
                 }
@@ -74,6 +89,7 @@ class SystemConfigService
             if ($row !== null) {
                 $value = $this->cast($row->config_value, $row->data_type);
                 $this->localCache[$key] = $value;
+                $this->localCacheGenerations[$key] = $this->cacheGeneration($key);
                 $this->cacheValue($key, $row->config_value, $row->data_type);
 
                 return $value;
@@ -132,8 +148,10 @@ class SystemConfigService
             );
         }
 
+        $this->invalidateGeneration($key);
         $this->cacheValue($key, $serialized, $dataType);
         $this->localCache[$key] = $value;
+        $this->localCacheGenerations[$key] = $this->cacheGeneration($key);
     }
 
     /**
@@ -141,7 +159,8 @@ class SystemConfigService
      */
     public function forget(string $key): void
     {
-        unset($this->localCache[$key]);
+        $this->invalidateGeneration($key);
+        unset($this->localCache[$key], $this->localCacheGenerations[$key]);
         try {
             Cache::forget(self::CACHE_PREFIX.$key);
         } catch (\Throwable $e) {
@@ -152,16 +171,25 @@ class SystemConfigService
     /**
      * Flush all cached config values (e.g., after bulk update).
      */
-    public function flushCache(): void
+    public function flushCache(bool $strict = false): void
     {
         $this->localCache = [];
+        $this->localCacheGenerations = [];
         try {
             // Flush all syscfg: keys
             $keys = DB::select('SELECT section, config_key FROM system_configs');
             foreach ($keys as $row) {
-                Cache::forget(self::CACHE_PREFIX.$row->section.'.'.$row->config_key);
+                $key = $row->section.'.'.$row->config_key;
+                $this->invalidateGeneration($key);
+                Cache::forget(self::CACHE_PREFIX.$key);
+                if ($strict && Cache::has(self::CACHE_PREFIX.$key)) {
+                    throw new \RuntimeException('Configuration cache remained present.');
+                }
             }
         } catch (\Throwable $e) {
+            if ($strict) {
+                throw new \RuntimeException('Configuration cache invalidation unavailable.', 0, $e);
+            }
             Log::warning('SystemConfigService: Cache flush failed', ['error' => $e->getMessage()]);
         }
     }
@@ -243,5 +271,15 @@ class SystemConfigService
         }
 
         return $this->cast(isset($cached['value']) ? (string) $cached['value'] : null, $dataType);
+    }
+
+    private function cacheGeneration(string $key): int
+    {
+        return self::$cacheGenerations[$key] ?? 0;
+    }
+
+    private function invalidateGeneration(string $key): void
+    {
+        self::$cacheGenerations[$key] = $this->cacheGeneration($key) + 1;
     }
 }

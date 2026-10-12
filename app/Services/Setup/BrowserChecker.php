@@ -74,8 +74,14 @@ class BrowserChecker
         $hint = (string) ($entry['install_hint'] ?? 'npx playwright install chromium');
         $expected = $this->playwrightChromiumPath();
 
-        if ($expected !== null && $this->isExecutablePath($expected)) {
-            return CheckResult::pass('browser', $name, 'Playwright Chromium executable found', ['path' => $expected]);
+        $candidates = array_values(array_filter([
+            $expected,
+            ...$this->browserCandidates($entry),
+        ], 'is_string'));
+        foreach (array_unique($candidates) as $candidate) {
+            if ($this->isExecutablePath($candidate)) {
+                return CheckResult::pass('browser', $name, 'Playwright-compatible browser executable found', ['path' => $candidate]);
+            }
         }
 
         $message = $expected === null
@@ -97,7 +103,7 @@ class BrowserChecker
         $required = (bool) ($entry['required'] ?? false);
         $hint = (string) ($entry['install_hint'] ?? 'set PLOS_PUPPETEER_CHROME or install Chrome/Chromium');
 
-        foreach ($this->puppeteerCandidates($entry) as $candidate) {
+        foreach ($this->browserCandidates($entry) as $candidate) {
             if ($this->isExecutablePath($candidate)) {
                 return CheckResult::pass('browser', $name, 'Puppeteer Chrome executable found', ['path' => $candidate]);
             }
@@ -115,7 +121,7 @@ class BrowserChecker
      * @param  array<string, mixed>  $entry
      * @return list<string>
      */
-    protected function puppeteerCandidates(array $entry): array
+    protected function browserCandidates(array $entry): array
     {
         $candidates = [];
 

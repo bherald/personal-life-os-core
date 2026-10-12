@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\RuntimeBoolean;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
@@ -9,6 +10,10 @@ use InvalidArgumentException;
 class BitLlmPrivacyGateService
 {
     public const MODEL_ROLE = 'privacy_deny_prefilter';
+
+    public const INFERENCE_MAX_TOKENS = 4;
+
+    public const INFERENCE_TEMPERATURE = 0;
 
     public function __construct(private readonly ?AIService $aiService = null) {}
 
@@ -46,7 +51,16 @@ class BitLlmPrivacyGateService
             ];
         }
 
-        $providerRows = $this->eligibleProviderRows($prompt);
+        $requiredInstanceId = is_string($options['required_instance_id'] ?? null)
+            ? trim($options['required_instance_id'])
+            : '';
+        if ($requiredInstanceId !== ''
+            && preg_match('/\A[a-zA-Z0-9][a-zA-Z0-9._:-]{2,127}\z/', $requiredInstanceId) !== 1
+        ) {
+            throw new InvalidArgumentException('BitLLM required provider identity is invalid.');
+        }
+
+        $providerRows = $this->eligibleProviderRows($prompt, $requiredInstanceId);
         if ($providerRows === []) {
             return [
                 'success' => false,
@@ -87,11 +101,12 @@ class BitLlmPrivacyGateService
             'use_cache' => false,
             'dedup' => false,
             '_skip_decompose' => true,
-            'temperature' => 0,
-            'max_tokens' => 4,
+            'temperature' => self::INFERENCE_TEMPERATURE,
+            'max_tokens' => self::INFERENCE_MAX_TOKENS,
             'timeout' => (int) ($options['timeout'] ?? 20),
             'suppressAlert' => true,
             'system_prompt' => 'Return exactly one lowercase token: deny or allow.',
+            'required_instance_id' => $requiredInstanceId !== '' ? $requiredInstanceId : null,
         ]);
 
         $text = trim((string) ($result['response'] ?? ''));
@@ -146,16 +161,12 @@ class BitLlmPrivacyGateService
     public function evalCases(): array
     {
         $denyProviders = [
-            'mistral_free',
-            'openrouter_free',
-            'cerebras_free',
-            'groq_free',
-            'deepinfra_free',
-            'gemini_free',
-            'sambanova_free',
             'a public web chatbot',
             'a hosted summarization API',
             'an unauthenticated external demo endpoint',
+            'an unreviewed public inference endpoint',
+            'a third-party benchmark API',
+            'a free hosted model gateway',
         ];
 
         $denyPayloads = [
@@ -235,7 +246,7 @@ class BitLlmPrivacyGateService
     /**
      * @return array<string,mixed>
      */
-    public function evaluate(int $limit = 0): array
+    public function evaluate(int $limit = 0, array $options = []): array
     {
         $cases = $this->evalCases();
         if ($limit > 0) {
@@ -244,7 +255,7 @@ class BitLlmPrivacyGateService
 
         $rows = [];
         foreach ($cases as $case) {
-            $result = $this->decide($case['note'], ['redacted_input' => true]);
+            $result = $this->decide($case['note'], array_merge($options, ['redacted_input' => true]));
             $rows[] = [
                 'id' => $case['id'],
                 'expected' => $case['expected'],
@@ -299,7 +310,7 @@ class BitLlmPrivacyGateService
     /**
      * @return array<int,object>
      */
-    private function eligibleProviderRows(?string $prompt = null): array
+    private function eligibleProviderRows(?string $prompt = null, string $requiredInstanceId = ''): array
     {
         if (! Schema::hasTable('llm_instances')) {
             return [];
@@ -323,6 +334,9 @@ class BitLlmPrivacyGateService
 
         if (Schema::hasColumn('llm_instances', 'allows_private_data')) {
             $query->where('allows_private_data', 1);
+        }
+        if ($requiredInstanceId !== '') {
+            $query->where('instance_id', $requiredInstanceId);
         }
 
         return $query
@@ -475,19 +489,7 @@ class BitLlmPrivacyGateService
 
     private function truthy(mixed $value): bool
     {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_int($value)) {
-            return $value === 1;
-        }
-
-        if (is_string($value)) {
-            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
-        }
-
-        return (bool) $value;
+        return RuntimeBoolean::isTrue($value);
     }
 
     /**

@@ -2,12 +2,15 @@
 
 namespace App\Services\Ops;
 
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class AgentToolPolicyRefreshService
 {
+    public const OVERRIDES_KEY = 'ops.agent_tool_policy_overrides';
+
     /**
      * @return array<string, mixed>
      */
@@ -65,6 +68,7 @@ class AgentToolPolicyRefreshService
             $query->limit(min($limit, 1000));
         }
 
+        $overrides = $this->privacyOverrides();
         $rows = $query->get();
         $summary = [
             'total_scanned' => 0,
@@ -84,7 +88,7 @@ class AgentToolPolicyRefreshService
 
         foreach ($rows as $row) {
             $summary['total_scanned']++;
-            $decision = $this->classify($row);
+            $decision = $this->classify($row, $overrides);
             $summary[$decision['availability_status'].'_total'] = ($summary[$decision['availability_status'].'_total'] ?? 0) + 1;
             $summary[$decision['privacy_class'].'_total'] = ($summary[$decision['privacy_class'].'_total'] ?? 0) + 1;
             ((bool) $decision['allows_private_data'])
@@ -129,10 +133,10 @@ class AgentToolPolicyRefreshService
     /**
      * @return array{availability_status: string, last_error: ?string, privacy_class: string, allows_private_data: bool, schema_generation: int, max_result_bytes: int}
      */
-    private function classify(object $row): array
+    private function classify(object $row, array $overrides): array
     {
         [$availability, $lastError] = $this->availability($row);
-        [$privacyClass, $allowsPrivateData] = $this->privacy($row);
+        [$privacyClass, $allowsPrivateData] = $this->privacy($row, $overrides);
 
         return [
             'availability_status' => $availability,
@@ -188,7 +192,7 @@ class AgentToolPolicyRefreshService
     /**
      * @return array{0: string, 1: bool}
      */
-    private function privacy(object $row): array
+    private function privacy(object $row, array $overrides): array
     {
         if ($this->isExternalNoPrivateTool($row)) {
             return [
@@ -197,10 +201,45 @@ class AgentToolPolicyRefreshService
             ];
         }
 
+        $override = $overrides[(string) ($row->name ?? '')] ?? null;
+        if ($override !== null) {
+            if ($override['service_class'] !== (string) ($row->service_class ?? '') ||
+                $override['method'] !== (string) ($row->method ?? '') ||
+                trim((string) ($row->mcp_server ?? '')) !== '' || trim((string) ($row->mcp_tool ?? '')) !== '') {
+                throw new \RuntimeException('Registered tool privacy override binding differs.');
+            }
+
+            // Classification metadata never restores a revoked private-data permission.
+            return [$override['privacy_class'], (bool) ($row->allows_private_data ?? false)];
+        }
+
         return [
             (string) config('agent_tool_policy.privacy.default_class', 'internal_private'),
             (bool) config('agent_tool_policy.privacy.default_allows_private_data', true),
         ];
+    }
+
+    private function privacyOverrides(): array
+    {
+        $policy = app(SystemConfigService::class)->get(self::OVERRIDES_KEY);
+        if ($policy === null) {
+            return [];
+        }
+        if (! is_array($policy) || ($policy['schema'] ?? null) !== 'plos.agent_tool_policy_overrides.v1' ||
+            ! is_array($policy['tools'] ?? null)) {
+            throw new \RuntimeException('Invalid registered tool privacy overrides.');
+        }
+        foreach ($policy['tools'] as $name => $override) {
+            if (! is_string($name) || $name === '' || ! is_array($override) ||
+                ! is_string($override['service_class'] ?? null) || $override['service_class'] === '' ||
+                ! is_string($override['method'] ?? null) || $override['method'] === '' ||
+                ! is_string($override['privacy_class'] ?? null) ||
+                ! preg_match('/^[a-z][a-z0-9_]{0,49}$/D', $override['privacy_class'])) {
+                throw new \RuntimeException('Invalid registered tool privacy override.');
+            }
+        }
+
+        return $policy['tools'];
     }
 
     private function isExternalNoPrivateTool(object $row): bool

@@ -49,6 +49,9 @@ class GenealogyLocalDocumentWorkerService
                     'dedup' => false,
                     'factual_mode' => true,
                     'task_type' => 'genealogy_local_fact_extraction',
+                    'ollama_output_schema' => ($payload['profile']['structured_output_enforced'] ?? false)
+                        ? $payload['profile']['output_schema']
+                        : null,
                 ]
             );
 
@@ -66,7 +69,7 @@ class GenealogyLocalDocumentWorkerService
                 continue;
             }
 
-            $chunkResults[] = $parsed;
+            $chunkResults[] = $this->sanitizeExtractionResult($parsed, $chunk['text']);
         }
 
         if ($chunkResults === []) {
@@ -131,7 +134,7 @@ Return ONLY valid JSON in this exact format:
 
 Rules:
 1. facts.field must be one of: birth_date, birth_year, birth_place, death_date, death_year, death_place, burial_place, marriage_date, marriage_place, occupation, residence, immigration_date, immigration_place, military_branch, military_rank, enlistment_date, discharge_date, nationality, religion, other
-2. If unclear, omit rather than guess
+2. Use null for an unknown document_year; omit other uncertain optional fields rather than guess
 3. Return JSON only
 PROMPT;
     }
@@ -186,6 +189,87 @@ PROMPT;
             'persons' => [],
             'notes_remainder' => '',
         ], $data);
+    }
+
+    private function sanitizeExtractionResult(array $result, string $sourceText): array
+    {
+        $documentYear = $result['document_year'] ?? null;
+        if (is_int($documentYear) && ! $this->sourceContainsYear($sourceText, $documentYear)) {
+            $result['document_year'] = null;
+        }
+
+        $persons = [];
+        foreach ((array) ($result['persons'] ?? []) as $person) {
+            if (! is_array($person)) {
+                continue;
+            }
+
+            $relationships = [];
+            foreach ((array) ($person['relationships'] ?? []) as $relationship) {
+                if (! is_array($relationship)) {
+                    continue;
+                }
+
+                $birthYear = $relationship['birth_year'] ?? null;
+                $name = trim((string) ($relationship['name'] ?? ''));
+                if (is_int($birthYear) && ! $this->sourceSentenceContainsNameAndYear($sourceText, $name, $birthYear)) {
+                    unset($relationship['birth_year']);
+                }
+
+                $relationships[] = $relationship;
+            }
+
+            $person['facts'] = $this->deduplicateObjects((array) ($person['facts'] ?? []));
+            $person['relationships'] = $this->deduplicateObjects($relationships);
+            $persons[] = $person;
+        }
+
+        $result['persons'] = $this->deduplicateObjects($persons);
+
+        return $result;
+    }
+
+    private function deduplicateObjects(array $objects): array
+    {
+        $unique = [];
+        $seen = [];
+
+        foreach ($objects as $object) {
+            if (! is_array($object)) {
+                continue;
+            }
+
+            $fingerprint = json_encode($object, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            if ($fingerprint === false || isset($seen[$fingerprint])) {
+                continue;
+            }
+
+            $seen[$fingerprint] = true;
+            $unique[] = $object;
+        }
+
+        return $unique;
+    }
+
+    private function sourceContainsYear(string $sourceText, int $year): bool
+    {
+        return preg_match('/(?<!\d)'.preg_quote((string) $year, '/').'(?!\d)/', $sourceText) === 1;
+    }
+
+    private function sourceSentenceContainsNameAndYear(string $sourceText, string $name, int $year): bool
+    {
+        if ($name === '') {
+            return false;
+        }
+
+        foreach (preg_split('/(?<=[.!?])\s+|[\r\n]+/', $sourceText, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $sentence) {
+            if (str_contains(mb_strtolower($sentence), mb_strtolower($name))
+                && $this->sourceContainsYear($sentence, $year)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function mergeChunkResults(array $chunkResults, array $context): array

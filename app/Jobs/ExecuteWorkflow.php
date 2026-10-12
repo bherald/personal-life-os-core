@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Engine\WorkflowEngine;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -61,14 +62,30 @@ class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
 
     protected array $input;
 
+    protected ?string $traceSessionId;
+
+    /** Content-free SHA-256 key; never a raw upstream delivery identifier. */
+    protected ?string $idempotencyKey;
+
     /**
      * Create a new job instance.
      */
-    public function __construct(string $workflowName, ?int $workflowId = null, array $input = [])
-    {
+    public function __construct(
+        string $workflowName,
+        ?int $workflowId = null,
+        array $input = [],
+        ?string $traceSessionId = null,
+        ?string $idempotencyKey = null
+    ) {
+        if ($idempotencyKey !== null && preg_match('/^[a-f0-9]{64}$/D', $idempotencyKey) !== 1) {
+            throw new \InvalidArgumentException('Workflow idempotency key must be a SHA-256 digest.');
+        }
+
         $this->workflowName = $workflowName;
         $this->workflowId = $workflowId;
         $this->input = $input;
+        $this->traceSessionId = $traceSessionId;
+        $this->idempotencyKey = $idempotencyKey;
         $this->applyRuntimePolicy();
 
         // Use the dedicated workflow queue to isolate orchestration work.
@@ -94,6 +111,10 @@ class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
      */
     public function uniqueId(): string
     {
+        if ($this->idempotencyKey !== null) {
+            return $this->workflowName.':'.$this->idempotencyKey;
+        }
+
         if (empty($this->input)) {
             return $this->workflowName;
         }
@@ -127,10 +148,23 @@ class ExecuteWorkflow implements ShouldBeUnique, ShouldQueue
             'id' => $this->workflowId,
             'attempt' => $this->attempts(),
             'input_keys' => array_keys($this->input),
+            'trace_session_id' => $this->traceSessionId,
         ]);
 
-        $engine = new WorkflowEngine;
-        $result = $engine->executeWorkflow($this->workflowName, $this->input);
+        try {
+            $engine = app(WorkflowEngine::class);
+            $result = $engine->executeWorkflow($this->workflowName, $this->input, [
+                'trace_session_id' => $this->traceSessionId,
+                'idempotency_key' => $this->idempotencyKey,
+            ]);
+        } catch (Throwable $error) {
+            if (! InferenceAdmissionException::isAdmissionFailure($error)) {
+                throw $error;
+            }
+            $this->fail($error);
+
+            return;
+        }
 
         Log::info('Queued workflow completed successfully', [
             'workflow' => $this->workflowName,

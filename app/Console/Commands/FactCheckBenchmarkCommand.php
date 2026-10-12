@@ -51,16 +51,17 @@ class FactCheckBenchmarkCommand extends Command
 
     private function showStats(): int
     {
-        $runs = DB::connection('pgsql_rag')->select("
+        $runs = DB::connection('pgsql_rag')->select('
             SELECT run_id, dataset, split, claims_evaluated, accuracy, macro_f1, weighted_f1,
                    avg_duration_ms, total_duration_ms, config, created_at
             FROM fact_check_benchmark_runs
             ORDER BY created_at DESC
             LIMIT 20
-        ");
+        ');
 
         if (empty($runs)) {
             $this->info('No benchmark runs found.');
+
             return Command::SUCCESS;
         }
 
@@ -74,8 +75,8 @@ class FactCheckBenchmarkCommand extends Command
                 $this->fmt($run->accuracy),
                 $this->fmt($run->macro_f1),
                 $this->fmt($run->weighted_f1),
-                $run->avg_duration_ms ? $run->avg_duration_ms . 'ms' : '-',
-                !empty($config['consensus']) ? 'Yes' : 'No',
+                $run->avg_duration_ms ? $run->avg_duration_ms.'ms' : '-',
+                ! empty($config['consensus']) ? 'Yes' : 'No',
             ];
         }
 
@@ -89,12 +90,13 @@ class FactCheckBenchmarkCommand extends Command
 
     private function analyzeRun(string $runId): int
     {
-        $run = DB::connection('pgsql_rag')->select("
+        $run = DB::connection('pgsql_rag')->select('
             SELECT * FROM fact_check_benchmark_runs WHERE run_id = ?
-        ", [$runId]);
+        ', [$runId]);
 
         if (empty($run)) {
             $this->error("Run '{$runId}' not found.");
+
             return Command::FAILURE;
         }
 
@@ -112,7 +114,7 @@ class FactCheckBenchmarkCommand extends Command
             ['Weighted F1', $this->fmt($run->weighted_f1)],
             ['Avg Confidence (Correct)', $this->fmt($run->avg_confidence_correct)],
             ['Avg Confidence (Incorrect)', $this->fmt($run->avg_confidence_incorrect)],
-            ['Avg Duration', ($run->avg_duration_ms ?? '-') . 'ms'],
+            ['Avg Duration', ($run->avg_duration_ms ?? '-').'ms'],
             ['Total Duration', $this->formatDuration($run->total_duration_ms)],
         ]);
 
@@ -158,7 +160,7 @@ class FactCheckBenchmarkCommand extends Command
             LIMIT 10
         ", [$runId]);
 
-        if (!empty($errors)) {
+        if (! empty($errors)) {
             $this->info('--- High-Confidence Errors (top 10) ---');
             $errRows = [];
             foreach ($errors as $e) {
@@ -192,7 +194,7 @@ class FactCheckBenchmarkCommand extends Command
             return Command::FAILURE;
         }
 
-        $this->info("Loaded " . count($claims) . " claims from {$dataset}/{$split}");
+        $this->info('Loaded '.count($claims)." claims from {$dataset}/{$split}");
 
         // Show label distribution
         $distribution = [];
@@ -204,20 +206,21 @@ class FactCheckBenchmarkCommand extends Command
         $distRows = [];
         foreach ($distribution as $label => $count) {
             $mapped = self::LABEL_MAP[$label] ?? '?';
-            $distRows[] = [$label, $mapped, $count, round($count / count($claims) * 100, 1) . '%'];
+            $distRows[] = [$label, $mapped, $count, round($count / count($claims) * 100, 1).'%'];
         }
         $this->table(['AVeriTeC Label', 'PLOS Label', 'Count', '%'], $distRows);
 
         if ($dryRun) {
             $this->info('Dry run complete. No LLM calls made.');
+
             return Command::SUCCESS;
         }
 
         // Apply offset/limit
         $subset = array_slice($claims, $offset, $limit);
-        $this->info("Evaluating claims {$offset}–" . ($offset + count($subset) - 1) . " ({$limit} max)");
+        $this->info("Evaluating claims {$offset}–".($offset + count($subset) - 1)." ({$limit} max)");
 
-        $runId = 'fcb_' . date('Ymd_His') . '_' . substr(bin2hex(random_bytes(4)), 0, 8);
+        $runId = 'fcb_'.date('Ymd_His').'_'.substr(bin2hex(random_bytes(4)), 0, 8);
         $pipeline = app(FactCheckPipelineService::class);
         $results = [];
         $totalStart = microtime(true);
@@ -245,7 +248,7 @@ class FactCheckBenchmarkCommand extends Command
                 $evidenceCount = $result['evidence_count'] ?? 0;
                 $durationMs = $result['duration_ms'] ?? 0;
             } catch (\Throwable $e) {
-                Log::warning("FC-Benchmark: Claim #{$claimIndex} failed: " . $e->getMessage());
+                Log::warning('FC-Benchmark claim failed', ['claim_index' => $claimIndex, 'exception' => $e]);
                 $predicted = 'error';
                 $confidence = 0;
                 $evidenceCount = 0;
@@ -295,15 +298,16 @@ class FactCheckBenchmarkCommand extends Command
     {
         if ($dataset !== 'averitec') {
             $this->error("Unsupported dataset: {$dataset}. Only 'averitec' is supported.");
+
             return null;
         }
 
         $cachePath = "benchmarks/averitec/{$split}.json";
 
-        if (!$refresh && Storage::disk('local')->exists($cachePath)) {
+        if (! $refresh && Storage::disk('local')->exists($cachePath)) {
             $this->line("Loading cached dataset from storage/app/{$cachePath}");
             $data = json_decode(Storage::disk('local')->get($cachePath), true);
-            if (!empty($data)) {
+            if (! empty($data)) {
                 return $data;
             }
         }
@@ -320,7 +324,7 @@ class FactCheckBenchmarkCommand extends Command
 
         for ($page = 0; $page < $maxPages; $page++) {
             $offset = $page * $pageSize;
-            $url = "https://datasets-server.huggingface.co/rows?" . http_build_query([
+            $url = 'https://datasets-server.huggingface.co/rows?'.http_build_query([
                 'dataset' => 'pminervini/averitec',
                 'config' => 'default',
                 'split' => $split,
@@ -331,12 +335,13 @@ class FactCheckBenchmarkCommand extends Command
             try {
                 $response = Http::timeout(30)->get($url);
 
-                if (!$response->successful()) {
+                if (! $response->successful()) {
                     // If we get a 404 or similar, we've exhausted the split
                     if ($response->status() === 404 || $page > 0) {
                         break;
                     }
-                    $this->error("HuggingFace API returned {$response->status()}: " . $response->body());
+                    $this->error("HuggingFace API returned {$response->status()}: ".$response->body());
+
                     return null;
                 }
 
@@ -351,7 +356,7 @@ class FactCheckBenchmarkCommand extends Command
                     $allRows[] = $row['row'] ?? $row;
                 }
             } catch (\Throwable $e) {
-                $this->error("Failed to fetch page {$page}: " . $e->getMessage());
+                $this->error("Failed to fetch page {$page}: ".$e->getMessage());
                 if (empty($allRows)) {
                     return null;
                 }
@@ -366,13 +371,14 @@ class FactCheckBenchmarkCommand extends Command
 
         if (empty($allRows)) {
             $this->error('No data retrieved from HuggingFace.');
+
             return null;
         }
 
         // Ensure directory exists and cache
         Storage::disk('local')->makeDirectory('benchmarks/averitec');
         Storage::disk('local')->put($cachePath, json_encode($allRows, JSON_PRETTY_PRINT));
-        $this->info("Cached " . count($allRows) . " claims to storage/app/{$cachePath}");
+        $this->info('Cached '.count($allRows)." claims to storage/app/{$cachePath}");
 
         return $allRows;
     }
@@ -380,7 +386,7 @@ class FactCheckBenchmarkCommand extends Command
     private function computeMetrics(array $results): array
     {
         // Filter out errors
-        $valid = array_filter($results, fn($r) => $r['predicted_label'] !== 'error');
+        $valid = array_filter($results, fn ($r) => $r['predicted_label'] !== 'error');
         $errorCount = count($results) - count($valid);
 
         if (empty($valid)) {
@@ -442,34 +448,34 @@ class FactCheckBenchmarkCommand extends Command
         }
 
         // Accuracy
-        $correct = count(array_filter($valid, fn($r) => $r['correct']));
+        $correct = count(array_filter($valid, fn ($r) => $r['correct']));
         $accuracy = count($valid) > 0 ? $correct / count($valid) : 0;
 
         // Macro F1
         $f1s = array_column($perClass, 'f1');
-        $classesWithSupport = array_filter($perClass, fn($m) => $m['support'] > 0);
-        $macroF1 = !empty($classesWithSupport)
+        $classesWithSupport = array_filter($perClass, fn ($m) => $m['support'] > 0);
+        $macroF1 = ! empty($classesWithSupport)
             ? array_sum(array_column($classesWithSupport, 'f1')) / count($classesWithSupport)
             : 0;
 
         // Weighted F1
         $totalSupport = array_sum(array_column($perClass, 'support'));
         $weightedF1 = $totalSupport > 0
-            ? array_sum(array_map(fn($m) => $m['f1'] * $m['support'], $perClass)) / $totalSupport
+            ? array_sum(array_map(fn ($m) => $m['f1'] * $m['support'], $perClass)) / $totalSupport
             : 0;
 
         // Confidence calibration
-        $correctConfs = array_column(array_filter($valid, fn($r) => $r['correct']), 'confidence');
-        $incorrectConfs = array_column(array_filter($valid, fn($r) => !$r['correct']), 'confidence');
-        $avgConfCorrect = !empty($correctConfs) ? array_sum($correctConfs) / count($correctConfs) : 0;
-        $avgConfIncorrect = !empty($incorrectConfs) ? array_sum($incorrectConfs) / count($incorrectConfs) : 0;
+        $correctConfs = array_column(array_filter($valid, fn ($r) => $r['correct']), 'confidence');
+        $incorrectConfs = array_column(array_filter($valid, fn ($r) => ! $r['correct']), 'confidence');
+        $avgConfCorrect = ! empty($correctConfs) ? array_sum($correctConfs) / count($correctConfs) : 0;
+        $avgConfIncorrect = ! empty($incorrectConfs) ? array_sum($incorrectConfs) / count($incorrectConfs) : 0;
 
         // Duration
         $durations = array_column($valid, 'duration_ms');
-        $avgDuration = !empty($durations) ? (int) round(array_sum($durations) / count($durations)) : 0;
+        $avgDuration = ! empty($durations) ? (int) round(array_sum($durations) / count($durations)) : 0;
 
         // Coverage (% non-inconclusive)
-        $nonInconclusive = count(array_filter($valid, fn($r) => $r['predicted_label'] !== 'inconclusive'));
+        $nonInconclusive = count(array_filter($valid, fn ($r) => $r['predicted_label'] !== 'inconclusive'));
         $coverage = count($valid) > 0 ? $nonInconclusive / count($valid) : 0;
 
         return [
@@ -488,15 +494,15 @@ class FactCheckBenchmarkCommand extends Command
 
     private function persistResults(string $runId, string $dataset, string $split, bool $consensus, array $results, array $metrics): void
     {
-        $validCount = count(array_filter($results, fn($r) => $r['predicted_label'] !== 'error'));
+        $validCount = count(array_filter($results, fn ($r) => $r['predicted_label'] !== 'error'));
 
-        DB::connection('pgsql_rag')->insert("
+        DB::connection('pgsql_rag')->insert('
             INSERT INTO fact_check_benchmark_runs
                 (run_id, dataset, split, claims_evaluated, accuracy, macro_f1, weighted_f1,
                  confusion_matrix, per_class_metrics, config,
                  avg_confidence_correct, avg_confidence_incorrect, avg_duration_ms, total_duration_ms)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?, ?, ?, ?)
-        ", [
+        ', [
             $runId, $dataset, $split, $validCount,
             $metrics['accuracy'], $metrics['macro_f1'], $metrics['weighted_f1'],
             json_encode($metrics['confusion_matrix']),
@@ -507,11 +513,11 @@ class FactCheckBenchmarkCommand extends Command
         ]);
 
         foreach ($results as $r) {
-            DB::connection('pgsql_rag')->insert("
+            DB::connection('pgsql_rag')->insert('
                 INSERT INTO fact_check_benchmark_claims
                     (run_id, claim_index, claim_text, gold_label, predicted_label, confidence, evidence_count, duration_ms, correct)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ", [
+            ', [
                 $r['run_id'], $r['claim_index'], $r['claim_text'], $r['gold_label'],
                 $r['predicted_label'], $r['confidence'], $r['evidence_count'],
                 $r['duration_ms'], $r['correct'],
@@ -533,7 +539,7 @@ class FactCheckBenchmarkCommand extends Command
             ['Coverage (non-inconclusive)', $this->fmt($metrics['coverage'])],
             ['Avg Confidence (Correct)', $this->fmt($metrics['avg_confidence_correct'])],
             ['Avg Confidence (Incorrect)', $this->fmt($metrics['avg_confidence_incorrect'])],
-            ['Avg Duration/Claim', $metrics['avg_duration_ms'] . 'ms'],
+            ['Avg Duration/Claim', $metrics['avg_duration_ms'].'ms'],
             ['Errors (excluded)', $metrics['error_count']],
         ]);
 
@@ -560,16 +566,17 @@ class FactCheckBenchmarkCommand extends Command
 
     private function compareWithPrevious(string $currentRunId, array $currentMetrics): void
     {
-        $prev = DB::connection('pgsql_rag')->select("
+        $prev = DB::connection('pgsql_rag')->select('
             SELECT run_id, accuracy, macro_f1, weighted_f1, avg_confidence_correct, claims_evaluated, created_at
             FROM fact_check_benchmark_runs
             WHERE run_id != ?
             ORDER BY created_at DESC
             LIMIT 1
-        ", [$currentRunId]);
+        ', [$currentRunId]);
 
         if (empty($prev)) {
             $this->info('First benchmark run — no comparison available.');
+
             return;
         }
 
@@ -597,23 +604,25 @@ class FactCheckBenchmarkCommand extends Command
         if ($value === null) {
             return '-';
         }
+
         return sprintf('%.2f%%', (float) $value * 100);
     }
 
     private function formatDuration(?int $ms): string
     {
-        if (!$ms) {
+        if (! $ms) {
             return '-';
         }
         if ($ms < 1000) {
-            return $ms . 'ms';
+            return $ms.'ms';
         }
         $seconds = $ms / 1000;
         if ($seconds < 60) {
-            return round($seconds, 1) . 's';
+            return round($seconds, 1).'s';
         }
         $minutes = floor($seconds / 60);
         $remaining = round($seconds - $minutes * 60);
+
         return "{$minutes}m {$remaining}s";
     }
 }

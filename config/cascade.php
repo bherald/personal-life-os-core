@@ -29,16 +29,16 @@ return [
     // json_validity only fires when the prompt expects JSON; otherwise its
     // weight is redistributed proportionally to the remaining signals.
     'weights' => [
-        'length'       => 0.20,
+        'length' => 0.20,
         'json_validity' => 0.30,
-        'refusal'      => 0.25,
-        'repetition'   => 0.10,
-        'self_assess'  => 0.15,
+        'refusal' => 0.25,
+        'repetition' => 0.10,
+        'self_assess' => 0.15,
     ],
 
     // Roles that skip cascading — they already target a strong model
     'skip_roles' => ['quality'],
 
     // Config keys that skip cascading — caller has already routed intentionally
-    'skip_if_set' => ['prefer_claude', 'prefer_external'],
+    'skip_if_set' => ['prefer_external'],
 ];

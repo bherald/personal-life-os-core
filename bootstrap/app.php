@@ -1,8 +1,14 @@
 <?php
 
+use App\Http\Middleware\GenealogyPrivacyMiddleware;
+use App\Http\Middleware\RequireExactPassportScope;
+use Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse;
+use Illuminate\Cookie\Middleware\EncryptCookies;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Http\Request;
+use Illuminate\Session\Middleware\StartSession;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -17,6 +23,12 @@ return Application::configure(basePath: dirname(__DIR__))
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Scoped CLI tool arguments preserve their original whitespace and
+        // empty strings through the same API validation/router pipeline.
+        $scopeRequest = fn (Request $request): bool => $request->is('api/mcp/call-direct-scoped');
+        $middleware->trimStrings(except: [$scopeRequest]);
+        $middleware->convertEmptyStringsToNull(except: [$scopeRequest]);
+
         // Trust all proxies for correct URL detection (localhost, .226, .227, etc.)
         $middleware->trustProxies(at: '*');
 
@@ -27,16 +39,23 @@ return Application::configure(basePath: dirname(__DIR__))
 
         // Add session middleware to API routes for session-based authentication
         $middleware->group('api', [
-            \Illuminate\Cookie\Middleware\EncryptCookies::class,
-            \Illuminate\Cookie\Middleware\AddQueuedCookiesToResponse::class,
-            \Illuminate\Session\Middleware\StartSession::class,
+            EncryptCookies::class,
+            AddQueuedCookiesToResponse::class,
+            StartSession::class,
         ]);
+
+        $middleware->redirectGuestsTo(
+            fn (Request $request): ?string => $request->is('api/*') ? null : '/login'
+        );
 
         // Register middleware aliases
         $middleware->alias([
-            'genealogy.privacy' => \App\Http\Middleware\GenealogyPrivacyMiddleware::class,
+            'genealogy.privacy' => GenealogyPrivacyMiddleware::class,
+            'passport.scope.exact' => RequireExactPassportScope::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        $exceptions->shouldRenderJsonWhen(
+            fn (Request $request, Throwable $exception): bool => $request->is('api/*') || $request->expectsJson()
+        );
     })->create();

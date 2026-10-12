@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\ScheduledJobApiRuntimePolicyService;
 use App\Services\ScheduledJobService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,8 +18,10 @@ class ScheduledJobController extends Controller
 {
     private ScheduledJobService $service;
 
-    public function __construct(ScheduledJobService $service)
-    {
+    public function __construct(
+        ScheduledJobService $service,
+        private readonly ScheduledJobApiRuntimePolicyService $runtimePolicy,
+    ) {
         $this->service = $service;
     }
 
@@ -27,6 +30,7 @@ class ScheduledJobController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
+        $policy = $this->runtimePolicy->required();
         $jobs = $this->service->getAllJobs();
 
         // Apply filters
@@ -54,6 +58,9 @@ class ScheduledJobController extends Controller
         return response()->json([
             'success' => true,
             'data' => array_values($jobs),
+            'policy' => [
+                'job_timeout' => $policy['job_timeout'],
+            ],
         ]);
     }
 
@@ -105,7 +112,8 @@ class ScheduledJobController extends Controller
         }
 
         $job->schedule_description = $this->service->describeCron($job->cron_expression);
-        $job->history = $this->service->getJobHistory($id, 10);
+        $policy = $this->runtimePolicy->required();
+        $job->history = $this->service->getJobHistory($id, $policy['history']['embedded_limit']);
 
         return response()->json([
             'success' => true,
@@ -118,6 +126,7 @@ class ScheduledJobController extends Controller
      */
     public function store(Request $request): JsonResponse
     {
+        $policy = $this->runtimePolicy->required();
         $validated = $request->validate([
             'name' => 'required|string|max:255|unique:scheduled_jobs,name',
             'description' => 'nullable|string',
@@ -127,11 +136,17 @@ class ScheduledJobController extends Controller
             'enabled' => 'boolean',
             'run_in_background' => 'boolean',
             'without_overlapping' => 'boolean',
-            'timeout_minutes' => 'integer|min:1|max:1440',
+            'timeout_minutes' => [
+                'nullable',
+                'integer',
+                'min:'.$policy['job_timeout']['min_minutes'],
+                'max:'.$policy['job_timeout']['max_minutes'],
+            ],
             'notes' => 'nullable|string',
             'category' => 'nullable|string|max:100',
             'source_module' => 'nullable|string|max:100',
         ]);
+        $validated['timeout_minutes'] ??= $policy['job_timeout']['default_minutes'];
 
         // Validate cron expression
         $cronValidation = $this->service->validateCronExpression($validated['cron_expression']);
@@ -167,6 +182,7 @@ class ScheduledJobController extends Controller
      */
     public function update(Request $request, int $id): JsonResponse
     {
+        $policy = $this->runtimePolicy->required();
         $job = $this->service->getJob($id);
         if (! $job) {
             return response()->json([
@@ -184,7 +200,12 @@ class ScheduledJobController extends Controller
             'enabled' => 'boolean',
             'run_in_background' => 'boolean',
             'without_overlapping' => 'boolean',
-            'timeout_minutes' => 'integer|min:1|max:1440',
+            'timeout_minutes' => [
+                'sometimes',
+                'integer',
+                'min:'.$policy['job_timeout']['min_minutes'],
+                'max:'.$policy['job_timeout']['max_minutes'],
+            ],
             'notes' => 'nullable|string',
             'category' => 'nullable|string|max:100',
             'source_module' => 'nullable|string|max:100',
@@ -309,7 +330,11 @@ class ScheduledJobController extends Controller
             ], 404);
         }
 
-        $limit = min((int) $request->query('limit', 50), 100);
+        $policy = $this->runtimePolicy->required();
+        $validated = $request->validate([
+            'limit' => ['nullable', 'integer', 'min:1', 'max:'.$policy['history']['max_limit']],
+        ]);
+        $limit = (int) ($validated['limit'] ?? $policy['history']['default_limit']);
         $history = $this->service->getJobHistory($id, $limit);
 
         return response()->json([
@@ -364,7 +389,16 @@ class ScheduledJobController extends Controller
      */
     public function cleanupHistory(Request $request): JsonResponse
     {
-        $days = (int) $request->query('days', 30);
+        $policy = $this->runtimePolicy->required();
+        $validated = $request->validate([
+            'days' => [
+                'nullable',
+                'integer',
+                'min:'.$policy['cleanup']['min_retention_days'],
+                'max:'.$policy['cleanup']['max_retention_days'],
+            ],
+        ]);
+        $days = (int) ($validated['days'] ?? $policy['cleanup']['default_retention_days']);
         $deleted = $this->service->cleanupHistory($days);
 
         Log::info('Scheduled job history cleanup', ['days' => $days, 'deleted' => $deleted]);

@@ -1,0 +1,54 @@
+{
+  "schema": "plos.portable_workflow.v2",
+  "dsl_version": "2.0",
+  "source": {
+    "product": "PLOS",
+    "format": "native-portable-workflow"
+  },
+  "workflow": {
+    "name": "Fictional cyber-news digest retrieval stage",
+    "description": "PLOS v2.1 inactive synthetic retrieval stage only; no scheduler, corpus ingestion, model execution, Joplin or Pushover delivery is performed.",
+    "schedule": null,
+    "active": false,
+    "current_version": 1,
+    "error_handling": "stop",
+    "retry": null,
+    "defaults": [],
+    "nodes": [
+      {
+        "node_type": "RAGSearch",
+        "node_order": 0,
+        "timeout_seconds": 60,
+        "compensation_handler": null,
+        "compensation_config": null,
+        "configs": [
+          {
+            "key": "query",
+            "value": "Compare the fictional guest-view advisory and correction; retain scoped uncertainty.",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "document_type",
+            "value": "public_demo_cyber",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "limit",
+            "value": "2",
+            "requires_runtime_value": false
+          }
+        ]
+      }
+    ]
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "workflow_sha256": "c42e8e98f157fd314a65458e0f2db70686d704febd963cfb137e6a01e171d73e"
+  },
+  "warnings": [],
+  "posture": {
+    "secrets_included": false,
+    "imported_active": false,
+    "import_requires_execute_and_confirm": true
+  }
+}

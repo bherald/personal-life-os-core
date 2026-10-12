@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 
 /**
  * YouTube Transcript Service
@@ -229,6 +231,9 @@ class YouTubeTranscriptService
             return $result;
 
         } catch (\Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::warning('YouTubeTranscriptService: Invidious API fetch failed', [
                 'video_id' => $videoId,
                 'error' => $e->getMessage(),
@@ -319,7 +324,7 @@ class YouTubeTranscriptService
             // Clear all language variants for this video via Redis SCAN
             $cachePrefix = config('cache.prefix', config('database.redis.options.prefix', ''));
             $dbPrefix = config('database.redis.options.prefix', '');
-            $redis = \Illuminate\Support\Facades\Redis::connection(config('cache.stores.redis.connection', 'cache'));
+            $redis = Redis::connection(config('cache.stores.redis.connection', 'cache'));
             $keys = $redis->keys($cachePrefix."youtube_transcript:{$videoId}:*");
             foreach ($keys as $key) {
                 $cleanKey = str_starts_with($key, $dbPrefix) ? substr($key, strlen($dbPrefix)) : $key;
@@ -377,6 +382,9 @@ class YouTubeTranscriptService
             try {
                 $results[$videoId] = $this->getTranscript($videoId, $language, $useCache);
             } catch (\Exception $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 Log::error('YouTubeTranscriptService: Batch fetch error', [
                     'video_id' => $videoId,
                     'error' => $e->getMessage(),
@@ -474,6 +482,9 @@ class YouTubeTranscriptService
             return $result;
 
         } catch (\Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('YouTubeTranscriptService: getTranscriptWithBackoff failed', [
                 'video_id' => $videoId,
                 'error' => $e->getMessage(),

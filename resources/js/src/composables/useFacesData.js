@@ -43,6 +43,7 @@ const NAMED_ONLY_CLUSTER_SCOPES = new Set(['all', 'mixed'])
 const unidentifiedFaces = ref([])
 const unidentifiedPage = ref(1)
 const unidentifiedTotal = ref(0)
+const unidentifiedPendingTotal = ref(0)
 const unidentifiedLoading = ref(false)
 const unidentifiedPages = ref(0)
 const PAGE_SIZE_UNIDENTIFIED = 50
@@ -127,6 +128,27 @@ export function useFacesData() {
       console.error('Failed to load new faces', e)
     } finally {
       loading.value = false
+    }
+  }
+
+  async function loadFaceStats() {
+    try {
+      const result = await api.get('/media/faces/new', {
+        params: {
+          limit: 1,
+          offset: 0,
+        }
+      })
+
+      if (result.stats) {
+        stats.value = {
+          ...stats.value,
+          ...result.stats,
+          unidentified_count: result.stats.unidentified_count ?? stats.value.unidentified_count,
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load face stats', e)
     }
   }
 
@@ -535,19 +557,22 @@ export function useFacesData() {
 
   // --- Unidentified faces (N63) ---
 
-  async function loadUnidentified(page = 1) {
+  async function loadUnidentified(page = 1, perPage = PAGE_SIZE_UNIDENTIFIED, forReview = false) {
     unidentifiedLoading.value = true
     try {
       const result = await api.get('/media/faces/unidentified', {
-        params: { page, per_page: PAGE_SIZE_UNIDENTIFIED }
+        params: { page, per_page: perPage, ...(forReview ? { for_review: 1 } : {}) }
       })
       unidentifiedFaces.value = result.faces || []
       unidentifiedTotal.value = result.total || 0
+      unidentifiedPendingTotal.value = result.pending_total ?? result.total ?? 0
       unidentifiedPages.value = result.pages || 0
       unidentifiedPage.value = page
-      stats.value.unidentified_count = result.total || 0
+      stats.value.unidentified_count = unidentifiedPendingTotal.value
+      return true
     } catch (e) {
       console.error('Failed to load unidentified faces', e)
+      return false
     } finally {
       unidentifiedLoading.value = false
     }
@@ -719,6 +744,7 @@ export function useFacesData() {
     unidentifiedFaces,
     unidentifiedPage,
     unidentifiedTotal,
+    unidentifiedPendingTotal,
     unidentifiedLoading,
     unidentifiedPages,
 
@@ -730,6 +756,7 @@ export function useFacesData() {
     // Methods
     loadRecognized,
     loadNewFaces,
+    loadFaceStats,
     loadMoreRecognized,
     loadMoreNew,
     loadHidden,

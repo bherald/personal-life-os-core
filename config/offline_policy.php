@@ -45,6 +45,7 @@ return [
     'tool_classes' => [
         'read' => 'Inspect / search / diff / explain — no state change',
         'bounded-write' => 'Bounded edits inside repo + approved additional dirs',
+        'collaboration-write' => 'Private session-addressed messages in the selected local pod',
         'command-safe' => 'Local dev commands (artisan, lint, test, build)',
         'command-dangerous' => 'rm / chmod / dd / kill / sudo / pipe-to-shell',
         'deploy' => 'Push / deploy / prod SSH / deploy script',
@@ -123,8 +124,8 @@ return [
 
     'remote_domain_classes' => [
         'plos_lan' => 'LAN addresses (192.168.*, 127.0.0.1, *.local)',
-        'approved_cloud' => 'Allowlisted providers (api.anthropic.com, etc.)',
-        'wild_internet' => 'Anything else — always refused in offline/hybrid',
+        'approved_cloud' => 'Allowlisted providers (openrouter.ai, etc.)',
+        'wild_internet' => 'Anything else — refused outside default/private profiles',
     ],
 
     /*
@@ -187,6 +188,7 @@ return [
         'code_review' => 'read',
         'rag_search' => 'read',
         'rag_similar' => 'read',
+        'rag_read' => 'read',
         'git_status' => 'read',
         'git_diff' => 'read',
         'git_log' => 'read',
@@ -250,7 +252,7 @@ return [
     'profiles' => [
 
         'default' => [
-            'allowed_tool_classes' => ['read', 'bounded-write', 'command-safe', 'command-dangerous', 'deploy', 'external-network'],
+            'allowed_tool_classes' => ['read', 'bounded-write', 'collaboration-write', 'command-safe', 'command-dangerous', 'deploy', 'external-network'],
             'allowed_mcp_trust' => ['plos_local', 'local_host', 'local_lan', 'internet'],
             'allowed_path_classes' => ['repo_read', 'repo_write', 'additional_dir_read', 'additional_dir_write'],
             'allowed_provider_classes' => ['local_llm', 'cloud_sensitive_safe', 'cloud_external'],
@@ -272,7 +274,7 @@ return [
         ],
 
         'offline_dev_assist' => [
-            'allowed_tool_classes' => ['read', 'bounded-write', 'command-safe'],
+            'allowed_tool_classes' => ['read', 'bounded-write', 'collaboration-write', 'command-safe'],
             'allowed_mcp_trust' => ['plos_local', 'local_host', 'local_lan'],
             'allowed_path_classes' => ['repo_read', 'repo_write', 'additional_dir_read', 'additional_dir_write'],
             'allowed_provider_classes' => ['local_llm'],
@@ -283,7 +285,7 @@ return [
         ],
 
         'offline_genealogy_assist' => [
-            'allowed_tool_classes' => ['read', 'bounded-write'],
+            'allowed_tool_classes' => ['read', 'bounded-write', 'collaboration-write'],
             'allowed_mcp_trust' => ['plos_local', 'local_lan'],
             'allowed_path_classes' => ['repo_read', 'additional_dir_read'],
             'allowed_provider_classes' => ['local_llm'],
@@ -305,7 +307,7 @@ return [
         ],
 
         'hybrid_dev_assist' => [
-            'allowed_tool_classes' => ['read', 'bounded-write', 'command-safe', 'external-network'],
+            'allowed_tool_classes' => ['read', 'bounded-write', 'collaboration-write', 'command-safe', 'external-network'],
             'allowed_mcp_trust' => ['plos_local', 'local_host', 'local_lan', 'internet'],
             'allowed_path_classes' => ['repo_read', 'repo_write', 'additional_dir_read', 'additional_dir_write'],
             'allowed_provider_classes' => ['local_llm', 'cloud_sensitive_safe'],
@@ -313,6 +315,41 @@ return [
             'confirmation' => ['bounded-write', 'command-safe'],
             'audit' => 'always',
             'description' => 'offline_dev_assist + allowlisted cloud reasoning/escalation. No auto deploy/push, no unrestricted remote MCP.',
+        ],
+
+        'resilient_local_first' => [
+            'allowed_tool_classes' => ['read', 'bounded-write', 'collaboration-write', 'command-safe'],
+            'allowed_mcp_trust' => ['plos_local', 'local_host', 'local_lan'],
+            'allowed_path_classes' => ['repo_read', 'repo_write', 'additional_dir_read', 'additional_dir_write'],
+            'allowed_provider_classes' => ['local_llm', 'cloud_sensitive_safe'],
+            'allowed_remote_domain_classes' => ['plos_lan', 'approved_cloud'],
+            'confirmation' => ['bounded-write', 'command-safe'],
+            'audit' => 'always',
+            'llm_routing' => [
+                'local_first' => true,
+                'allow_latency_demotion' => false,
+                'patient_local_capacity' => true,
+                'local_lock_wait_seconds' => 600,
+                'minimum_local_timeout_seconds' => 300,
+                'monitor_ollama_progress' => true,
+                'ollama_progress_idle_timeout_seconds' => 600,
+                'ollama_absolute_timeout_seconds' => 0,
+                'ollama_progress_log_interval_seconds' => 30,
+                'allowed_external_fallback_instance_ids' => ['codex_exec'],
+            ],
+            'description' => 'Patient local-first outage routing across healthy PLOS hosts; approved Codex Exec is the only cloud fallback after eligible local routes fail.',
+        ],
+
+        'private_genealogy_research' => [
+            'allowed_tool_classes' => ['read', 'bounded-write', 'collaboration-write', 'command-safe', 'external-network'],
+            'allowed_mcp_trust' => ['plos_local', 'local_host', 'local_lan', 'internet'],
+            'allowed_path_classes' => ['repo_read', 'repo_write', 'additional_dir_read', 'additional_dir_write'],
+            'allowed_provider_classes' => ['local_llm', 'cloud_sensitive_safe'],
+            'allowed_remote_domain_classes' => ['plos_lan', 'approved_cloud', 'wild_internet'],
+            'confirmation' => ['bounded-write', 'command-safe'],
+            'audit' => 'always',
+            'inherits_mcp_profile' => 'hybrid_dev_assist',
+            'description' => 'Private/operator-owned genealogy research and coding support: audited internet search/browser capture plus bounded repo/Genea writes and safe local commands. No deploy or dangerous shell.',
         ],
 
         'cloud_escalation_only' => [
@@ -335,12 +372,12 @@ return [
     |
     | Domains/hosts that resolve to `approved_cloud` when matched. Anything not
     | matched here and not in the `plos_lan` regex falls through to
-    | `wild_internet` and is refused under every profile except `default`.
+    | `wild_internet` and is refused under every profile except `default` and
+    | `private_genealogy_research`.
     |
     */
 
     'approved_cloud_hosts' => [
-        'api.anthropic.com',
         'openrouter.ai',
         'api.groq.com',
         'api.sambanova.ai',
@@ -348,6 +385,7 @@ return [
         'api.deepinfra.com',
         'generativelanguage.googleapis.com',
         'api.mistral.ai',
+        'api.typesafe.ai',
     ],
 
     /*
@@ -407,6 +445,7 @@ return [
         'filesystem.*' => ['path'],
         'repo-dev.find_repo_files' => ['path'],
         'repo-dev.search_repo' => ['path'],
+        'repo-dev.context_map' => ['path'],
         'repo-dev.list_repo_directory' => ['path'],
         'repo-dev.read_repo_file' => ['path'],
         'repo-dev.write_repo_file' => ['path'],
@@ -429,8 +468,11 @@ return [
         'serena.replace_symbol_body' => ['relative_path'],
         'serena.rename_symbol' => ['relative_path'],
         'serena.safe_delete_symbol' => ['relative_path'],
-        'prompt-compressor.prompt_token_count' => ['path'],
-        'prompt-compressor.compress_file' => ['path'],
+        'codebase-memory.index_repository' => ['repo_path'],
+        'codebase-memory.index_status' => ['repo_path'],
+        'codebase-memory.detect_changes' => ['repo_path'],
+        'codebase-memory.get_architecture' => ['repo_path'],
+        'codebase-memory.ingest_traces' => ['trace_file'],
     ],
 
     // Deprecated (kept for back-compat with any caller still reading it).
@@ -438,6 +480,38 @@ return [
     'local_fs_path_mcp_servers' => ['filesystem'],
 
     'mcp_tool_class_map' => [
+        'plos.plos_review_lookup' => 'read',
+        'codex-skills.codex_skills_list' => 'read',
+        'codex-skills.codex_skills_read' => 'read',
+        'lemma-pod.lemma_pod_tables' => 'read',
+        'lemma-pod.lemma_pod_get_records' => 'read',
+        'lemma-pod.lemma_pod_query' => 'read',
+        'lemma-pod.lemma_pod_list_files' => 'read',
+        'lemma-pod.lemma_pod_read_file' => 'read',
+        'lemma-pod.lemma_pod_view_document_pages' => 'read',
+        'lemma-pod.lemma_pod_search_files' => 'read',
+        // Public mode can mint a shareable URL, so every URL call needs review.
+        'lemma-pod.lemma_pod_get_file_url' => 'bounded-write',
+        'lemma-pod.lemma_pod_write_record' => 'bounded-write',
+        'lemma-pod.lemma_pod_write_file' => 'bounded-write',
+        'lemma-pod.lemma_message_send' => 'collaboration-write',
+        'lemma-pod.lemma_message_inbox' => 'read',
+        'lemma-pod.lemma_message_read' => 'collaboration-write',
+        'lemma-pod.lemma_task_claim' => 'collaboration-write',
+        'lemma-pod.lemma_task_release' => 'collaboration-write',
+        'lemma-pod.lemma_task_list' => 'read',
+        'lemma-local.lemma_status' => 'read',
+        'lemma-local.lemma_start' => 'command-safe',
+        'lemma-local.lemma_stop' => 'command-safe',
+        'hister.search' => 'read',
+        'hister.get_preview' => 'read',
+        'hister.get_history' => 'read',
+        'gortex.search_symbols' => 'read',
+        'gortex.get_symbol' => 'read',
+        'gortex.get_symbol_source' => 'read',
+        'gortex.get_callers' => 'read',
+        'gortex.find_files' => 'read',
+        'gortex.get_dependencies' => 'read',
         // --- plos (internal workflow) ---
         'plos.workflow_list' => 'read',
         'plos.workflow_get' => 'read',
@@ -445,6 +519,7 @@ return [
         'plos.execution_get' => 'read',
         'plos.schedule_list' => 'read',
         'plos.system_diagnostics' => 'read',
+        'plos.genealogy_search' => 'read',
         'plos.genealogy_context' => 'read',
         'plos.genealogy_batch_apply' => 'bounded-write',
         'plos.workflow_run' => 'bounded-write',
@@ -457,11 +532,14 @@ return [
         // --- repo-dev (repo-local dev surface) ---
         'repo-dev.find_repo_files' => 'read',
         'repo-dev.search_repo' => 'read',
+        'repo-dev.context_map' => 'read',
         'repo-dev.list_repo_directory' => 'read',
         'repo-dev.read_repo_file' => 'read',
         'repo-dev.list_routes' => 'read',
+        'repo-dev.summarize_repo_edits' => 'read',
         'repo-dev.write_repo_file' => 'bounded-write',
         'repo-dev.apply_repo_patch' => 'bounded-write',
+        'repo-dev.restore_repo_edit' => 'bounded-write',
         'repo-dev.run_verification' => 'command-safe',
 
         // --- serena (external, repo-local semantic coding MCP) ---
@@ -496,14 +574,23 @@ return [
         'serena.execute_shell_command' => 'command-dangerous',
         'serena.restart_language_server' => 'command-safe',
 
-        // --- prompt-compressor (repo-local context compression) ---
-        'prompt-compressor.prompt_token_count' => 'read',
-        'prompt-compressor.compress_prompt' => 'read',
-        'prompt-compressor.compress_file' => 'read',
-        'prompt-compressor.compress_diff' => 'read',
-        'prompt-compressor.context_retrieve' => 'read',
-        'prompt-compressor.context_list' => 'read',
-        'prompt-compressor.context_store' => 'bounded-write',
+        // --- codebase-memory (external, dev-only code graph MCP sidecar) ---
+        'codebase-memory.index_repository' => 'bounded-write',
+        'codebase-memory.list_projects' => 'read',
+        'codebase-memory.delete_project' => 'command-dangerous',
+        'codebase-memory.index_status' => 'read',
+        'codebase-memory.search_graph' => 'read',
+        'codebase-memory.trace_path' => 'read',
+        'codebase-memory.trace_call_path' => 'read',
+        'codebase-memory.detect_changes' => 'read',
+        'codebase-memory.query_graph' => 'read',
+        'codebase-memory.get_graph_schema' => 'read',
+        'codebase-memory.get_code_snippet' => 'read',
+        'codebase-memory.get_architecture' => 'read',
+        'codebase-memory.search_code' => 'read',
+        'codebase-memory.semantic_query' => 'read',
+        'codebase-memory.manage_adr' => 'bounded-write',
+        'codebase-memory.ingest_traces' => 'bounded-write',
 
         // --- ops (internal) ---
         'ops.ops_health_check' => 'read',
@@ -532,6 +619,7 @@ return [
         // --- rag (internal) ---
         'rag.rag_search' => 'read',
         'rag.rag_similar' => 'read',
+        'rag.rag_read' => 'read',
         'rag.rag_index' => 'bounded-write',
 
         // --- research / web-research / puppeteer / searxng (internet) ---
@@ -574,6 +662,7 @@ return [
 
         // --- genealogy ---
         'genealogy.gedcom_parse' => 'read',
+        'genealogy.genealogy_search' => 'read',
         'genealogy.genealogy_context' => 'read',
         'genealogy.tree_search' => 'read',
         'genealogy.person_search' => 'read',
@@ -627,6 +716,7 @@ return [
         'genealogy.evidence_capture_direct' => 'bounded-write',
         'genealogy.source_media_backfill' => 'bounded-write',
         'genealogy.nara_placeholder_capture_batch' => 'bounded-write',
+        'genealogy.newspapers_media_download' => 'bounded-write',
         'genealogy.media_attach_proposal' => 'bounded-write',
         'genealogy.media_identity_apply' => 'bounded-write',
         'genealogy.source_add_proposal' => 'bounded-write',
@@ -655,10 +745,17 @@ return [
 
         // --- filesystem (local files, path-sensitive) ---
         'filesystem.read_file' => 'read',
+        'filesystem.read_text_file' => 'read',
+        'filesystem.read_media_file' => 'read',
+        'filesystem.read_multiple_files' => 'read',
         'filesystem.list_directory' => 'read',
+        'filesystem.list_directory_with_sizes' => 'read',
+        'filesystem.directory_tree' => 'read',
+        'filesystem.list_allowed_directories' => 'read',
         'filesystem.search_files' => 'read',
         'filesystem.get_file_info' => 'read',
         'filesystem.write_file' => 'bounded-write',
+        'filesystem.edit_file' => 'bounded-write',
         'filesystem.create_directory' => 'bounded-write',
         'filesystem.move_file' => 'bounded-write',
         'filesystem.delete_file' => 'command-dangerous',
@@ -700,6 +797,7 @@ return [
         'evidence_capture_direct',
         'source_media_backfill',
         'nara_placeholder_capture_batch',
+        'newspapers_media_download',
         'media_attach_proposal',
         'media_identity_apply',
         'source_add_proposal',

@@ -107,9 +107,10 @@ class YouTubeJoplinService
             return [
                 'success' => true,
                 'note_id' => $result['note_id'],
-                'notebook_id' => $notebookId,
+                'notebook_id' => $result['parent_id'] ?? $notebookId,
                 'notebook_name' => $notebookName,
-                'title' => $title,
+                'title' => $result['title'] ?? $title,
+                'reused' => $result['reused'] ?? false,
                 'joplin_url' => "joplin://x-callback-url/openNote?id={$result['note_id']}",
                 'queued' => false,
             ];
@@ -166,7 +167,9 @@ class YouTubeJoplinService
             'PROCESSED_DATE' => date('Y-m-d H:i:s'),
             'TIER' => $videoData['tier'] ?? 'unknown',
             'KEY_POINTS_BULLETS' => $this->formatKeyPoints($videoData['key_points'] ?? []),
-            'FULL_TRANSCRIPT' => $videoData['transcript_full_text'] ?? '*Transcript not available*',
+            'FULL_TRANSCRIPT' => $videoData['transcript_original']
+                ?? $videoData['transcript_full_text']
+                ?? '*Transcript not available*',
             'WORD_COUNT' => $videoData['word_count'] ?? ($videoData['transcript_word_count'] ?? 'Unknown'),
             'CAPTION_TYPE' => $videoData['caption_type'] ?? ($videoData['transcript_caption_type'] ?? 'Unknown'),
             'LANGUAGE' => $videoData['language'] ?? ($videoData['transcript_language'] ?? 'en'),
@@ -252,57 +255,53 @@ class YouTubeJoplinService
     protected function findOrCreateNotebook(string $notebookName): ?string
     {
         try {
-            // Use notebook-specific cache key (24 hour TTL)
-            $cacheKey = 'joplin_notebook_id:'.Str::slug($notebookName);
-
-            return Cache::remember($cacheKey, 86400, function () use ($notebookName) {
-                Log::debug('Looking up or creating Joplin notebook', ['name' => $notebookName]);
-
-                // Try to create the notebook (will return existing ID if already exists)
-                $result = $this->joplinService->createNotebook($notebookName);
-
-                if (! $result['success']) {
-                    // If creation failed, try searching in the full notebook list as fallback
-                    // (This is slower but ensures we don't miss existing notebooks)
-                    Log::debug('Notebook creation returned error, trying fallback search', [
-                        'name' => $notebookName,
-                        'error' => $result['error'] ?? 'Unknown error',
-                    ]);
-
-                    $notebooks = $this->joplinFilesService->getNotebooks();
-                    foreach ($notebooks as $notebook) {
-                        if ($notebook['title'] === $notebookName) {
-                            Log::info('Found existing notebook via fallback search', [
-                                'name' => $notebookName,
-                                'id' => $notebook['id'],
-                            ]);
-
-                            return $notebook['id'];
-                        }
-                    }
-
-                    Log::error('Failed to find or create notebook', [
-                        'name' => $notebookName,
-                        'error' => $result['error'] ?? 'Unknown error',
-                    ]);
-
-                    return null;
+            $cacheKey = 'joplin_youtube_notebook:'.hash('sha256', $notebookName);
+            $cached = Cache::get($cacheKey);
+            if (is_string($cached)) {
+                $note = $this->joplinFilesService->getNote($cached, true);
+                if ($note && $note['type'] === 2 && $note['title'] === $notebookName && $note['parent_id'] === '') {
+                    return $cached;
                 }
+            }
+            $matches = [];
+            foreach ($this->joplinFilesService->listNotes(true) as $file) {
+                $note = $this->joplinFilesService->getNote(substr($file, 0, -3), true);
+                if ($note === null) {
+                    throw new Exception('Joplin catalogue changed; retry notebook lookup');
+                }
+                if ($note['type'] === 2 && $note['title'] === $notebookName && $note['parent_id'] === '') {
+                    $matches[] = $note;
+                }
+            }
+            usort($matches, fn (array $a, array $b): int => [$a['created_time'], $a['id']] <=> [$b['created_time'], $b['id']]);
+            if ($matches) {
+                $id = $matches[0]['id'];
+            } else {
+                $id = substr(hash('sha256', 'plos.youtube.notebook:'.$notebookName), 0, 32);
+                $snapshot = $this->joplinService->reviewSnapshot($id.'.md');
+                if ($snapshot === null) {
+                    $locks = app(JoplinLockHandler::class);
+                    $lock = $locks->acquireSyncLock();
+                    try {
+                        $this->joplinService->reviewPut($id.'.md', $this->joplinService->reviewNotebookWire($id, $notebookName, ''), null);
+                    } catch (Exception $e) {
+                        if ($this->joplinService->reviewSnapshot($id.'.md') === null) {
+                            throw $e;
+                        }
+                    } finally {
+                        $locks->releaseLock($lock);
+                    }
+                }
+                $note = $this->joplinFilesService->getNote($id, true);
+                if (! $note || $note['type'] !== 2 || $note['title'] !== $notebookName || $note['parent_id'] !== '') {
+                    throw new Exception('Existing notebook identity conflicts; preserved without overwrite');
+                }
+            }
+            Cache::put($cacheKey, $id, 86400);
 
-                Log::info('Notebook ready', [
-                    'name' => $notebookName,
-                    'id' => $result['notebook_id'],
-                    'was_created' => $result['created'] ?? false,
-                ]);
-
-                return $result['notebook_id'];
-            });
-
+            return $id;
         } catch (Exception $e) {
-            Log::error('Failed to find or create notebook', [
-                'name' => $notebookName,
-                'error' => $e->getMessage(),
-            ]);
+            Log::error('Failed to find or create notebook', ['name' => $notebookName, 'error' => $e->getMessage()]);
 
             return null;
         }

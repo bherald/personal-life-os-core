@@ -3,6 +3,8 @@
 namespace App\Services\Ops;
 
 use App\Services\OfflinePolicyService;
+use App\Support\PromptIntegrityPolicy;
+use App\Support\RuntimeBoolean;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -374,6 +376,12 @@ class LocalRuntimeScorecardService
     private function ollamaEvalPosture(): array
     {
         $candidateQueue = (array) config('ollama_eval.candidate_queue', []);
+        $compressionEvalEnabled = PromptIntegrityPolicy::allowsLossyTransforms();
+        $compressionBenchmarkEnabled = PromptIntegrityPolicy::allowsLossyTransforms();
+        $configuredCompressionFamilies = (array) config('ollama_eval.compression_families', []);
+        $activeCompressionFamilyCount = ($compressionEvalEnabled || $compressionBenchmarkEnabled)
+            ? count($configuredCompressionFamilies)
+            : 0;
         $candidateCounts = [
             'active' => 0,
             'testing' => 0,
@@ -398,7 +406,10 @@ class LocalRuntimeScorecardService
             'scorecard_field_count' => count((array) config('ollama_eval.scorecard_fields', [])),
             'minimum_acceptance_count' => count((array) config('ollama_eval.minimum_acceptance', [])),
             'regression_case_count' => count((array) config('ollama_eval.regression_cases', [])),
-            'compression_family_count' => count((array) config('ollama_eval.compression_families', [])),
+            'compression_eval_enabled' => $compressionEvalEnabled,
+            'compression_benchmark_enabled' => $compressionBenchmarkEnabled,
+            'compression_family_count' => $activeCompressionFamilyCount,
+            'compression_family_configured_count' => count($configuredCompressionFamilies),
             'candidate_counts' => $candidateCounts,
         ];
     }
@@ -544,19 +555,7 @@ class LocalRuntimeScorecardService
 
     private function truthy(mixed $value): bool
     {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_int($value)) {
-            return $value === 1;
-        }
-
-        if (is_string($value)) {
-            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
-        }
-
-        return (bool) $value;
+        return RuntimeBoolean::isTrue($value);
     }
 
     private function safeRoutePolicy(array $routePolicy): array

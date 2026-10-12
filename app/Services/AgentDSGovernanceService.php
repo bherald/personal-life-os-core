@@ -14,6 +14,10 @@ class AgentDSGovernanceService
 
     public const PROFILE_DS_GENEALOGY = 'ds_genealogy';
 
+    public const RUNTIME_POLICY_KEY = 'agents.delegation_runtime_policy';
+
+    public function __construct(private ?SystemConfigService $systemConfig = null) {}
+
     public function buildMarker(array $context): array
     {
         $profile = $this->profileFromContext($context);
@@ -30,7 +34,7 @@ class AgentDSGovernanceService
             'schema' => self::SCHEMA,
             'gate_version' => 'hwr-003-2026-05-25',
             'parent_session_id' => $this->stringOrNull($context['parent_session_id'] ?? null),
-            'depth' => min($depth, $maxDepth),
+            'depth' => $depth,
             'max_depth' => $maxDepth,
             'runtime_budget_seconds' => max(60, min($runtimeBudget, (int) config('agents.delegation_governance.max_runtime_budget_seconds', 3600))),
             'max_iterations' => max(1, min($maxIterations, (int) config('agents.delegation_governance.max_iterations_ceiling', 20))),
@@ -110,6 +114,33 @@ class AgentDSGovernanceService
         return $this->decision(true, $profile, $toolClass, 'bounded governance allowed');
     }
 
+    /** @return array<string,mixed> */
+    public function evaluateDelegation(array $context): array
+    {
+        $context = $this->flattenGovernanceContext($context);
+        $profile = $this->profileFromContext($context);
+        $depth = max(0, (int) ($context['delegation_depth'] ?? $context['depth'] ?? 0));
+        $maxDepth = $this->maxDepth($profile);
+        $allowed = $depth < $maxDepth;
+
+        return [
+            'allowed' => $allowed,
+            'depth' => $depth,
+            'child_depth' => $depth + 1,
+            'max_depth' => $maxDepth,
+            'profile' => $profile,
+            'policy_source' => 'system_configs.'.self::RUNTIME_POLICY_KEY,
+            'reason' => $allowed
+                ? 'delegation depth available'
+                : "delegation depth {$depth} reached max {$maxDepth}",
+        ];
+    }
+
+    public function maxDepthForContext(array $context): int
+    {
+        return $this->maxDepth($this->profileFromContext($context));
+    }
+
     private function profileFromContext(array $context): string
     {
         $context = $this->flattenGovernanceContext($context);
@@ -164,11 +195,31 @@ class AgentDSGovernanceService
 
     private function maxDepth(string $profile): int
     {
+        $policy = $this->runtimePolicy();
+
         return match ($profile) {
-            self::PROFILE_SIDECAR_READ_ONLY => (int) config('agents.delegation_governance.max_sidecar_depth', 1),
-            self::PROFILE_DS_BOUNDED_WRITE, self::PROFILE_DS_GENEALOGY => (int) config('agents.delegation_governance.max_depth', 2),
-            default => 0,
+            self::PROFILE_SIDECAR_READ_ONLY => $policy['max_sidecar_depth'],
+            default => $policy['max_depth'],
         };
+    }
+
+    /** @return array{max_depth:int,max_sidecar_depth:int} */
+    private function runtimePolicy(): array
+    {
+        $defaults = [
+            'max_depth' => (int) config('agents.delegation_governance.max_depth', 1),
+            'max_sidecar_depth' => (int) config('agents.delegation_governance.max_sidecar_depth', 0),
+        ];
+        $service = $this->systemConfig ?? app(SystemConfigService::class);
+        $configured = $service->get(self::RUNTIME_POLICY_KEY, $defaults);
+        if (! is_array($configured)) {
+            $configured = $defaults;
+        }
+
+        return [
+            'max_depth' => max(0, min(5, (int) ($configured['max_depth'] ?? $defaults['max_depth']))),
+            'max_sidecar_depth' => max(0, min(2, (int) ($configured['max_sidecar_depth'] ?? $defaults['max_sidecar_depth']))),
+        ];
     }
 
     private function allowedToolClasses(string $profile): array

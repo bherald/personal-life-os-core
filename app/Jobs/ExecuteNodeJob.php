@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Engine\NodeLoader;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\SystemConfigService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -29,18 +30,26 @@ class ExecuteNodeJob implements ShouldQueue
     ];
 
     public $timeout = 600; // 10 minutes per node
+
     public $tries = 3;
+
     public $backoff = [30, 60, 120];
 
     /** @var array<string,mixed>|null */
     private ?array $runtimePolicy = null;
 
     protected int $runId;
+
     protected int $nodeExecutionId;
+
     protected string $nodeType;
+
     protected array $nodeConfig;
+
     protected array $input;
+
     protected int $branchIndex;
+
     protected string $parentFanOutId;
 
     public function __construct(
@@ -84,7 +93,7 @@ class ExecuteNodeJob implements ShouldQueue
 
         try {
             // Load and execute the node
-            $nodeLoader = new NodeLoader();
+            $nodeLoader = new NodeLoader;
             $nodeInstance = $nodeLoader->loadNode($this->nodeType, $this->nodeConfig);
             $output = $nodeInstance->execute($this->input);
 
@@ -105,17 +114,36 @@ class ExecuteNodeJob implements ShouldQueue
         } catch (Throwable $e) {
             $durationMs = (int) ((microtime(true) - $startTime) * 1000);
 
-            // Mark as failed
-            DB::update(
-                'UPDATE node_executions SET state = ?, error_message = ?, duration_ms = ? WHERE id = ?',
-                ['failed', mb_substr($e->getMessage(), 0, 65000), $durationMs, $this->nodeExecutionId]
-            );
+            try {
+                // Mark as failed
+                DB::update(
+                    'UPDATE node_executions SET state = ?, error_message = ?, duration_ms = ? WHERE id = ?',
+                    ['failed', mb_substr($e->getMessage(), 0, 65000), $durationMs, $this->nodeExecutionId]
+                );
 
-            Log::error('ExecuteNodeJob: Branch execution failed', [
-                'node_execution_id' => $this->nodeExecutionId,
-                'branch_index' => $this->branchIndex,
-                'error' => $e->getMessage(),
-            ]);
+                Log::error('ExecuteNodeJob: Branch execution failed', [
+                    'node_execution_id' => $this->nodeExecutionId,
+                    'branch_index' => $this->branchIndex,
+                    'error' => $e->getMessage(),
+                ]);
+            } catch (Throwable $bookkeepingError) {
+                if (! InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $bookkeepingError;
+                }
+                try {
+                    Log::warning('Admission failure bookkeeping failed; original stop retained', [
+                        'exception_class' => get_class($bookkeepingError),
+                    ]);
+                } catch (Throwable) {
+                    // Preserve the original terminal admission failure even if logging fails.
+                }
+            }
+
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                $this->fail($e);
+
+                return;
+            }
 
             throw $e;
         }
@@ -126,7 +154,7 @@ class ExecuteNodeJob implements ShouldQueue
         // Ensure state is marked as failed even if job permanently fails
         DB::update(
             'UPDATE node_executions SET state = ?, error_message = ? WHERE id = ?',
-            ['failed', 'Job failed permanently: ' . ($exception?->getMessage() ?? 'Unknown'), $this->nodeExecutionId]
+            ['failed', 'Job failed permanently: '.($exception?->getMessage() ?? 'Unknown'), $this->nodeExecutionId]
         );
 
         Log::error('ExecuteNodeJob: Permanent failure', [
@@ -141,9 +169,9 @@ class ExecuteNodeJob implements ShouldQueue
     {
         return [
             'workflow',
-            'node:' . $this->nodeType,
-            'fanout:' . $this->parentFanOutId,
-            'branch:' . $this->branchIndex,
+            'node:'.$this->nodeType,
+            'fanout:'.$this->parentFanOutId,
+            'branch:'.$this->branchIndex,
         ];
     }
 

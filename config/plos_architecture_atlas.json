@@ -1,0 +1,548 @@
+{
+  "schema": "plos.architecture_atlas.v1",
+  "title": "PLOS architecture atlas",
+  "diagrams": [
+    {
+      "id": "ai",
+      "title": "AI request and recovery",
+      "insight": "A summarized request path; the full ordered inventory is retained below. Optional Jev judgments never grant action authority.",
+      "nodes": [
+        {
+          "id": "ai_0",
+          "label": "Request",
+          "sublabel": "Full input retained",
+          "type": "frontend",
+          "source": "app/Services/AIService.php"
+        },
+        {
+          "id": "ai_1",
+          "label": "Routing policy",
+          "sublabel": "Privacy and model role",
+          "type": "security",
+          "source": "app/Services/OfflinePolicyService.php"
+        },
+        {
+          "id": "ai_2",
+          "label": "Provider selection",
+          "sublabel": "Table-owned admission",
+          "type": "backend",
+          "source": "app/Services/AIService.php"
+        },
+        {
+          "id": "ai_3",
+          "label": "Generation",
+          "sublabel": "Progress and retries",
+          "type": "backend",
+          "source": "app/Services/OpenAICompatibleProgressClient.php"
+        },
+        {
+          "id": "ai_4",
+          "label": "Quality / fallback",
+          "sublabel": "Permitted providers only",
+          "type": "security",
+          "source": "app/Services/AIService.php"
+        },
+        {
+          "id": "ai_5",
+          "label": "Response",
+          "sublabel": "Evidence preserved",
+          "type": "frontend",
+          "source": "app/Services/AIService.php"
+        }
+      ],
+      "edge_labels": [
+        "Normalize",
+        "Select",
+        "Invoke",
+        "Evaluate",
+        "Return"
+      ]
+    },
+    {
+      "id": "tools",
+      "title": "MCP tools and local CLI",
+      "insight": "Tool discovery and invocation keep schema checks and approval boundaries. Gortex is optional navigation; exact source remains authoritative.",
+      "nodes": [
+        {
+          "id": "tools_0",
+          "label": "CLI / agent",
+          "sublabel": "Task and arguments",
+          "type": "frontend",
+          "source": "app/Services/UnifiedCli/CliToolRuntime.php"
+        },
+        {
+          "id": "tools_1",
+          "label": "Tool discovery",
+          "sublabel": "Registered capabilities",
+          "type": "backend",
+          "source": "app/Services/AgentToolRegistryService.php"
+        },
+        {
+          "id": "tools_2",
+          "label": "Input admission",
+          "sublabel": "Advertised JSON schema",
+          "type": "security",
+          "source": "app/Engine/MCPRouter.php"
+        },
+        {
+          "id": "tools_3",
+          "label": "Tool execution",
+          "sublabel": "Selected MCP server",
+          "type": "backend",
+          "source": "app/Engine/MCPRouter.php"
+        },
+        {
+          "id": "tools_4",
+          "label": "Result validation",
+          "sublabel": "Advertised output schema",
+          "type": "security",
+          "source": "app/Engine/MCPRouter.php"
+        },
+        {
+          "id": "tools_5",
+          "label": "Agent context",
+          "sublabel": "Trust-boundary wrapper",
+          "type": "frontend",
+          "source": "app/Engine/AIRouter.php"
+        }
+      ],
+      "edge_labels": [
+        "Discover",
+        "Validate",
+        "Call",
+        "Check",
+        "Return"
+      ]
+    },
+    {
+      "id": "workflow",
+      "title": "Workflows and scheduled work",
+      "insight": "Workflow and scheduler entry points use existing execution, approval and recovery services. This is an operational lifecycle, not a claim that every workflow uses every node.",
+      "nodes": [
+        {
+          "id": "workflow_0",
+          "label": "Trigger",
+          "sublabel": "CLI / webhook / schedule",
+          "type": "frontend",
+          "source": "app/Engine/WorkflowEngine.php"
+        },
+        {
+          "id": "workflow_1",
+          "label": "Execution intent",
+          "sublabel": "Workflow definition",
+          "type": "backend",
+          "source": "app/Services/WorkflowService.php"
+        },
+        {
+          "id": "workflow_2",
+          "label": "Approval",
+          "sublabel": "When policy requires",
+          "type": "security",
+          "source": "app/Services/WorkflowApprovalService.php"
+        },
+        {
+          "id": "workflow_3",
+          "label": "Node execution",
+          "sublabel": "Configured handlers",
+          "type": "backend",
+          "source": "app/Engine/WorkflowEngine.php"
+        },
+        {
+          "id": "workflow_4",
+          "label": "Run evidence",
+          "sublabel": "Metrics and trace",
+          "type": "database",
+          "source": "app/Services/WorkflowExecutionTraceService.php"
+        },
+        {
+          "id": "workflow_5",
+          "label": "Recovery",
+          "sublabel": "Replay / diagnostics",
+          "type": "backend",
+          "source": "app/Services/WorkflowReplayer.php"
+        }
+      ],
+      "edge_labels": [
+        "Start",
+        "Admit",
+        "Execute",
+        "Record",
+        "Inspect"
+      ]
+    },
+    {
+      "id": "youtube",
+      "title": "YouTube, Joplin and search",
+      "insight": "Source notes survive duplicate cleanup. Weekly organization is separate from transcript extraction and semantic summary review.",
+      "nodes": [
+        {
+          "id": "youtube_0",
+          "label": "YouTube source",
+          "sublabel": "Exact video identity",
+          "type": "external",
+          "source": "app/Services/YouTubeApiService.php"
+        },
+        {
+          "id": "youtube_1",
+          "label": "Transcript",
+          "sublabel": "Extraction and language",
+          "type": "backend",
+          "source": "app/Services/YouTubeTranscriptService.php"
+        },
+        {
+          "id": "youtube_2",
+          "label": "Joplin writer",
+          "sublabel": "Reuse / conditional write",
+          "type": "security",
+          "source": "app/Services/YouTubeJoplinService.php"
+        },
+        {
+          "id": "youtube_3",
+          "label": "Nextcloud target",
+          "sublabel": "Joplin sync files",
+          "type": "database",
+          "source": "app/Services/JoplinWriteService.php"
+        },
+        {
+          "id": "youtube_4",
+          "label": "Joplin capture",
+          "sublabel": "Source identity retained",
+          "type": "backend",
+          "source": "app/Services/JoplinSyncService.php"
+        },
+        {
+          "id": "youtube_5",
+          "label": "RAG index",
+          "sublabel": "Dependency-safe cleanup",
+          "type": "database",
+          "source": "app/Services/RAGService.php"
+        }
+      ],
+      "edge_labels": [
+        "Retrieve",
+        "Prepare",
+        "Write",
+        "Capture",
+        "Index"
+      ]
+    },
+    {
+      "id": "documents",
+      "title": "Documents, media and evidence",
+      "insight": "Extraction and provenance serve existing files/RAG workflows. OpenDataLoader adds an optional page-coordinate output; it does not replace every extractor.",
+      "nodes": [
+        {
+          "id": "documents_0",
+          "label": "File intake",
+          "sublabel": "Known file identity",
+          "type": "external",
+          "source": "app/Services/FileRegistryService.php"
+        },
+        {
+          "id": "documents_1",
+          "label": "Registry",
+          "sublabel": "Versions and metadata",
+          "type": "database",
+          "source": "app/Services/FileVersionService.php"
+        },
+        {
+          "id": "documents_2",
+          "label": "Extraction",
+          "sublabel": "PDF / OCR / media",
+          "type": "backend",
+          "source": "app/Services/ContentExtractionService.php"
+        },
+        {
+          "id": "documents_3",
+          "label": "Provenance",
+          "sublabel": "Page and source evidence",
+          "type": "security",
+          "source": "app/Services/ContentExtractionProvenanceService.php"
+        },
+        {
+          "id": "documents_4",
+          "label": "Search index",
+          "sublabel": "Text and embeddings",
+          "type": "database",
+          "source": "app/Services/RAGService.php"
+        },
+        {
+          "id": "documents_5",
+          "label": "Retrieval",
+          "sublabel": "Evidence for tasks",
+          "type": "frontend",
+          "source": "app/Services/RAGService.php"
+        }
+      ],
+      "edge_labels": [
+        "Register",
+        "Read",
+        "Record",
+        "Index",
+        "Search"
+      ]
+    },
+    {
+      "id": "genealogy",
+      "title": "Genea research and review",
+      "insight": "Tree-scoped work preserves source evidence, dry runs and operator-owned identity decisions. This is the required research/write workflow.",
+      "nodes": [
+        {
+          "id": "genealogy_0",
+          "label": "Research request",
+          "sublabel": "Explicit tree scope",
+          "type": "frontend",
+          "source": "app/Http/Controllers/GenealogyController.php"
+        },
+        {
+          "id": "genealogy_1",
+          "label": "Source search",
+          "sublabel": "Records and citations",
+          "type": "backend",
+          "source": "app/Services/Genealogy/GenealogyExternalSearchService.php"
+        },
+        {
+          "id": "genealogy_2",
+          "label": "Evidence",
+          "sublabel": "Conflicts and uncertainty",
+          "type": "database",
+          "source": "app/Services/Genealogy/SourceConflictService.php"
+        },
+        {
+          "id": "genealogy_3",
+          "label": "Proposed changes",
+          "sublabel": "Dry-run batch",
+          "type": "backend",
+          "source": "app/Services/Genealogy/BatchOperationsService.php"
+        },
+        {
+          "id": "genealogy_4",
+          "label": "Operator review",
+          "sublabel": "Identity / approval",
+          "type": "security",
+          "source": "app/Services/Genealogy/GenealogyReviewPacketMaterializationService.php"
+        },
+        {
+          "id": "genealogy_5",
+          "label": "Scoped apply",
+          "sublabel": "Verified tree changes",
+          "type": "database",
+          "source": "app/Services/Genealogy/BatchOperationsService.php"
+        }
+      ],
+      "edge_labels": [
+        "Find",
+        "Assess",
+        "Prepare",
+        "Review",
+        "Apply"
+      ]
+    },
+    {
+      "id": "delivery",
+      "title": "Private release and recovery",
+      "insight": "Private Git delivery uses PROD1. Production is a deployed tree; rollback and smoke checks stay separate from a source commit.",
+      "nodes": [
+        {
+          "id": "delivery_0",
+          "label": "Isolated changes",
+          "sublabel": "Preserve shared edits",
+          "type": "frontend",
+          "source": "AGENTS.md"
+        },
+        {
+          "id": "delivery_1",
+          "label": "Focused checks",
+          "sublabel": "Behavior and formatting",
+          "type": "security",
+          "source": "docs/testing-isolation-playbook.md"
+        },
+        {
+          "id": "delivery_2",
+          "label": "Documentation audit",
+          "sublabel": "Staged release evidence",
+          "type": "security",
+          "source": "AGENTS.md"
+        },
+        {
+          "id": "delivery_3",
+          "label": "Private Gitea",
+          "sublabel": "Reviewed commit",
+          "type": "database",
+          "source": "prod1.sh"
+        },
+        {
+          "id": "delivery_4",
+          "label": "PROD1 deploy",
+          "sublabel": "Release source proof",
+          "type": "backend",
+          "source": "prod1.sh"
+        },
+        {
+          "id": "delivery_5",
+          "label": "Smoke / rollback",
+          "sublabel": "Runtime verification",
+          "type": "backend",
+          "source": "prod1.sh"
+        }
+      ],
+      "edge_labels": [
+        "Verify",
+        "Audit",
+        "Commit",
+        "Deploy",
+        "Check"
+      ]
+    },
+    {
+      "id": "reviews",
+      "title": "Review hub and private mirrors",
+      "insight": "One owning record drives the hub. D: retains interactive diagrams; Joplin receives readable notes and static chart resources.",
+      "nodes": [
+        {
+          "id": "reviews_0",
+          "label": "Owning records",
+          "sublabel": "Decisions and evidence",
+          "type": "database",
+          "source": "skills/plos-chores/SKILL.md"
+        },
+        {
+          "id": "reviews_1",
+          "label": "Review builder",
+          "sublabel": "Current files and links",
+          "type": "backend",
+          "source": "skills/plos-chores/SKILL.md"
+        },
+        {
+          "id": "reviews_2",
+          "label": "Review hub",
+          "sublabel": "Read-only overview",
+          "type": "frontend",
+          "source": "skills/plos-chores/SKILL.md"
+        },
+        {
+          "id": "reviews_3",
+          "label": "D: on .87",
+          "sublabel": "Portable HTML and charts",
+          "type": "database",
+          "source": "skills/plos-chores/SKILL.md"
+        },
+        {
+          "id": "reviews_4",
+          "label": "Joplin bundle",
+          "sublabel": "Selected notes / images",
+          "type": "backend",
+          "source": "skills/plos-chores/scripts/build_joplin_review.py"
+        },
+        {
+          "id": "reviews_5",
+          "label": "Mirror verification",
+          "sublabel": "Read-back and clean queue",
+          "type": "security",
+          "source": "app/Services/JoplinReviewMirrorService.php"
+        }
+      ],
+      "edge_labels": null
+    },
+    {
+      "id": "hosts",
+      "title": "Hosts and model placement",
+      "insight": "Host roles and configured provider state are dated inventory observations. Routability, health, activation and loaded-model state are different facts.",
+      "nodes": [
+        {
+          "id": "hosts_0",
+          "label": "DEV",
+          "sublabel": "Laravel and tools",
+          "type": "backend",
+          "source": "docs/operation.md"
+        },
+        {
+          "id": "hosts_1",
+          "label": "PROD",
+          "sublabel": "Deployed services",
+          "type": "backend",
+          "source": "prod1.sh"
+        },
+        {
+          "id": "hosts_2",
+          "label": "Windows .87",
+          "sublabel": "Model storage and runtime",
+          "type": "backend",
+          "source": "docs/plos-model-host-controller-plan.md"
+        },
+        {
+          "id": "hosts_3",
+          "label": "Jetson",
+          "sublabel": "Independent local worker",
+          "type": "backend",
+          "source": "docs/plos-model-host-controller-plan.md"
+        },
+        {
+          "id": "hosts_4",
+          "label": "MySQL / PostgreSQL",
+          "sublabel": "Operational / RAG data",
+          "type": "database",
+          "source": "config/database.php"
+        },
+        {
+          "id": "hosts_5",
+          "label": "Backup storage",
+          "sublabel": "Offsite recovery cycle",
+          "type": "database",
+          "source": "docs/PLOS-OFFSITE-BACKUP.md"
+        }
+      ],
+      "edge_labels": null
+    },
+    {
+      "id": "domains",
+      "title": "Personal and operational domains",
+      "insight": "These peer domains are covered by the controller/service inventory. Boxes show capability areas, not inferred inter-domain data transfers.",
+      "nodes": [
+        {
+          "id": "domains_0",
+          "label": "Daily operations",
+          "sublabel": "Calendar and contacts",
+          "type": "frontend",
+          "source": "app/Services/CalendarPersistenceService.php"
+        },
+        {
+          "id": "domains_1",
+          "label": "Communications",
+          "sublabel": "Email and notifications",
+          "type": "backend",
+          "source": "app/Services/EmailService.php"
+        },
+        {
+          "id": "domains_2",
+          "label": "Knowledge",
+          "sublabel": "Files / notes / research",
+          "type": "database",
+          "source": "app/Services/RAGService.php"
+        },
+        {
+          "id": "domains_3",
+          "label": "Genealogy",
+          "sublabel": "Tree and source work",
+          "type": "backend",
+          "source": "app/Http/Controllers/GenealogyController.php"
+        },
+        {
+          "id": "domains_4",
+          "label": "Automation",
+          "sublabel": "Workflows / schedules",
+          "type": "backend",
+          "source": "app/Services/ScheduledJobService.php"
+        },
+        {
+          "id": "domains_5",
+          "label": "Governance",
+          "sublabel": "Review and policy",
+          "type": "security",
+          "source": "app/Services/Review/ReviewDeskService.php"
+        }
+      ],
+      "edge_labels": null
+    }
+  ]
+}

@@ -1,0 +1,183 @@
+{
+  "schema": "plos.image_controller_workloads.v1",
+  "instance_id": "image_sidecar_87",
+  "engine": "diffusers",
+  "default_model": "sdxl-lightning",
+  "models": {
+    "sdxl-lightning": {
+      "profile_name": "media_output_image",
+      "role": "media_output_image",
+      "defaults": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 4,
+        "guidance_scale": 0.0
+      },
+      "contract": {
+        "model": "sdxl-lightning",
+        "wire_api": "image_generation",
+        "controller_host_id": ".87",
+        "controller_target": "image_sdxl_lightning_87",
+        "context_window": 77,
+        "maximum_input_bytes": 8000,
+        "maximum_width": 1024,
+        "maximum_height": 1024,
+        "maximum_steps": 4,
+        "maximum_guidance_scale": 0.0
+      },
+      "artifact": {
+        "source": "ByteDance/SDXL-Lightning",
+        "revision": "c9a24f48e1c025556787b0c58dd67a091ece2e44",
+        "relative_path": "models/SDXL-Lightning/sdxl_lightning_4step.safetensors",
+        "pipeline": "sdxl-lightning"
+      },
+      "qualification": {
+        "state": "pending_controller_qualification",
+        "model_quality_grade": null,
+        "observed_installed": "2026-09-28",
+        "cpu_offload": true,
+        "resource_envelope": "controller capacity and desktop reserve must be qualified before use"
+      }
+    },
+    "sdxl-base-1.0": {
+      "profile_name": "media_output_image_quality",
+      "role": "media_output_image_quality",
+      "defaults": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 30,
+        "guidance_scale": 5.0
+      },
+      "contract": {
+        "model": "sdxl-base-1.0",
+        "wire_api": "image_generation",
+        "controller_host_id": ".87",
+        "controller_target": "image_sdxl_base_1.0_87",
+        "context_window": 77,
+        "maximum_input_bytes": 8000,
+        "maximum_width": 1024,
+        "maximum_height": 1024,
+        "maximum_steps": 30,
+        "maximum_guidance_scale": 5.0
+      },
+      "artifact": {
+        "source": "stabilityai/stable-diffusion-xl-base-1.0",
+        "revision": "462165984030d82259a11f4367a4eed129e94a7b",
+        "relative_path": "models/SDXL-Base-1.0",
+        "pipeline": "sdxl-base"
+      },
+      "qualification": {
+        "state": "pending_controller_qualification",
+        "model_quality_grade": null,
+        "observed_installed": "2026-09-28",
+        "cpu_offload": true,
+        "resource_envelope": "controller capacity and desktop reserve must be qualified before use"
+      }
+    },
+    "pixart-sigma-1024": {
+      "profile_name": "media_output_image_alternate",
+      "role": "media_output_image_alternate",
+      "defaults": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 20,
+        "guidance_scale": 4.5
+      },
+      "contract": {
+        "model": "pixart-sigma-1024",
+        "wire_api": "image_generation",
+        "controller_host_id": ".87",
+        "controller_target": "image_pixart_sigma_1024_87",
+        "context_window": 300,
+        "maximum_input_bytes": 8000,
+        "maximum_width": 1024,
+        "maximum_height": 1024,
+        "maximum_steps": 20,
+        "maximum_guidance_scale": 4.5
+      },
+      "artifact": {
+        "source": "PixArt-alpha/PixArt-Sigma-XL-2-1024-MS",
+        "revision": "e102b3591cc82e97071b8b4cb90d834d0c487207",
+        "relative_path": "models/PixArt-Sigma-XL-2-1024-MS",
+        "pipeline": "pixart-sigma"
+      },
+      "qualification": {
+        "state": "pending_controller_qualification",
+        "model_quality_grade": null,
+        "observed_installed": "2026-09-28",
+        "cpu_offload": true,
+        "resource_envelope": "controller capacity and desktop reserve must be qualified before use"
+      }
+    },
+    "flux2-klein-4b": {
+      "profile_name": "media_output_image_modern",
+      "role": "media_output_image_modern",
+      "defaults": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 4,
+        "guidance_scale": 1.0
+      },
+      "contract": {
+        "model": "flux2-klein-4b",
+        "wire_api": "image_generation",
+        "controller_host_id": ".87",
+        "controller_target": "image_flux2_klein_4b_87",
+        "context_window": 512,
+        "maximum_input_bytes": 8000,
+        "maximum_width": 1024,
+        "maximum_height": 1024,
+        "maximum_steps": 4,
+        "maximum_guidance_scale": 1.0
+      },
+      "artifact": {
+        "source": "black-forest-labs/FLUX.2-klein-4B",
+        "revision": "e7b7dc27f91deacad38e78976d1f2b499d76a294",
+        "relative_path": "models/FLUX.2-klein-4B",
+        "pipeline": "flux2-klein"
+      },
+      "qualification": {
+        "state": "pending_controller_qualification",
+        "model_quality_grade": null,
+        "observed_installed": "2026-09-28",
+        "cpu_offload": true,
+        "resource_envelope": "controller capacity and desktop reserve must be qualified before use"
+      }
+    },
+    "sana-sprint-1.6b": {
+      "profile_name": "media_output_image_experimental",
+      "role": "media_output_image_experimental",
+      "defaults": {
+        "width": 1024,
+        "height": 1024,
+        "steps": 2,
+        "guidance_scale": 0.0
+      },
+      "contract": {
+        "model": "sana-sprint-1.6b",
+        "wire_api": "image_generation",
+        "controller_host_id": ".87",
+        "controller_target": "image_sana_sprint_1.6b_87",
+        "context_window": 300,
+        "maximum_input_bytes": 8000,
+        "maximum_width": 1024,
+        "maximum_height": 1024,
+        "maximum_steps": 2,
+        "maximum_guidance_scale": 0.0
+      },
+      "artifact": {
+        "source": "Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers",
+        "revision": "b3c9ce6f29ad4161a00fa58a62e476b9c75ca934",
+        "relative_path": "models/Sana-Sprint-1.6B-1024px",
+        "pipeline": "sana-sprint"
+      },
+      "qualification": {
+        "state": "pending_controller_qualification",
+        "model_quality_grade": null,
+        "observed_installed": "2026-09-28",
+        "cpu_offload": true,
+        "resource_envelope": "controller capacity and desktop reserve must be qualified before use"
+      }
+    }
+  }
+}

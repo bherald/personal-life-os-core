@@ -3,8 +3,10 @@
 namespace App\Console\Commands;
 
 use App\Contracts\HostCommandRunner;
+use App\Services\Ops\JetsonTegrastatsParserService;
 use App\Services\ShellExecHostCommandRunner;
 use Illuminate\Console\Command;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Redis;
@@ -56,8 +58,18 @@ class OpsHostBaselineCommand extends Command
         return self::SUCCESS;
     }
 
-    private function buildPayload(string $scenario, int $iteration, int $totalIterations, \Illuminate\Support\Carbon $capturedAt): array
+    private function buildPayload(string $scenario, int $iteration, int $totalIterations, Carbon $capturedAt): array
     {
+        $gpu = $this->parseGpuRows(
+            $this->readCommand(
+                'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader,nounits'
+            )
+        );
+        $jetsonTegrastats = $gpu === []
+            ? app(JetsonTegrastatsParserService::class)->parse(
+                $this->readCommand(JetsonTegrastatsParserService::SAMPLE_COMMAND)
+            )
+            : null;
         $payload = [
             'version' => 1,
             'captured_at' => $capturedAt->format('Y-m-d\TH:i:s\Z'),
@@ -71,11 +83,8 @@ class OpsHostBaselineCommand extends Command
             'disk' => $this->parseDiskUsage($this->readCommand('df -BG /')),
             'top_memory_procs' => $this->parseProcessList($this->readCommand('ps aux --sort=-%mem | head -20')),
             'top_cpu_procs' => $this->parseProcessList($this->readCommand('ps aux --sort=-%cpu | head -20')),
-            'gpu' => $this->parseGpuRows(
-                $this->readCommand(
-                    'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader,nounits'
-                )
-            ),
+            'gpu' => $gpu,
+            'jetson_tegrastats' => $jetsonTegrastats,
             'app' => [
                 'queue_depths' => $this->collectQueueDepths(),
                 'running_jobs' => $this->collectRunningJobs(),
@@ -90,7 +99,7 @@ class OpsHostBaselineCommand extends Command
         return $payload;
     }
 
-    private function reserveOutputPath(string $directory, string $scenario, \Illuminate\Support\Carbon $capturedAt): string
+    private function reserveOutputPath(string $directory, string $scenario, Carbon $capturedAt): string
     {
         $timestamp = $capturedAt->format('Ymd-His');
         $path = $directory.'/'.$scenario.'-'.$timestamp.'.json';

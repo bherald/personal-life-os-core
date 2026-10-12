@@ -1,21 +1,17 @@
 # Security Policy
 
-Personal Life OS Core is the sanitized public foundation for a separate private
-operational system. Keep private data, credentials, hostnames, machine-specific
-paths, personal documents, and private deployment history out of this
-repository. Run `scripts/guards/public-release-audit.sh` before proposing a
-public-bound change.
+PLOS is currently prepared from a private operational repository. Do not publish
+or deploy a public extraction until `scripts/guards/public-release-audit.sh`
+passes and private data, credentials, hostnames, and personal docs have been
+removed.
 
 ## Reporting
 
-Report vulnerabilities through this repository's private GitHub Security
-Advisory flow when it is available. Otherwise, email `bherald@wphc.us`. Do not
-include credentials, private data, or exploit details in a public issue.
+For a future public repository, report vulnerabilities through the GitHub
+Security Advisory flow or the contact listed in that repository's README.
 
 ## Supported Versions
 
-The latest `main` revision and current tagged release are the active review
-surfaces. Security fixes and release timing are best effort; no response-time or
-commercial-support commitment is implied. Private deployments, connectors,
-credentials, data mounts, and local configuration remain outside the public
-support boundary.
+Public support policy is not active until the first public release. Private
+operator deployments should treat all local connectors, credentials, and data
+mounts as environment-specific and outside the public support boundary.

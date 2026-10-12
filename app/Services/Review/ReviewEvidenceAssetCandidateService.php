@@ -2,9 +2,18 @@
 
 namespace App\Services\Review;
 
+use App\Services\Genealogy\GenealogyEvidenceAssetIdentityService;
+
 class ReviewEvidenceAssetCandidateService
 {
     private const MAX_CANDIDATES = 20;
+
+    private GenealogyEvidenceAssetIdentityService $identityService;
+
+    public function __construct(?GenealogyEvidenceAssetIdentityService $identityService = null)
+    {
+        $this->identityService = $identityService ?? new GenealogyEvidenceAssetIdentityService;
+    }
 
     /**
      * @return list<array<string, mixed>>
@@ -92,6 +101,7 @@ class ReviewEvidenceAssetCandidateService
         $assetType = $this->assetType($asset, $parsed);
         $provider = $this->provider($parsed);
         $policy = $this->capturePolicy($provider, $assetType, $parsed, $sourceContext ?? $asset);
+        $identity = $this->identityService->fingerprint($locator, $asset, $sourceContext ?? []);
 
         return [
             'schema' => 'review_evidence_asset_candidate.v1',
@@ -107,7 +117,9 @@ class ReviewEvidenceAssetCandidateService
             'capture_policy' => $policy,
             'capture_actions' => $this->captureActions($policy, $assetType),
             'locator' => $parsed['safe_locator'],
-            'locator_hash' => substr(sha1($locator), 0, 16),
+            'locator_hash' => substr($identity['hash'], 0, 16),
+            'locator_identity_mode' => $identity['mode'],
+            'source_generation_present' => $identity['source_generation_present'],
             'locator_redacted' => $parsed['redacted'],
             'host' => $parsed['host'],
             'extension' => $parsed['extension'],

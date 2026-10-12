@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -24,6 +25,7 @@ class SpacyNLPService
     private const CACHE_TTL = 300; // 5 min — same text = same extraction
 
     private ?ComputeRouterService $computeRouter = null;
+
     private ?bool $available = null;
 
     private function getComputeRouter(): ComputeRouterService
@@ -31,6 +33,7 @@ class SpacyNLPService
         if ($this->computeRouter === null) {
             $this->computeRouter = app(ComputeRouterService::class);
         }
+
         return $this->computeRouter;
     }
 
@@ -38,16 +41,16 @@ class SpacyNLPService
      * Extract entities and genealogy facts from text.
      * Returns null if no NLP compute instance is available.
      *
-     * @param string $text Input text (capped at 5000 chars in Python)
+     * @param  string  $text  Input text (capped at 5000 chars in Python)
      * @return array|null ['dates'=>[], 'places'=>[], 'persons'=>[], 'facts'=>['birth_date'=>..., ...]]
      */
     public function extract(string $text): ?array
     {
-        if (!$this->isAvailable()) {
+        if (! $this->isAvailable()) {
             return null;
         }
 
-        $cacheKey = 'spacy_nlp:' . md5($text);
+        $cacheKey = 'spacy_nlp:'.md5($text);
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
             return $cached;
@@ -63,23 +66,29 @@ class SpacyNLPService
                 10
             );
 
-            if (!$result['success'] || empty($result['output'])) {
+            if (! $result['success'] || empty($result['output'])) {
                 return null;
             }
 
             $parsed = json_decode($result['output'], true);
-            if (!is_array($parsed) || isset($parsed['error'])) {
+            if (! is_array($parsed) || isset($parsed['error'])) {
                 if (($parsed['error'] ?? '') === 'spacy_not_available') {
                     $this->available = false;
                 }
+
                 return null;
             }
 
             Cache::put($cacheKey, $parsed, self::CACHE_TTL);
+
             return $parsed;
 
         } catch (\Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::warning('SpacyNLPService: extraction failed', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -92,21 +101,21 @@ class SpacyNLPService
         $proposals = [];
         $facts = $extraction['facts'] ?? [];
         $fieldMap = [
-            'birth_date'  => ['fact_update', 'birth_date',  0.55],
-            'death_date'  => ['fact_update', 'death_date',  0.55],
+            'birth_date' => ['fact_update', 'birth_date',  0.55],
+            'death_date' => ['fact_update', 'death_date',  0.55],
             'birth_place' => ['fact_update', 'birth_place', 0.50],
             'death_place' => ['fact_update', 'death_place', 0.50],
-            'occupation'  => ['fact_update', 'occupation',  0.45],
+            'occupation' => ['fact_update', 'occupation',  0.45],
         ];
 
         foreach ($fieldMap as $key => [$changeType, $fieldName, $confidence]) {
-            if (!empty($facts[$key])) {
+            if (! empty($facts[$key])) {
                 $proposals[] = [
-                    'person_id'       => $personId,
-                    'change_type'     => $changeType,
-                    'field_name'      => $fieldName,
-                    'proposed_value'  => trim($facts[$key]),
-                    'confidence'      => $confidence,
+                    'person_id' => $personId,
+                    'change_type' => $changeType,
+                    'field_name' => $fieldName,
+                    'proposed_value' => trim($facts[$key]),
+                    'confidence' => $confidence,
                     'evidence_sources' => ['spacy-extracted from research findings'],
                     'evidence_summary' => substr($evidenceSummary, 0, 300),
                 ];
@@ -127,6 +136,7 @@ class SpacyNLPService
         }
 
         $this->available = $this->getComputeRouter()->route('nlp') !== null;
+
         return $this->available;
     }
 }

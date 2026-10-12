@@ -5,52 +5,54 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agent Review - PLOS</title>
     <style>
+        :root { --ink: #162c39; --muted: #536b77; --line: #d8e2e5; --teal: #096b62; --paper: #fff; --canvas: #f2f5f5; --success: #176b49; --warning: #825113; --danger: #9d3434; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 16px; min-height: 100vh; }
-        .card { background: #16213e; border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid #0f3460; }
+        body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--canvas); color: var(--ink); padding: 20px; min-height: 100vh; max-width: 900px; margin: auto; }
+        .card { background: var(--paper); border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid var(--line); box-shadow: 0 7px 28px #1534440a; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
         .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-        .badge-pending { background: #e67e22; color: #fff; }
-        .badge-approved { background: #27ae60; color: #fff; }
-        .badge-rejected { background: #e74c3c; color: #fff; }
-        .badge-expired { background: #7f8c8d; color: #fff; }
-        .badge-priority-2 { background: #e74c3c; }
-        .badge-priority-1 { background: #e67e22; }
-        h1 { font-size: 18px; color: #fff; margin-bottom: 4px; }
-        h2 { font-size: 15px; color: #a0a0a0; font-weight: 400; }
-        .meta { font-size: 13px; color: #888; margin-bottom: 12px; }
+        .badge-pending, .badge-priority-1 { background: #fff3de; color: var(--warning); }
+        .badge-approved { background: #e7f4ef; color: var(--success); }
+        .badge-rejected, .badge-priority-2 { background: #fbeaea; color: var(--danger); }
+        .badge-expired { background: #e8eff0; color: var(--muted); }
+        h1 { font-size: 22px; color: var(--ink); margin-bottom: 4px; letter-spacing: -.4px; }
+        h2 { font-size: 14px; color: var(--muted); font-weight: 400; }
+        .meta { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
         .summary { font-size: 14px; line-height: 1.6; margin-bottom: 16px; white-space: pre-wrap; }
-        .details { background: #0f3460; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.5; margin-bottom: 16px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
-        .details-toggle { color: #3498db; font-size: 13px; cursor: pointer; margin-bottom: 12px; }
+        .details { background: #fafcfc; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.5; margin-bottom: 16px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow-y: auto; }
+        .details-toggle { color: var(--teal); font-size: 13px; cursor: pointer; margin-bottom: 12px; text-decoration: underline; text-underline-offset: 3px; }
         .actions { display: flex; gap: 10px; margin-bottom: 12px; }
         .btn { flex: 1; padding: 14px 16px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
         .btn-sm { padding: 10px 14px; font-size: 14px; }
         .btn:active { opacity: 0.7; }
         .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-        .btn-approve { background: #27ae60; color: #fff; }
-        .btn-reject { background: #e74c3c; color: #fff; }
-        .btn-send { background: #3498db; color: #fff; }
-        .btn-secondary { background: #2c3e50; color: #e0e0e0; border: 1px solid #0f3460; }
-        textarea, input[type="text"] { width: 100%; padding: 12px; border: 1px solid #0f3460; border-radius: 8px; background: #0f3460; color: #e0e0e0; font-size: 14px; font-family: inherit; }
+        .btn-approve, .btn-send { background: var(--teal); color: #fff; }
+        .btn-reject { background: var(--paper); color: var(--danger); border: 1px solid var(--line); }
+        .btn-secondary { background: var(--paper); color: var(--ink); border: 1px solid var(--line); }
+        textarea, input[type="text"] { width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font-size: 14px; font-family: inherit; }
         textarea { resize: vertical; min-height: 80px; margin-bottom: 12px; }
-        textarea::placeholder, input::placeholder { color: #666; }
+        textarea::placeholder, input::placeholder { color: var(--muted); }
         .result { padding: 16px; border-radius: 8px; font-size: 15px; font-weight: 600; text-align: center; margin-top: 12px; }
-        .result-success { background: #27ae60; color: #fff; }
-        .result-error { background: #e74c3c; color: #fff; }
-        .confidence-bar { height: 6px; background: #0f3460; border-radius: 3px; margin: 8px 0; }
+        .result-success { background: #e7f4ef; color: var(--success); }
+        .result-error { background: #fbeaea; color: var(--danger); }
+        .confidence-bar { height: 6px; background: var(--line); border-radius: 3px; margin: 8px 0; }
         .confidence-fill { height: 100%; border-radius: 3px; }
         .chat-messages { max-height: 400px; overflow-y: auto; margin-bottom: 12px; }
         .chat-msg { padding: 10px 14px; border-radius: 10px; margin-bottom: 8px; max-width: 90%; font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
-        .chat-human { background: #0f3460; margin-left: auto; text-align: right; border-bottom-right-radius: 4px; }
-        .chat-ai { background: #1e3a5f; border-bottom-left-radius: 4px; }
-        .chat-meta { font-size: 11px; color: #666; margin-top: 4px; }
+        .chat-human { background: #e7f4ef; margin-left: auto; text-align: right; border-bottom-right-radius: 4px; }
+        .chat-ai { background: #f1f5f5; border-bottom-left-radius: 4px; }
+        .chat-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
         .chat-input { display: flex; gap: 8px; }
         .chat-input input { flex: 1; }
         .chat-input .btn { flex: none; width: auto; padding: 12px 20px; }
-        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #666; border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--teal); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .logo { font-size: 12px; color: #555; text-align: center; margin-top: 20px; }
-        .section-label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+        .logo { font-size: 12px; color: var(--muted); text-align: center; margin-top: 20px; }
+        .section-label { font-size: 12px; color: var(--teal); text-transform: uppercase; letter-spacing: .8px; font-weight: 700; margin-bottom: 8px; }
+        .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+        .details-toggle { appearance: none; background: none; border: 0; padding: 0; font: inherit; }
+        :focus-visible { outline: 3px solid var(--teal); outline-offset: 3px; }
+        @media (max-width: 560px) { body { padding: 14px; } .actions, .chat-input { flex-wrap: wrap; } .chat-input input { min-width: 100%; } }
     </style>
 </head>
 <body>
@@ -136,7 +138,13 @@
             $safeDetails = is_array($details) ? $sanitizeDetails($details) : null;
         @endphp
         @if($safeDetails)
-            <div class="details-toggle" onclick="document.getElementById('details-block').style.display = document.getElementById('details-block').style.display === 'none' ? 'block' : 'none'">Show/hide details</div>
+            <button
+                type="button"
+                class="details-toggle"
+                aria-controls="details-block"
+                aria-expanded="false"
+                onclick="toggleDetails(this)"
+            >Show details</button>
             <div class="details" id="details-block" style="display:none;">{{ json_encode($safeDetails, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</div>
         @endif
     </div>
@@ -145,10 +153,11 @@
     @if($item->status === 'pending')
         <div class="card" id="action-card">
             <div class="section-label">Decision</div>
+            <label class="visually-hidden" for="notes">Decision notes</label>
             <textarea id="notes" placeholder="Optional: comments, instructions, or feedback for the agent..."></textarea>
             <div class="actions">
-                <button class="btn btn-approve" onclick="resolve(true)">Approve</button>
-                <button class="btn btn-reject" onclick="resolve(false)">Reject</button>
+                <button type="button" class="btn btn-approve" onclick="resolve(true)">Approve</button>
+                <button type="button" class="btn btn-reject" onclick="resolve(false)">Reject</button>
             </div>
         </div>
     @else
@@ -163,16 +172,17 @@
         </div>
     @endif
 
-    <div id="result-msg" style="display:none;"></div>
+    <div id="result-msg" role="status" aria-live="polite" style="display:none;"></div>
 
     {{-- Chat with Agent --}}
     <div class="card" id="chat-card">
         <div class="section-label">Chat with {{ $item->agent_id }}</div>
-        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
         <div class="chat-input">
+            <label class="visually-hidden" for="chat-input">Message to agent</label>
             <input type="text" id="chat-input" placeholder="Ask a question or send a command..."
                    onkeydown="if(event.key==='Enter')sendChat()">
-            <button class="btn btn-send btn-sm" onclick="sendChat()" id="chat-send-btn">Send</button>
+            <button type="button" class="btn btn-send btn-sm" onclick="sendChat()" id="chat-send-btn">Send</button>
         </div>
     </div>
 
@@ -181,6 +191,14 @@
     <script>
         const token = '{{ $item->token }}';
         const agentId = '{{ $item->agent_id }}';
+
+        function toggleDetails(button) {
+            const details = document.getElementById('details-block');
+            const expanded = button.getAttribute('aria-expanded') === 'true';
+            details.style.display = expanded ? 'none' : 'block';
+            button.setAttribute('aria-expanded', String(!expanded));
+            button.textContent = expanded ? 'Show details' : 'Hide details';
+        }
 
         // ── Review Actions ──
         async function resolve(approved) {

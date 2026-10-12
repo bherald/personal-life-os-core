@@ -19,6 +19,7 @@ class OpsFacePersonSourceRepairPacketRefillCommand extends Command
         'offset_step',
         'max_packets_per_run',
         'max_pending_total',
+        'max_open_research_tasks',
         'per_status_pending_target',
     ];
 
@@ -55,10 +56,15 @@ class OpsFacePersonSourceRepairPacketRefillCommand extends Command
 
         $pendingByStatus = $this->pendingRepairPacketCounts();
         $usedOffsets = $this->usedRepairPacketOffsets();
-        $candidateCounts = (bool) ($policy['candidate_count_guard_enabled'] ?? false)
+        $openResearchTasks = $this->openRepairResearchTaskCount($treeId);
+        $maxOpenResearchTasks = max(0, (int) $policy['max_open_research_tasks']);
+        $researchTaskBacklogBlocked = $openResearchTasks > $maxOpenResearchTasks;
+        $candidateCounts = ! $researchTaskBacklogBlocked && (bool) ($policy['candidate_count_guard_enabled'] ?? false)
             ? $this->candidateCountsByStatus($treeId)
             : [];
-        $plans = $this->buildRefillPlans($treeId, $config, $policy, $pendingByStatus, $usedOffsets, $candidateCounts);
+        $plans = $researchTaskBacklogBlocked
+            ? []
+            : $this->buildRefillPlans($treeId, $config, $policy, $pendingByStatus, $usedOffsets, $candidateCounts);
         $runway = $this->buildRunwayTelemetry($policy, $pendingByStatus, $usedOffsets, $candidateCounts, $plans);
 
         $payload = [
@@ -86,6 +92,7 @@ class OpsFacePersonSourceRepairPacketRefillCommand extends Command
                 'offset_step' => (int) $policy['offset_step'],
                 'max_packets_per_run' => (int) $policy['max_packets_per_run'],
                 'max_pending_total' => (int) $policy['max_pending_total'],
+                'max_open_research_tasks' => $maxOpenResearchTasks,
                 'per_status_pending_target' => (int) $policy['per_status_pending_target'],
                 'candidate_count_guard_enabled' => (bool) ($policy['candidate_count_guard_enabled'] ?? false),
                 'status_order' => array_values(array_map('strval', $policy['status_order'])),
@@ -93,6 +100,9 @@ class OpsFacePersonSourceRepairPacketRefillCommand extends Command
             'queue' => [
                 'pending_total' => array_sum($pendingByStatus),
                 'pending_by_status' => $pendingByStatus,
+                'open_research_tasks' => $openResearchTasks,
+                'max_open_research_tasks' => $maxOpenResearchTasks,
+                'research_task_backlog_blocked' => $researchTaskBacklogBlocked,
             ],
             'runway' => $runway,
             'summary' => [
@@ -106,9 +116,11 @@ class OpsFacePersonSourceRepairPacketRefillCommand extends Command
             ],
             'plans' => $plans,
             'results' => [],
-            'next_action' => count($plans) > 0
-                ? 'refill_preview_packets_for_operator_review'
-                : 'pending_repair_packet_runway_satisfied',
+            'next_action' => $researchTaskBacklogBlocked
+                ? 'face_photo_research_task_backlog_requires_operator_disposition'
+                : (count($plans) > 0
+                    ? 'refill_preview_packets_for_operator_review'
+                    : 'pending_repair_packet_runway_satisfied'),
         ];
 
         if (! (bool) $policy['enabled']) {
@@ -167,6 +179,10 @@ class OpsFacePersonSourceRepairPacketRefillCommand extends Command
             }
         }
 
+        if (! is_numeric($policy['max_open_research_tasks']) || (int) $policy['max_open_research_tasks'] < 0) {
+            return 'face_person_source_repair_plan_refill_policy_invalid_numeric_value';
+        }
+
         if (! is_bool($policy['enabled'])) {
             return 'face_person_source_repair_plan_refill_policy_invalid_enabled_value';
         }
@@ -223,6 +239,34 @@ class OpsFacePersonSourceRepairPacketRefillCommand extends Command
         ksort($counts);
 
         return $counts;
+    }
+
+    private function openRepairResearchTaskCount(int $treeId): int
+    {
+        try {
+            $row = DB::selectOne(
+                "SELECT COUNT(*) AS total
+                   FROM genealogy_research_tasks t
+                   JOIN agent_review_queue q ON q.id = t.queue_item_id
+                  WHERE t.tree_id = ?
+                    AND t.status IN ('queued', 'processing')
+                    AND q.review_type = ?
+                    AND q.finding_type = ?
+                    AND JSON_UNQUOTE(JSON_EXTRACT(t.parameters, '$.source')) = ?
+                    AND JSON_UNQUOTE(JSON_EXTRACT(t.parameters, '$.operation_type')) = ?",
+                [
+                    $treeId,
+                    'genealogy_review_packet',
+                    'face_person_source_repair_plan',
+                    'genealogy_review_packet',
+                    'genealogy_todo_create',
+                ]
+            );
+        } catch (Throwable) {
+            return PHP_INT_MAX;
+        }
+
+        return max(0, (int) ($row->total ?? 0));
     }
 
     /**

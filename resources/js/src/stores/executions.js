@@ -5,6 +5,7 @@ export const useExecutionsStore = defineStore('executions', {
   state: () => ({
     executions: [],
     currentExecution: null,
+    executionRedaction: null,
     stats: null,
     loading: false,
     error: null,
@@ -40,10 +41,13 @@ export const useExecutionsStore = defineStore('executions', {
     async fetchExecutionDetails(id) {
       this.loading = true;
       this.error = null;
+      this.currentExecution = null;
+      this.executionRedaction = null;
       try {
         const response = await api.get(`/executions/${id}`);
         if (response.success) {
           this.currentExecution = response.data;
+          this.executionRedaction = response.redaction || null;
         }
       } catch (error) {
         this.error = error.response?.data?.error?.message || 'Failed to fetch execution details';

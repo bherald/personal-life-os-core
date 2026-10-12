@@ -2,11 +2,12 @@
 
 namespace App\Services;
 
+use App\DTOs\PolicyDecision;
+use Closure;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\DTOs\PolicyDecision;
 
 /**
  * Agent Guardrail Service
@@ -89,8 +90,6 @@ class AgentGuardrailService
 
     // Dangerous command patterns
     private const DANGEROUS_COMMAND_PATTERNS = [
-        '#rm\s+-rf\s+/#',
-        '#rm\s+-r\s+/#',
         '#dd\s+if=#',
         '#mkfs#',
         '#fdisk#',
@@ -105,14 +104,28 @@ class AgentGuardrailService
         '#exec\s*\(#',
     ];
 
+    private const SAFE_RECURSIVE_DELETE_TARGETS = [
+        '.cache',
+        '.next',
+        '.turbo',
+        '__pycache__',
+        'build',
+        'coverage',
+        'dist',
+        'node_modules',
+    ];
+
     /** @var array Cached rules from database */
     private ?array $cachedRules = null;
 
     /** @var bool Whether to use database rules (false = config only) */
     private bool $useDatabaseRules;
 
-    public function __construct()
-    {
+    public function __construct(
+        private readonly ?Closure $ruleProvider = null,
+        private readonly ?Closure $eventRecorder = null,
+        private readonly ?OfflinePolicyService $offlinePolicy = null,
+    ) {
         $this->useDatabaseRules = config('services.guardrails.use_database', true);
     }
 
@@ -133,6 +146,22 @@ class AgentGuardrailService
             'rule_id' => null,
             'severity' => 'low',
         ];
+
+        // Indirect prompt-injection containment: once an agent run has consumed
+        // a contaminated tool result, external text may continue to inform
+        // read-only investigation but cannot authorize a state-changing call.
+        $contaminationGate = $this->evaluateContaminatedToolContext($operation, $context);
+        if (! $contaminationGate['allowed']) {
+            $this->logGuardrailEvent(
+                'blocked',
+                $operation,
+                $context,
+                $contaminationGate['reason'],
+                $agentId
+            );
+
+            return $contaminationGate;
+        }
 
         // 0. 3b offline/hybrid policy gate (P02c) — consults the single authority
         //    before any other check so that a non-default profile can refuse an
@@ -211,27 +240,51 @@ class AgentGuardrailService
     }
 
     /**
-     * Consult OfflinePolicyService for a 3b profile-aware decision. Returns
-     * null when the service is unavailable (test harness without the binding)
-     * so existing behavior is preserved for callers outside the 3b flow.
+     * Consult OfflinePolicyService for a profile-aware decision. Resolution
+     * or evaluation failures return a synthetic denial so callers fail closed.
      */
     private function evaluateOfflinePolicy(string $operation, array $context): ?PolicyDecision
     {
         try {
-            $service = app(\App\Services\OfflinePolicyService::class);
+            $service = $this->offlinePolicy ?? app(OfflinePolicyService::class);
         } catch (\Throwable $e) {
-            return null;
+            Log::error('AgentGuardrailService: offline policy service unavailable - blocking operation', [
+                'operation' => $operation,
+                'error_type' => get_debug_type($e),
+            ]);
+
+            return PolicyDecision::deny(
+                reason: 'Offline policy service unavailable; operation denied.',
+                profile: 'unavailable',
+                toolClass: (string) ($context['risk_level'] ?? 'unknown'),
+            );
         }
 
         try {
-            return $service->evaluateOperation($operation, $context);
+            if ($this->eventRecorder !== null) {
+                // A CLI-local recorder owns these events; do not let the
+                // shared policy evaluator also write to the application DB.
+                $context['_audit'] = false;
+            }
+            $decision = $service->evaluateOperation($operation, $context);
+            if ($this->eventRecorder !== null) {
+                ($this->eventRecorder)('policy_decision', $operation,
+                    array_merge($context, ['policy_decision' => $decision->toArray()]),
+                    $decision->reason, $context['agent_id'] ?? null);
+            }
+
+            return $decision;
         } catch (\Throwable $e) {
-            Log::warning('AgentGuardrailService: offline policy evaluation failed — passing through', [
+            Log::error('AgentGuardrailService: offline policy evaluation failed - blocking operation', [
                 'operation' => $operation,
-                'error' => $e->getMessage(),
+                'error_type' => get_debug_type($e),
             ]);
 
-            return null;
+            return PolicyDecision::deny(
+                reason: 'Offline policy evaluation failed; operation denied.',
+                profile: 'evaluation_error',
+                toolClass: (string) ($context['risk_level'] ?? 'unknown'),
+            );
         }
     }
 
@@ -272,6 +325,13 @@ class AgentGuardrailService
         // Check command patterns
         $command = $context['command'] ?? $context['cmd'] ?? $context['script'] ?? null;
         if ($command) {
+            if ($this->containsUnsafeRecursiveDelete((string) $command)) {
+                $result['allowed'] = false;
+                $result['reason'] = 'Command contains dangerous pattern: unsafe recursive delete blocked by security policy';
+
+                return $result;
+            }
+
             foreach (self::DANGEROUS_COMMAND_PATTERNS as $pattern) {
                 if (preg_match($pattern, $command)) {
                     $result['allowed'] = false;
@@ -283,6 +343,92 @@ class AgentGuardrailService
         }
 
         return $result;
+    }
+
+    private function containsUnsafeRecursiveDelete(string $command): bool
+    {
+        preg_match_all(
+            '#(?<![A-Za-z0-9_.-])(?:(?:[A-Za-z0-9_.-]+/)+|(?:/[A-Za-z0-9_.-]+)+/)?rm\s+([^;&|)\r\n]*)#',
+            $command,
+            $matches
+        );
+
+        $hasRecursiveDelete = false;
+        foreach ($matches[1] ?? [] as $arguments) {
+            if (preg_match(
+                '#(?:^|\s)(?:--recursive|-[A-Za-z]*r[A-Za-z]*)(?=\s|$)#',
+                $arguments
+            ) === 1) {
+                $hasRecursiveDelete = true;
+                break;
+            }
+        }
+
+        return $hasRecursiveDelete && ! $this->isSafeStandaloneRecursiveDelete($command);
+    }
+
+    private function isSafeStandaloneRecursiveDelete(string $command): bool
+    {
+        $trimmed = trim($command);
+        if ($trimmed === '' || preg_match('#[;&|()\#\r\n\x00-\x1F\x7F\'"`\\$]#', $trimmed)) {
+            return false;
+        }
+
+        $tokens = preg_split('/\s+/', $trimmed) ?: [];
+        $executable = array_shift($tokens);
+        if (! in_array($executable, ['rm', '/bin/rm', '/usr/bin/rm'], true)) {
+            return false;
+        }
+
+        $recursive = false;
+        $targets = [];
+        $optionsEnded = false;
+
+        foreach ($tokens as $token) {
+            if (! $optionsEnded && $token === '--') {
+                $optionsEnded = true;
+
+                continue;
+            }
+
+            if (! $optionsEnded && str_starts_with($token, '--')) {
+                if (! in_array($token, ['--force', '--recursive', '--verbose'], true)) {
+                    return false;
+                }
+                $recursive = $recursive || $token === '--recursive';
+
+                continue;
+            }
+
+            if (! $optionsEnded && preg_match('/^-[A-Za-z]+$/', $token)) {
+                $flags = substr($token, 1);
+                if (preg_match('/[^frv]/', $flags)) {
+                    return false;
+                }
+                $recursive = $recursive || str_contains($flags, 'r');
+
+                continue;
+            }
+
+            $targets[] = rtrim($token, '/');
+        }
+
+        if (! $recursive || $targets === []) {
+            return false;
+        }
+
+        foreach ($targets as $target) {
+            if ($target === ''
+                || str_starts_with($target, '/')
+                || str_starts_with($target, '~')
+                || preg_match('#(^|/)\.\.(/|$)#', $target)
+                || ! preg_match('#^[A-Za-z0-9._/-]+$#', $target)
+                || ! in_array(basename($target), self::SAFE_RECURSIVE_DELETE_TARGETS, true)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -405,6 +551,26 @@ class AgentGuardrailService
      */
     private function getRules(): array
     {
+        if ($this->ruleProvider !== null) {
+            // CLI callers supply their current pinned/overlaid definitions.
+            // Never cache these or fall through to another application's DB.
+            $rules = ($this->ruleProvider)();
+            if (! is_array($rules) || ! array_is_list($rules)) {
+                throw new \RuntimeException('Guardrail definition provider returned invalid rules.');
+            }
+            foreach ($rules as $rule) {
+                if (! is_array($rule) || ! isset($rule['id'], $rule['operation_pattern'])
+                    || ! in_array($rule['action'] ?? null, ['allow', 'block', 'confirm', 'log'], true)) {
+                    throw new \RuntimeException('Guardrail definition provider returned an invalid rule.');
+                }
+            }
+            foreach (config('services.guardrails.rules', []) as $index => $rule) {
+                $rules[] = array_merge(['id' => 'config_'.$index, 'priority' => 0], $rule);
+            }
+            usort($rules, fn ($a, $b) => ($b['priority'] ?? 0) <=> ($a['priority'] ?? 0));
+
+            return $rules;
+        }
         if ($this->cachedRules !== null) {
             return $this->cachedRules;
         }
@@ -463,9 +629,7 @@ class AgentGuardrailService
     private function tableExists(): bool
     {
         try {
-            $result = DB::selectOne("SHOW TABLES LIKE 'guardrail_rules'");
-
-            return $result !== null;
+            return DB::connection()->getSchemaBuilder()->hasTable('guardrail_rules');
         } catch (Exception $e) {
             Log::debug('AgentGuardrailService: guardrail_rules table check failed', ['error' => $e->getMessage()]);
 
@@ -484,24 +648,37 @@ class AgentGuardrailService
     public function requestConfirmation(string $operation, array $context, ?string $agentId = null): string
     {
         $token = bin2hex(random_bytes(16));
-
+        $ttl = $this->confirmationTtlSeconds();
+        $createdAt = now();
+        $expiresAt = $createdAt->copy()->addSeconds($ttl);
         $confirmationData = [
             'operation' => $operation,
             'context' => $context,
             'agent_id' => $agentId,
-            'created_at' => now()->toIso8601String(),
-            'expires_at' => now()->addMinutes(5)->toIso8601String(),
+            'created_at' => $createdAt->toIso8601String(),
+            'expires_at' => $expiresAt->toIso8601String(),
         ];
 
-        // Store in cache (5 minute TTL)
-        Cache::put("guardrail_confirm:{$token}", $confirmationData, 300);
-
-        // Log the confirmation request
+        // Database mode is authoritative so cache eviction cannot lose a live
+        // request or permit a second decision. Expire stale rows as new work
+        // arrives, including legacy rows written without expires_at.
         if ($this->useDatabaseRules && $this->tableExists()) {
+            DB::table('guardrail_confirmations')
+                ->where('status', 'pending')
+                ->where(function ($query) use ($createdAt, $ttl) {
+                    $query->where('expires_at', '<=', $createdAt)
+                        ->orWhere(function ($legacy) use ($createdAt, $ttl) {
+                            $legacy->whereNull('expires_at')
+                                ->where('created_at', '<=', $createdAt->copy()->subSeconds($ttl));
+                        });
+                })
+                ->update(['status' => 'expired']);
             DB::insert("
-                INSERT INTO guardrail_confirmations (token, operation, context, agent_id, status, created_at)
-                VALUES (?, ?, ?, ?, 'pending', NOW())
-            ", [$token, $operation, json_encode($context), $agentId]);
+                INSERT INTO guardrail_confirmations (token, operation, context, agent_id, status, created_at, expires_at)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+            ", [$token, $operation, json_encode($context, JSON_THROW_ON_ERROR), $agentId, $createdAt, $expiresAt]);
+        } else {
+            Cache::put("guardrail_confirm:{$token}", $confirmationData, $ttl);
         }
 
         Log::info('GuardrailService: Confirmation requested', [
@@ -526,6 +703,49 @@ class AgentGuardrailService
      */
     public function confirm(string $token, bool $approved, ?string $confirmedBy = null): array
     {
+        if ($this->useDatabaseRules && $this->tableExists()) {
+            $now = now();
+            $updated = DB::table('guardrail_confirmations')
+                ->where('token', $token)
+                ->where('status', 'pending')
+                ->where('expires_at', '>', $now)
+                ->update([
+                    'status' => $approved ? 'approved' : 'denied',
+                    'confirmed_by' => $confirmedBy,
+                    'confirmed_at' => $now,
+                ]);
+
+            if ($updated !== 1) {
+                DB::table('guardrail_confirmations')
+                    ->where('token', $token)
+                    ->where('status', 'pending')
+                    ->where(function ($query) use ($now) {
+                        $query->whereNull('expires_at')->orWhere('expires_at', '<=', $now);
+                    })
+                    ->update(['status' => 'expired']);
+
+                return ['success' => false, 'error' => 'Confirmation token not found, expired, or already used'];
+            }
+
+            $record = DB::table('guardrail_confirmations')->where('token', $token)->first();
+            $context = json_decode((string) $record->context, true);
+            $context = is_array($context) ? $context : [];
+            $this->logGuardrailEvent(
+                $approved ? 'confirmed' : 'denied',
+                $record->operation,
+                $context,
+                $approved ? "Confirmed by {$confirmedBy}" : "Denied by {$confirmedBy}",
+                $record->agent_id
+            );
+
+            return [
+                'success' => true,
+                'approved' => $approved,
+                'operation' => $record->operation,
+                'context' => $context,
+            ];
+        }
+
         $cacheKey = "guardrail_confirm:{$token}";
         $confirmationData = Cache::get($cacheKey);
 
@@ -546,15 +766,6 @@ class AgentGuardrailService
             ];
         }
 
-        // Update database record
-        if ($this->useDatabaseRules && $this->tableExists()) {
-            DB::update('
-                UPDATE guardrail_confirmations
-                SET status = ?, confirmed_by = ?, confirmed_at = NOW()
-                WHERE token = ?
-            ', [$approved ? 'approved' : 'denied', $confirmedBy, $token]);
-        }
-
         // Remove from cache
         Cache::forget($cacheKey);
 
@@ -572,6 +783,21 @@ class AgentGuardrailService
             'operation' => $confirmationData['operation'],
             'context' => $confirmationData['context'],
         ];
+    }
+
+    private function confirmationTtlSeconds(): int
+    {
+        $value = app(SystemConfigService::class)->get('guardrails.confirmation_ttl_seconds', 300);
+        if (! is_int($value) && (! is_string($value) || ! ctype_digit($value))) {
+            throw new \InvalidArgumentException('Invalid guardrail confirmation TTL policy');
+        }
+
+        $seconds = (int) $value;
+        if ($seconds < 1 || $seconds > 3600) {
+            throw new \InvalidArgumentException('Guardrail confirmation TTL must be between 1 and 3600 seconds');
+        }
+
+        return $seconds;
     }
 
     /**
@@ -777,6 +1003,11 @@ class AgentGuardrailService
         ?string $reason,
         ?string $agentId
     ): void {
+        if ($this->eventRecorder !== null) {
+            ($this->eventRecorder)($eventType, $operation, $context, $reason, $agentId);
+
+            return;
+        }
         Log::info("GuardrailService: {$eventType}", [
             'operation' => $operation,
             'agent_id' => $agentId,
@@ -965,7 +1196,8 @@ class AgentGuardrailService
             Log::warning('AgentGuardrail: Content contamination detected', [
                 'threats' => $threats,
                 'severity' => $severity,
-                'content_preview' => mb_substr($retrievedContent, 0, 200),
+                'content_length' => mb_strlen($retrievedContent),
+                'content_fingerprint' => substr(hash('sha256', $retrievedContent), 0, 16),
             ]);
         }
 
@@ -974,6 +1206,76 @@ class AgentGuardrailService
             'threats' => $threats,
             'severity' => $severity,
         ];
+    }
+
+    /**
+     * Persist bounded, content-free evidence that this run consumed a
+     * contaminated tool result. Clean results never clear earlier evidence.
+     */
+    public function accumulateContentContamination(?array $current, string $source, string $content): ?array
+    {
+        $assessment = $this->detectContentContamination($content);
+        if ($assessment['clean']) {
+            return $current;
+        }
+
+        $sources = array_values(array_unique(array_merge(
+            (array) ($current['sources'] ?? []),
+            [$this->normalizeContaminationSource($source)]
+        )));
+        $threats = array_values(array_unique(array_merge(
+            (array) ($current['threats'] ?? []),
+            (array) $assessment['threats']
+        )));
+        $fingerprints = array_values(array_unique(array_merge(
+            (array) ($current['fingerprints'] ?? []),
+            [substr(hash('sha256', $content), 0, 16)]
+        )));
+
+        return [
+            'schema' => 'plos.agent_content_contamination.v1',
+            'active' => true,
+            'severity' => ($assessment['severity'] === 'critical' || ($current['severity'] ?? null) === 'critical')
+                ? 'critical'
+                : 'high',
+            'threats' => array_slice($threats, 0, 12),
+            'sources' => array_slice($sources, 0, 8),
+            'fingerprints' => array_slice($fingerprints, 0, 8),
+            'detections' => min(999, max(0, (int) ($current['detections'] ?? 0)) + 1),
+        ];
+    }
+
+    private function evaluateContaminatedToolContext(string $operation, array $context): array
+    {
+        $contamination = $context['content_contamination'] ?? null;
+        $riskLevel = strtolower((string) ($context['risk_level'] ?? 'read'));
+        $isToolCall = str_starts_with($operation, 'tool:');
+        $isContaminated = is_array($contamination) && ($contamination['active'] ?? false) === true;
+
+        if (! $isToolCall || ! $isContaminated || $riskLevel === 'read') {
+            return [
+                'allowed' => true,
+                'requires_confirmation' => false,
+                'reason' => null,
+                'rule_id' => null,
+                'severity' => 'low',
+            ];
+        }
+
+        return [
+            'allowed' => false,
+            'requires_confirmation' => false,
+            'reason' => 'Non-read tool blocked because this agent run consumed contaminated external content; restart from clean evidence.',
+            'rule_id' => 'builtin:contaminated_tool_context',
+            'severity' => 'high',
+        ];
+    }
+
+    private function normalizeContaminationSource(string $source): string
+    {
+        $normalized = preg_replace('/[^a-zA-Z0-9_.:-]+/', '_', trim($source)) ?? '';
+
+        return mb_substr($normalized !== '' ? $normalized : 'unknown_tool', 0, 80);
     }
 
     /**

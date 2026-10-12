@@ -2,13 +2,16 @@
 
 namespace App\Services\Research;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\AIService;
 use App\Support\PgVector;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
+use App\Support\VectorMath;
 use App\Traits\RecursionAware;
 use Exception;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * LLMKnowledgeVettingService - Extract and verify LLM knowledge externally
@@ -28,17 +31,23 @@ class LLMKnowledgeVettingService
     use RecursionAware;
 
     private AIService $aiService;
+
     private string $connection = 'pgsql_rag';
 
     // Verification thresholds
     private const STRICT_MIN_EXTERNAL_CONFIRMATIONS = 2;
+
     private const STANDARD_MIN_EXTERNAL_CONFIRMATIONS = 1;
+
     private const HIGH_LLM_CONFIDENCE_THRESHOLD = 0.90;
+
     private const RAG_MATCH_THRESHOLD = 0.75;
 
     // Confidence weights for combined scoring
     private const WEIGHT_EXTERNAL_VERIFICATION = 0.50;
+
     private const WEIGHT_RAG_CROSS_REFERENCE = 0.30;
+
     private const WEIGHT_LLM_CONFIDENCE = 0.20;
 
     public function __construct(AIService $aiService)
@@ -49,13 +58,13 @@ class LLMKnowledgeVettingService
     /**
      * Extract knowledge from LLM about a topic
      *
-     * @param string $query The research query
-     * @param string $category Domain category for context
+     * @param  string  $query  The research query
+     * @param  string  $category  Domain category for context
      * @return array Extracted facts with confidence scores
      */
     public function extractLLMKnowledge(string $query, string $category = 'general'): array
     {
-        $cacheKey = "llm_knowledge:" . md5("{$query}:{$category}");
+        $cacheKey = 'llm_knowledge:'.md5("{$query}:{$category}");
         $cached = Cache::get($cacheKey);
         if ($cached) {
             return $cached;
@@ -93,13 +102,18 @@ class LLMKnowledgeVettingService
             ];
 
             Cache::put($cacheKey, $response, now()->addHours(6));
+
             return $response;
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('LLM knowledge extraction failed', [
                 'query' => $query,
                 'error' => $e->getMessage(),
             ]);
+
             return ['facts' => [], 'error' => $e->getMessage()];
         }
     }
@@ -158,11 +172,13 @@ PROMPT;
             if (is_array($facts)) {
                 // Validate and normalize each fact
                 return array_filter(array_map(function ($fact) {
-                    if (empty($fact['statement'])) return null;
+                    if (empty($fact['statement'])) {
+                        return null;
+                    }
 
                     return [
                         'statement' => trim($fact['statement']),
-                        'confidence' => min(1.0, max(0.0, (float)($fact['confidence'] ?? 0.5))),
+                        'confidence' => min(1.0, max(0.0, (float) ($fact['confidence'] ?? 0.5))),
                         'fact_type' => $fact['fact_type'] ?? 'unknown',
                         'entities' => $fact['entities'] ?? [],
                         'verification_hint' => $fact['verification_hint'] ?? null,
@@ -178,8 +194,8 @@ PROMPT;
     /**
      * Verify a fact using all available methods
      *
-     * @param array $fact The fact to verify
-     * @param string $verificationLevel 'strict', 'standard', or 'relaxed'
+     * @param  array  $fact  The fact to verify
+     * @param  string  $verificationLevel  'strict', 'standard', or 'relaxed'
      * @return array Verification result with confidence score
      */
     public function verifyFact(array $fact, string $verificationLevel = 'strict', array $options = []): array
@@ -214,7 +230,7 @@ PROMPT;
         if ($existing && $existing['verification_status'] === 'verified') {
             return array_merge($verificationResult, [
                 'verification_status' => 'already_verified',
-                'confidence_score' => (float)$existing['confidence_score'],
+                'confidence_score' => (float) $existing['confidence_score'],
                 'existing_fact_id' => $existing['id'],
             ]);
         }
@@ -278,23 +294,24 @@ PROMPT;
             $embeddingResult = $this->aiService->generateEmbedding($factStatement);
 
             // Check if embedding generation succeeded
-            if (!($embeddingResult['success'] ?? false) || empty($embeddingResult['embedding'])) {
+            if (! ($embeddingResult['success'] ?? false) || empty($embeddingResult['embedding'])) {
                 $error = $embeddingResult['error'] ?? 'Failed to generate embedding';
                 Log::debug('RAG cross-reference skipped - embedding failed', ['error' => $error]);
+
                 return ['match_found' => false, 'score' => 0.0, 'error' => $error];
             }
 
             $embedding = $embeddingResult['embedding'];
 
             // Validate embedding is a numeric array
-            if (!is_array($embedding) || empty($embedding) || !is_numeric($embedding[0])) {
+            if (! is_array($embedding) || empty($embedding) || ! is_numeric($embedding[0])) {
                 return ['match_found' => false, 'score' => 0.0, 'error' => 'Invalid embedding format'];
             }
 
             // Search RAG documents for similar content
             $embeddingStr = PgVector::literal($embedding);
 
-            $results = DB::connection($this->connection)->select("
+            $results = DB::connection($this->connection)->select('
                 SELECT
                     id,
                     title,
@@ -304,14 +321,14 @@ PROMPT;
                 WHERE embedding IS NOT NULL
                 ORDER BY embedding <=> ?::vector
                 LIMIT 5
-            ", [$embeddingStr, $embeddingStr]);
+            ', [$embeddingStr, $embeddingStr]);
 
             if (empty($results)) {
                 return ['match_found' => false, 'score' => 0.0, 'matching_documents' => []];
             }
 
             $bestMatch = $results[0];
-            $similarity = (float)$bestMatch->similarity;
+            $similarity = (float) $bestMatch->similarity;
 
             // Consider it a match if similarity is above threshold
             $matchFound = $similarity >= self::RAG_MATCH_THRESHOLD;
@@ -324,13 +341,17 @@ PROMPT;
                     return [
                         'id' => $r->id,
                         'title' => $r->title,
-                        'similarity' => round((float)$r->similarity, 4),
+                        'similarity' => round((float) $r->similarity, 4),
                     ];
                 }, $results),
             ];
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::warning('RAG cross-reference failed', ['error' => $e->getMessage()]);
+
             return ['match_found' => false, 'score' => 0.0, 'error' => $e->getMessage()];
         }
     }
@@ -347,12 +368,12 @@ PROMPT;
             // Generate embedding for the fact
             $embeddingResult = $this->aiService->generateEmbedding($factStatement);
 
-            if (!($embeddingResult['success'] ?? false) || empty($embeddingResult['embedding'])) {
+            if (! ($embeddingResult['success'] ?? false) || empty($embeddingResult['embedding'])) {
                 return ['has_comparison' => false, 'error' => 'Embedding generation failed'];
             }
 
             $embedding = $embeddingResult['embedding'];
-            if (!is_array($embedding) || empty($embedding) || !is_numeric($embedding[0])) {
+            if (! is_array($embedding) || empty($embedding) || ! is_numeric($embedding[0])) {
                 return ['has_comparison' => false, 'error' => 'Invalid embedding format'];
             }
 
@@ -360,7 +381,7 @@ PROMPT;
 
             // Search human-entered facts that are similar
             // First, search in research_facts where human_entered = true
-            $humanFacts = DB::connection($this->connection)->select("
+            $humanFacts = DB::connection($this->connection)->select('
                 SELECT
                     rf.id,
                     rf.fact_statement,
@@ -371,7 +392,7 @@ PROMPT;
                 FROM research_facts rf
                 WHERE rf.llm_stated = false
                 LIMIT 100
-            ");
+            ');
 
             if (empty($humanFacts)) {
                 return [
@@ -389,6 +410,7 @@ PROMPT;
                     3600,
                     function () use ($hf) {
                         $result = $this->aiService->generateEmbedding($hf->fact_statement);
+
                         return $result['embedding'] ?? null;
                     }
                 );
@@ -416,7 +438,7 @@ PROMPT;
             }
 
             // Sort by similarity
-            usort($similarities, fn($a, $b) => $b['similarity'] <=> $a['similarity']);
+            usort($similarities, fn ($a, $b) => $b['similarity'] <=> $a['similarity']);
             $topMatches = array_slice($similarities, 0, 3);
 
             // Use AI to compare the facts
@@ -459,7 +481,11 @@ PROMPT;
             ];
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::warning('Human knowledge comparison failed', ['error' => $e->getMessage()]);
+
             return ['has_comparison' => false, 'error' => $e->getMessage()];
         }
     }
@@ -471,7 +497,7 @@ PROMPT;
     {
         $humanFactList = '';
         foreach ($humanMatches as $i => $match) {
-            $humanFactList .= ($i + 1) . ". \"{$match['fact']->fact_statement}\" (entered by: {$match['fact']->human_entered_by})\n";
+            $humanFactList .= ($i + 1).". \"{$match['fact']->fact_statement}\" (entered by: {$match['fact']->human_entered_by})\n";
         }
 
         return <<<PROMPT
@@ -498,7 +524,7 @@ PROMPT;
      */
     private function cosineSimilarity(array $a, array $b): float
     {
-        return \App\Support\VectorMath::cosineSimilarity($a, $b);
+        return VectorMath::cosineSimilarity($a, $b);
     }
 
     /**
@@ -521,13 +547,13 @@ PROMPT;
 
         try {
             // Use existing research sources to search
-            $searchEngines = DB::connection($this->connection)->select("
+            $searchEngines = DB::connection($this->connection)->select('
                 SELECT id, name, search_url_template
                 FROM research_sources
                 WHERE is_search_engine = true AND is_active = true
                 ORDER BY trust_score DESC
                 LIMIT 3
-            ");
+            ');
 
             foreach ($searchEngines as $engine) {
                 $searchResult = $this->searchEngine($engine, $searchQuery, $fact);
@@ -603,20 +629,20 @@ PROMPT;
         try {
             $searchUrl = str_replace('{query}', urlencode($query), $engine->search_url_template);
 
-            $response = \Illuminate\Support\Facades\Http::connectTimeout(5)->timeout(15)
+            $response = Http::connectTimeout(5)->timeout(15)
                 ->withHeaders([
                     'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 ])
                 ->get($searchUrl);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 return ['confirms' => false, 'denies' => false];
             }
 
             $html = $response->body();
 
             // Look for fact keywords in results
-            $factWords = array_filter(explode(' ', strtolower($fact)), fn($w) => strlen($w) > 4);
+            $factWords = array_filter(explode(' ', strtolower($fact)), fn ($w) => strlen($w) > 4);
             $matchCount = 0;
 
             foreach ($factWords as $word) {
@@ -632,8 +658,8 @@ PROMPT;
             $snippet = null;
             if ($matchRatio > 0.5) {
                 // Try to extract relevant snippet
-                preg_match('/<p[^>]*>([^<]*(' . implode('|', array_slice($factWords, 0, 3)) . ')[^<]*)<\/p>/i', $html, $matches);
-                if (!empty($matches[1])) {
+                preg_match('/<p[^>]*>([^<]*('.implode('|', array_slice($factWords, 0, 3)).')[^<]*)<\/p>/i', $html, $matches);
+                if (! empty($matches[1])) {
                     $snippet = substr(strip_tags($matches[1]), 0, 300);
                 }
             }
@@ -647,6 +673,7 @@ PROMPT;
 
         } catch (Exception $e) {
             Log::debug("Search engine {$engine->name} failed", ['error' => $e->getMessage()]);
+
             return ['confirms' => false, 'denies' => false, 'error' => $e->getMessage()];
         }
     }
@@ -698,6 +725,7 @@ PROMPT;
                 if ($externalConfirmations >= self::STRICT_MIN_EXTERNAL_CONFIRMATIONS) {
                     return 'verified';
                 }
+
                 return $combinedScore >= 0.8 ? 'pending' : 'unverified';
 
             case 'standard':
@@ -705,6 +733,7 @@ PROMPT;
                 if ($externalConfirmations >= 1 && ($llmConfidence >= self::HIGH_LLM_CONFIDENCE_THRESHOLD || $ragMatch)) {
                     return 'verified';
                 }
+
                 return $combinedScore >= 0.65 ? 'pending' : 'unverified';
 
             case 'relaxed':
@@ -712,6 +741,7 @@ PROMPT;
                 if ($ragMatch) {
                     return 'verified';
                 }
+
                 return $combinedScore >= 0.5 ? 'pending' : 'unverified';
 
             default:
@@ -724,12 +754,37 @@ PROMPT;
      */
     public function storeFact(array $fact, array $verificationResult, ?string $missionId = null): ?string
     {
+        $sourceUrls = $fact['source_urls'] ?? null;
+        if (! is_string($fact['context_snippet'] ?? null) || trim($fact['context_snippet']) === '' || ! is_array($sourceUrls) || ! $sourceUrls) {
+            return null;
+        }
+        foreach ($sourceUrls as $url) {
+            $parts = is_string($url) && filter_var($url, FILTER_VALIDATE_URL) ? parse_url($url) : false;
+            if (! is_array($parts) || ! in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true) || ! empty($parts['user']) || ! empty($parts['pass'])) {
+                return null;
+            }
+        }
+
         try {
             $factHash = $verificationResult['fact_hash'] ?? hash('sha256', strtolower(trim($fact['statement'])));
+            $externalAttempt = $verificationResult['attempts'][1] ?? [];
+            $citations = is_array($fact['source_citations'] ?? null) ? $fact['source_citations'] : [];
+            foreach (is_array($externalAttempt['evidence'] ?? null) ? $externalAttempt['evidence'] : [] as $evidence) {
+                if (is_array($evidence) && is_string($evidence['url'] ?? null) && filter_var($evidence['url'], FILTER_VALIDATE_URL)) {
+                    $citations[] = $evidence;
+                }
+            }
+            $verificationSummary = [
+                'verification_status' => $verificationResult['verification_status'] ?? 'unverified',
+                'external_sources_checked' => $externalAttempt['sources_checked'] ?? 0,
+                'external_sources_confirmed' => $externalAttempt['sources_confirmed'] ?? 0,
+                'source_basis' => 'quoted_source_content',
+            ];
 
             $result = DB::connection($this->connection)->select("
                 INSERT INTO research_facts (
                     mission_id, fact_statement, fact_hash, fact_type, domain_category,
+                    context_snippet, source_urls, source_count, verification_summary,
                     verification_status, confidence_score,
                     llm_stated, llm_confidence, llm_model,
                     external_sources_checked, external_sources_confirmed, external_sources_denied,
@@ -737,6 +792,7 @@ PROMPT;
                     source_citations, related_entities, tags
                 ) VALUES (
                     ?, ?, ?, ?, ?,
+                    ?, ?::jsonb, ?, ?::jsonb,
                     ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
@@ -746,6 +802,11 @@ PROMPT;
                 ON CONFLICT (fact_hash) DO UPDATE SET
                     verification_status = EXCLUDED.verification_status,
                     confidence_score = GREATEST(research_facts.confidence_score, EXCLUDED.confidence_score),
+                    context_snippet = COALESCE(research_facts.context_snippet, EXCLUDED.context_snippet),
+                    source_urls = (SELECT COALESCE(jsonb_agg(DISTINCT source_url.value), '[]'::jsonb) FROM jsonb_array_elements_text(COALESCE(research_facts.source_urls, '[]'::jsonb) || EXCLUDED.source_urls) AS source_url(value)),
+                    source_count = (SELECT COUNT(DISTINCT source_url.value) FROM jsonb_array_elements_text(COALESCE(research_facts.source_urls, '[]'::jsonb) || EXCLUDED.source_urls) AS source_url(value)),
+                    source_citations = (SELECT COALESCE(jsonb_agg(DISTINCT source_citation.value), '[]'::jsonb) FROM jsonb_array_elements(COALESCE(research_facts.source_citations, '[]'::jsonb) || EXCLUDED.source_citations) AS source_citation(value)),
+                    verification_summary = EXCLUDED.verification_summary,
                     external_sources_checked = research_facts.external_sources_checked + EXCLUDED.external_sources_checked,
                     external_sources_confirmed = research_facts.external_sources_confirmed + EXCLUDED.external_sources_confirmed,
                     updated_at = CURRENT_TIMESTAMP,
@@ -757,6 +818,10 @@ PROMPT;
                 $factHash,
                 $fact['fact_type'] ?? 'unknown',
                 $fact['domain_category'] ?? 'general',
+                $fact['context_snippet'],
+                json_encode($sourceUrls, JSON_THROW_ON_ERROR),
+                count(array_unique($sourceUrls)),
+                json_encode($verificationSummary, JSON_THROW_ON_ERROR),
                 $verificationResult['verification_status'],
                 $verificationResult['confidence_score'],
                 $fact['llm_stated'] ?? true,
@@ -768,17 +833,18 @@ PROMPT;
                 isset($verificationResult['attempts'][0]) && $verificationResult['attempts'][0]['method'] === 'rag_lookup',
                 $verificationResult['attempts'][0]['confidence'] ?? 0,
                 json_encode($verificationResult['attempts'][0]['matching_documents'] ?? []),
-                json_encode($verificationResult['attempts'][1]['evidence'] ?? []),
+                json_encode($citations, JSON_THROW_ON_ERROR),
                 json_encode($fact['entities'] ?? []),
                 json_encode([]),
             ]);
 
             // Log verification attempts
-            if (!empty($result[0]->id)) {
+            if (! empty($result[0]->id)) {
                 $factId = $result[0]->id;
-                foreach ($verificationResult['attempts'] as $attempt) {
+                foreach ($verificationResult['attempts'] ?? [] as $attempt) {
                     $this->logVerificationAttempt($factId, $attempt);
                 }
+
                 return $factId;
             }
 
@@ -789,6 +855,7 @@ PROMPT;
                 'statement' => $fact['statement'] ?? 'unknown',
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }
@@ -799,11 +866,11 @@ PROMPT;
     private function logVerificationAttempt(string $factId, array $attempt): void
     {
         try {
-            DB::connection($this->connection)->insert("
+            DB::connection($this->connection)->insert('
                 INSERT INTO verification_attempts (
                     fact_id, method, result, confidence, evidence_snippet, source_url
                 ) VALUES (?, ?, ?, ?, ?, ?)
-            ", [
+            ', [
                 $factId,
                 $attempt['method'],
                 $attempt['result'],
@@ -821,14 +888,14 @@ PROMPT;
      */
     private function getExistingFact(string $factHash): ?array
     {
-        $result = DB::connection($this->connection)->select("
+        $result = DB::connection($this->connection)->select('
             SELECT id, fact_statement, verification_status, confidence_score
             FROM research_facts
             WHERE fact_hash = ?
             LIMIT 1
-        ", [$factHash]);
+        ', [$factHash]);
 
-        return !empty($result) ? (array)$result[0] : null;
+        return ! empty($result) ? (array) $result[0] : null;
     }
 
     /**
@@ -861,8 +928,8 @@ PROMPT;
         ");
 
         return [
-            'summary' => (array)($stats[0] ?? []),
-            'recent_attempts' => array_map(fn($r) => (array)$r, $recentVerifications),
+            'summary' => (array) ($stats[0] ?? []),
+            'recent_attempts' => array_map(fn ($r) => (array) $r, $recentVerifications),
         ];
     }
 }

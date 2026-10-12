@@ -25,12 +25,18 @@ const BLOCKED_PATTERNS = [
 // Max output to prevent flooding
 const MAX_OUTPUT_BYTES = 100_000; // 100KB
 
+export function buildSshCommand(command: string, cwd: string, sshPrefix = sshCmd()): string {
+  const remoteCommand = `cd -- ${shellQuote(cwd)} && ${command}`;
+
+  return `${sshPrefix} ${shellQuote(remoteCommand)}`;
+}
+
 export const plosSshInput = z.object({
   command: z.string().describe(
     'Shell command to execute on the configured remote PLOS instance. Examples: "npm run build", "ls -la public/build/", "nvidia-smi", "df -h", "systemctl status nginx"'
   ),
-  cwd: z.string().optional().default(CONFIG.paths.remoteRoot)
-    .describe('Working directory on the configured remote PLOS instance'),
+  cwd: z.string().optional()
+    .describe('Optional working directory; the configured remote project root is used when omitted'),
   timeout: z.coerce.number().optional().default(60)
     .describe('Timeout in seconds (max 120, default 60)'),
 });
@@ -40,10 +46,17 @@ export type PlosSshInput = z.infer<typeof plosSshInput>;
 export async function plosSsh(input: PlosSshInput, context?: ToolContext): Promise<string> {
   const { command, cwd, timeout: timeoutSec } = input;
   const timeoutMs = Math.min(timeoutSec, 120) * 1000;
-  const normalizedCwd = cwd.trim();
+  const normalizedCwd = (cwd ?? CONFIG.paths.remoteRoot).trim();
 
   if (!normalizedCwd.startsWith('/') || /[\r\n\0]/.test(normalizedCwd)) {
     return `[BLOCKED] Invalid cwd: ${cwd}`;
+  }
+
+  // These destroy live cache/queue custody even without sudo. They have no
+  // SSH override; use plos_cache_clear for scoped release invalidation.
+  if (/\bphp(?:\d+(?:\.\d+)*)?\b[^;&|\r\n]*\bartisan\b[^;&|\r\n]*\b(?:cache:clear|optimize:clear)\b/i.test(command)
+    || /\bredis-cli(?:\s+(?:-[hpsanu]|--(?:host|port|user|pass|uri|cacert|cert|key|sni|socket|pattern|count))\s+(?:"[^"]*"|'[^']*'|[^\s;&|]+)|\s+--cluster\s+call\s+[^\s;&|]+|\s+-[^\s;&|]+)*\s+["']?flush(?:db|all)["']?(?=\s|[;&|]|$)/i.test(command)) {
+    return '[HELD] global_cache_flush_not_permitted; use plos_cache_clear for scoped invalidation';
   }
 
   // Safety: block dangerous commands
@@ -54,7 +67,7 @@ export async function plosSsh(input: PlosSshInput, context?: ToolContext): Promi
   }
 
   // Build SSH command with cd to working directory
-  const shellCmd = `${sshCmd()} "cd -- ${shellQuote(normalizedCwd)} && ${command}"`;
+  const shellCmd = buildSshCommand(command, normalizedCwd);
 
   logger.info('SSH command', { command, cwd: normalizedCwd, timeoutMs });
 

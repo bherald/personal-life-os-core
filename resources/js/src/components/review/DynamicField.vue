@@ -96,7 +96,7 @@ const BADGE_TOOLTIPS = {
   // Review types (shown as review_type badge)
   agent: 'General agent finding — approve to acknowledge, reject to dismiss',
   tool_proposal: 'Agent proposes a new tool registration — approve to add to tool registry',
-  skill_optimization: 'Agent proposes a SKILL.md amendment — approve to update agent config',
+  skill_optimization: 'Review a skill proposal or audit packet; the detail panel states whether any file can change',
   tool_composition: 'Agent discovered a reusable tool chain — approve to register composition',
   genealogy_finding: 'Per-person research report with embedded proposals — approve applies all changes, reject cascade-rejects all pending proposals for this person',
   research: 'Verified research fact — approve to accept into knowledge base',
@@ -257,8 +257,8 @@ const formatJson = (val) => {
   font-size: 0.7rem;
   font-weight: 600;
   text-transform: uppercase;
-  background: var(--ops-plum);
-  color: var(--ops-peach);
+  background: var(--color-accent);
+  color: white;
 }
 
 .field-badge[title] {
@@ -287,7 +287,7 @@ const formatJson = (val) => {
 .confidence-bar {
   width: 60px;
   height: 6px;
-  background: var(--ops-black);
+  background: var(--color-bg-secondary);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -297,9 +297,9 @@ const formatJson = (val) => {
   transition: width 0.3s ease;
 }
 
-.confidence-fill.high { background: var(--ops-green); }
-.confidence-fill.medium { background: var(--ops-gold); }
-.confidence-fill.low { background: var(--ops-sunset); }
+.confidence-fill.high { background: var(--ops-success); }
+.confidence-fill.medium { background: var(--ops-warning); }
+.confidence-fill.low { background: var(--ops-danger); }
 
 .confidence-text {
   font-size: 0.75rem;
@@ -315,12 +315,12 @@ const formatJson = (val) => {
 }
 
 .field-timestamp.warn {
-  color: var(--ops-sunset);
+  color: var(--ops-danger);
 }
 
 .warn-badge {
-  background: var(--ops-sunset);
-  color: var(--ops-black);
+  background: var(--ops-danger);
+  color: white;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
   font-size: 0.625rem;
@@ -332,7 +332,7 @@ const formatJson = (val) => {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  color: var(--ops-sky);
+  color: var(--color-accent);
   font-size: 0.875rem;
   text-decoration: none;
 }
@@ -358,7 +358,7 @@ const formatJson = (val) => {
 }
 
 .link-item {
-  color: var(--ops-sky);
+  color: var(--color-accent);
   text-decoration: none;
 }
 
@@ -392,13 +392,13 @@ const formatJson = (val) => {
 }
 
 .json-content {
-  background: var(--ops-black);
+  background: var(--color-bg-secondary);
   padding: 0.5rem;
   border-radius: 4px;
   overflow-x: auto;
   max-height: 200px;
   overflow-y: auto;
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
   font-family: monospace;
   font-size: 0.7rem;
   margin: 0.25rem 0 0;
@@ -411,7 +411,7 @@ const formatJson = (val) => {
 .field-image {
   overflow: hidden;
   border-radius: 8px;
-  background: var(--ops-black);
+  background: #111;
 }
 
 .field-image img {
@@ -435,7 +435,7 @@ const formatJson = (val) => {
 .fallback-icon {
   width: 50%;
   height: 50%;
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
 }
 
 .field-diff {
@@ -460,7 +460,7 @@ const formatJson = (val) => {
 .diff-current {
   text-decoration: line-through;
   opacity: 0.5;
-  color: var(--ops-sunset);
+  color: var(--ops-danger);
 }
 
 .diff-arrow {
@@ -469,7 +469,7 @@ const formatJson = (val) => {
 }
 
 .diff-proposed {
-  color: var(--ops-green);
+  color: var(--ops-success);
   font-weight: 600;
 }
 </style>

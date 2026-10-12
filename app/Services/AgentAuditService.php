@@ -37,11 +37,11 @@ class AgentAuditService
     ): void {
         try {
             DB::insert(
-                "INSERT INTO agent_execution_log
+                'INSERT INTO agent_execution_log
                     (session_id, agent_name, action_type, action_detail, risk_level,
                      role, input_summary, output_summary, duration_ms, success,
                      outcome, context, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())',
                 [
                     $sessionId ?? '',
                     $agentName ? mb_substr($agentName, 0, 100) : null,
@@ -77,7 +77,16 @@ class AgentAuditService
         float $durationMs,
         string $outcome = 'success',
         ?string $error = null,
+        ?string $toolCallId = null,
     ): void {
+        $context = [];
+        if (is_string($toolCallId) && preg_match('/\Aplos_call_[1-9][0-9]{0,19}\z/D', $toolCallId) === 1) {
+            $context['tool_call_id'] = $toolCallId;
+        }
+        if ($error !== null) {
+            $context['error'] = mb_substr($error, 0, 500);
+        }
+
         $this->record(
             actionType: 'tool_call',
             sessionId: $sessionId,
@@ -86,7 +95,7 @@ class AgentAuditService
             riskLevel: $riskLevel,
             durationMs: $durationMs,
             outcome: $outcome,
-            context: $error ? ['error' => mb_substr($error, 0, 500)] : null,
+            context: $context !== [] ? $context : null,
         );
     }
 
@@ -159,25 +168,26 @@ class AgentAuditService
         int $limit = 50,
         int $hoursBack = 24,
     ): array {
-        $sql = "SELECT * FROM agent_execution_log WHERE created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)";
+        $sql = 'SELECT * FROM agent_execution_log WHERE created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)';
         $params = [$hoursBack];
 
         if ($agentName) {
-            $sql .= " AND agent_name = ?";
+            $sql .= ' AND agent_name = ?';
             $params[] = $agentName;
         }
         if ($actionType) {
-            $sql .= " AND action_type = ?";
+            $sql .= ' AND action_type = ?';
             $params[] = $actionType;
         }
 
-        $sql .= " ORDER BY created_at DESC LIMIT ?";
+        $sql .= ' ORDER BY created_at DESC LIMIT ?';
         $params[] = $limit;
 
         try {
             return DB::select($sql, $params);
         } catch (\Throwable $e) {
             Log::warning('AgentAuditService: query failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -189,7 +199,7 @@ class AgentAuditService
     {
         try {
             $rows = DB::select(
-                "SELECT
+                'SELECT
                     action_type,
                     outcome,
                     risk_level,
@@ -198,7 +208,7 @@ class AgentAuditService
                  FROM agent_execution_log
                  WHERE created_at > DATE_SUB(NOW(), INTERVAL ? HOUR)
                  GROUP BY action_type, outcome, risk_level
-                 ORDER BY count DESC",
+                 ORDER BY count DESC',
                 [$hoursBack]
             );
 
@@ -206,8 +216,12 @@ class AgentAuditService
             $denied = 0;
             $failures = 0;
             foreach ($rows as $row) {
-                if ($row->outcome === 'denied') $denied += $row->count;
-                if ($row->outcome === 'failure') $failures += $row->count;
+                if ($row->outcome === 'denied') {
+                    $denied += $row->count;
+                }
+                if ($row->outcome === 'failure') {
+                    $failures += $row->count;
+                }
             }
 
             return [

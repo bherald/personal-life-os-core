@@ -4,15 +4,22 @@ namespace App\Services;
 
 use App\Controllers\NotificationController;
 use App\DTOs\TrustEnvelope;
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Exceptions\ModelHostControllerUnavailableException;
+use App\Services\AgentLoop\AgentStuckDetectorService;
 use App\Services\AgentLoop\RunMemoryService;
+use App\Services\Genealogy\GenealogyReviewProposalQualityService;
 use App\Services\Genealogy\GenealogySearchPlanService;
 use App\Services\Genealogy\ProposalValidatorService;
 use App\Services\PreCompaction\LogPreCompactor;
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
+use App\Support\PromptIntegrityPolicy;
 use Exception;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 
 /**
  * Agent Loop Service - Core Agent Execution Engine
@@ -30,10 +37,13 @@ use Illuminate\Support\Facades\Log;
  * - Auto-index findings to RAG with agent_id scoping
  * - Pushover notification on completion/findings
  * - Configurable max iterations for tool-calling loops
+ * - Semantic action-observation stuck detection with bounded hashed history
  */
 class AgentLoopService
 {
     private ?AIService $aiService = null;
+
+    private bool $executionGuardHeld = false;
 
     private ?AgentSessionService $sessionService = null;
 
@@ -57,9 +67,15 @@ class AgentLoopService
 
     private ?AgentMemoryGatingService $memoryGating = null;
 
+    private ?AgentMemoryPhaseTelemetryService $memoryPhaseTelemetry = null;
+
     private ?RunMemoryService $runMemory = null;
 
     private ?TrustBoundaryFormatterService $trustBoundaryFormatter = null;
+
+    private ?AgentExecutionContextService $executionContext = null;
+
+    private ?AgentGuardrailService $guardrail = null;
 
     /** @var array Accumulated quality metrics from hybrid workflow run (reset per execution) */
     private array $hybridRunMetrics = [];
@@ -114,6 +130,21 @@ class AgentLoopService
     private function trustBoundaryFormatter(): TrustBoundaryFormatterService
     {
         return $this->trustBoundaryFormatter ??= app(TrustBoundaryFormatterService::class);
+    }
+
+    private function getExecutionContext(): AgentExecutionContextService
+    {
+        return $this->executionContext ??= app(AgentExecutionContextService::class);
+    }
+
+    private function getGuardrailService(): AgentGuardrailService
+    {
+        return $this->guardrail ??= app(AgentGuardrailService::class);
+    }
+
+    private function getMemoryPhaseTelemetry(): AgentMemoryPhaseTelemetryService
+    {
+        return $this->memoryPhaseTelemetry ??= app(AgentMemoryPhaseTelemetryService::class);
     }
 
     private function getSessionService(): AgentSessionService
@@ -240,15 +271,49 @@ class AgentLoopService
      *                          - tree_id: Genealogy tree context
      *                          - notify: Send Pushover on completion (default: false)
      *                          - depth: Current nesting depth for sub-agent limits
+     *                          - parent_session_id: Parent run identity for delegated work
+     *                          - handoff_id: Agent handoff identity when applicable
+     *                          - scheduled_job_name: Scheduler origin when applicable
+     *                          - distributed_task_id: Distributed queue task identity when applicable
      *                          - index_findings: Auto-index final response to RAG (default: true)
      * @return array Execution result with session_id, response, episodes, duration_ms
      */
     public function execute(string $agentId, string $task, array $options = []): array
     {
+        $this->executionGuardHeld = false;
+        $this->assertExecutionGuard($options);
         $startTime = microtime(true);
+        if (! SkillLoaderService::isDiscoverableSkillName($agentId)
+            || ! app(SkillLoaderService::class)->skillExists($agentId)) {
+            return [
+                'success' => false,
+                'error' => 'Invalid agent skill identifier',
+                'duration_ms' => round((microtime(true) - $startTime) * 1000),
+            ];
+        }
+
+        $skillSnapshot = $this->getSkillLoader()->loadSkillSnapshot($agentId);
+        $skillConfigSnapshot = $skillSnapshot['frontmatter'] ?? null;
+        $toolContract = $this->getToolRegistry()->resolveToolContractForAgent(
+            $agentId,
+            is_array($skillConfigSnapshot) ? $skillConfigSnapshot : null
+        );
+        if ($toolContract['unresolved_declared_tools'] !== []) {
+            return [
+                'success' => false,
+                'error' => 'Agent tool contract unresolved',
+                'unresolved_tools' => $toolContract['unresolved_declared_tools'],
+                'duration_ms' => round((microtime(true) - $startTime) * 1000),
+            ];
+        }
+
         $maxIterations = $options['max_iterations'] ?? config('agents.max_loop_iterations', 10);
         $depth = $options['depth'] ?? 0;
-        $maxDepth = config('agents.max_nesting_depth', 5);
+        $delegationGovernanceService = app(AgentDSGovernanceService::class);
+        $maxDepth = $delegationGovernanceService->maxDepthForContext(array_merge($options, [
+            'depth' => $depth,
+            'delegation_depth' => $options['delegation_depth'] ?? $depth,
+        ]));
 
         // S19: Speculative execution trigger — runs same task through 2 modes in parallel
         if (empty($options['_speculative_branch']) && empty($options['benchmark_mode'])) {
@@ -289,7 +354,7 @@ class AgentLoopService
             }
         }
 
-        if ($depth >= $maxDepth) {
+        if ($depth > $maxDepth) {
             return [
                 'success' => false,
                 'error' => "Agent nesting depth limit ({$maxDepth}) exceeded",
@@ -298,7 +363,7 @@ class AgentLoopService
             ];
         }
 
-        $delegationGovernance = app(AgentDSGovernanceService::class)->buildMarker(array_merge($options, [
+        $delegationGovernance = $delegationGovernanceService->buildMarker(array_merge($options, [
             'agent_id' => $agentId,
             'depth' => $depth,
             'delegation_depth' => $options['delegation_depth'] ?? $depth,
@@ -330,6 +395,7 @@ class AgentLoopService
             ];
         }
 
+        $executionFailure = null;
         try {
             // 2. Load or create session
             $session = $this->getSessionService()->findOrCreateSession(null, 'agent', [
@@ -399,7 +465,6 @@ class AgentLoopService
             $preScreenResult = $this->monitoringPreScreen($agentId, $session);
             if ($preScreenResult !== null) {
                 $this->getSessionService()->completeSession($session['session_id']);
-                $lock->release();
 
                 return [
                     'success' => true,
@@ -414,7 +479,7 @@ class AgentLoopService
             }
 
             // 4. Load available tools for this agent
-            $agentTools = $this->getToolRegistry()->getToolsForAgent($agentId);
+            $agentTools = $toolContract['tools'];
             $toolDescriptions = $this->getToolRegistry()->buildToolDescriptions($agentTools);
 
             // 5. Build system prompt (with tool descriptions + fenced memory)
@@ -428,11 +493,12 @@ class AgentLoopService
             // Add the current task as user message
             $this->getSessionService()->addMessage($session['session_id'], 'user', $task);
             $messages[] = ['role' => 'user', 'content' => $task];
+            $persistedMessageCount = count($messages);
 
             // 8. Execute: deterministic workflow OR agentic loop
             $model = $options['model'] ?? $skillConfig['model'] ?? null;
             $useAutoSelect = ($model === null); // No model specified → let AIService pick best available
-            $modelRole = $options['model_role'] ?? $skillConfig['model_role'] ?? 'standard'; // N119b: quality/standard/fast
+            $modelRole = $this->resolveAgentModelRole($skillConfig, $options); // N119b: quality/standard/fast
             AIService::setAgentModelRole($modelRole); // Inherit model_role into tool-level LLM calls
             $temperature = $skillConfig['temperature'] ?? 0.7;
             // AI-1: cascade opt-in — SKILL.md can set `cascade: true` or `cascade: {threshold: 0.7}`
@@ -448,18 +514,17 @@ class AgentLoopService
             $toolCalls = [];
             $iterations = 0;
             $finalResponse = '';
+            $stuckDetection = null;
             $backtracker = new AgentBacktrackService; // AG-10
+            $contentContamination = null;
 
-            // Build runtime context for tool parameter injection
-            $toolContext = [
-                'tree_id' => $options['tree_id'] ?? null,
-                'agent_id' => $agentId,
-                'delegation_governance' => $delegationGovernance,
-                'ds_profile' => $options['ds_profile'] ?? $delegationGovernance['ds_profile'] ?? null,
-                'sidecar' => $options['sidecar'] ?? $delegationGovernance['sidecar'] ?? false,
-                'delegation_depth' => $options['delegation_depth'] ?? $delegationGovernance['depth'] ?? 0,
-                'ds_confirmed' => $options['ds_confirmed'] ?? $delegationGovernance['operator_confirmed'] ?? false,
-            ];
+            // Stable run identity must reach every tool policy, execution, and audit path.
+            $toolContext = $this->getExecutionContext()->build(
+                $agentId,
+                (string) $session['session_id'],
+                $options,
+                $delegationGovernance
+            );
 
             // RLM: Pass recursion config from SKILL.md into tool context
             if (! empty($skillConfig['recursion']) && is_array($skillConfig['recursion'])) {
@@ -564,11 +629,16 @@ class AgentLoopService
                 // between phases and provides final synthesis. Best of both worlds:
                 // - Tools are called systematically (no wasted iterations)
                 // - LLM interprets results and guides cross-phase analysis
+                $hybridMessages = $messages;
                 $finalResponse = $this->executeHybridWorkflow(
                     $agentId, $sessionId, $task, $skillConfig, $skillInstructions,
                     $agentTools, $toolPhases, $toolContext, $toolCalls,
-                    $systemPrompt, $messages, $model, $useAutoSelect, $temperature, $hasSensitivePerms, $options
+                    $systemPrompt, $hybridMessages, $model, $useAutoSelect, $modelRole,
+                    $temperature, $hasSensitivePerms, $options, $persistedMessageCount
                 );
+                if (CliWorkflowExecutionScope::current() !== null) {
+                    $messages = $hybridMessages;
+                }
                 $iterations = count($toolCalls);
                 $totalTokens = $this->hybridRunMetrics['total_tokens'] ?? 0;
                 $response = ['model' => $model ?? 'hybrid']; // set for episode recording
@@ -588,7 +658,7 @@ class AgentLoopService
             } elseif ($workflowMode === 'deterministic' && ! empty($skillConfig['workflow_steps'])) {
                 // Deterministic mode: execute tools in declared order, then LLM analyzes
                 $workflowResults = $this->executeDeterministicWorkflow(
-                    $agentId, $sessionId, $skillConfig['workflow_steps'], $agentTools, $toolContext, $toolCalls
+                    $agentId, $sessionId, $skillConfig['workflow_steps'], $agentTools, $toolContext, $toolCalls, $options
                 );
 
                 $iterations = count($workflowResults);
@@ -623,9 +693,10 @@ class AgentLoopService
                     $aiOptions['cascade'] = $cascadeConfig;
                 }
 
-                $response = $this->getAIService()->process(
+                $this->persistCliAgentMessages($session['session_id'], $messages, $persistedMessageCount);
+                $response = $this->processGuardedAI(
                     $this->formatMessagesForAI($messages),
-                    $aiOptions
+                    $aiOptions, $options
                 );
 
                 $totalTokens = $response['tokens'] ?? 0;
@@ -635,9 +706,8 @@ class AgentLoopService
                 // Agentic mode: LLM drives tool calls via JSON in responses
                 $maxTokenBudget = $skillConfig['max_tokens'] ?? 50000;
                 $toolCallCounts = [];
-                $consecutiveSameTool = 0;
-                $lastToolName = null;
-                $recentToolCalls = []; // Track last N tool calls for alternation detection
+                $stuckDetector = new AgentStuckDetectorService;
+                $stuckHistory = [];
                 $submitForReviewCount = 0;
 
                 // --- Phased tool loading ---
@@ -715,8 +785,6 @@ class AgentLoopService
                             ]);
 
                         $phaseIterationCount = 0;
-                        $consecutiveSameTool = 0;
-                        $lastToolName = null;
                     }
 
                     // Kill switch check
@@ -764,9 +832,10 @@ class AgentLoopService
                         $aiOptions['cascade'] = $cascadeConfig;
                     }
 
-                    $response = $this->getAIService()->process(
+                    $this->persistCliAgentMessages($session['session_id'], $messages, $persistedMessageCount);
+                    $response = $this->processGuardedAI(
                         $this->formatMessagesForAI($messages),
-                        $aiOptions
+                        $aiOptions, $options
                     );
 
                     $totalTokens += $response['tokens'] ?? 0;
@@ -894,8 +963,6 @@ class AgentLoopService
 
                                 // Reset tracking for new phase
                                 $phaseIterationCount = 0;
-                                $consecutiveSameTool = 0;
-                                $lastToolName = null;
 
                                 continue;
                             }
@@ -909,112 +976,6 @@ class AgentLoopService
                     // Execute the tool call
                     $toolName = $parsed['tool'];
                     $toolParams = $parsed['params'];
-
-                    // --- Loop safety: consecutive same-tool detection ---
-                    if ($toolName === $lastToolName) {
-                        $consecutiveSameTool++;
-                    } else {
-                        $consecutiveSameTool = 0;
-                    }
-                    $lastToolName = $toolName;
-
-                    // --- Loop safety: alternating-tool pattern detection ---
-                    // Catches A→B→A→B spinning that evades consecutive-same-tool check
-                    $recentToolCalls[] = $toolName;
-                    if (count($recentToolCalls) > 6) {
-                        array_shift($recentToolCalls);
-                    }
-                    $alternatingSpinDetected = false;
-                    if (count($recentToolCalls) >= 6) {
-                        // Check for A-B-A-B-A-B pattern (3 full cycles)
-                        $last6 = array_slice($recentToolCalls, -6);
-                        $uniqueInWindow = array_unique($last6);
-                        if (count($uniqueInWindow) <= 2
-                            && $last6[0] === $last6[2] && $last6[2] === $last6[4]
-                            && $last6[1] === $last6[3] && $last6[3] === $last6[5]) {
-                            $alternatingSpinDetected = true;
-                            $spinTools = implode(' ↔ ', array_unique($last6));
-                            Log::warning('AgentLoop: Alternating tool spin detected', [
-                                'agent_id' => $agentId, 'tools' => $spinTools, 'iteration' => $iterations,
-                            ]);
-                            if (! empty($phaseNames) && $currentPhaseIdx < count($phaseNames) - 1) {
-                                $phaseResults[$currentPhaseName] = $assistantContent;
-                                $currentPhaseIdx++;
-                                $currentPhaseName = $phaseNames[$currentPhaseIdx];
-                                $currentPhaseTools = $this->getToolRegistry()->getToolsForPhase(
-                                    $agentTools, $toolPhases[$currentPhaseName] ?? null
-                                );
-                                $phaseToolDescriptions = $this->getToolRegistry()->buildToolDescriptions($currentPhaseTools);
-                                $systemPrompt = $this->buildSystemPrompt($agentId, $skillInstructions, $skillConfig, $options, $phaseToolDescriptions);
-                                $messages[] = ['role' => 'user', 'content' => "Spinning detected: you alternated '{$spinTools}' without progress. ".
-                                    "Moving to phase '{$currentPhaseName}'. Use these tools: ".
-                                    implode(', ', array_keys($currentPhaseTools)).'.',
-                                ];
-                                $this->recordEpisode($agentId, $sessionId, 'phase_advanced',
-                                    "Forced advance from alternating spin ({$spinTools}) to '{$currentPhaseName}'", [
-                                        'iteration' => $iterations,
-                                    ]);
-                                $phaseIterationCount = 0;
-                                $consecutiveSameTool = 0;
-                                $lastToolName = null;
-                                $recentToolCalls = [];
-
-                                continue;
-                            }
-                            $this->recordEpisode($agentId, $sessionId, 'loop_detected',
-                                "Alternating tool spin ({$spinTools}) — breaking loop", ['iteration' => $iterations]);
-                            $finalResponse = $assistantContent;
-                            break;
-                        }
-                    }
-
-                    $toolLoopLimit = config('agents.consecutive_tool_limit', 3);
-                    if ($consecutiveSameTool >= $toolLoopLimit) {
-                        // Consecutive limit hit = phase advance or break, not just warning
-                        if (! empty($phaseNames) && $currentPhaseIdx < count($phaseNames) - 1) {
-                            // Force phase advance instead of breaking the entire run
-                            $phaseResults[$currentPhaseName] = $assistantContent;
-                            $currentPhaseIdx++;
-                            $currentPhaseName = $phaseNames[$currentPhaseIdx];
-                            $currentPhaseTools = $this->getToolRegistry()->getToolsForPhase(
-                                $agentTools, $toolPhases[$currentPhaseName] ?? null
-                            );
-                            $phaseToolDescriptions = $this->getToolRegistry()->buildToolDescriptions($currentPhaseTools);
-                            $systemPrompt = $this->buildSystemPrompt($agentId, $skillInstructions, $skillConfig, $options, $phaseToolDescriptions);
-                            $messages[] = ['role' => 'user', 'content' => "You repeated '{$toolName}' 3 times. Moving to phase '{$currentPhaseName}' with new tools: ".
-                                implode(', ', array_keys($currentPhaseTools)).'. Call a different tool now.',
-                            ];
-                            $this->recordEpisode($agentId, $sessionId, 'phase_advanced',
-                                "Forced advance from repeat of '{$toolName}' to '{$currentPhaseName}'", [
-                                    'iteration' => $iterations,
-                                ]);
-                            $phaseIterationCount = 0;
-                            $consecutiveSameTool = 0;
-                            $lastToolName = null;
-
-                            continue;
-                        }
-
-                        $this->recordEpisode($agentId, $sessionId, 'loop_detected', "Same tool '{$toolName}' called 3+ times — breaking loop", [
-                            'tool' => $toolName,
-                            'iteration' => $iterations,
-                        ]);
-                        Log::warning('AgentLoop: Infinite loop detected', ['agent_id' => $agentId, 'tool' => $toolName]);
-                        $finalResponse = $assistantContent;
-                        break;
-                    }
-
-                    if ($consecutiveSameTool >= config('agents.consecutive_tool_limit_alt', 2)) {
-                        // Inject warning after 2 consecutive same-tool calls
-                        $visibleTools = $currentPhaseTools ?? $agentTools;
-                        $otherTools = array_diff(array_keys($visibleTools), [$toolName]);
-                        $messages[] = ['role' => 'assistant', 'content' => $assistantContent];
-                        $messages[] = ['role' => 'user', 'content' => "Warning: You called '{$toolName}' twice in a row. Use a DIFFERENT tool next. ".
-                            'Available alternatives: '.implode(', ', array_slice($otherTools, 0, 5)),
-                        ];
-
-                        continue;
-                    }
 
                     // --- Loop safety: per-tool call limit ---
                     $toolCallCounts[$toolName] = ($toolCallCounts[$toolName] ?? 0) + 1;
@@ -1144,22 +1105,66 @@ class AgentLoopService
                     // Validate tool is in agent's allowed set
                     $toolStartTime = microtime(true);
                     $toolSuccess = false;
-                    if (! isset($agentTools[$toolName])) {
+                    $toolAllowed = isset($agentTools[$toolName]);
+                    if (! $toolAllowed) {
                         $toolResultText = "Error: Tool '{$toolName}' is not available. Available tools: ".implode(', ', array_keys($agentTools));
                     } else {
+                        $this->assertExecutionGuard($options);
                         $toolResult = $this->getToolRegistry()->executeTool($toolName, $toolParams, $toolContext);
                         $toolResultText = $toolResult['result_text'] ?? 'No output';
                         $toolSuccess = $toolResult['success'] ?? false;
 
+                        // Preserve contamination for the remainder of the run.
+                        // The registry guardrail permits further read-class
+                        // evidence gathering but blocks state-changing tools.
+                        $previousContaminationDetections = (int) ($contentContamination['detections'] ?? 0);
+                        $contentContamination = $this->getGuardrailService()->accumulateContentContamination(
+                            $contentContamination,
+                            $toolName,
+                            $toolResultText
+                        );
+                        if ($contentContamination !== null) {
+                            $toolContext['content_contamination'] = $contentContamination;
+                            if ((int) $contentContamination['detections'] > $previousContaminationDetections) {
+                                $this->recordEpisode(
+                                    $agentId,
+                                    $sessionId,
+                                    'content_contamination_detected',
+                                    "Contaminated tool result detected for '{$toolName}'",
+                                    [
+                                        'tool' => $toolName,
+                                        'severity' => $contentContamination['severity'],
+                                        'threats' => $contentContamination['threats'],
+                                        'fingerprints' => $contentContamination['fingerprints'],
+                                        'detections' => $contentContamination['detections'],
+                                        'iteration' => $iterations,
+                                    ]
+                                );
+                            }
+                        }
+                    }
+                    $toolDurationMs = (int) round((microtime(true) - $toolStartTime) * 1000);
+                    $semanticEvent = $stuckDetector->event($toolName, $toolParams, $toolSuccess, $toolResultText);
+                    $stuckHistory[] = $semanticEvent;
+
+                    if ($toolAllowed) {
                         $toolCalls[] = [
                             'tool' => $toolName,
                             'params' => $toolParams,
                             'success' => $toolSuccess,
+                            'risk_level' => $toolDef['risk_level'] ?? null,
+                            'evidence_lineage' => $cotAuditor->classifyEvidenceLineage(
+                                $toolName,
+                                $toolDef,
+                                $toolSuccess
+                            ),
                             'iteration' => $iterations,
                             'phase' => $currentPhaseName,
+                            'action_fingerprint' => $semanticEvent['action_fingerprint'],
+                            'observation_fingerprint' => $semanticEvent['observation_fingerprint'],
+                            'pair_fingerprint' => $semanticEvent['pair_fingerprint'],
                         ];
                     }
-                    $toolDurationMs = (int) round((microtime(true) - $toolStartTime) * 1000);
 
                     // Record tool call episode with result
                     $this->recordEpisode($agentId, $sessionId, 'tool_call', "Calling {$toolName}", [
@@ -1169,7 +1174,69 @@ class AgentLoopService
                         'success' => $toolSuccess,
                         'duration_ms' => $toolDurationMs,
                         'tool_result' => mb_substr($toolResultText, 0, 500),
+                        'action_fingerprint' => $semanticEvent['action_fingerprint'],
+                        'observation_fingerprint' => $semanticEvent['observation_fingerprint'],
+                        'pair_fingerprint' => $semanticEvent['pair_fingerprint'],
                     ]);
+
+                    $stuckCheck = $stuckDetector->detect($stuckHistory);
+                    if ($stuckCheck['stuck']) {
+                        $this->recordEpisode($agentId, $sessionId, 'loop_detected', $stuckCheck['reason'], [
+                            'iteration' => $iterations,
+                            'pattern' => $stuckCheck['pattern'],
+                            'occurrences' => $stuckCheck['occurrences'],
+                            'history_scanned' => $stuckCheck['history_scanned'],
+                            'pattern_length' => $stuckCheck['pattern_length'],
+                            'repetitions' => $stuckCheck['repetitions'],
+                        ]);
+                        Log::warning('AgentLoop: Semantic stuck pattern detected', [
+                            'agent_id' => $agentId,
+                            'iteration' => $iterations,
+                            'pattern' => $stuckCheck['pattern'],
+                            'occurrences' => $stuckCheck['occurrences'],
+                            'pattern_length' => $stuckCheck['pattern_length'],
+                            'repetitions' => $stuckCheck['repetitions'],
+                        ]);
+
+                        if (! empty($phaseNames) && $currentPhaseIdx < count($phaseNames) - 1) {
+                            $messages[] = ['role' => 'assistant', 'content' => $assistantContent];
+                            $messages[] = ['role' => 'user', 'content' => $this->buildToolResultMessage(
+                                $toolName,
+                                $toolResultText,
+                                '',
+                                '',
+                                isset($toolDef['max_result_bytes']) ? (int) $toolDef['max_result_bytes'] : null
+                            )];
+                            $phaseResults[$currentPhaseName] = $assistantContent;
+                            $previousPhaseName = $currentPhaseName;
+                            $currentPhaseIdx++;
+                            $currentPhaseName = $phaseNames[$currentPhaseIdx];
+                            $currentPhaseTools = $this->getToolRegistry()->getToolsForPhase(
+                                $agentTools,
+                                $toolPhases[$currentPhaseName] ?? null
+                            );
+                            $phaseToolDescriptions = $this->getToolRegistry()->buildToolDescriptions($currentPhaseTools);
+                            $systemPrompt = $this->buildSystemPrompt($agentId, $skillInstructions, $skillConfig, $options, $phaseToolDescriptions);
+                            $messages[] = ['role' => 'user', 'content' => "Semantic stuck pattern '{$stuckCheck['pattern']}' detected. ".
+                                "Moving from phase '{$previousPhaseName}' to '{$currentPhaseName}'. Use a different evidence path with these tools: ".
+                                implode(', ', array_keys($currentPhaseTools)).'.',
+                            ];
+                            $this->recordEpisode($agentId, $sessionId, 'phase_advanced',
+                                "Forced advance from semantic stuck pattern to '{$currentPhaseName}'", [
+                                    'iteration' => $iterations,
+                                    'pattern' => $stuckCheck['pattern'],
+                                ]);
+                            $phaseIterationCount = 0;
+                            $stuckHistory = [];
+
+                            continue;
+                        }
+
+                        $stuckDetection = $stuckCheck;
+                        $finalResponse = 'Agent stopped after detecting an unproductive tool loop: '.$stuckCheck['reason'];
+
+                        break;
+                    }
 
                     // Framework C1 — update compact run memory from tool result signals.
                     // Simple heuristic only: zero-result searches become open questions,
@@ -1314,8 +1381,13 @@ class AgentLoopService
                         if ($backtracker->shouldBacktrack()) {
                             $rollback = $backtracker->backtrack(array_keys($agentTools));
                             if ($rollback !== null) {
-                                $messages = $rollback['messages'];
-                                $messages[] = ['role' => 'user', 'content' => $rollback['context']];
+                                if (CliWorkflowExecutionScope::current() === null) {
+                                    $messages = $rollback['messages'];
+                                    $messages[] = ['role' => 'user', 'content' => $rollback['context']];
+                                } else {
+                                    $messages[] = ['role' => 'user', 'content' => 'The recent tool attempts failed. The full conversation and failed results are retained. '
+                                        .'Take a different approach using another tool or different parameters; do not repeat the failed approach.'];
+                                }
                                 $this->recordEpisode($agentId, $sessionId, 'backtrack',
                                     "Backtrack to iteration {$rollback['branchpoint_iteration']}", [
                                         'branchpoint_iteration' => $rollback['branchpoint_iteration'],
@@ -1348,6 +1420,37 @@ class AgentLoopService
                 }
             }
 
+            $this->persistCliAgentMessages($session['session_id'], $messages, $persistedMessageCount);
+
+            if ($stuckDetection !== null) {
+                $durationMs = (int) round((microtime(true) - $startTime) * 1000);
+                $this->getSessionService()->addMessage($session['session_id'], 'assistant', $finalResponse, [
+                    'terminal_state' => 'stuck',
+                    'stuck_pattern' => $stuckDetection['pattern'],
+                ]);
+                $this->recordEpisode($agentId, $sessionId, 'task_stuck', $finalResponse, [
+                    'tokens_used' => $totalTokens,
+                    'duration_ms' => $durationMs,
+                    'iterations' => $iterations,
+                    'tool_calls' => count($toolCalls),
+                    'pattern' => $stuckDetection['pattern'],
+                    'occurrences' => $stuckDetection['occurrences'],
+                ]);
+
+                return [
+                    'success' => false,
+                    'agent_id' => $agentId,
+                    'session_id' => $session['session_id'],
+                    'error' => $finalResponse,
+                    'terminal_state' => 'stuck',
+                    'stuck_detection' => $stuckDetection,
+                    'duration_ms' => $durationMs,
+                    'tokens_used' => $totalTokens,
+                    'tool_calls' => $toolCalls,
+                    'iterations' => $iterations,
+                ];
+            }
+
             // Anti-hallucination guard: if agentic agent made zero tool calls
             // (not pre-screened), the response is likely fabricated — fail the run.
             if (empty($toolCalls) && ! ($options['pre_screened'] ?? false) && $iterations > 1) {
@@ -1357,7 +1460,6 @@ class AgentLoopService
                     'response_length' => strlen($finalResponse),
                 ]);
                 $this->getSessionService()->completeSession($session['session_id']);
-                $lock->release();
 
                 return [
                     'success' => false,
@@ -1371,10 +1473,21 @@ class AgentLoopService
                 ];
             }
 
+            if (CliWorkflowExecutionScope::current() !== null) {
+                $lastMessage = end($messages);
+                if (($lastMessage['role'] ?? null) !== 'assistant' || ($lastMessage['content'] ?? null) !== $finalResponse) {
+                    $messages[] = ['role' => 'assistant', 'content' => $finalResponse];
+                }
+                $this->persistCliAgentMessages($session['session_id'], $messages, $persistedMessageCount);
+            }
             $finalResponse = $this->stabilizeFinalResponse($agentId, $finalResponse, $messages, $toolCalls);
 
             // Store final assistant response in session
-            $this->getSessionService()->addMessage($session['session_id'], 'assistant', $finalResponse);
+            $lastMessage = end($messages);
+            if (CliWorkflowExecutionScope::current() === null
+                || ($lastMessage['role'] ?? null) !== 'assistant' || ($lastMessage['content'] ?? null) !== $finalResponse) {
+                $this->getSessionService()->addMessage($session['session_id'], 'assistant', $finalResponse);
+            }
 
             // 9. Auto-index findings to RAG (with agent_id scoping)
             if (($options['index_findings'] ?? true) && strlen($finalResponse) > 100) {
@@ -1494,50 +1607,64 @@ class AgentLoopService
             try {
                 $this->getSessionService()->completeSession($session['session_id']);
             } catch (\Throwable $ignore) {
-                Log::debug('AgentLoopService: session completion failed after success', ['session' => $session['session_id'], 'error' => $ignore->getMessage()]);
+                throw ($executionFailure = $this->stopAfterSecondaryFailure(null, $ignore));
             }
 
             return $result;
 
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            $executionFailure = $e;
+            // Retain the existing thrown-Error API, while keeping its original cause for cleanup.
+            if (! $e instanceof Exception) {
+                throw $e;
+            }
+            $controllerFailure = InferenceAdmissionException::controllerFailureFrom($e);
+            $admissionHeld = InferenceAdmissionException::isAdmissionFailure($e);
             $durationMs = round((microtime(true) - $startTime) * 1000);
+            $capacityWaitExpired = self::isPreDispatchCapacityWaitExpiry($e)
+                && self::allSuccessfulToolCallsReadOnly($toolCalls ?? []);
 
-            // Record adaptive mode failure outcome (S20)
-            if (! empty($adaptiveSelectionId)) {
-                try {
-                    app(AdaptiveModeService::class)->recordOutcome($adaptiveSelectionId, false, $durationMs, 0);
-                } catch (\Throwable $ignore) {
-                    Log::debug('AgentLoopService: adaptive mode failure outcome recording failed', ['error' => $ignore->getMessage()]);
+            try {
+                // Record adaptive mode failure outcome (S20)
+                if (! empty($adaptiveSelectionId)) {
+                    try {
+                        app(AdaptiveModeService::class)->recordOutcome($adaptiveSelectionId, false, $durationMs, 0);
+                    } catch (\Throwable $ignore) {
+                        Log::debug('AgentLoopService: adaptive mode failure outcome recording failed', ['error' => $ignore->getMessage()]);
+                    }
                 }
-            }
 
-            $this->recordEpisode($agentId, $sessionId, 'error', $e->getMessage(), [
-                'trace' => substr($e->getTraceAsString(), 0, 500),
-                'duration_ms' => $durationMs,
-            ]);
-
-            // Distill episodic memory from failed run
-            try {
-                $this->getEpisodicMemory()->distillRunEpisodes($agentId, $sessionId, $task ?? 'unknown', [
-                    'success' => false,
+                $this->recordEpisode($agentId, $sessionId, 'error', $e->getMessage(), [
+                    'trace' => substr($e->getTraceAsString(), 0, 500),
                     'duration_ms' => $durationMs,
-                    'error' => $e->getMessage(),
                 ]);
-            } catch (\Throwable $ignore) {
-                Log::debug('AgentLoopService: episodic memory distillation failed', ['error' => $ignore->getMessage()]);
-            }
 
-            Log::error('AgentLoop: Execution failed', [
-                'agent_id' => $agentId,
-                'error' => $e->getMessage(),
-                'duration_ms' => $durationMs,
-            ]);
+                // Distill episodic memory from failed run
+                try {
+                    $this->getEpisodicMemory()->distillRunEpisodes($agentId, $sessionId, $task ?? 'unknown', [
+                        'success' => false,
+                        'duration_ms' => $durationMs,
+                        'error' => $e->getMessage(),
+                    ]);
+                } catch (\Throwable $ignore) {
+                    Log::debug('AgentLoopService: episodic memory distillation failed', ['error' => $ignore->getMessage()]);
+                }
 
-            // Mark session as completed even on failure (the run is over)
-            try {
-                $this->getSessionService()->completeSession($sessionId);
-            } catch (\Throwable $ignore) {
-                Log::debug('AgentLoopService: session completion failed after error', ['session' => $sessionId ?? null, 'error' => $ignore->getMessage()]);
+                Log::error('AgentLoop: Execution failed', [
+                    'agent_id' => $agentId,
+                    'error' => $e->getMessage(),
+                    'duration_ms' => $durationMs,
+                ] + ($controllerFailure === [] ? [] : ['controller_failure' => $controllerFailure]));
+
+                // Mark session as completed even on failure (the run is over)
+                try {
+                    $this->getSessionService()->completeSession($sessionId);
+                } catch (\Throwable $ignore) {
+                    Log::debug('AgentLoopService: session completion failed after error', ['session' => $sessionId ?? null, 'error' => $ignore->getMessage()]);
+                }
+
+            } catch (\Throwable $secondary) {
+                throw ($executionFailure = $this->stopAfterSecondaryFailure($executionFailure, $secondary));
             }
 
             return [
@@ -1546,30 +1673,114 @@ class AgentLoopService
                 'session_id' => $sessionId,
                 'error' => $e->getMessage(),
                 'duration_ms' => $durationMs,
-            ];
+                'controller_capacity_wait_expired' => $capacityWaitExpired,
+            ] + ($this->executionGuardHeld ? ['execution_guard_held' => true] : [])
+                + ($admissionHeld ? ['inference_admission_held' => true] : [])
+                + ($controllerFailure === [] ? [] : ['controller_failure' => $controllerFailure]);
 
         } finally {
-            // Ensure session is marked completed even when process is killed (SIGALRM/stall)
-            // completeSession() is idempotent — only updates WHERE status='active'
+            // Attempt each cleanup independently; an earlier error must not skip owned-lock release.
+            $cleanupFailure = null;
             try {
                 $this->getSessionService()->completeSession($sessionId);
-            } catch (\Throwable $ignore) {
-                // Best-effort — process may be mid-termination
+            } catch (\Throwable $secondary) {
+                $cleanupFailure = $secondary;
             }
-
-            // Framework C1 — clear compact run-memory slice on success OR failure.
             try {
                 $runMemorySid = $session['session_id'] ?? $sessionId;
                 if ($runMemorySid) {
                     $this->getRunMemory()->clear($runMemorySid);
                 }
-            } catch (\Throwable $ignore) {
-                // Best-effort
+            } catch (\Throwable $secondary) {
+                $cleanupFailure ??= $secondary;
             }
-
-            AIService::clearAgentModelRole();
-            $lock->release();
+            try {
+                AIService::clearAgentModelRole();
+            } catch (\Throwable $secondary) {
+                $cleanupFailure ??= $secondary;
+            }
+            try {
+                if ($lock->release() !== true) {
+                    throw new RuntimeException('Owned agent session lock release is unconfirmed.');
+                }
+            } catch (\Throwable $secondary) {
+                $cleanupFailure ??= $secondary;
+            }
+            if ($cleanupFailure !== null) {
+                throw $this->stopAfterSecondaryFailure($executionFailure, $cleanupFailure);
+            }
         }
+    }
+
+    /** Preserve a genuine original stop; uncertain secondary completion is never a retryable success. */
+    private function stopAfterSecondaryFailure(?\Throwable $original, \Throwable $secondary): \Throwable
+    {
+        if ($original !== null && InferenceAdmissionException::isAdmissionFailure($original)) {
+            return $original;
+        }
+        if (InferenceAdmissionException::isAdmissionFailure($secondary)) {
+            return $secondary;
+        }
+
+        return new InferenceAdmissionException('Agent execution bookkeeping or cleanup is unconfirmed; automatic replay is held.', 0, $original ?? $secondary);
+    }
+
+    /** Retain completed CLI tool exchanges before sending the next model request. */
+    private function persistCliAgentMessages(string $sessionId, array $messages, int &$persistedCount): void
+    {
+        if (CliWorkflowExecutionScope::current() === null) {
+            return;
+        }
+        for ($count = count($messages); $persistedCount < $count; $persistedCount++) {
+            $message = $messages[$persistedCount];
+            if (! $this->getSessionService()->addMessage($sessionId, $message['role'], $message['content'])) {
+                throw new RuntimeException('The complete supporting-agent tool exchange could not be retained. Resume only after checking the session transcript; no automatic replay was attempted.');
+            }
+        }
+    }
+
+    /** Keep branch exchanges in the session without adding other people to a branch prompt. */
+    private function persistCliAgentBranch(string $sessionId, array $branch, int &$branchCount, array &$transcript, int &$persistedCount): void
+    {
+        if (CliWorkflowExecutionScope::current() === null) {
+            return;
+        }
+        foreach (array_slice($branch, $branchCount) as $message) {
+            $transcript[] = $message;
+        }
+        $this->persistCliAgentMessages($sessionId, $transcript, $persistedCount);
+        $branchCount = count($branch);
+    }
+
+    /** A caller-owned synchronous fence, separate from best-effort progress reporting. */
+    private function assertExecutionGuard(array $options): void
+    {
+        if (! array_key_exists('execution_guard', $options)) {
+            return;
+        }
+        $guard = $options['execution_guard'];
+        if (! is_callable($guard)) {
+            $this->executionGuardHeld = true;
+            throw new InferenceAdmissionException('Agent execution guard is unavailable; no new work was dispatched.');
+        }
+        try {
+            if ($guard() === false) {
+                throw new InferenceAdmissionException('Agent execution ownership is not proven; no new work was dispatched.');
+            }
+        } catch (\Throwable $error) {
+            $this->executionGuardHeld = true;
+            if (InferenceAdmissionException::isAdmissionFailure($error)) {
+                throw $error;
+            }
+            throw new InferenceAdmissionException('Agent execution ownership check failed; no new work was dispatched.', 0, $error);
+        }
+    }
+
+    private function processGuardedAI(string $prompt, array $aiOptions, array $options): array
+    {
+        $this->assertExecutionGuard($options);
+
+        return $this->getAIService()->process($prompt, $aiOptions);
     }
 
     private function emitProgressCallback(array $options, string $event, array $details = []): void
@@ -1599,11 +1810,13 @@ class AgentLoopService
         array $steps,
         array $agentTools,
         array $toolContext,
-        array &$toolCalls
+        array &$toolCalls,
+        array $options = []
     ): array {
         $results = [];
 
         foreach ($steps as $stepStr) {
+            $this->assertExecutionGuard($options);
             $parts = explode('|', $stepStr);
             $toolName = trim($parts[0]);
             $label = trim($parts[1] ?? $toolName);
@@ -1655,6 +1868,7 @@ class AgentLoopService
                 continue;
             }
 
+            $this->assertExecutionGuard($options);
             try {
                 $toolResult = $this->getToolRegistry()->executeTool($toolName, $overrideParams, $toolContext);
 
@@ -1695,13 +1909,12 @@ class AgentLoopService
         string $agentId, string $sessionId, string $task, array $skillConfig,
         string $skillInstructions, array $agentTools, array $toolPhases,
         array $toolContext, array &$toolCalls, string $systemPrompt,
-        array $messages, ?string $model, bool $useAutoSelect,
-        float $temperature, bool $hasSensitivePerms, array $options
+        array &$messages, ?string $model, bool $useAutoSelect,
+        string $modelRole, float $temperature, bool $hasSensitivePerms, array $options, int &$persistedMessageCount
     ): string {
         $phaseNames = array_keys($toolPhases);
         $phaseResults = [];
         $allToolResults = [];
-        $modelRole = $skillConfig['model_role'] ?? 'standard'; // N119b: quality/standard/fast
         $cascadeConfig = $skillConfig['cascade'] ?? null; // AI-1: cascade opt-in
         $reportMode = $skillConfig['report_mode'] ?? 'person_research';
         $isOperationalMode = $reportMode === 'operational';
@@ -1712,7 +1925,7 @@ class AgentLoopService
         // Floor 3 (minimum viable run), ceil 20 (prevent runaway on large entity sets).
         // ScheduledJobService passes timeout_minutes from scheduled_jobs into $options.
         // This pattern applies to ALL hybrid-mode agents, not just genealogy.
-        $timeoutMinutes = $options['timeout_minutes'] ?? config('agents.hybrid_default_timeout', 44);
+        $timeoutMinutes = $options['timeout_minutes'] ?? $this->hybridDefaultTimeoutMinutes();
         $overhead = config('agents.hybrid_overhead_fraction', 0.70);
         $minPerEntity = config('agents.hybrid_minutes_per_entity', 2.5);
         $entityFloor = config('agents.hybrid_entity_floor', 3);
@@ -1734,7 +1947,7 @@ class AgentLoopService
             'phases_skipped' => [],
             'phase_providers' => [],        // phaseName => provider string
             'template_detections' => 0,
-            'claude_escalations' => 0,
+            'provider_escalations' => 0,
             'review_items_submitted' => 0,
             'review_item_types' => [],      // change_type => count
             'proposals_filtered' => 0,      // vague/duplicate filtered
@@ -1752,11 +1965,12 @@ class AgentLoopService
                 $agentTools, $toolPhases, $toolContext, $toolCalls, $systemPrompt,
                 $messages, $model, $useAutoSelect, $temperature, $hasSensitivePerms,
                 $options, $phaseNames, $maxPersonsPerRun, $workflowStartTime,
-                $timeoutSeconds, $reportReserveSeconds, $modelRole, $cascadeConfig
+                $timeoutSeconds, $reportReserveSeconds, $modelRole, $persistedMessageCount, $cascadeConfig
             );
         }
 
         foreach ($phaseNames as $phaseIdx => $phaseName) {
+            $this->assertExecutionGuard($options);
             $elapsedSeconds = microtime(true) - $workflowStartTime;
             $remainingSeconds = $timeoutSeconds - $elapsedSeconds;
             $isLastPhase = ($phaseIdx === count($phaseNames) - 1);
@@ -1938,6 +2152,7 @@ class AgentLoopService
                     $callLabel = $callConfig['label'];
 
                     $toolStartTime = microtime(true);
+                    $this->assertExecutionGuard($options);
                     try {
                         $toolResult = $this->getToolRegistry()->executeTool($toolName, $callParams, $toolContext);
                         $resultText = $toolResult['result_text'] ?? 'No output';
@@ -2153,15 +2368,16 @@ class AgentLoopService
 
             $assistantContent = '';
             $validationResult = null;
-            $maxRetries = config('agents.phase_max_retries', 2);
+            $maxRetries = $this->phaseMaxRetries();
             if ($cascadeConfig !== null) {
                 $aiOptions['cascade'] = $cascadeConfig;
             }
 
             for ($retry = 0; $retry <= $maxRetries; $retry++) {
-                $response = $this->getAIService()->process(
+                $this->persistCliAgentMessages($sessionId, $messages, $persistedMessageCount);
+                $response = $this->processGuardedAI(
                     $this->formatMessagesForAI($messages),
-                    $aiOptions
+                    $aiOptions, $options
                 );
 
                 // N75b: Detect AI provider failure
@@ -2173,7 +2389,7 @@ class AgentLoopService
                         'error' => $response['error'] ?? 'Unknown AI failure',
                     ]);
                     if ($retry < $maxRetries) {
-                        $aiOptions['prefer_claude'] = true;
+                        $aiOptions['prefer_external'] = true;
                         unset($aiOptions['skip_if_busy']);
                     }
 
@@ -2200,9 +2416,9 @@ class AgentLoopService
                         'retry' => $retry,
                     ]);
 
-                    // Escalate to Claude for retry
+                    // Escalate to an admitted external provider for retry.
                     if ($retry < $maxRetries) {
-                        $aiOptions['prefer_claude'] = true;
+                        $aiOptions['prefer_external'] = true;
                         $messages[] = ['role' => 'assistant', 'content' => $assistantContent];
                         $messages[] = ['role' => 'user', 'content' => "CRITICAL ERROR: Your response contains template/placeholder content (e.g. 'John Doe', 'sample response'). "
                             .'You MUST analyze the ACTUAL tool results above and produce real findings for the real persons. '
@@ -2243,9 +2459,8 @@ class AgentLoopService
             if ($isTemplate || $hasPlaceholderNames) {
                 $this->hybridRunMetrics['template_detections']++;
             }
-            // Count Claude escalations triggered by template detection (not routine report-phase Claude)
-            if (! $isReportPhase && isset($aiOptions['prefer_claude']) && $aiOptions['prefer_claude']) {
-                $this->hybridRunMetrics['claude_escalations']++;
+            if (! $isReportPhase && ! empty($aiOptions['prefer_external'])) {
+                $this->hybridRunMetrics['provider_escalations']++;
             }
 
             // Adaptive timeout: extend deadline after productive phases (batch mode)
@@ -2748,15 +2963,16 @@ class AgentLoopService
         string $agentId, string $sessionId, string $task, array $skillConfig,
         string $skillInstructions, array $agentTools, array $toolPhases,
         array $toolContext, array &$toolCalls, string $systemPrompt,
-        array $messages, ?string $model, bool $useAutoSelect,
+        array &$messages, ?string $model, bool $useAutoSelect,
         float $temperature, bool $hasSensitivePerms, array $options,
         array $phaseNames, int $maxPersonsPerRun, float $workflowStartTime,
-        float $timeoutSeconds, float $reportReserveSeconds, string $modelRole,
+        float $timeoutSeconds, float $reportReserveSeconds, string $modelRole, int &$persistedMessageCount,
         ?array $cascadeConfig = null
     ): string {
         // Phase 1 (assess) runs in batch — needs full tree context to select persons
         $assessPhaseName = $phaseNames[0];
         $perPersonPhases = array_slice($phaseNames, 1); // research, analyze, report (or subset)
+        $assessPersistedCount = count($messages);
 
         // Queue mode: skip assess phase entirely — person pre-identified by research queue
         $skipAssess = ! empty($options['context']['skip_assess']);
@@ -2854,6 +3070,7 @@ class AgentLoopService
             }
 
             $toolStartTime = microtime(true);
+            $this->assertExecutionGuard($options);
             try {
                 $result = $this->getToolRegistry()->executeTool($toolName, $callParams, $toolContext);
                 $assessToolResults[$toolName] = ['success' => $result['success'] ?? false, 'result_text' => $result['result_text'] ?? 'No output'];
@@ -2910,7 +3127,7 @@ class AgentLoopService
             $aiOptions['model_role'] = $modelRole;
         }
 
-        $maxRetries = config('agents.phase_max_retries', 2);
+        $maxRetries = $this->phaseMaxRetries();
         $assessContent = '';
         $assessValidation = null;
         $assessResponse = null;
@@ -2919,7 +3136,8 @@ class AgentLoopService
             $aiOptions['cascade'] = $cascadeConfig;
         }
         for ($retry = 0; $retry <= $maxRetries; $retry++) {
-            $assessResponse = $this->getAIService()->process($this->formatMessagesForAI($assessMessages), $aiOptions);
+            $this->persistCliAgentBranch($sessionId, $assessMessages, $assessPersistedCount, $messages, $persistedMessageCount);
+            $assessResponse = $this->processGuardedAI($this->formatMessagesForAI($assessMessages), $aiOptions, $options);
 
             // N75b: Detect AI provider failure — don't silently treat empty response as "no persons"
             if (empty($assessResponse['success'])) {
@@ -2930,11 +3148,11 @@ class AgentLoopService
                     'error' => $aiError,
                     'attempts' => $assessResponse['attempts'] ?? [],
                 ]);
-                // On retry, escalate to Claude CLI
+                // On retry, escalate to an admitted external provider.
                 if ($retry < $maxRetries) {
-                    $aiOptions['prefer_claude'] = true;
+                    $aiOptions['prefer_external'] = true;
                     unset($aiOptions['skip_if_busy']);
-                    $this->hybridRunMetrics['claude_escalations']++;
+                    $this->hybridRunMetrics['provider_escalations']++;
                 }
 
                 continue;
@@ -2947,7 +3165,7 @@ class AgentLoopService
             $hasPlaceholderNames = preg_match('/\b(John Doe|Jane Smith|Jane Doe|John Smith)\b/', $assessContent);
             if (($isTemplate || $hasPlaceholderNames) && $retry < $maxRetries) {
                 $this->hybridRunMetrics['template_detections']++;
-                $aiOptions['prefer_claude'] = true;
+                $aiOptions['prefer_external'] = true;
                 $assessMessages[] = ['role' => 'assistant', 'content' => $assessContent];
                 $assessMessages[] = ['role' => 'user', 'content' => 'CRITICAL ERROR: Template/placeholder detected. Analyze the ACTUAL tool results and produce real findings.',
                 ];
@@ -2977,6 +3195,11 @@ class AgentLoopService
                 'model' => $assessResponse['model'] ?? 'unknown',
             ]);
 
+        if (CliWorkflowExecutionScope::current() !== null) {
+            $assessMessages[] = ['role' => 'assistant', 'content' => $assessContent];
+            $this->persistCliAgentBranch($sessionId, $assessMessages, $assessPersistedCount, $messages, $persistedMessageCount);
+        }
+
         // Extract persons from assess
         $targetPersons = [];
         if ($assessValidation && $assessValidation['valid'] && ! empty($assessValidation['data'])) {
@@ -2994,7 +3217,9 @@ class AgentLoopService
             ]);
             // Defensive: complete session on early return to prevent orphaned 'active' sessions
             try {
-                $this->getSessionService()->completeSession($sessionId);
+                if (CliWorkflowExecutionScope::current() === null) {
+                    $this->getSessionService()->completeSession($sessionId);
+                }
             } catch (\Throwable $ignore) {
                 Log::debug('AgentLoopService: session completion failed on early return (no persons)', ['session' => $sessionId]);
             }
@@ -3005,6 +3230,7 @@ class AgentLoopService
         $personsToProcess = array_slice($targetPersons, 0, $maxPersonsPerRun);
 
         perPersonLoop:
+        $this->persistCliAgentBranch($sessionId, $assessMessages, $assessPersistedCount, $messages, $persistedMessageCount);
         Log::info('AgentLoop: Per-person mode — processing persons individually', [
             'agent_id' => $agentId,
             'persons_count' => count($personsToProcess),
@@ -3015,6 +3241,9 @@ class AgentLoopService
         // stays bounded because direct research tasks are intended to be small slices.
         $timeoutExtender = $options['timeout_extender'] ?? null;
         $queueMode = ! empty($options['context']['queue_mode']);
+        $queueQualityAnalysis = $queueMode && ! empty($options['context']['queue_quality_analysis']);
+        $queueProofGradeReview = $queueQualityAnalysis
+            && ($options['context']['queue_proposal_quality_policy'] ?? null) === GenealogyReviewProposalQualityService::POLICY;
         $perPersonReportReserveSeconds = $this->effectivePerPersonReportReserveSeconds(
             $queueMode,
             $timeoutSeconds,
@@ -3036,6 +3265,7 @@ class AgentLoopService
         $allProposedMarriages = [];
 
         foreach ($personsToProcess as $personIdx => $person) {
+            $this->assertExecutionGuard($options);
             $personId = $person['id'] ?? null;
             $personName = $person['name'] ?? 'Unknown';
             if (! $personId) {
@@ -3078,7 +3308,10 @@ class AgentLoopService
             $personResearchToolResults = [];
             $personSearchPlan = null;
             $personMessages = $assessMessages;
-            $personMessages[] = ['role' => 'assistant', 'content' => $assessContent];
+            if (CliWorkflowExecutionScope::current() === null) {
+                $personMessages[] = ['role' => 'assistant', 'content' => $assessContent];
+            }
+            $personPersistedCount = count($personMessages);
 
             // Run each per-person phase (research, analyze, report)
             foreach ($perPersonPhases as $ppIdx => $ppPhaseName) {
@@ -3107,9 +3340,14 @@ class AgentLoopService
                 $ppToolNames = $this->constrainDirectGenealogyReportTools($ppToolNames, $ppPhaseName, $options);
                 $phaseToolCalls = $this->buildPhaseToolCalls($ppToolNames, $personName);
                 if ($queueMode && $ppPhaseName === 'research') {
+                    // Autonomous queue research must not plan confirmation-gated
+                    // writes. Use the live tool contract, not a copied tool list.
+                    $ppToolNames = array_values(array_filter($ppToolNames,
+                        static fn (string $name): bool => ($agentTools[$name]['risk_level'] ?? null) === 'read'));
+                    $queueResearchTools = array_intersect_key($agentTools, array_flip($ppToolNames));
                     $personSearchPlan = app(GenealogySearchPlanService::class)->buildPlan(
                         $person,
-                        $agentTools,
+                        $queueResearchTools,
                         array_merge($options['context'] ?? [], ['model_role' => $modelRole])
                     );
                     $phaseToolCalls = $this->buildQueueModePlannedPhaseCalls(
@@ -3145,6 +3383,7 @@ class AgentLoopService
                     "Per-person phase '{$ppPhaseName}' for {$personName}", [
                         'phase' => $ppPhaseName, 'person_id' => $personId, 'mode' => 'per_person',
                     ]);
+                $this->assertExecutionGuard($options);
                 $this->emitProgressCallback($options, 'phase_started', [
                     'phase' => $ppPhaseName,
                     'person_id' => $personId,
@@ -3255,6 +3494,7 @@ class AgentLoopService
 
                     $toolStartTime = microtime(true);
                     $ppResultKey = (string) ($phaseToolCall['label'] ?? "{$toolName} for {$personName}");
+                    $this->assertExecutionGuard($options);
                     try {
                         $result = $this->getToolRegistry()->executeTool($toolName, $params, $personContext);
                         // Keep BOTH the serialized string (for LLM prompt injection) AND
@@ -3286,7 +3526,6 @@ class AgentLoopService
                     // the proposal extractor never has to re-parse the possibly-truncated
                     // serialized string.
                     if ($queueMode
-                        && ($ppToolResults[$ppResultKey]['success'] ?? false)
                         && in_array($toolName, [
                             'source_search_all', 'generate_record_hints', 'nara_search',
                             'ellis_island_search', 'dar_search', 'wikitree_search',
@@ -3297,7 +3536,7 @@ class AgentLoopService
                         ], true)
                     ) {
                         $personResearchToolResults[$ppResultKey] = [
-                            'success' => true,
+                            'success' => (bool) ($ppToolResults[$ppResultKey]['success'] ?? false),
                             'result_text' => $ppToolResults[$ppResultKey]['result_text'],
                             'result_array' => $ppToolResults[$ppResultKey]['result_array'],
                             'phase' => $ppPhaseName,
@@ -3310,7 +3549,9 @@ class AgentLoopService
                         'tool' => $toolName, 'phase' => $ppPhaseName, 'person_id' => $personId, 'mode' => 'per_person',
                         'success' => $ppToolResults[$ppResultKey]['success'],
                         'duration_ms' => $toolDurationMs,
-                        'tool_result' => mb_substr($ppToolResults[$ppResultKey]['result_text'], 0, 500),
+                        'params' => $params,
+                        'plan_purpose' => $phaseToolCall['purpose'] ?? null,
+                        'tool_result' => mb_substr($ppToolResults[$ppResultKey]['result_text'], 0, 1000),
                     ]);
                     $this->emitProgressCallback($options, 'tool_call', [
                         'phase' => $ppPhaseName,
@@ -3321,7 +3562,8 @@ class AgentLoopService
                         'duration_ms' => $toolDurationMs,
                     ]);
 
-                    $toolCalls[] = ['tool' => $toolName, 'params' => $params, 'success' => $ppToolResults[$ppResultKey]['success'], 'phase' => $ppPhaseName];
+                    $toolCalls[] = ['tool' => $toolName, 'params' => $params, 'success' => $ppToolResults[$ppResultKey]['success'],
+                        'phase' => $ppPhaseName, 'risk_level' => $toolDef['risk_level'] ?? null];
                 }
 
                 if ($toolsSkippedByBudget > 0) {
@@ -3365,6 +3607,12 @@ class AgentLoopService
                         ."CRITICAL: Only analyze data for {$personName} (ID: {$personId}). Do NOT invent or fabricate data.";
                 } else {
                     // Report phase prompt for this person
+                    $proposalSchema = $queueProofGradeReview
+                        ? "{\"person_id\": {$personId}, \"change_type\": \"<fact_update|source_add>\", \"field_name\": \"<exact FT4 field or null for source_add>\", \"current_value\": \"<exact on-file value or null>\", \"proposed_value\": \"<new value or record URL>\", \"source_locator\": \"<stable record URL>\", \"source_citation\": \"<record-level citation>\", \"record_title\": \"<specific record title>\", \"record_text_excerpt\": \"<short excerpt naming the target>\", \"identity_anchors\": [{\"type\": \"name\", \"value\": \"{$personName}\"}, {\"type\": \"<date|place|relative|household|occupation|source_chain>\", \"value\": \"<corroborating value>\"}], \"evidence_sources\": [\"<citation>\", \"<stable URL>\"], \"evidence_summary\": \"<why the record belongs to this person and supports this exact change>\", \"confidence\": <0.0-1.0>}"
+                        : "{\"person_id\": {$personId}, \"change_type\": \"<fact_update|event_add|source_add|notes_append|residence_add|external_record_link|source_create>\", \"field_name\": \"<field or null>\", \"proposed_value\": \"<value>\", \"evidence_sources\": [\"<citation>\"], \"evidence_summary\": \"<what and where>\", \"confidence\": <0.0-1.0>}";
+                    $proposalInstructions = $queueProofGradeReview
+                        ? 'Convert only proof-grade record evidence into proposed_changes. Every proposal must include the exact on-file value, stable record URL, record-level citation, specific title, short record-text excerpt, a matched-name anchor, a second date/place/relative/household/occupation/source-chain anchor, and confidence of at least the Genea actionability threshold. The record excerpt itself must name this target person. If any field is unavailable, return deferred with no proposal. source_add proposed_value MUST be the stable record URL. Use follow_up_tasks and source_tool_gaps for broad search hits, weak leads, conflicts, or failed sources.'
+                        : 'Convert evidence-backed findings into proposed_changes. source_add proposed_value MUST be a URL and must identify this target person beyond a broad same-name search hit. Use notes_append only for durable source-backed conclusions, never raw search output; use follow_up_tasks and source_tool_gaps for weak leads or failed sources.';
                     $priorFindings = '';
                     foreach ($personPhaseResults as $prPhase => $prResult) {
                         $prJson = null;
@@ -3389,14 +3637,26 @@ class AgentLoopService
                         ."  \"phase\": \"final_report\",\n"
                         ."  \"summary\": \"<findings for {$personName}>\",\n"
                         ."  \"persons_researched\": [{\"id\": {$personId}, \"name\": \"{$personName}\", \"findings\": \"<string>\", \"confidence\": <0.0-1.0>, \"recommendation\": \"<confirmed|probable|possible|needs_review>\"}],\n"
-                        ."  \"proposed_changes\": [{\"person_id\": {$personId}, \"change_type\": \"<fact_update|event_add|source_add|notes_append|residence_add|external_record_link|source_create>\", \"field_name\": \"<field or null>\", \"proposed_value\": \"<value>\", \"evidence_sources\": [\"<citation>\"], \"evidence_summary\": \"<what and where>\", \"confidence\": <0.0-1.0>}],\n"
+                        ."  \"proposed_changes\": [{$proposalSchema}],\n"
                         ."  \"proposed_relationships\": [],\n"
                         ."  \"proposed_marriages\": [],\n"
                         ."  \"total_tools_used\": <number>,\n"
                         ."  \"total_findings\": <number>,\n"
-                        ."  \"follow_up_tasks\": [\"<string>\"]\n"
+                        ."  \"follow_up_tasks\": [\"<string>\"],\n"
+                        ."  \"outcome_state\": \"completed|deferred|requeue|needs_human_review\",\n"
+                        ."  \"outcome_reason\": \"<concise evidence-based reason>\",\n"
+                        ."  \"scope_reason\": \"<who else was included and why, or none>\",\n"
+                        ."  \"related_people_used\": [\"<person identifier>\"],\n"
+                        ."  \"sources_checked\": [\"<source class or tool>\"],\n"
+                        ."  \"evidence_summary\": \"<concise evidence-backed summary>\",\n"
+                        ."  \"conflicts_found\": \"<conflict summary or none>\",\n"
+                        ."  \"evidence_packets\": [],\n"
+                        ."  \"hypothesis_ledger\": [],\n"
+                        ."  \"agent_activity_trace\": [],\n"
+                        ."  \"source_tool_gaps\": [],\n"
+                        ."  \"review_gates\": {\"review_first\": true, \"writeback_blocked_or_bounded\": true, \"private_payload_avoided\": true, \"face_evidence_avoided\": true}\n"
                         ."}\n```\n"
-                        .'Convert evidence-backed findings into proposed_changes. source_add proposed_value MUST be a URL and must identify this target person beyond a broad same-name search hit. Use notes_append for text findings and follow_up_tasks for weak leads.';
+                        .$proposalInstructions;
                 }
 
                 $personMessages[] = ['role' => 'user', 'content' => $ppPrompt];
@@ -3409,7 +3669,7 @@ class AgentLoopService
                     'model' => 'framework',
                 ];
 
-                if ($queueMode) {
+                if ($queueMode && ! $queueQualityAnalysis) {
                     $ppContent = $isReportPhase
                         ? $this->buildQueueModeFinalReport(
                             $personName,
@@ -3447,21 +3707,23 @@ class AgentLoopService
                         $ppAiOptions['model_role'] = $modelRole;
                         // Report phase still asks for the quality tier, but AIService
                         // routes local-first via role-fit scoring. Conditional retry
-                        // and template-detection escalation below still force
-                        // prefer_claude when a real failure or placeholder pattern
-                        // is observed — that's intentional and stays intact.
+                        // and template-detection escalation below still request
+                        // an admitted external provider after a real failure.
                         if ($isReportPhase) {
-                            $ppAiOptions['model_role'] = 'quality';
+                            $ppAiOptions['model_role'] = $queueQualityAnalysis
+                                ? (string) ($options['context']['queue_quality_model_role'] ?? 'quality')
+                                : 'quality';
                         }
                     }
 
                     // Retry loop with template detection and validation
-                    $ppMaxRetries = config('agents.phase_max_retries', 2);
+                    $ppMaxRetries = $this->phaseMaxRetries();
                     if ($cascadeConfig !== null) {
                         $ppAiOptions['cascade'] = $cascadeConfig;
                     }
                     for ($retry = 0; $retry <= $ppMaxRetries; $retry++) {
-                        $ppResponse = $this->getAIService()->process($this->formatMessagesForAI($personMessages), $ppAiOptions);
+                        $this->persistCliAgentBranch($sessionId, $personMessages, $personPersistedCount, $messages, $persistedMessageCount);
+                        $ppResponse = $this->processGuardedAI($this->formatMessagesForAI($personMessages), $ppAiOptions, $options);
 
                         // N75b: Detect AI provider failure
                         if (empty($ppResponse['success'])) {
@@ -3473,7 +3735,7 @@ class AgentLoopService
                                 'error' => $ppResponse['error'] ?? 'Unknown AI failure',
                             ]);
                             if ($retry < $ppMaxRetries) {
-                                $ppAiOptions['prefer_claude'] = true;
+                                $ppAiOptions['prefer_external'] = true;
                                 unset($ppAiOptions['skip_if_busy']);
                             }
 
@@ -3487,7 +3749,7 @@ class AgentLoopService
 
                         if (($isTemplate || $hasPlaceholders) && $retry < $ppMaxRetries) {
                             $this->hybridRunMetrics['template_detections']++;
-                            $ppAiOptions['prefer_claude'] = true;
+                            $ppAiOptions['prefer_external'] = true;
                             $personMessages[] = ['role' => 'assistant', 'content' => $ppContent];
                             $personMessages[] = ['role' => 'user', 'content' => "CRITICAL ERROR: Template/placeholder detected. Analyze the ACTUAL tool results for {$personName} (ID: {$personId}). "
                                 .'Do NOT generate example data.',
@@ -3512,11 +3774,12 @@ class AgentLoopService
 
                 $this->hybridRunMetrics['phases_completed']++;
                 $this->hybridRunMetrics['phase_providers']["{$ppPhaseName}({$personName})"] = $ppResponse['provider'] ?? 'unknown';
-                if (isset($ppAiOptions['prefer_claude']) && $ppAiOptions['prefer_claude']) {
-                    $this->hybridRunMetrics['claude_escalations']++;
+                if (! empty($ppAiOptions['prefer_external'])) {
+                    $this->hybridRunMetrics['provider_escalations']++;
                 }
 
                 $personMessages[] = ['role' => 'assistant', 'content' => $ppContent];
+                $this->persistCliAgentBranch($sessionId, $personMessages, $personPersistedCount, $messages, $persistedMessageCount);
                 $personPhaseResults[$ppPhaseName] = $ppContent;
 
                 // Update person context from phase output (reuse validation from retry loop)
@@ -3562,7 +3825,10 @@ class AgentLoopService
 
             if ($queueMode) {
                 if ($pfd) {
-                    foreach ($pfd['proposed_changes'] ?? [] as $proposal) {
+                    $reviewableChanges = $this->filterQueueModeReviewableGenealogyProposals(
+                        array_values(array_filter($pfd['proposed_changes'] ?? [], 'is_array'))
+                    );
+                    foreach ($reviewableChanges as $proposal) {
                         if (is_array($proposal)) {
                             $toolCalls[] = ['tool' => 'propose_change', 'success' => true, 'phase' => 'report', 'synthetic' => true];
                         }
@@ -3572,13 +3838,24 @@ class AgentLoopService
                             $toolCalls[] = ['tool' => 'propose_relationship', 'success' => true, 'phase' => 'report', 'synthetic' => true];
                         }
                     }
-                    $this->submitQueueModeGenealogyFindingReview($agentId, $personName, $personId, $pfd, $toolCalls);
+                    $this->assertExecutionGuard($options);
+                    $this->submitQueueModeGenealogyFindingReview(
+                        $agentId,
+                        $personName,
+                        $personId,
+                        $pfd,
+                        $toolCalls,
+                        $queueProofGradeReview,
+                        (int) ($toolContext['tree_id'] ?? 0)
+                    );
                 }
 
                 $report = $this->renderQueueModeWorkflowReport($personName, $personId, $pfd, $toolCalls);
 
                 try {
-                    $this->getSessionService()->completeSession($sessionId);
+                    if (CliWorkflowExecutionScope::current() === null) {
+                        $this->getSessionService()->completeSession($sessionId);
+                    }
                 } catch (\Throwable $ignore) {
                     Log::debug('AgentLoopService: session completion failed on queue-mode return', ['session' => $sessionId]);
                 }
@@ -3794,7 +4071,9 @@ class AgentLoopService
         // (idempotent — caller also calls completeSession, but this guards against
         // exceptions in post-workflow steps between here and the caller's completion)
         try {
-            $this->getSessionService()->completeSession($sessionId);
+            if (CliWorkflowExecutionScope::current() === null) {
+                $this->getSessionService()->completeSession($sessionId);
+            }
         } catch (\Throwable $ignore) {
             Log::debug('AgentLoopService: session completion failed on per-person return', ['session' => $sessionId]);
         }
@@ -3826,16 +4105,7 @@ class AgentLoopService
         $questionType = $context['question_type'] ?? 'find_record';
 
         return match ($phaseName) {
-            'research' => match ($questionType) {
-                'negative_search_followup' => array_values(array_intersect($toolNames, [
-                    'source_search_all',
-                    'generate_record_hints',
-                ])),
-                default => array_values(array_intersect($toolNames, [
-                    'source_search_all',
-                    'generate_record_hints',
-                ])),
-            },
+            'research' => array_values(array_intersect($toolNames, ['source_search_all'])),
             'analyze' => array_values(array_intersect($toolNames, [
                 'get_person_full',
                 'get_person_events',
@@ -3896,7 +4166,7 @@ class AgentLoopService
                 continue;
             }
             $tool = trim((string) ($call['tool'] ?? ''));
-            if ($tool === '' || ! isset($agentTools[$tool])) {
+            if ($tool === '' || ! in_array($tool, $defaultToolNames, true) || ! isset($agentTools[$tool])) {
                 continue;
             }
             $calls[] = [
@@ -3920,13 +4190,27 @@ class AgentLoopService
     ): string {
         $successfulTools = [];
         $findings = [];
+        $failedTools = [];
+        $issues = [];
 
         foreach ($toolResults as $toolKey => $toolResult) {
-            if (! is_array($toolResult) || empty($toolResult['success'])) {
+            if (! is_array($toolResult)) {
                 continue;
             }
 
             $toolName = trim((string) preg_replace('/\s+for\s+.+$/', '', $toolKey));
+            if (empty($toolResult['success'])) {
+                if ($toolName !== '') {
+                    $failedTools[] = $toolName;
+                }
+                $error = trim((string) ($toolResult['result_text'] ?? 'tool failed'));
+                if ($error !== '') {
+                    $issues[] = mb_substr("{$toolName}: {$error}", 0, 300);
+                }
+
+                continue;
+            }
+
             if ($toolName !== '') {
                 $successfulTools[] = $toolName;
             }
@@ -3938,8 +4222,9 @@ class AgentLoopService
         }
 
         $nextPhase = $perPersonPhases[$phaseIndex + 1] ?? 'report';
+        $findings = array_values(array_unique($findings));
         $summary = ! empty($findings)
-            ? implode(' ', array_slice($findings, 0, 2))
+            ? implode(' ', array_slice($findings, 0, 3))
             : "Queue-mode {$phaseName} completed for {$personName}.";
 
         $payload = [
@@ -3956,8 +4241,8 @@ class AgentLoopService
                 'person_id' => $personId,
                 'action' => $nextPhase,
             ]],
-            'issues' => [],
-            'tool_failures' => [],
+            'issues' => array_slice(array_values(array_unique($issues)), 0, 5),
+            'tool_failures' => array_slice(array_values(array_unique($failedTools)), 0, 5),
         ];
 
         return "```json\n".json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n```";
@@ -3969,6 +4254,8 @@ class AgentLoopService
         $followUpTasks = [];
         $evidenceSources = [];
         $sourcesChecked = [];
+        $activityTrace = [];
+        $sourceToolGaps = [];
 
         foreach ($personPhaseResults as $phaseResult) {
             if (! preg_match('/```(?:json)?\s*(\{[\s\S]*?\})\s*```/', $phaseResult, $matches)) {
@@ -4016,6 +4303,13 @@ class AgentLoopService
                 }
             }
 
+            foreach ($data['tool_failures'] ?? [] as $failedTool) {
+                $failedTool = trim((string) $failedTool);
+                if ($failedTool !== '') {
+                    $followUpTasks[] = "Retry or replace failed tool: {$failedTool}";
+                }
+            }
+
             foreach ($data['follow_up_tasks'] ?? [] as $task) {
                 $task = trim((string) $task);
                 if ($task !== '') {
@@ -4045,6 +4339,46 @@ class AgentLoopService
             if (str_contains($toolName, 'update_search_coverage')) {
                 $evidenceSources[] = 'update_search_coverage';
             }
+        }
+
+        foreach ($researchToolResults as $toolName => $toolResult) {
+            if (! is_array($toolResult)) {
+                continue;
+            }
+            $baseToolName = trim((string) preg_replace('/\s+for\s+.+$/', '', (string) $toolName));
+            if ($baseToolName === '') {
+                continue;
+            }
+            $sourcesChecked[] = $baseToolName;
+            $purpose = trim((string) ($toolResult['plan_purpose'] ?? 'bounded genealogy search'));
+            $params = is_array($toolResult['planned_params'] ?? null) ? $toolResult['planned_params'] : [];
+            $target = $this->queueModeActivityTarget($baseToolName, $params, $personName);
+            $resultText = trim((string) ($toolResult['result_text'] ?? ''));
+            if (! empty($toolResult['success'])) {
+                $activityTrace[] = [
+                    'action' => 'search',
+                    'target' => $target,
+                    'result' => mb_substr($this->summarizeQueueModeToolResult($baseToolName, $resultText), 0, 300),
+                    'reason' => mb_substr($purpose, 0, 300),
+                ];
+
+                continue;
+            }
+
+            $failure = $resultText !== '' ? $resultText : 'tool failed without a result';
+            $activityTrace[] = [
+                'action' => 'search',
+                'target' => $target,
+                'result' => mb_substr('failed: '.$failure, 0, 300),
+                'reason' => mb_substr($purpose, 0, 300),
+            ];
+            $sourceToolGaps[] = [
+                'source_or_tool' => $baseToolName,
+                'purpose' => mb_substr($purpose, 0, 300),
+                'access_type' => 'api',
+                'risk' => 'low',
+                'vetting_needed' => mb_substr($failure, 0, 300),
+            ];
         }
 
         $priorFindings = array_values(array_unique(array_filter($priorFindings)));
@@ -4092,13 +4426,9 @@ class AgentLoopService
 
         $sourceProposals = $this->buildQueueModeSourceProposals($personId, $evidenceToolResults, $personName);
 
-        $proposedChanges = [];
-        if (! empty($sourceProposals)) {
-            // Concrete source URLs beat the synthetic notes_append blurb that the noise filter rejects.
-            $proposedChanges = $sourceProposals;
-        } elseif ($hasPositiveFinding) {
-            $proposedChanges = $this->buildQueueModeProposals($personId, $summary, $evidenceToolResults, $evidenceSources);
-        }
+        // Deterministic queue summaries are search telemetry, not evidence suitable
+        // for notes_append. Only concrete, quality-gated source proposals advance.
+        $proposedChanges = $sourceProposals;
 
         $hasReviewableProposal = ! empty($this->filterQueueModeReviewableGenealogyProposals($proposedChanges));
 
@@ -4106,6 +4436,21 @@ class AgentLoopService
         $outcomeReason = $hasReviewableProposal
             ? 'Evidence-backed finding prepared for human review.'
             : 'No supported change found; preserve for future follow-up.';
+        $evidencePackets = array_map(static fn (array $proposal): array => [
+            'claim' => (string) ($proposal['evidence_summary'] ?? 'Source candidate for review'),
+            'subject' => $personName,
+            'source_label' => implode(', ', (array) ($proposal['evidence_sources'] ?? [])),
+            'citation_state' => 'inferred',
+            'identity_bridge' => 'Result text must identify the anchor person beyond the search query.',
+            'confidence' => ((float) ($proposal['confidence'] ?? 0)) >= 0.75 ? 'high' : 'medium',
+            'review_action' => 'review_packet',
+        ], $this->filterQueueModeReviewableGenealogyProposals($proposedChanges));
+        $hypothesisLedger = $hasReviewableProposal ? [] : [[
+            'hypothesis' => "Independent evidence can confirm the requested facts for {$personName}.",
+            'state' => 'unresolved',
+            'basis' => $sourceToolGaps !== [] ? 'One or more planned source tools failed and no reviewable record remained.' : 'Completed searches produced no reviewable identity bridge.',
+            'next_action' => $sourceToolGaps !== [] ? 'Retry or replace the failed source tool before repeating broad searches.' : 'Use a different repository or a more specific relative/place query.',
+        ]];
 
         $report = [
             'phase' => 'final_report',
@@ -4130,6 +4475,17 @@ class AgentLoopService
             'sources_checked' => $sourcesChecked,
             'evidence_summary' => mb_substr($summary, 0, 500),
             'conflicts_found' => 'none',
+            'evidence_packets' => $evidencePackets,
+            'hypothesis_ledger' => $hypothesisLedger,
+            'agent_activity_trace' => array_slice($activityTrace, 0, 20),
+            'source_tool_gaps' => array_slice($sourceToolGaps, 0, 12),
+            'review_gates' => [
+                'review_first' => true,
+                'writeback_blocked_or_bounded' => true,
+                'private_payload_avoided' => true,
+                'face_evidence_avoided' => true,
+                'media_capture_attempted_or_gap_logged' => true,
+            ],
         ];
         if ($searchPlan !== null) {
             $report['search_plan'] = [
@@ -4148,6 +4504,18 @@ class AgentLoopService
         }
 
         return "```json\n".json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n```";
+    }
+
+    private function queueModeActivityTarget(string $toolName, array $params, string $personName): string
+    {
+        foreach (['query', 'name', 'surname'] as $key) {
+            $value = trim((string) ($params[$key] ?? ''));
+            if ($value !== '') {
+                return mb_substr("{$toolName}: {$value}", 0, 300);
+            }
+        }
+
+        return mb_substr("{$toolName}: {$personName}", 0, 300);
     }
 
     private function isQueueModeNoFindingNoise(string $finding): bool
@@ -4623,9 +4991,23 @@ class AgentLoopService
         $report .= 'RELATED_PEOPLE_USED: '.(! empty($relatedPeople) ? implode(', ', $relatedPeople) : 'none')."\n";
         $report .= 'SOURCES_CHECKED: '.(! empty($sourcesChecked) ? implode(', ', $sourcesChecked) : 'none')."\n";
         $report .= 'EVIDENCE_SUMMARY: '.($evidenceSummary !== '' ? $evidenceSummary : $summary)."\n";
-        $report .= 'CONFLICTS_FOUND: '.($conflictsFound !== '' ? $conflictsFound : 'none');
+        $report .= 'CONFLICTS_FOUND: '.($conflictsFound !== '' ? $conflictsFound : 'none')."\n";
+        $report .= 'EVIDENCE_PACKETS: '.$this->queueModeJsonMarker($reportData['evidence_packets'] ?? [])."\n";
+        $report .= 'HYPOTHESIS_LEDGER: '.$this->queueModeJsonMarker($reportData['hypothesis_ledger'] ?? [])."\n";
+        $report .= 'AGENT_ACTIVITY_TRACE: '.$this->queueModeJsonMarker($reportData['agent_activity_trace'] ?? [])."\n";
+        $report .= 'SOURCE_TOOL_GAPS: '.$this->queueModeJsonMarker($reportData['source_tool_gaps'] ?? [])."\n";
+        $report .= 'REVIEW_GATES: '.$this->queueModeJsonMarker($reportData['review_gates'] ?? []);
 
         return $report;
+    }
+
+    private function queueModeJsonMarker(mixed $value): string
+    {
+        if (! is_array($value) || $value === []) {
+            return 'none';
+        }
+
+        return json_encode($value, JSON_UNESCAPED_SLASHES) ?: 'none';
     }
 
     private function submitQueueModeGenealogyFindingReview(
@@ -4633,7 +5015,9 @@ class AgentLoopService
         string $personName,
         int $personId,
         array $reportData,
-        array &$toolCalls
+        array &$toolCalls,
+        bool $proofGradeRequired = false,
+        ?int $treeId = null
     ): void {
         $personProposals = array_merge(
             array_values(array_filter($reportData['proposed_changes'] ?? [], 'is_array')),
@@ -4642,6 +5026,15 @@ class AgentLoopService
         );
 
         $reviewableProposals = $this->filterQueueModeReviewableGenealogyProposals($personProposals);
+        if ($proofGradeRequired) {
+            $reviewableProposals = app(GenealogyReviewProposalQualityService::class)->filter(
+                $personId,
+                $reviewableProposals,
+                $agentId,
+                $treeId
+            );
+        }
+
         // Post-deploy gap fix (2026-04-24): yesterday's GPS Sprint #3 wired
         // ProposalValidatorService into PersonService::proposeChange — but
         // hybrid-output bundled proposals from the per-person queue mode
@@ -4654,7 +5047,7 @@ class AgentLoopService
             (int) $personId,
             $agentId
         );
-        $actionable = ! empty($reviewableProposals) && $this->shouldQueueGenealogyFindingReview($personProposals);
+        $actionable = ! empty($reviewableProposals) && $this->shouldQueueGenealogyFindingReview($reviewableProposals);
 
         if (! $actionable) {
             if (empty($personProposals)) {
@@ -4674,6 +5067,7 @@ class AgentLoopService
                 'phase' => 'report',
                 'skipped' => true,
                 'review_created' => false,
+                'outcome_eligible' => false,
                 'reason' => 'task_history_only_no_actionable',
             ];
 
@@ -4692,7 +5086,11 @@ class AgentLoopService
 
         // Merge path: refresh the pending row when this run produced actionable proposals.
         if ($existing) {
-            $confidence = (float) ($reportData['persons_researched'][0]['confidence'] ?? 0.5);
+            $confidence = $this->genealogyFindingReviewConfidence(
+                $reportData,
+                $reviewableProposals,
+                $proofGradeRequired
+            );
             $this->mergePendingGenealogyFindingProposals(
                 (int) $existing->id,
                 $agentId,
@@ -4707,19 +5105,28 @@ class AgentLoopService
                 'success' => true,
                 'phase' => 'report',
                 'merged_into' => (int) $existing->id,
+                'review_created' => true,
+                'status' => 'pending',
                 'reason' => 'pending_finding_refreshed_with_new_proposals',
             ];
 
             return;
         }
 
-        $confidence = (float) ($reportData['persons_researched'][0]['confidence'] ?? 0.5);
+        $confidence = $this->genealogyFindingReviewConfidence(
+            $reportData,
+            $reviewableProposals,
+            $proofGradeRequired
+        );
 
         $reviewDetails = [
             'person_id' => $personId,
             'person_name' => $personName,
             'proposals' => $reviewableProposals,
         ];
+        if ($proofGradeRequired) {
+            $reviewDetails['proposal_quality_policy'] = GenealogyReviewProposalQualityService::POLICY;
+        }
         if (isset($reportData['search_plan']) && is_array($reportData['search_plan'])) {
             $reviewDetails['search_plan'] = $reportData['search_plan'];
         }
@@ -4742,10 +5149,39 @@ class AgentLoopService
 
         $toolCalls[] = [
             'tool' => 'submit_for_review',
-            'success' => ! empty($review['review_id']) || ! empty($review['token']),
+            'success' => (bool) ($review['success'] ?? false),
             'phase' => 'report',
             'synthetic' => true,
+            'review_created' => (bool) ($review['review_created'] ?? false),
+            'review_id' => $review['review_id'] ?? null,
+            'token' => $review['token'] ?? null,
+            'status' => $review['status'] ?? null,
+            'auto_rejected' => (bool) ($review['auto_rejected'] ?? false),
+            'deduplicated' => (bool) ($review['deduplicated'] ?? false),
+            'actionability_state' => $review['actionability_state'] ?? null,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $reportData
+     * @param  array<int, array<string, mixed>>  $reviewableProposals
+     */
+    private function genealogyFindingReviewConfidence(
+        array $reportData,
+        array $reviewableProposals,
+        bool $proofGradeRequired
+    ): float {
+        $reportConfidence = (float) ($reportData['persons_researched'][0]['confidence'] ?? 0.5);
+        if (! $proofGradeRequired || $reviewableProposals === []) {
+            return $reportConfidence;
+        }
+
+        $proposalConfidences = array_map(
+            static fn (array $proposal): float => (float) ($proposal['confidence'] ?? 0.0),
+            $reviewableProposals
+        );
+
+        return min($proposalConfidences);
     }
 
     /**
@@ -4794,7 +5230,8 @@ class AgentLoopService
                 $proposedValueStr,
                 (string) ($proposal['evidence_summary'] ?? ''),
                 is_array($proposal['evidence_sources'] ?? null) ? $proposal['evidence_sources'] : [],
-                $agentId
+                $agentId,
+                $proposal
             );
             if ($result['ok'] === true) {
                 $survivors[] = $proposal;
@@ -4861,16 +5298,22 @@ class AgentLoopService
 
         if ($changeType === 'source_add') {
             $value = trim((string) ($proposal['proposed_value'] ?? ''));
+            $evidenceText = trim((string) ($proposal['evidence_summary'] ?? ''));
 
-            return $value !== '' && (
-                preg_match('/^https?:\/\//i', $value) === 1
-                || ctype_digit($value)
-            );
+            return ! $this->isSelfDisqualifyingGenealogyEvidenceText($evidenceText)
+                && $value !== '' && (
+                    preg_match('/^https?:\/\//i', $value) === 1
+                    || ctype_digit($value)
+                );
         }
 
         if ($changeType === 'notes_append') {
             $text = trim((string) ($proposal['evidence_summary'] ?? $proposal['proposed_value'] ?? ''));
             if ($text === '' || $this->isNegativeGenealogyFindingText($text)) {
+                return false;
+            }
+
+            if ($this->isSelfDisqualifyingGenealogyEvidenceText($text)) {
                 return false;
             }
 
@@ -4886,6 +5329,18 @@ class AgentLoopService
         }
 
         return true;
+    }
+
+    private function isSelfDisqualifyingGenealogyEvidenceText(string $text): bool
+    {
+        if (trim($text) === '') {
+            return false;
+        }
+
+        return preg_match(
+            '/\b(lacks? (specific )?(biographical|identity|genealogical|record) details?|no direct (historical )?records?|no (independent|primary) (records?|sources?|evidence)|pending (independent )?corroboration|does not (identify|confirm|support|establish)|same[- ]name (hit|match|result) only)\b/i',
+            $text
+        ) === 1;
     }
 
     private function isNonActionableGenealogyProgressReview(string $reviewType, array $details): bool
@@ -5121,6 +5576,11 @@ class AgentLoopService
                 continue;
             }
 
+            $contextAlias = trim((string) ($paramDef['x_context_alias'] ?? ''));
+            if ($contextAlias !== '' && isset($availableContext[$contextAlias])) {
+                continue;
+            }
+
             $unsatisfied[] = $paramName;
         }
 
@@ -5278,12 +5738,18 @@ class AgentLoopService
                     '/(found|record|census|certificate|document|source|born|died|married|buried|\d{4})/i',
                     $findings
                 );
-                if (strlen($findings) > 30 && ! $isNegative && $hasPositiveEvidence) {
+                $isGenericSearchActivity = $this->isGenericQueueModeSearchActivitySummary($findingsTrimmed);
+                if (strlen($findings) > 30 && ! $isNegative && ! $isGenericSearchActivity && $hasPositiveEvidence) {
                     $hasFindings = true;
                     break;
                 }
             }
-            if ($hasFindings && ! $hasProposals) {
+            $explicitlyNonActionable = in_array(
+                strtolower(trim((string) ($data['outcome_state'] ?? ''))),
+                ['deferred', 'requeue'],
+                true
+            );
+            if ($hasFindings && ! $hasProposals && ! $explicitlyNonActionable) {
                 return [
                     'valid' => false,
                     'reason' => 'You found research data for persons but proposed_changes, proposed_relationships, and proposed_marriages are ALL empty. '
@@ -5607,53 +6073,101 @@ class AgentLoopService
 
         // AG-5: Memory retrieval gating
         $task = $options['task'] ?? '';
+        $memoryMetrics = [];
+        $memoryTelemetry = $this->getMemoryPhaseTelemetry();
         $memoryGate = ['procedural' => true, 'episodic' => true, 'cross_agent' => true];
         if ($task) {
             try {
-                $memoryGate = $this->getMemoryGating()->gate($agentId, $task);
+                $memoryGate = $memoryTelemetry->measure(
+                    'gating',
+                    true,
+                    fn (): array => $this->getMemoryGating()->gate($agentId, $task),
+                    $memoryMetrics,
+                );
             } catch (\Throwable $e) {
                 Log::debug('AgentLoopService: memory gating failed', ['agent' => $agentId]);
             }
         }
 
-        if ($task && (bool) config('agents.retrieved_context_fencing.enabled', true)) {
-            $ctx = $this->retrieveAgentMemory($agentId, $task, $options);
+        if ($task) {
+            $parts[] = app(AgentMemoryUsePolicyService::class)->promptPreamble('agent_memory_context');
+        }
+
+        try {
+            $ctx = $memoryTelemetry->measure(
+                'rag',
+                (bool) $task && (bool) config('agents.retrieved_context_fencing.enabled', true),
+                fn (): ?string => $this->retrieveAgentMemory($agentId, $task, $options),
+                $memoryMetrics,
+            );
             if ($ctx) {
                 $parts[] = $ctx;
             }
+        } catch (\Throwable $e) {
+            Log::debug('AgentLoop: Memory retrieval failed (non-fatal)', [
+                'agent_id' => $agentId,
+                'error_type' => $e::class,
+            ]);
         }
 
         // Procedural memory (gated)
-        if ($memoryGate['procedural'] && $task) {
-            try {
-                $ctx = $this->getProceduralMemory()->buildContextForTask($agentId, $task);
-                if ($ctx) {
-                    $parts[] = $this->formatMemoryContextForPrompt($ctx, 'agent_procedural_memory', "{$agentId}:procedural");
-                }
-            } catch (\Throwable $e) {
+        try {
+            $ctx = $memoryTelemetry->measure(
+                'procedural',
+                (bool) ($memoryGate['procedural'] ?? false) && (bool) $task,
+                function () use ($agentId, $task): ?string {
+                    $ctx = $this->getProceduralMemory()->buildContextForTask($agentId, $task);
+
+                    return $ctx
+                        ? $this->formatMemoryContextForPrompt($ctx, 'agent_procedural_memory', "{$agentId}:procedural")
+                        : null;
+                },
+                $memoryMetrics,
+            );
+            if ($ctx) {
+                $parts[] = $ctx;
             }
+        } catch (\Throwable) {
         }
 
         // Episodic memory (gated)
-        if ($memoryGate['episodic'] && $task) {
-            try {
-                $ctx = $this->getEpisodicMemory()->buildContextForTask($agentId, $task);
-                if ($ctx) {
-                    $parts[] = $this->formatMemoryContextForPrompt($ctx, 'agent_episodic_memory', "{$agentId}:episodic");
-                }
-            } catch (\Throwable $e) {
+        try {
+            $ctx = $memoryTelemetry->measure(
+                'episodic',
+                (bool) ($memoryGate['episodic'] ?? false) && (bool) $task,
+                function () use ($agentId, $task): ?string {
+                    $ctx = $this->getEpisodicMemory()->buildContextForTask($agentId, $task);
+
+                    return $ctx
+                        ? $this->formatMemoryContextForPrompt($ctx, 'agent_episodic_memory', "{$agentId}:episodic")
+                        : null;
+                },
+                $memoryMetrics,
+            );
+            if ($ctx) {
+                $parts[] = $ctx;
             }
+        } catch (\Throwable) {
         }
 
         // Cross-agent insights (gated)
-        if ($memoryGate['cross_agent'] && $task) {
-            try {
-                $ctx = $this->getEpisodicMemory()->recallCrossAgentInsights($agentId, $task);
-                if ($ctx) {
-                    $parts[] = $this->formatMemoryContextForPrompt($ctx, 'agent_cross_memory', "{$agentId}:cross_agent");
-                }
-            } catch (\Throwable $e) {
+        try {
+            $ctx = $memoryTelemetry->measure(
+                'cross_agent',
+                (bool) ($memoryGate['cross_agent'] ?? false) && (bool) $task,
+                function () use ($agentId, $task): ?string {
+                    $ctx = $this->getEpisodicMemory()->recallCrossAgentInsights($agentId, $task);
+
+                    return $ctx
+                        ? $this->formatMemoryContextForPrompt($ctx, 'agent_cross_memory', "{$agentId}:cross_agent")
+                        : null;
+                },
+                $memoryMetrics,
+            );
+            if ($ctx) {
+                $parts[] = $ctx;
             }
+        } catch (\Throwable) {
         }
 
         // Constitution — binding principles
@@ -5667,18 +6181,31 @@ class AgentLoopService
         // questions/verification state). Built fresh on every iteration so tool
         // results recorded since the last iteration are visible to the LLM.
         $runMemorySid = $options['run_memory_session_id'] ?? null;
-        if ($runMemorySid) {
-            try {
-                $runMemoryFragment = $this->getRunMemory()->renderSystemPromptFragment($runMemorySid);
-                if ($runMemoryFragment !== '') {
-                    $parts[] = $this->formatMemoryContextForPrompt($runMemoryFragment, 'agent_run_memory', "{$agentId}:run_memory");
-                }
-            } catch (\Throwable $e) {
-                Log::debug('AgentLoopService: run memory fragment render failed', [
-                    'session' => $runMemorySid,
-                    'error' => $e->getMessage(),
-                ]);
+        try {
+            $runMemoryFragment = $memoryTelemetry->measure(
+                'run_memory',
+                (bool) $runMemorySid,
+                function () use ($runMemorySid, $agentId): ?string {
+                    $runMemoryFragment = $this->getRunMemory()->renderSystemPromptFragment($runMemorySid);
+
+                    return $runMemoryFragment !== ''
+                        ? $this->formatMemoryContextForPrompt($runMemoryFragment, 'agent_run_memory', "{$agentId}:run_memory")
+                        : null;
+                },
+                $memoryMetrics,
+            );
+            if ($runMemoryFragment) {
+                $parts[] = $runMemoryFragment;
             }
+        } catch (\Throwable $e) {
+            Log::debug('AgentLoopService: run memory fragment render failed', [
+                'session' => $runMemorySid,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        if ($task) {
+            $memoryTelemetry->record($agentId, $runMemorySid, $memoryMetrics);
         }
 
         return implode("\n\n", $parts);
@@ -5693,6 +6220,7 @@ class AgentLoopService
             trustLevel: 'low',
             payload: $payload,
             maxChars: (int) config('agents.retrieved_context_fencing.memory_fragment_max_chars', 8000),
+            preservePayload: CliWorkflowExecutionScope::current() !== null,
         ));
     }
 
@@ -5701,39 +6229,29 @@ class AgentLoopService
      */
     private function retrieveAgentMemory(string $agentId, string $task, array $options): ?string
     {
-        try {
-            $results = $this->getRAGService()->search($task, 3, 'agent_finding', false, $agentId);
+        $results = $this->getRAGService()->search($task, 3, 'agent_finding', false, $agentId);
 
-            if (empty($results)) {
-                return null;
-            }
-
-            if ((bool) config('agents.retrieved_context_fencing.enabled', true)) {
-                return app(AgentRetrievedContextFenceService::class)->renderForAgentMemory($results, [
-                    'agent_id' => $agentId,
-                    'task' => $task,
-                ]);
-            }
-
-            $memoryParts = [];
-            foreach ($results as $result) {
-                $doc = $result['document'];
-                $similarity = round($result['similarity'] ?? 0, 3);
-                $title = $doc->title ?? 'Untitled';
-                $preview = substr($doc->content ?? '', 0, 500);
-                $memoryParts[] = "### {$title} (relevance: {$similarity})\n{$preview}";
-            }
-
-            return implode("\n\n", $memoryParts);
-
-        } catch (Exception $e) {
-            Log::debug('AgentLoop: Memory retrieval failed (non-fatal)', [
-                'agent_id' => $agentId,
-                'error' => $e->getMessage(),
-            ]);
-
+        if (empty($results)) {
             return null;
         }
+
+        if ((bool) config('agents.retrieved_context_fencing.enabled', true)) {
+            return app(AgentRetrievedContextFenceService::class)->renderForAgentMemory($results, [
+                'agent_id' => $agentId,
+                'task' => $task,
+            ]);
+        }
+
+        $memoryParts = [];
+        foreach ($results as $result) {
+            $doc = $result['document'];
+            $similarity = round($result['similarity'] ?? 0, 3);
+            $title = $doc->title ?? 'Untitled';
+            $preview = substr($doc->content ?? '', 0, 500);
+            $memoryParts[] = "### {$title} (relevance: {$similarity})\n{$preview}";
+        }
+
+        return implode("\n\n", $memoryParts);
     }
 
     /**
@@ -5914,7 +6432,7 @@ class AgentLoopService
 
             // Quality line
             $templates = $m['template_detections'] ?? 0;
-            $escalations = $m['claude_escalations'] ?? 0;
+            $escalations = $m['provider_escalations'] ?? 0;
             $filtered = $m['proposals_filtered'] ?? 0;
 
             // Review items line
@@ -5978,8 +6496,6 @@ class AgentLoopService
     {
         $map = [
             'ollama' => 'Ollama',
-            'claude' => 'Claude',
-            'claude_cli' => 'Claude',
             'openrouter' => 'OpenRouter',
             'sambanova' => 'SambaNova',
             'cerebras' => 'Cerebras',
@@ -6273,11 +6789,6 @@ class AgentLoopService
      * Agents call this when they find something that requires human approval
      * or when a workflow wants to record a reviewable item.
      */
-    /**
-     * Confidence threshold for generic finding auto-approval.
-     * Genealogy findings are never auto-approved.
-     */
-    /** @see config/agents.php auto_approve_confidence */
     public function submitForReview(array $params): array
     {
         $agentId = $params['agent_id'] ?? 'unknown';
@@ -6285,7 +6796,7 @@ class AgentLoopService
         $findingType = $params['finding_type'] ?? null; // INF-10e: links to remediation_actions
         $title = $params['title'] ?? 'Agent Review Item';
         $summary = $params['summary'] ?? '';
-        $details = $this->sanitizeReviewDetails($params['details'] ?? []);
+        $details = $this->sanitizeReviewDetails($params['details'] ?? [], (string) $reviewType);
         $confidence = $params['confidence'] ?? null;
         $priority = (int) ($params['priority'] ?? 0);
         $notify = $params['notify'] ?? true;
@@ -6298,6 +6809,28 @@ class AgentLoopService
             'confidence' => $confidence,
             'priority' => $priority,
         ], $details);
+
+        if ($this->isNonActionableGenealogyProgressReview((string) $reviewType, $details)) {
+            Log::info('AgentLoop: Non-actionable genealogy progress not queued for human review', [
+                'agent_id' => $agentId,
+                'review_type' => $reviewType,
+                'title' => $title,
+            ]);
+
+            return [
+                'success' => true,
+                'review_id' => null,
+                'token' => null,
+                'status' => 'not_queued',
+                'auto_approved' => false,
+                'auto_rejected' => false,
+                'review_created' => false,
+                'pushover_suppressed' => true,
+                'actionability_state' => AgentActionabilityGateService::STATE_OBSERVE_ONLY,
+                'message' => 'Non-actionable genealogy progress belongs in task history, not human review.',
+            ];
+        }
+
         $actionabilityService = app(AgentActionabilityGateService::class);
         $actionabilityGate = $actionabilityService->classifyReviewSubmission([
             'agent_id' => $agentId,
@@ -6345,45 +6878,13 @@ class AgentLoopService
             'write_scope' => $params['write_scope'] ?? null,
         ], $details);
 
-        if ($this->isNonActionableGenealogyProgressReview((string) $reviewType, $details)) {
-            Log::info('AgentLoop: Non-actionable genealogy progress not queued for human review', [
-                'agent_id' => $agentId,
-                'review_type' => $reviewType,
-                'title' => $title,
-            ]);
+        $inspectionOnly = app(ReviewTypeRegistryService::class)->isInspectionOnly((string) $reviewType);
 
-            return [
-                'success' => true,
-                'review_id' => null,
-                'token' => null,
-                'status' => 'not_queued',
-                'auto_approved' => false,
-                'auto_rejected' => false,
-                'review_created' => false,
-                'pushover_suppressed' => true,
-                'actionability_state' => $actionabilityGate['state'] ?? null,
-                'message' => 'Non-actionable genealogy progress belongs in task history, not human review.',
-            ];
-        }
-
-        // Auto-approve: high-confidence generic findings (>= 0.90) or routine status reports.
-        // genealogy_finding is intentionally excluded and always requires human review.
-        $autoApproved = false;
-        if ($confidence !== null && $confidence >= config('agents.auto_approve_confidence', 0.90) && $reviewType === 'finding') {
-            $autoApproved = true;
-        }
-        // N118: Routine status reports, alerts, and status changes don't need human review — auto-dismiss.
-        // Alerts are operational notifications (transient failures, pipeline state) — not human decisions.
-        // isRoutineReport applies regardless of priority to prevent priority-gaming by LLMs.
-        if (in_array($reviewType, ['status', 'status_change', 'alert'], true) || $this->isRoutineReport($title, $summary)) {
-            $autoApproved = true;
-        }
-        // N128: Only genealogy_finding, tool_proposal, skill_optimization need human review.
-        // Everything else (action, finding, suggestion, etc.) is ops informational with no
-        // service handler — approve/reject just toggles status with no side effects.
-        if (! in_array($reviewType, ['genealogy_finding', 'tool_proposal', 'skill_optimization'], true)) {
-            $autoApproved = true;
-        }
+        // Titles and confidence never authorize operator-owned decisions.
+        // Only qualified informational registry policy can close a row automatically.
+        $autoApproved = ! $inspectionOnly
+            && $this->allowsInformationalReviewAutoApproval((string) $reviewType, $findingType, $actionabilityGate, $details);
+        $autoApprovalReason = $autoApproved ? 'informational_review_type' : null;
         $qualityGateRequiresHumanReview = $this->qualityGateRequiresHumanReview($details);
         $autoRejectedByQualityGate = $this->qualityGateAutoRejectsReview($reviewType, $agentId, $details);
         if ($autoRejectedByQualityGate) {
@@ -6422,6 +6923,9 @@ class AgentLoopService
                 'success' => true,
                 'review_id' => (int) $existingItem->id,
                 'token' => $existingItem->token,
+                'status' => (string) $existingItem->status,
+                'review_created' => (string) $existingItem->status === 'pending',
+                'review_row_created' => false,
                 'deduplicated' => true,
                 'message' => 'Identical review item already exists (dedup window)',
             ];
@@ -6434,12 +6938,16 @@ class AgentLoopService
             || $findingType === 'genealogy_finding'
             || str_starts_with((string) $reviewType, 'genealogy_')
             || str_starts_with((string) $agentId, 'genealogy-');
-        $expiresAt = ($autoApproved || $isGenealogyItem)
+        $expiresAt = ($autoApproved || $isGenealogyItem || $inspectionOnly)
             ? null
             : now()->addDays(config('agents.review_expiry_days', 7))->format('Y-m-d H:i:s');
         $reviewerNotes = match (true) {
             $autoRejectedByQualityGate => $this->qualityGateAutoRejectNote($details),
-            $autoApproved => sprintf('Auto-approved: confidence %.0f%% >= %.0f%% threshold', $confidence * 100, config('agents.auto_approve_confidence', 0.90) * 100),
+            $autoApproved => match ($autoApprovalReason) {
+                'routine_operational_output' => 'Auto-approved: routine operational output.',
+                'informational_review_type' => 'Auto-approved: informational review type has no side-effect approval handler.',
+                default => 'Auto-approved by explicit agent review policy.',
+            },
             default => null,
         };
         $reviewedAt = ($autoApproved || $autoRejectedByQualityGate) ? now()->format('Y-m-d H:i:s') : null;
@@ -6501,6 +7009,9 @@ class AgentLoopService
                 'success' => true,
                 'review_id' => (int) $raced->id,
                 'token' => $raced->token,
+                'status' => (string) $raced->status,
+                'review_created' => (string) $raced->status === 'pending',
+                'review_row_created' => false,
                 'deduplicated' => true,
                 'raced' => true,
                 'message' => 'Concurrent session inserted first; returning existing review row',
@@ -6517,10 +7028,11 @@ class AgentLoopService
         );
 
         if ($autoApproved) {
-            Log::info('AgentLoop: High-confidence finding auto-approved', [
+            Log::info('AgentLoop: Non-operator informational review auto-approved', [
                 'id' => $itemId,
                 'agent_id' => $agentId,
                 'confidence' => $confidence,
+                'auto_approval_reason' => $autoApprovalReason,
                 'title' => $title,
             ]);
 
@@ -6568,6 +7080,8 @@ class AgentLoopService
             'status' => $status,
             'auto_approved' => $autoApproved,
             'auto_rejected' => $autoRejectedByQualityGate,
+            'review_created' => $status === 'pending',
+            'review_row_created' => true,
             'expires_at' => $expiresAt,
             'actionability_state' => $actionabilityGate['state'] ?? null,
         ];
@@ -6603,6 +7117,72 @@ class AgentLoopService
         }
 
         return $count;
+    }
+
+    private function allowsInformationalReviewAutoApproval(string $reviewType, ?string $findingType, array $gate, array $details): bool
+    {
+        if (! in_array($gate['state'] ?? null, [AgentActionabilityGateService::STATE_REVIEW_READY, AgentActionabilityGateService::STATE_OBSERVE_ONLY, AgentActionabilityGateService::STATE_SILENT_AUDIT], true)
+            || ($details['ds_governance']['requires_operator_confirmation_for_write'] ?? false) === true) {
+            return false;
+        }
+
+        try {
+            $registry = app(ReviewTypeRegistryService::class);
+            foreach (array_unique(array_filter([$reviewType, $findingType], static fn ($name) => is_string($name) && $name !== '')) as $name) {
+                $type = $registry->getType($name);
+                if (! is_array($type) || ($type['source_connection'] ?? null) !== 'mysql'
+                    || ($type['source_table'] ?? null) !== 'agent_review_queue') {
+                    return false;
+                }
+                foreach (['service_class', 'approve_method', 'reject_method', 'approve_sql', 'reject_sql', 'ui_schema', 'actions', 'actionability_state'] as $field) {
+                    if (! array_key_exists($field, $type)) {
+                        return false;
+                    }
+                }
+                foreach (['service_class', 'approve_method', 'reject_method'] as $field) {
+                    if ($type[$field] !== null && $type[$field] !== '') {
+                        return false;
+                    }
+                }
+                foreach (['approve_sql' => 'approved', 'reject_sql' => 'rejected'] as $field => $status) {
+                    if ($type[$field] !== null && $type[$field] !== ''
+                        && ! $this->isAgentReviewDispositionSql($type[$field], $status)) {
+                        return false;
+                    }
+                }
+                if (($type['ui_schema']['inspection_only'] ?? false) === true
+                    || ! in_array($type['actionability_state'], [AgentActionabilityGateService::STATE_SILENT_AUDIT, AgentActionabilityGateService::STATE_OBSERVE_ONLY, AgentActionabilityGateService::STATE_REVIEW_READY], true)) {
+                    return false;
+                }
+                $actions = $type['actions'] ?? [];
+                if (! is_array($actions)) {
+                    return false;
+                }
+                foreach ($actions as $action) {
+                    if (! is_array($action) || ! in_array($action['name'] ?? null, ['view', 'ignore'], true)) {
+                        return false;
+                    }
+                }
+            }
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $reviewType !== '';
+    }
+
+    private function isAgentReviewDispositionSql(mixed $sql, string $status): bool
+    {
+        if (! is_string($sql)) {
+            return false;
+        }
+
+        // Recognize only the existing literal row-status templates, never domain SQL.
+        $pattern = '/\A\s*UPDATE\s+`?agent_review_queue`?\s+SET\s+`?status`?\s*=\s*\''.$status.'\''
+            .'(?:\s*,\s*`?(?:reviewed_at|updated_at)`?\s*=\s*NOW\(\))*'
+            .'\s+WHERE\s+`?(?:id|token)`?\s*=\s*\?(?:\s+AND\s+`?status`?\s*=\s*\'pending\')?\s*;?\s*\z/i';
+
+        return preg_match($pattern, $sql) === 1;
     }
 
     private function qualityGateRequiresHumanReview(array $details): bool
@@ -6875,6 +7455,24 @@ class AgentLoopService
             ];
         }
 
+        $actionability = app(AgentActionabilityGateService::class);
+        $classification = $actionability->classifyReviewSubmission([
+            'agent_id' => $row->agent_id,
+            'review_type' => $row->review_type,
+            'title' => $row->title,
+            'summary' => $row->summary,
+            'confidence' => $row->confidence,
+            'priority' => $row->priority,
+        ], $details);
+        if (! $actionability->shouldNotifyPushover($classification)) {
+            return [
+                'success' => true,
+                'review_id' => (int) $row->id,
+                'pushover_suppressed' => true,
+                'message' => 'Current review policy keeps this item in the Review portal.',
+            ];
+        }
+
         $this->sendReviewNotification(
             (int) $row->id,
             (string) $row->token,
@@ -7081,7 +7679,7 @@ class AgentLoopService
 
     /**
      * Poll Pushover receipts for all pending review items with receipts.
-     * If ack received, auto-approve the review item.
+     * A delivery acknowledgement is never domain approval; keep the item pending.
      * Called by scheduled job (every 16 min).
      */
     public function pollPushoverReceipts(): array
@@ -7099,6 +7697,7 @@ class AgentLoopService
 
         $controller = app(NotificationController::class);
         $approved = 0;
+        $acknowledged = 0;
 
         foreach ($pending as $item) {
             $details = json_decode($item->details, true);
@@ -7113,10 +7712,8 @@ class AgentLoopService
             }
 
             if ($result['acknowledged']) {
-                // Ack received — auto-approve
-                $this->resolveReview($item->token, true, 'Auto-approved via Pushover acknowledgment');
-                $approved++;
-                Log::info('AgentLoop: Auto-approved review via Pushover ack', ['id' => $item->id]);
+                $acknowledged++;
+                Log::info('AgentLoop: Pushover acknowledged; operator review remains pending', ['id' => $item->id]);
             } elseif ($result['expired']) {
                 // Receipt expired without ack — leave pending (don't auto-reject)
                 Log::info('AgentLoop: Pushover receipt expired without ack', ['id' => $item->id]);
@@ -7128,7 +7725,7 @@ class AgentLoopService
             }
         }
 
-        return ['checked' => count($pending), 'approved' => $approved];
+        return ['checked' => count($pending), 'approved' => $approved, 'acknowledged' => $acknowledged];
     }
 
     /**
@@ -7178,7 +7775,7 @@ class AgentLoopService
         }
     }
 
-    private function sanitizeReviewDetails(array $details): array
+    private function sanitizeReviewDetails(array $details, ?string $reviewType = null): array
     {
         $json = json_encode($details);
 
@@ -7194,7 +7791,17 @@ class AgentLoopService
         // Strip SSH/PEM private key content
         $json = preg_replace('/-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----.*?-----END\s+(RSA\s+)?PRIVATE\s+KEY-----/s', '[REDACTED_PRIVATE_KEY]', $json);
 
-        return json_decode($json, true) ?? $details;
+        $sanitized = json_decode($json, true) ?? $details;
+        if ($reviewType === 'file_source_recovery') {
+            // Full-file and receipt checksums are provenance, not opaque credentials.
+            foreach (['source_sha256', 'expected_sha256', 'receipt_sha256'] as $field) {
+                if (is_string($details[$field] ?? null) && preg_match('/^[a-f0-9]{64}$/i', $details[$field]) === 1) {
+                    $sanitized[$field] = strtolower($details[$field]);
+                }
+            }
+        }
+
+        return $sanitized;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -7349,7 +7956,7 @@ class AgentLoopService
         foreach ($toolResults as $toolName => $result) {
             $status = $result['success'] ? 'OK' : 'FAILED';
             $resultText = (string) ($result['result_text'] ?? '');
-            if (mb_strlen($resultText) > $maxPerToolChars) {
+            if (CliWorkflowExecutionScope::current() === null && mb_strlen($resultText) > $maxPerToolChars) {
                 $resultText = mb_substr($resultText, 0, $maxPerToolChars)
                     ."\n... [truncated — {$toolName} returned ".number_format(mb_strlen((string) ($result['result_text'] ?? '')))." chars, showing first {$maxPerToolChars}]";
             }
@@ -7369,14 +7976,9 @@ class AgentLoopService
      * Build an agentic-mode tool result message with bounded payload size.
      * Public for testability.
      *
-     * Framework B7 — when the tool is log-shaped (log_parse_errors and
-     * siblings) and the result crosses the compaction threshold, pre-compact
-     * with LogPreCompactor before the truncation step. This runs UPSTREAM
-     * of whatever provider AIService routes to, so savings apply to every
-     * LLM in the fallback chain (Ollama local, Claude CLI, Groq, OpenRouter,
-     * Gemini, Cerebras, Mistral). Config-gated via agents.enable_log_precompaction
-     * so it can be flipped off without a deploy if the compaction ever
-     * damages signal quality.
+     * Log precompaction is retained only as unreachable historical code. The
+     * source-level prompt-integrity policy prevents it from removing detail
+     * before any provider receives the next agent prompt.
      */
     public function buildToolResultMessage(
         string $toolName,
@@ -7403,7 +8005,7 @@ class AgentLoopService
             }
         }
 
-        if (mb_strlen($boundedResult) > $maxPerToolChars) {
+        if (CliWorkflowExecutionScope::current() === null && mb_strlen($boundedResult) > $maxPerToolChars) {
             $boundedResult = mb_substr($boundedResult, 0, $maxPerToolChars)
                 ."\n... [truncated — {$toolName} returned ".number_format(mb_strlen($toolResultText))." chars, showing first {$maxPerToolChars}]";
         }
@@ -7424,6 +8026,7 @@ class AgentLoopService
             origin: $origin,
             payload: $payload,
             maxChars: $maxChars,
+            preservePayload: CliWorkflowExecutionScope::current() !== null,
         ));
     }
 
@@ -7441,7 +8044,8 @@ class AgentLoopService
      */
     private function shouldPrecompactLogToolResult(string $toolName, string $result): bool
     {
-        if (! (bool) config('agents.enable_log_precompaction', true)) {
+        if (! PromptIntegrityPolicy::allowsLossyTransforms()
+            || ! (bool) config('agents.enable_log_precompaction', false)) {
             return false;
         }
         $threshold = (int) config('agents.log_precompaction_threshold_bytes', 1000);
@@ -7461,9 +8065,55 @@ class AgentLoopService
     {
         $timeout = $options['ai_timeout']
             ?? $skillConfig['ai_timeout_seconds']
-            ?? config('agents.ai_timeout_seconds', 45);
+            ?? app(SystemConfigService::class)->getInt('agents.ai_timeout_seconds', 45);
 
-        return max(5, (int) $timeout);
+        return max(5, min(3600, (int) $timeout));
+    }
+
+    private function hybridDefaultTimeoutMinutes(): int
+    {
+        return max(5, min(150, app(SystemConfigService::class)->getInt('agents.hybrid_default_timeout_minutes', 90)));
+    }
+
+    private function resolveAgentModelRole(array $skillConfig = [], array $options = []): string
+    {
+        $role = $options['model_role'] ?? $skillConfig['model_role'] ?? 'standard';
+
+        return is_string($role) && trim($role) !== '' ? trim($role) : 'standard';
+    }
+
+    private function phaseMaxRetries(): int
+    {
+        return max(0, min(5, app(SystemConfigService::class)->getInt('agents.phase_max_retries', 2)));
+    }
+
+    private static function isPreDispatchCapacityWaitExpiry(\Throwable $error): bool
+    {
+        do {
+            if ($error instanceof ModelHostControllerUnavailableException
+                && $error->reason === 'wait_deadline'
+                && $error->lastWaitReason === 'capacity'
+                && ! $error->dispatched) {
+                return true;
+            }
+            $error = $error->getPrevious();
+        } while ($error !== null);
+
+        return false;
+    }
+
+    private static function allSuccessfulToolCallsReadOnly(array $toolCalls): bool
+    {
+        foreach ($toolCalls as $call) {
+            if (! is_array($call) || ! is_bool($call['success'] ?? null)) {
+                return false;
+            }
+            if ($call['success'] && ($call['risk_level'] ?? null) !== 'read') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public function stabilizeFinalResponse(string $agentId, string $finalResponse, array $messages, array $toolCalls): string

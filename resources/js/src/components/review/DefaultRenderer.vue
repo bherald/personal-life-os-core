@@ -92,7 +92,7 @@ const formatDate = (dateStr) => {
   align-items: center;
   gap: 1rem;
   padding: 1rem;
-  background: var(--ops-plum);
+  background: var(--color-accent);
   border-radius: 0 16px 16px 0;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -105,7 +105,7 @@ const formatDate = (dateStr) => {
 
 .review-item.selected {
   background: var(--ops-magenta);
-  box-shadow: 0 0 0 2px var(--ops-orange);
+  box-shadow: 0 0 0 2px var(--ops-warning);
 }
 
 .item-checkbox {
@@ -131,7 +131,7 @@ const formatDate = (dateStr) => {
   font-size: 0.625rem;
   font-weight: 600;
   text-transform: uppercase;
-  color: var(--ops-black);
+  color: var(--color-text-primary);
 }
 
 .item-confidence {
@@ -139,13 +139,13 @@ const formatDate = (dateStr) => {
   font-weight: 600;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
-  background: var(--ops-sky);
-  color: var(--ops-black);
+  background: var(--color-accent);
+  color: white;
 }
 
-.item-confidence.high { background: var(--ops-green); }
-.item-confidence.medium { background: var(--ops-gold); }
-.item-confidence.low { background: var(--ops-sunset); color: var(--ops-white); }
+.item-confidence.high { background: var(--ops-success); }
+.item-confidence.medium { background: var(--ops-warning); }
+.item-confidence.low { background: var(--ops-danger); color: var(--ops-white); }
 
 .item-priority {
   font-size: 0.625rem;
@@ -155,14 +155,14 @@ const formatDate = (dateStr) => {
   border-radius: 4px;
 }
 
-.priority-high { background: var(--ops-sunset); color: var(--ops-white); }
-.priority-medium { background: var(--ops-gold); color: var(--ops-black); }
-.priority-low { background: var(--ops-plum-light, #5c4a72); color: var(--ops-peach); }
+.priority-high { background: var(--ops-danger); color: var(--ops-white); }
+.priority-medium { background: var(--ops-warning); color: white; }
+.priority-low { background: var(--color-bg-hover); color: var(--color-text-primary); }
 
 .item-title {
   font-size: 0.9375rem;
   font-weight: 500;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -170,7 +170,7 @@ const formatDate = (dateStr) => {
 
 .item-summary {
   font-size: 0.8125rem;
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
   margin-top: 0.25rem;
 }
 
@@ -196,12 +196,12 @@ const formatDate = (dateStr) => {
 }
 
 .action-btn.approve {
-  background: var(--ops-green);
-  color: var(--ops-black);
+  background: var(--ops-success);
+  color: white;
 }
 
 .action-btn.reject {
-  background: var(--ops-sunset);
+  background: var(--ops-danger);
   color: var(--ops-white);
 }
 

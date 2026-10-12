@@ -3,10 +3,9 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use Exception;
 use Illuminate\Http\JsonResponse;
 use ReflectionClass;
-use ReflectionMethod;
-use Exception;
 
 class NodeController extends Controller
 {
@@ -16,7 +15,7 @@ class NodeController extends Controller
             $nodePath = app_path('Nodes');
             $nodes = [];
 
-            $files = glob($nodePath . '/*.php');
+            $files = glob($nodePath.'/*.php');
 
             foreach ($files as $file) {
                 $className = basename($file, '.php');
@@ -28,7 +27,7 @@ class NodeController extends Controller
 
                 $fullClassName = "App\\Nodes\\{$className}";
 
-                if (!class_exists($fullClassName)) {
+                if (! class_exists($fullClassName)) {
                     continue;
                 }
 
@@ -40,19 +39,19 @@ class NodeController extends Controller
             }
 
             // Sort nodes alphabetically by name
-            usort($nodes, function($a, $b) {
+            usort($nodes, function ($a, $b) {
                 return strcmp($a['name'], $b['name']);
             });
 
             return response()->json([
                 'success' => true,
-                'data' => $nodes
+                'data' => $nodes,
             ]);
 
         } catch (Exception $e) {
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'FETCH_FAILED', 'message' => $e->getMessage()]
+                'error' => ['code' => 'FETCH_FAILED', 'message' => $e->getMessage()],
             ], 500);
         }
     }
@@ -69,7 +68,7 @@ class NodeController extends Controller
                 // Format config for frontend
                 $formattedConfig = [
                     'required' => [],
-                    'optional' => []
+                    'optional' => [],
                 ];
 
                 if (isset($definition['config'])) {
@@ -104,7 +103,7 @@ class NodeController extends Controller
                     'icon' => $definition['icon'] ?? null,
                     'config' => $formattedConfig,
                     'outputs' => $definition['outputs'] ?? [],
-                    'className' => $className
+                    'className' => $className,
                 ];
             }
 
@@ -135,10 +134,10 @@ class NodeController extends Controller
                 'category' => 'utility',
                 'config' => [
                     'required' => $configParams['required'],
-                    'optional' => $configParams['optional']
+                    'optional' => $configParams['optional'],
                 ],
                 'outputs' => $outputs,
-                'className' => $className
+                'className' => $className,
             ];
 
         } catch (Exception $e) {
@@ -175,7 +174,7 @@ class NodeController extends Controller
 
     private function extractDescription(string|false $docComment, string $name): string
     {
-        if (!$docComment) {
+        if (! $docComment) {
             return $this->generateDefaultDescription($name);
         }
 
@@ -189,7 +188,7 @@ class NodeController extends Controller
                 continue;
             }
 
-            $description .= $line . ' ';
+            $description .= $line.' ';
         }
 
         return trim($description) ?: $this->generateDefaultDescription($name);
@@ -199,7 +198,8 @@ class NodeController extends Controller
     {
         // Convert camelCase to words
         $words = preg_split('/(?=[A-Z])/', $name, -1, PREG_SPLIT_NO_EMPTY);
-        return 'Node for ' . strtolower(implode(' ', $words));
+
+        return 'Node for '.strtolower(implode(' ', $words));
     }
 
     private function extractConfigParams(string $className): array
@@ -222,7 +222,7 @@ class NodeController extends Controller
             $paramInfo = [
                 'name' => $paramName,
                 'description' => $this->generateParamDescription($paramName),
-                'type' => $this->inferParamType($paramName)
+                'type' => $this->inferParamType($paramName),
             ];
 
             if ($hasDefault) {
@@ -235,7 +235,7 @@ class NodeController extends Controller
 
         return [
             'required' => array_values(array_unique($required, SORT_REGULAR)),
-            'optional' => array_values(array_unique($optional, SORT_REGULAR))
+            'optional' => array_values(array_unique($optional, SORT_REGULAR)),
         ];
     }
 
@@ -249,7 +249,7 @@ class NodeController extends Controller
             'priority' => 'Notification priority level',
             'sound' => 'Notification sound',
             'response_format' => 'Expected response format from AI',
-            'ai_mode' => 'AI service mode (auto, openai, anthropic)'
+            'ai_mode' => 'AI service mode (auto, local, external_api)',
         ];
 
         return $descriptions[$paramName] ?? ucfirst(str_replace('_', ' ', $paramName));
@@ -277,14 +277,14 @@ class NodeController extends Controller
         $outputs = [
             'data' => 'Main output data',
             'meta' => 'Metadata about the execution',
-            'error' => 'Error message if execution failed'
+            'error' => 'Error message if execution failed',
         ];
 
         // Try to find specific output keys in standardOutput calls
         if (preg_match('/standardOutput\(\[(.*?)\]/s', $content, $match)) {
             preg_match_all('/[\'"]([^\'"]*)[\'"]\s*=>/', $match[1], $keys);
 
-            if (!empty($keys[1])) {
+            if (! empty($keys[1])) {
                 $specificOutputs = [];
                 foreach ($keys[1] as $key) {
                     $specificOutputs[$key] = $this->generateOutputDescription($key);
@@ -306,7 +306,7 @@ class NodeController extends Controller
             'notification_sent' => 'Whether notification was sent successfully',
             'message_length' => 'Length of the notification message',
             'temperature' => 'Current temperature',
-            'humidity' => 'Current humidity percentage'
+            'humidity' => 'Current humidity percentage',
         ];
 
         return $descriptions[$key] ?? ucfirst(str_replace('_', ' ', $key));

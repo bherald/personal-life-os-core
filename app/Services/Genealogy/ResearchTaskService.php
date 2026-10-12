@@ -20,6 +20,7 @@ use InvalidArgumentException;
  * 5. Soundly reasoned, coherently written conclusion
  *
  * Historical private backlog label: Priority 4 research task management.
+ *
  * @see Board for Certification of Genealogists GPS standard
  */
 class ResearchTaskService
@@ -64,12 +65,14 @@ class ResearchTaskService
     /**
      * Create a new GPS research task
      *
-     * @param int $personId Person being researched
-     * @param string $question The research question
-     * @param string|null $hypothesis Working theory/proposed answer
-     * @param string $taskType Type of research (birth, death, marriage, etc.)
-     * @param array $options Additional options (priority, due_date, assigned_to)
-     * @return int New task ID
+     * @param  int  $personId  Person being researched
+     * @param  string  $question  The research question
+     * @param  string|null  $hypothesis  Working theory/proposed answer
+     * @param  string  $taskType  Type of research (birth, death, marriage, etc.)
+     * @param  array  $options  Additional options (priority, due_date, assigned_to)
+     * @param  bool  $skipExistingOpen  Skip an exact matching open task when requested by registry policy
+     * @return int|null New task ID, or null when a matching open task is skipped
+     *
      * @throws InvalidArgumentException
      */
     public function createTask(
@@ -77,16 +80,38 @@ class ResearchTaskService
         string $question,
         ?string $hypothesis = null,
         string $taskType = 'other',
-        array $options = []
-    ): int {
+        array $options = [],
+        bool $skipExistingOpen = false
+    ): ?int {
         // Validate task type
-        if (!array_key_exists($taskType, self::TASK_TYPES)) {
+        if (! array_key_exists($taskType, self::TASK_TYPES)) {
             throw new InvalidArgumentException("Invalid task type: {$taskType}");
         }
 
+        if ($skipExistingOpen) {
+            return DB::transaction(function () use ($personId, $question, $hypothesis, $taskType, $options): ?int {
+                // Serialize guarded creators for one person without rewriting the
+                // question or imposing a unique constraint on historical tasks.
+                $person = DB::table('genealogy_persons')->where('id', $personId)->lockForUpdate()->first(['tree_id']);
+                if ($person === null) {
+                    throw new InvalidArgumentException("Person not found: {$personId}");
+                }
+                $existing = DB::table('gps_research_tasks')->where('person_id', $personId)->where('tree_id', $person->tree_id)
+                    ->whereIn('status', ['open', 'in_progress'])
+                    ->whereRaw('CAST(question AS BINARY) = CAST(? AS BINARY)', [$question])
+                    ->orderBy('id')->lockForUpdate()->first(['id']);
+                if ($existing !== null) {
+                    return null;
+                }
+
+                // The insert and initial assessment share the same transaction.
+                return $this->createTask($personId, $question, $hypothesis, $taskType, $options);
+            });
+        }
+
         // Get tree_id from person
-        $person = DB::selectOne("SELECT tree_id, given_name, surname FROM genealogy_persons WHERE id = ?", [$personId]);
-        if (!$person) {
+        $person = DB::selectOne('SELECT tree_id, given_name, surname FROM genealogy_persons WHERE id = ?', [$personId]);
+        if (! $person) {
             throw new InvalidArgumentException("Person not found: {$personId}");
         }
 
@@ -130,16 +155,16 @@ class ResearchTaskService
      */
     public function getTask(int $taskId): ?array
     {
-        $sql = "SELECT t.*,
+        $sql = 'SELECT t.*,
                        p.given_name, p.surname, p.birth_date, p.death_date,
                        tr.name as tree_name
                 FROM gps_research_tasks t
                 JOIN genealogy_persons p ON p.id = t.person_id
                 JOIN genealogy_trees tr ON tr.id = t.tree_id
-                WHERE t.id = ?";
+                WHERE t.id = ?';
 
         $task = DB::selectOne($sql, [$taskId]);
-        if (!$task) {
+        if (! $task) {
             return null;
         }
 
@@ -157,7 +182,7 @@ class ResearchTaskService
     public function updateTaskStatus(int $taskId, string $status, ?string $conclusion = null): bool
     {
         $validStatuses = ['open', 'in_progress', 'resolved', 'inconclusive', 'abandoned'];
-        if (!in_array($status, $validStatuses)) {
+        if (! in_array($status, $validStatuses)) {
             throw new InvalidArgumentException("Invalid status: {$status}");
         }
 
@@ -194,18 +219,18 @@ class ResearchTaskService
 
         $params = [$treeId];
 
-        if (!empty($filters['task_type'])) {
-            $sql .= " AND t.task_type = ?";
+        if (! empty($filters['task_type'])) {
+            $sql .= ' AND t.task_type = ?';
             $params[] = $filters['task_type'];
         }
 
-        if (!empty($filters['priority'])) {
-            $sql .= " AND t.priority = ?";
+        if (! empty($filters['priority'])) {
+            $sql .= ' AND t.priority = ?';
             $params[] = $filters['priority'];
         }
 
-        if (!empty($filters['person_id'])) {
-            $sql .= " AND t.person_id = ?";
+        if (! empty($filters['person_id'])) {
+            $sql .= ' AND t.person_id = ?';
             $params[] = $filters['person_id'];
         }
 
@@ -222,17 +247,17 @@ class ResearchTaskService
      */
     public function getPersonTasks(int $personId, bool $includeResolved = false): array
     {
-        $sql = "SELECT t.*,
+        $sql = 'SELECT t.*,
                        (SELECT COUNT(*) FROM gps_research_logs WHERE task_id = t.id) as log_count,
                        (SELECT overall_score FROM gps_assessments WHERE task_id = t.id ORDER BY assessed_at DESC LIMIT 1) as gps_score
                 FROM gps_research_tasks t
-                WHERE t.person_id = ?";
+                WHERE t.person_id = ?';
 
-        if (!$includeResolved) {
+        if (! $includeResolved) {
             $sql .= " AND t.status IN ('open', 'in_progress')";
         }
 
-        $sql .= " ORDER BY t.created_at DESC";
+        $sql .= ' ORDER BY t.created_at DESC';
 
         return DB::select($sql, [$personId]);
     }
@@ -313,11 +338,11 @@ class ResearchTaskService
         $params = [$staleHours];
 
         if ($treeId !== null) {
-            $sql .= " AND t.tree_id = ?";
+            $sql .= ' AND t.tree_id = ?';
             $params[] = $treeId;
         }
 
-        $sql .= " ORDER BY t.updated_at ASC";
+        $sql .= ' ORDER BY t.updated_at ASC';
 
         return array_map(static fn ($row) => (array) $row, DB::select($sql, $params));
     }
@@ -354,10 +379,10 @@ class ResearchTaskService
     public function normalizeTaskEvidenceSources(int $taskId): array
     {
         $task = DB::selectOne(
-            "SELECT t.id, t.tree_id, t.person_id, t.question, p.given_name, p.surname
+            'SELECT t.id, t.tree_id, t.person_id, t.question, p.given_name, p.surname
              FROM gps_research_tasks t
              JOIN genealogy_persons p ON p.id = t.person_id
-             WHERE t.id = ?",
+             WHERE t.id = ?',
             [$taskId]
         );
 
@@ -496,7 +521,7 @@ class ResearchTaskService
         $url = null;
         if (preg_match('/https?:\/\/\S+/i', $summary, $matches) === 1) {
             $url = rtrim($matches[0], '.,;)');
-        } elseif (!empty($log['repository_url'])) {
+        } elseif (! empty($log['repository_url'])) {
             $url = trim((string) $log['repository_url']);
         }
 
@@ -580,14 +605,14 @@ class ResearchTaskService
     {
         $existing = null;
 
-        if (!empty($candidate['url'])) {
+        if (! empty($candidate['url'])) {
             $existing = DB::selectOne(
                 'SELECT id FROM genealogy_sources WHERE tree_id = ? AND url = ? LIMIT 1',
                 [$treeId, $candidate['url']]
             );
         }
 
-        if (!$existing) {
+        if (! $existing) {
             $existing = DB::selectOne(
                 'SELECT id FROM genealogy_sources WHERE tree_id = ? AND title = ? LIMIT 1',
                 [$treeId, $candidate['title']]
@@ -625,23 +650,23 @@ class ResearchTaskService
     /**
      * Log a search activity (including negative results)
      *
-     * @param int $taskId Research task ID
-     * @param array $searchDetails Search parameters and results
+     * @param  int  $taskId  Research task ID
+     * @param  array  $searchDetails  Search parameters and results
      * @return int New log entry ID
      */
     public function logSearch(int $taskId, array $searchDetails): int
     {
-        $task = DB::selectOne("SELECT person_id FROM gps_research_tasks WHERE id = ?", [$taskId]);
-        if (!$task) {
+        $task = DB::selectOne('SELECT person_id FROM gps_research_tasks WHERE id = ?', [$taskId]);
+        if (! $task) {
             throw new InvalidArgumentException("Task not found: {$taskId}");
         }
 
-        $sql = "INSERT INTO gps_research_logs
+        $sql = 'INSERT INTO gps_research_logs
                 (task_id, person_id, log_type, repository_searched, repository_url,
                  search_terms, date_range_searched, location_searched, record_types_searched,
                  results_summary, negative_result, source_ids_found, media_ids_found,
                  search_duration_minutes, notes, searched_at, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())';
 
         $logType = $searchDetails['log_type'] ?? 'search';
         $negativeResult = (bool) ($searchDetails['negative_result'] ?? false);
@@ -693,10 +718,10 @@ class ResearchTaskService
      */
     public function getResearchLog(int $taskId): array
     {
-        $sql = "SELECT l.*
+        $sql = 'SELECT l.*
                 FROM gps_research_logs l
                 WHERE l.task_id = ?
-                ORDER BY l.searched_at DESC, l.created_at DESC";
+                ORDER BY l.searched_at DESC, l.created_at DESC';
 
         $logs = DB::select($sql, [$taskId]);
 
@@ -721,11 +746,11 @@ class ResearchTaskService
      */
     public function getNegativeResults(int $taskId): array
     {
-        $sql = "SELECT repository_searched, search_terms, date_range_searched,
+        $sql = 'SELECT repository_searched, search_terms, date_range_searched,
                        location_searched, results_summary, searched_at
                 FROM gps_research_logs
                 WHERE task_id = ? AND negative_result = 1
-                ORDER BY searched_at DESC";
+                ORDER BY searched_at DESC';
 
         return DB::select($sql, [$taskId]);
     }
@@ -739,11 +764,11 @@ class ResearchTaskService
      */
     private function createInitialAssessment(int $taskId, int $personId): int
     {
-        $sql = "INSERT INTO gps_assessments
+        $sql = 'INSERT INTO gps_assessments
                 (task_id, person_id, exhaustive_search_score, source_citations_complete,
                  evidence_analysis_complete, conflicting_evidence_resolved, sound_conclusion,
                  overall_score, gps_compliant, created_at, updated_at)
-                VALUES (?, ?, 0, FALSE, FALSE, FALSE, FALSE, 0, FALSE, NOW(), NOW())";
+                VALUES (?, ?, 0, FALSE, FALSE, FALSE, FALSE, 0, FALSE, NOW(), NOW())';
 
         DB::insert($sql, [$taskId, $personId]);
 
@@ -755,13 +780,13 @@ class ResearchTaskService
      *
      * Returns detailed scoring for all 5 GPS elements.
      *
-     * @param int $taskId Task to assess
+     * @param  int  $taskId  Task to assess
      * @return array GPS assessment with element scores and recommendations
      */
     public function assessGPSCompliance(int $taskId): array
     {
         $task = $this->getTask($taskId);
-        if (!$task) {
+        if (! $task) {
             throw new InvalidArgumentException("Task not found: {$taskId}");
         }
 
@@ -817,10 +842,10 @@ class ResearchTaskService
      */
     public function getLatestAssessment(int $taskId): ?object
     {
-        $sql = "SELECT * FROM gps_assessments
+        $sql = 'SELECT * FROM gps_assessments
                 WHERE task_id = ?
                 ORDER BY assessed_at DESC, created_at DESC
-                LIMIT 1";
+                LIMIT 1';
 
         $assessment = DB::selectOne($sql, [$taskId]);
 
@@ -893,6 +918,7 @@ class ResearchTaskService
                     return false;
                 }
             }
+
             return true;
         });
 
@@ -903,9 +929,9 @@ class ResearchTaskService
             'repositories_remaining' => array_values($remaining),
             'negative_results_documented' => $negativeCount,
             'notes' => $score >= 70
-                ? "Good coverage of relevant repositories"
-                : "Additional repositories should be searched: " . implode(', ', array_map(
-                    fn($r) => is_object($r) ? $r->name : $r['name'],
+                ? 'Good coverage of relevant repositories'
+                : 'Additional repositories should be searched: '.implode(', ', array_map(
+                    fn ($r) => is_object($r) ? $r->name : $r['name'],
                     array_slice($remaining, 0, 3)
                 )),
         ];
@@ -918,7 +944,7 @@ class ResearchTaskService
     {
         $sourceIds = [];
         foreach ($logs as $log) {
-            if (!empty($log->source_ids_found)) {
+            if (! empty($log->source_ids_found)) {
                 $sourceIds = array_merge($sourceIds, $log->source_ids_found);
             }
         }
@@ -949,7 +975,7 @@ class ResearchTaskService
             }
         } else {
             $qualityScore = 0;
-            $issues[] = "No sources have been linked to research findings";
+            $issues[] = 'No sources have been linked to research findings';
         }
 
         $qualityScore = max(0, $qualityScore);
@@ -960,8 +986,8 @@ class ResearchTaskService
             'sources_found' => $sourceCount,
             'issues' => $issues,
             'notes' => empty($issues)
-                ? "All source citations appear complete"
-                : "Citation improvements needed: " . count($issues) . " issues found",
+                ? 'All source citations appear complete'
+                : 'Citation improvements needed: '.count($issues).' issues found',
         ];
     }
 
@@ -971,7 +997,7 @@ class ResearchTaskService
     private function assessEvidenceAnalysis(int $taskId, array $logs): array
     {
         // Count evidence types from analysis logs
-        $analysisLogs = array_filter($logs, fn($l) => $l->log_type === 'analysis');
+        $analysisLogs = array_filter($logs, fn ($l) => $l->log_type === 'analysis');
         $directCount = 0;
         $indirectCount = 0;
         $negativeCount = 0;
@@ -997,10 +1023,18 @@ class ResearchTaskService
 
         // Score based on evidence diversity and analysis
         $score = 0;
-        if ($directCount > 0) $score += 40;
-        if ($indirectCount > 0) $score += 20;
-        if ($negativeCount > 0) $score += 20; // Negative evidence is important!
-        if ($hasAnalysis) $score += 20;
+        if ($directCount > 0) {
+            $score += 40;
+        }
+        if ($indirectCount > 0) {
+            $score += 20;
+        }
+        if ($negativeCount > 0) {
+            $score += 20;
+        } // Negative evidence is important!
+        if ($hasAnalysis) {
+            $score += 20;
+        }
 
         return [
             'score' => min(100, $score),
@@ -1010,8 +1044,8 @@ class ResearchTaskService
             'negative_evidence_count' => $negativeCount,
             'has_correlation_analysis' => $hasAnalysis,
             'notes' => $score >= 60
-                ? "Evidence analysis shows good coverage of evidence types"
-                : "More evidence analysis needed - consider documenting evidence types and correlations",
+                ? 'Evidence analysis shows good coverage of evidence types'
+                : 'More evidence analysis needed - consider documenting evidence types and correlations',
         ];
     }
 
@@ -1021,14 +1055,14 @@ class ResearchTaskService
     private function assessConflictResolution(int $taskId): array
     {
         // Get task to check evidence_summary
-        $task = DB::selectOne("SELECT evidence_summary, conclusion FROM gps_research_tasks WHERE id = ?", [$taskId]);
+        $task = DB::selectOne('SELECT evidence_summary, conclusion FROM gps_research_tasks WHERE id = ?', [$taskId]);
 
         $conflictsExist = false;
         $conflictsResolved = true;
 
         if ($task && $task->evidence_summary) {
             $summary = json_decode($task->evidence_summary, true);
-            if (isset($summary['conflicts']) && !empty($summary['conflicts'])) {
+            if (isset($summary['conflicts']) && ! empty($summary['conflicts'])) {
                 $conflictsExist = true;
                 $conflictsResolved = isset($summary['conflicts_resolved']) && $summary['conflicts_resolved'];
             }
@@ -1036,19 +1070,19 @@ class ResearchTaskService
 
         // If no conflicts documented, check if conclusion acknowledges potential conflicts
         $score = 100;
-        $notes = "No conflicting evidence identified";
+        $notes = 'No conflicting evidence identified';
 
-        if ($conflictsExist && !$conflictsResolved) {
+        if ($conflictsExist && ! $conflictsResolved) {
             $score = 30;
-            $notes = "Conflicting evidence exists but has not been resolved";
+            $notes = 'Conflicting evidence exists but has not been resolved';
         } elseif ($conflictsExist && $conflictsResolved) {
             $score = 100;
-            $notes = "Conflicting evidence has been resolved";
+            $notes = 'Conflicting evidence has been resolved';
         }
 
         return [
             'score' => $score,
-            'passed' => !$conflictsExist || $conflictsResolved,
+            'passed' => ! $conflictsExist || $conflictsResolved,
             'conflicts_exist' => $conflictsExist,
             'conflicts_resolved' => $conflictsResolved,
             'notes' => $notes,
@@ -1068,7 +1102,7 @@ class ResearchTaskService
                 'passed' => false,
                 'has_conclusion' => false,
                 'word_count' => 0,
-                'notes' => "No written conclusion has been documented",
+                'notes' => 'No written conclusion has been documented',
             ];
         }
 
@@ -1076,9 +1110,15 @@ class ResearchTaskService
         $hasReasoning = preg_match('/because|therefore|evidence|shows|indicates|suggests|based on/i', $conclusion);
 
         $score = 0;
-        if ($wordCount >= 50) $score += 30;
-        if ($wordCount >= 100) $score += 20;
-        if ($hasReasoning) $score += 50;
+        if ($wordCount >= 50) {
+            $score += 30;
+        }
+        if ($wordCount >= 100) {
+            $score += 20;
+        }
+        if ($hasReasoning) {
+            $score += 50;
+        }
 
         return [
             'score' => min(100, $score),
@@ -1087,8 +1127,8 @@ class ResearchTaskService
             'word_count' => $wordCount,
             'has_reasoning' => (bool) $hasReasoning,
             'notes' => $score >= 70
-                ? "Conclusion appears well-reasoned"
-                : "Conclusion could be strengthened with more detailed reasoning",
+                ? 'Conclusion appears well-reasoned'
+                : 'Conclusion could be strengthened with more detailed reasoning',
         ];
     }
 
@@ -1123,18 +1163,18 @@ class ResearchTaskService
     {
         $recommendations = [];
 
-        if (!$e1['passed']) {
+        if (! $e1['passed']) {
             $remainingRepos = $e1['repositories_remaining'] ?? [];
-            $repoNames = array_map(fn($r) => is_object($r) ? $r->name : ($r['name'] ?? 'Unknown'), array_slice($remainingRepos, 0, 3));
+            $repoNames = array_map(fn ($r) => is_object($r) ? $r->name : ($r['name'] ?? 'Unknown'), array_slice($remainingRepos, 0, 3));
             $recommendations[] = [
                 'element' => 1,
                 'priority' => 'high',
                 'action' => 'Expand search to additional repositories',
-                'details' => 'Check: ' . implode(', ', $repoNames),
+                'details' => 'Check: '.implode(', ', $repoNames),
             ];
         }
 
-        if (!$e2['passed']) {
+        if (! $e2['passed']) {
             $recommendations[] = [
                 'element' => 2,
                 'priority' => 'high',
@@ -1143,7 +1183,7 @@ class ResearchTaskService
             ];
         }
 
-        if (!$e3['passed']) {
+        if (! $e3['passed']) {
             $recommendations[] = [
                 'element' => 3,
                 'priority' => 'medium',
@@ -1152,7 +1192,7 @@ class ResearchTaskService
             ];
         }
 
-        if (!$e4['passed']) {
+        if (! $e4['passed']) {
             $recommendations[] = [
                 'element' => 4,
                 'priority' => 'high',
@@ -1161,7 +1201,7 @@ class ResearchTaskService
             ];
         }
 
-        if (!$e5['passed']) {
+        if (! $e5['passed']) {
             $recommendations[] = [
                 'element' => 5,
                 'priority' => 'high',
@@ -1178,7 +1218,7 @@ class ResearchTaskService
      */
     private function saveAssessment(int $taskId, int $personId, array $data): void
     {
-        $sql = "INSERT INTO gps_assessments
+        $sql = 'INSERT INTO gps_assessments
                 (task_id, person_id, exhaustive_search_score, exhaustive_search_notes,
                  repositories_checked, repositories_remaining,
                  source_citations_complete, citation_issues,
@@ -1205,7 +1245,7 @@ class ResearchTaskService
                     overall_score = VALUES(overall_score),
                     gps_compliant = VALUES(gps_compliant),
                     assessed_at = NOW(),
-                    updated_at = NOW()";
+                    updated_at = NOW()';
 
         $e1 = $data['element1'];
         $e2 = $data['element2'];
@@ -1273,15 +1313,15 @@ class ResearchTaskService
      */
     public function getStandardRepositories(?string $category = null): array
     {
-        $sql = "SELECT * FROM gps_standard_repositories";
+        $sql = 'SELECT * FROM gps_standard_repositories';
         $params = [];
 
         if ($category) {
-            $sql .= " WHERE category = ?";
+            $sql .= ' WHERE category = ?';
             $params[] = $category;
         }
 
-        $sql .= " ORDER BY category, name";
+        $sql .= ' ORDER BY category, name';
 
         return DB::select($sql, $params);
     }
@@ -1306,7 +1346,7 @@ class ResearchTaskService
             WHERE tree_id = ?
         ", [$treeId]);
 
-        $gpsStats = DB::selectOne("
+        $gpsStats = DB::selectOne('
             SELECT
                 COUNT(*) as assessed_tasks,
                 SUM(CASE WHEN gps_compliant = 1 THEN 1 ELSE 0 END) as compliant_tasks,
@@ -1314,7 +1354,7 @@ class ResearchTaskService
             FROM gps_assessments a
             JOIN gps_research_tasks t ON t.id = a.task_id
             WHERE t.tree_id = ?
-        ", [$treeId]);
+        ', [$treeId]);
 
         return [
             'total_tasks' => (int) $stats->total_tasks,
@@ -1335,10 +1375,9 @@ class ResearchTaskService
      * the same searches on the next run. Grouped by person with search
      * details, repositories searched, and whether results were found.
      *
-     * @param int $treeId
-     * @param int|null $personId Filter to a specific person (null = all persons in tree)
-     * @param int $days How many days back to look (default 30)
-     * @param int $limit Max results (default 100)
+     * @param  int|null  $personId  Filter to a specific person (null = all persons in tree)
+     * @param  int  $days  How many days back to look (default 30)
+     * @param  int  $limit  Max results (default 100)
      */
     public function getRecentSearches(int $treeId, ?int $personId = null, int $days = 30, int $limit = 100): array
     {
@@ -1364,11 +1403,11 @@ class ResearchTaskService
         $params = [$treeId, $days];
 
         if ($personId !== null) {
-            $sql .= " AND l.person_id = ?";
+            $sql .= ' AND l.person_id = ?';
             $params[] = $personId;
         }
 
-        $sql .= " ORDER BY l.searched_at DESC LIMIT ?";
+        $sql .= ' ORDER BY l.searched_at DESC LIMIT ?';
         $params[] = $limit;
 
         $rows = DB::select($sql, $params);
@@ -1377,7 +1416,7 @@ class ResearchTaskService
         $byPerson = [];
         foreach ($rows as $row) {
             $key = $row->person_id;
-            if (!isset($byPerson[$key])) {
+            if (! isset($byPerson[$key])) {
                 $byPerson[$key] = [
                     'person_id' => $row->person_id,
                     'person_name' => $row->person_name,

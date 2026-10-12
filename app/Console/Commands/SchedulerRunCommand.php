@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\Custody\TaskCustodyService;
 use App\Services\ScheduledJobService;
+use Cron\CronExpression;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -161,30 +162,65 @@ class SchedulerRunCommand extends Command
      */
     private function runSingleJob(string $identifier): int
     {
-        // Try as ID first
-        $job = is_numeric($identifier)
-            ? $this->scheduledJobService->getJob((int) $identifier)
-            : $this->scheduledJobService->getJobByName($identifier);
+        $lock = null;
+        if (! $this->option('force')) {
+            $lock = Cache::lock(self::SCHEDULER_TICK_LOCK_KEY, self::SCHEDULER_TICK_LOCK_TTL);
+            if (! $lock->get()) {
+                $this->warn('Single-job run held: scheduler admission is busy.');
 
-        if (! $job) {
-            $this->error("Job not found: {$identifier}");
-
-            return 1;
+                return 1;
+            }
         }
+        try {
+            // Try as ID first
+            $job = is_numeric($identifier)
+                ? $this->scheduledJobService->getJob((int) $identifier)
+                : $this->scheduledJobService->getJobByName($identifier);
 
-        if (! $job->enabled && ! $this->option('force')) {
-            $this->warn("Job '{$job->name}' is disabled. Use --force to run anyway.");
+            if (! $job) {
+                $this->error("Job not found: {$identifier}");
 
-            return 1;
+                return 1;
+            }
+
+            if (! $job->enabled && ! $this->option('force')) {
+                $this->warn("Job '{$job->name}' is disabled. Use --force to run anyway.");
+
+                return 1;
+            }
+
+            $parallelLimit = max(1, (int) ($job->max_parallel ?? 1));
+            if (! $this->option('force') && $parallelLimit > 1) {
+                $parallelLimit = $this->scheduledJobService->resolveMaxParallel($job);
+            }
+            $runningCount = (int) ($job->running_count ?? 0);
+            if (! $this->option('force') && $job->without_overlapping
+                && ($parallelLimit <= 1 ? ($job->last_run_status === 'running' || $runningCount > 0) : $runningCount >= $parallelLimit)) {
+                $this->warn('Single-job run held: job already has running custody.');
+
+                return 1;
+            }
+
+            if ($this->option('dry-run')) {
+                $this->info(sprintf('[DRY-RUN] Would run: %s (%s)', $job->name, $job->command));
+
+                return 0;
+            }
+
+            $admittedRunId = null;
+            if ($lock !== null && ($this->option('sync') || ! $job->run_in_background)) {
+                // Record the existing run/custody while the normal tick cannot select it.
+                $admittedRunId = $this->scheduledJobService->markJobStarted($job->id, 'manual');
+                $lock->release();
+                $lock = null;
+            }
+
+            return $this->runJob($job, false, $admittedRunId) ? 0 : 1;
+        } finally {
+            if ($lock !== null) {
+                $lock->release();
+            }
         }
-
-        if ($this->option('dry-run')) {
-            $this->info(sprintf('[DRY-RUN] Would run: %s (%s)', $job->name, $job->command));
-
-            return 0;
-        }
-
-        return $this->runJob($job) ? 0 : 1;
     }
 
     /**
@@ -193,7 +229,7 @@ class SchedulerRunCommand extends Command
      * @param  object  $job  The job to run
      * @param  bool  $forceSync  Force synchronous execution (ignores run_in_background flag)
      */
-    private function runJob(object $job, bool $forceSync = false): bool
+    private function runJob(object $job, bool $forceSync = false, ?int $admittedRunId = null): bool
     {
         $this->line(sprintf('Running: %s', $job->name));
         Log::info("Scheduler running job: {$job->name}", ['job_id' => $job->id]);
@@ -207,7 +243,7 @@ class SchedulerRunCommand extends Command
         } else {
             // Run synchronously — if we have a worker-id, find the existing run record
             // created by the parent to avoid duplicate run records (zombie fix)
-            $existingRunId = null;
+            $existingRunId = $admittedRunId;
             $workerId = $this->option('worker-id');
             if ($workerId) {
                 $existing = DB::selectOne("
@@ -224,7 +260,7 @@ class SchedulerRunCommand extends Command
             // Build adaptive timeout extender closure for agent tasks
             $timeoutExtender = $this->buildTimeoutExtender($job, $startTime);
 
-            $result = $this->scheduledJobService->runJobNow($job->id, 'scheduler', $existingRunId, $timeoutExtender);
+            $result = $this->scheduledJobService->runJobNow($job->id, 'scheduler', $existingRunId, $timeoutExtender, is_string($workerId) ? $workerId : null);
 
             // Cancel alarm and clean up deadline key on normal completion
             if (function_exists('pcntl_alarm')) {
@@ -261,101 +297,20 @@ class SchedulerRunCommand extends Command
         $timeoutMinutes = $job->timeout_minutes ?? 120;
         $timeoutSeconds = $timeoutMinutes * 60;
 
-        pcntl_signal(SIGALRM, function () use ($job, $timeoutMinutes, $runId, $workerId) {
-            $msg = "[SIGALRM] Job #{$job->id} ({$job->name}) exceeded {$timeoutMinutes}min wall-clock timeout, terminating";
-            Log::error("Scheduler: {$msg}");
-            $pid = getmypid() ?: null;
-            $maxParallel = (int) ($job->max_parallel ?? 1);
-
-            // Mark job as failed in DB before exiting
-            // Use a short statement timeout to avoid deadlocking on hung connections
+        pcntl_async_signals(true);
+        pcntl_signal(SIGALRM, static function () {
+            // Reservation precedes execution. Never reenter DB/cache while interrupted.
+            // A missing/dead/expired owner remains an admission hold, not completion.
             try {
-                DB::connection('mysql')->reconnect();
-                DB::connection('mysql')->statement('SET SESSION wait_timeout = 3');
-
-                if ($maxParallel > 1 && $pid) {
-                    app(\App\Services\ScheduledJobService::class)->unregisterWorkerPid((int) $job->id, (int) $pid);
-                    DB::connection('mysql')->update("
-                        UPDATE scheduled_jobs
-                        SET last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n{$msg}')
-                        WHERE id = ?
-                    ", [$job->id]);
-                } else {
-                    DB::connection('mysql')->update("
-                        UPDATE scheduled_jobs
-                        SET last_run_status = 'failed', last_pid = NULL, running_pids = NULL, running_count = 0,
-                            last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n{$msg}')
-                        WHERE id = ?
-                    ", [$job->id]);
-                }
-
-                if ($runId !== null && $runId > 0) {
-                    DB::connection('mysql')->update("
-                        UPDATE scheduled_job_runs
-                        SET status = 'failed', completed_at = NOW(),
-                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
-                        WHERE id = ? AND status = 'running'
-                    ", [$runId]);
-                } elseif ($workerId !== null && $workerId !== '') {
-                    DB::connection('mysql')->update("
-                        UPDATE scheduled_job_runs
-                        SET status = 'failed', completed_at = NOW(),
-                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
-                        WHERE scheduled_job_id = ? AND worker_id = ? AND status = 'running'
-                    ", [$job->id, $workerId]);
-                } elseif ($pid) {
-                    DB::connection('mysql')->update("
-                        UPDATE scheduled_job_runs
-                        SET status = 'failed', completed_at = NOW(),
-                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
-                        WHERE scheduled_job_id = ? AND pid = ? AND status = 'running'
-                    ", [$job->id, $pid]);
-                } else {
-                    DB::connection('mysql')->update("
-                        UPDATE scheduled_job_runs
-                        SET status = 'failed', completed_at = NOW(),
-                            output = CONCAT(COALESCE(output, ''), '\n{$msg}')
-                        WHERE scheduled_job_id = ? AND status = 'running'
-                    ", [$job->id]);
-                }
-
-                // Clean up adaptive timeout deadline key
-                if ($maxParallel <= 1) {
-                    Cache::forget("scheduler:job:{$job->id}:deadline");
-                }
-
-                // Release any in-progress genealogy research queue items
-                $sessionLikes = ScheduledJobService::genealogyQueueSessionLikePatterns($runId, $pid ?: null);
-                if ($sessionLikes !== []) {
-                    $sessionLikeWhere = implode(' OR ', array_fill(0, count($sessionLikes), 'session_id LIKE ?'));
-                    DB::connection('mysql')->update("
-                        UPDATE genealogy_research_queue
-                        SET status = 'failed', completed_at = NOW(),
-                            notes = CONCAT(COALESCE(notes, ''), ' [SIGALRM timeout]'),
-                            updated_at = NOW()
-                        WHERE status = 'in_progress'
-                          AND ({$sessionLikeWhere})
-                    ", $sessionLikes);
-                } elseif ($maxParallel <= 1) {
-                    DB::connection('mysql')->update("
-                    UPDATE genealogy_research_queue
-                    SET status = 'failed', completed_at = NOW(),
-                        notes = CONCAT(COALESCE(notes, ''), ' [SIGALRM timeout]'),
-                        updated_at = NOW()
-                    WHERE status = 'in_progress'
-                      AND started_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
-                    ", [$timeoutMinutes]);
-                }
-            } catch (\Throwable $e) {
-                // Best effort — we're about to exit anyway
+                stream_set_blocking(STDERR, false);
+                fwrite(STDERR, "scheduled_timeout_outcome_unknown\n");
+            } catch (\Throwable) {
+                // Receipt failure cannot turn unknown physical work into a terminal result.
             }
-
-            // exit() can deadlock inside a signal handler when cURL is blocking.
-            // SIGKILL is unblockable and guarantees process termination.
             if (function_exists('posix_kill')) {
                 posix_kill(getmypid(), SIGKILL);
             }
-            exit(124); // Fallback if posix_kill unavailable
+            exit(124);
         });
 
         pcntl_alarm($timeoutSeconds);
@@ -441,69 +396,10 @@ class SchedulerRunCommand extends Command
      */
     private function runInBackground(object $job): array
     {
-        $maxParallel = $job->max_parallel ?? 1;
-        $isParallel = $maxParallel > 1;
-
-        if ($isParallel) {
-            return $this->runParallelWorker($job);
-        }
-
-        // --- Single worker path (PID capture) ---
-        // NOTE: Do NOT create a run record here. The child process creates its own
-        // via markJobStarted(). Creating one here caused zombie records: the parent's
-        // PID dies after exec(), zombie cleanup marks it failed, polluting job status.
-
-        // Mark job as running + advance next_run_at to prevent overlap
-        DB::update("
-            UPDATE scheduled_jobs SET
-                last_run_at = NOW(),
-                last_run_status = 'running',
-                last_pid = NULL,
-                updated_at = NOW()
-            WHERE id = ?
-        ", [$job->id]);
-
-        // Advance next_run_at so it's not due again
-        $nextRun = (new \Cron\CronExpression($job->cron_expression))
-            ->getNextRunDate(now()->toDateTimeImmutable())
-            ->format('Y-m-d H:i:s');
-        DB::update('UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?', [$nextRun, $job->id]);
-
-        // Spawn the background process and capture PID
-        $pendingProcess = Process::path(base_path())
-            ->forever()
-            ->quietly();
-
-        if (! app()->runningUnitTests()) {
-            $pendingProcess->options(['create_new_console' => true]);
-        }
-
-        $process = $pendingProcess->start([
-            PHP_BINARY,
-            'artisan',
-            'scheduler:run',
-            '--job='.$job->id,
-            '--force',
-            '--sync',
-        ]);
-        $pid = (int) ($process->id() ?? 0);
-
-        // Store PID on scheduled_jobs only — child hasn't created its run record yet.
-        // Child's markJobStarted() will pick up last_pid and copy to its run record.
-        if ($pid > 0) {
-            DB::update('UPDATE scheduled_jobs SET last_pid = ? WHERE id = ?', [$pid, $job->id]);
-            Log::info("Scheduler: Spawned background PID {$pid} for job #{$job->id} ({$job->name})");
-        }
-
-        return [
-            'success' => true,
-            'output' => 'Job started in background'.($pid > 0 ? " (PID {$pid})" : ''),
-        ];
+        return $this->runParallelWorker($job);
     }
 
-    /**
-     * Spawn a parallel worker for jobs with max_parallel > 1.
-     */
+    /** Reserve and claim the same existing worker path for single and parallel jobs. */
     private function runParallelWorker(object $job): array
     {
         // Confirm another worker is warranted via dynamic resolution
@@ -524,7 +420,7 @@ class SchedulerRunCommand extends Command
 
         // Only advance next_run_at when we're filling the last slot
         if ($currentRunning + 1 >= $resolved) {
-            $nextRun = (new \Cron\CronExpression($job->cron_expression))
+            $nextRun = (new CronExpression($job->cron_expression))
                 ->getNextRunDate(now()->toDateTimeImmutable())
                 ->format('Y-m-d H:i:s');
             DB::update('UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?', [$nextRun, $job->id]);
@@ -552,13 +448,13 @@ class SchedulerRunCommand extends Command
 
         // Register worker PID
         if ($pid > 0) {
-            $this->scheduledJobService->registerWorkerPid($job->id, $pid, $runId);
+            $this->scheduledJobService->registerWorkerPid($job->id, $pid, $runId, $workerId);
             Log::info("Scheduler: Spawned parallel worker PID {$pid} (worker: {$workerId}) for job #{$job->id} ({$job->name})");
         }
 
         return [
-            'success' => true,
-            'output' => "Parallel worker started (PID {$pid}, worker: {$workerId})",
+            'success' => $pid > 0,
+            'output' => $pid > 0 ? 'Reserved worker started.' : 'Worker launch held; reservation retained.',
         ];
     }
 }

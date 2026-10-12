@@ -13,7 +13,7 @@
           v-model="localQuery"
           type="text"
           :placeholder="placeholder"
-          class="flex-1 bg-transparent text-ops-peach placeholder-ops-text-muted py-3 px-2 outline-none text-lg font-medium tracking-wide"
+          class="flex-1 bg-transparent text-ops-peach placeholder-ops-text-muted py-3 px-2 outline-hidden text-lg font-medium tracking-wide"
           @input="onInput"
           @keydown.enter="emitSearch"
           @keydown.escape="onEscape"

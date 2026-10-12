@@ -5,31 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PLOS Command</title>
     <style>
+        :root { --ink: #162c39; --muted: #536b77; --line: #d8e2e5; --teal: #096b62; --paper: #fff; --canvas: #f2f5f5; --danger: #9d3434; }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 16px; min-height: 100vh; display: flex; flex-direction: column; }
-        .card { background: #16213e; border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid #0f3460; }
-        h1 { font-size: 16px; color: #fff; margin-bottom: 4px; }
-        .subtitle { font-size: 13px; color: #888; margin-bottom: 16px; }
-        .context { font-size: 13px; color: #a0a0a0; margin-bottom: 12px; padding: 10px; background: #0f3460; border-radius: 8px; }
-        input[type="text"] { width: 100%; padding: 14px; border: 1px solid #0f3460; border-radius: 8px; background: #0f3460; color: #e0e0e0; font-size: 16px; font-family: inherit; margin-bottom: 12px; }
-        input::placeholder { color: #555; }
+        body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--canvas); color: var(--ink); padding: 20px; min-height: 100vh; max-width: 900px; margin: auto; display: flex; flex-direction: column; }
+        .card { background: var(--paper); border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid var(--line); box-shadow: 0 7px 28px #1534440a; }
+        h1 { font-size: 22px; color: var(--ink); margin-bottom: 4px; letter-spacing: -.4px; }
+        .subtitle { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+        .context { font-size: 13px; color: var(--muted); margin-bottom: 12px; padding: 10px; background: #f1f5f5; border-radius: 8px; }
+        input[type="text"] { width: 100%; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); font-size: 16px; font-family: inherit; margin-bottom: 12px; }
+        input::placeholder { color: var(--muted); }
         .btn { width: 100%; padding: 16px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; }
         .btn:active { opacity: 0.7; }
         .btn:disabled { opacity: 0.4; }
-        .btn-send { background: #3498db; color: #fff; margin-bottom: 8px; }
+        .btn-send { background: var(--teal); color: #fff; margin-bottom: 8px; }
         .quick-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-        .quick-btn { padding: 8px 14px; border: 1px solid #0f3460; border-radius: 20px; background: #0f3460; color: #e0e0e0; font-size: 13px; cursor: pointer; }
-        .quick-btn:active { background: #3498db; }
+        .quick-btn { padding: 8px 14px; border: 1px solid var(--line); border-radius: 20px; background: var(--paper); color: var(--ink); font-size: 13px; cursor: pointer; }
+        .quick-btn:active { background: #e7f4ef; }
         .response { padding: 16px; border-radius: 8px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; margin-top: 12px; }
-        .response-ok { background: #1e3a5f; border: 1px solid #3498db; }
-        .response-err { background: #3d1a1a; border: 1px solid #e74c3c; }
-        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #666; border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
+        .response-ok { background: #e7f4ef; border: 1px solid #afd2c4; }
+        .response-err { background: #fbeaea; color: var(--danger); border: 1px solid #edc7c7; }
+        .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--teal); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .logo { font-size: 12px; color: #444; text-align: center; margin-top: auto; padding-top: 20px; }
+        .logo { font-size: 12px; color: var(--muted); text-align: center; margin-top: auto; padding-top: 20px; }
         .history { margin-top: 12px; }
-        .history-item { padding: 8px 0; border-bottom: 1px solid #0f3460; font-size: 13px; }
-        .history-cmd { color: #3498db; }
-        .history-resp { color: #888; }
+        .history-item { padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+        .history-cmd { color: var(--teal); }
+        .history-resp { color: var(--muted); }
+        #history-card > div:first-child { color: var(--muted) !important; }
+        :focus-visible { outline: 3px solid var(--teal); outline-offset: 3px; }
+        @media (max-width: 560px) { body { padding: 14px; } }
     </style>
 </head>
 <body>

@@ -10,7 +10,7 @@
           v-model="editName"
           type="text"
           maxlength="160"
-          class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-none"
+          class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-hidden"
           @keydown.enter="confirm"
           @keydown.escape="close"
         />
@@ -23,7 +23,7 @@
           rows="2"
           maxlength="500"
           placeholder="Additional labels to normalize"
-          class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-none"
+          class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-hidden"
           @keydown.escape="close"
         ></textarea>
       </div>

@@ -2,11 +2,12 @@
 
 namespace App\Services\FileManagement;
 
+use App\Services\AIService;
+use App\Services\FileRegistryService;
 use App\Support\PgVector;
+use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use App\Services\AIService;
-use Exception;
 
 /**
  * File Semantic Search Integration Service
@@ -34,7 +35,7 @@ class SemanticSearchService
             // Get embedding for query
             $queryEmbedding = $this->getEmbedding($query);
 
-            if (!$queryEmbedding) {
+            if (! $queryEmbedding) {
                 return ['success' => false, 'error' => 'Failed to generate query embedding'];
             }
 
@@ -43,7 +44,7 @@ class SemanticSearchService
 
             // Step 1: Vector similarity search in pgsql_rag
             $embeddingResults = DB::connection('pgsql_rag')->select(
-                "SELECT
+                'SELECT
                     fse.file_id,
                     fse.chunk_index,
                     fse.chunk_text,
@@ -51,7 +52,7 @@ class SemanticSearchService
                  FROM file_semantic_embeddings fse
                  WHERE 1 - (fse.embedding <=> ?::vector) >= ?
                  ORDER BY similarity DESC
-                 LIMIT ?",
+                 LIMIT ?',
                 [$embeddingString, $embeddingString, $threshold, $limit]
             );
 
@@ -66,18 +67,18 @@ class SemanticSearchService
             $whereClause = "fr.id IN ({$placeholders})";
             $fileParams = array_values($fileIds);
 
-            if (!empty($fileTypes)) {
+            if (! empty($fileTypes)) {
                 $typePlaceholders = implode(',', array_fill(0, count($fileTypes), '?'));
                 $whereClause .= " AND fr.mime_type IN ({$typePlaceholders})";
                 $fileParams = array_merge($fileParams, $fileTypes);
             }
             if ($dateRange) {
                 if (isset($dateRange['start'])) {
-                    $whereClause .= " AND fr.created_at >= ?";
+                    $whereClause .= ' AND fr.created_at >= ?';
                     $fileParams[] = $dateRange['start'];
                 }
                 if (isset($dateRange['end'])) {
-                    $whereClause .= " AND fr.created_at <= ?";
+                    $whereClause .= ' AND fr.created_at <= ?';
                     $fileParams[] = $dateRange['end'];
                 }
             }
@@ -94,7 +95,9 @@ class SemanticSearchService
             // Enrich embedding results with file metadata
             $results = [];
             foreach ($embeddingResults as $er) {
-                if (!isset($fileMap[$er->file_id])) continue;
+                if (! isset($fileMap[$er->file_id])) {
+                    continue;
+                }
                 $fr = $fileMap[$er->file_id];
                 $results[] = (object) [
                     'file_id' => $er->file_id,
@@ -120,6 +123,7 @@ class SemanticSearchService
             ];
         } catch (Exception $e) {
             Log::error('SemanticSearch: Search failed', ['error' => $e->getMessage()]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -131,7 +135,7 @@ class SemanticSearchService
         foreach ($results as $result) {
             $fileId = $result->file_id;
 
-            if (!isset($grouped[$fileId])) {
+            if (! isset($grouped[$fileId])) {
                 $grouped[$fileId] = [
                     'file_id' => $fileId,
                     'file_path' => $result->file_path,
@@ -155,7 +159,7 @@ class SemanticSearchService
         }
 
         // Sort by max similarity
-        usort($grouped, fn($a, $b) => $b['max_similarity'] <=> $a['max_similarity']);
+        usort($grouped, fn ($a, $b) => $b['max_similarity'] <=> $a['max_similarity']);
 
         return array_values($grouped);
     }
@@ -166,54 +170,46 @@ class SemanticSearchService
 
     public function indexFile(int $fileId, ?string $content = null): array
     {
-        $file = DB::selectOne("SELECT * FROM file_registry WHERE id = ?", [$fileId]);
+        $file = DB::selectOne('SELECT * FROM file_registry WHERE id = ?', [$fileId]);
 
-        if (!$file) {
+        if (! $file) {
             return ['success' => false, 'error' => 'File not found'];
         }
 
         // Get or extract content
-        if (!$content) {
+        if (! $content) {
             $content = $this->extractFileContent($file);
         }
 
-        if (!$content || strlen(trim($content)) < 10) {
+        if (! $content || strlen(trim($content)) < 10) {
             return ['success' => false, 'error' => 'No content to index'];
         }
 
         try {
-            // Clear existing embeddings
-            DB::connection('pgsql_rag')->delete(
-                "DELETE FROM file_semantic_embeddings WHERE file_id = ?",
-                [$fileId]
-            );
-
-            // Chunk the content
-            $chunks = $this->chunkContent($content);
-
-            $indexed = 0;
-            foreach ($chunks as $i => $chunk) {
+            $registry = app(FileRegistryService::class);
+            $proof = $registry->currentSourcePublicationProof($file);
+            $prepared = [];
+            foreach ($this->chunkContent($content) as $i => $chunk) {
                 $embedding = $this->getEmbedding($chunk);
-
                 if ($embedding) {
-                    $embeddingString = PgVector::literal($embedding);
-
-                    DB::connection('pgsql_rag')->insert(
-                        "INSERT INTO file_semantic_embeddings
-                            (file_id, chunk_index, chunk_text, embedding, created_at)
-                         VALUES (?, ?, ?, ?::vector, NOW())",
-                        [$fileId, $i, $chunk, $embeddingString]
-                    );
-
-                    $indexed++;
+                    $prepared[] = [$fileId, $i, $chunk, PgVector::literal($embedding)];
                 }
             }
+            if ($prepared === []) {
+                return ['success' => false, 'error' => 'No embeddings prepared'];
+            }
+            $indexed = count($prepared);
+            $registry->publishCurrentSourceProjection($proof, function () use ($fileId, $prepared): bool {
+                DB::connection('pgsql_rag')->delete('DELETE FROM file_semantic_embeddings WHERE file_id = ?', [$fileId]);
+                foreach ($prepared as $bindings) {
+                    DB::connection('pgsql_rag')->insert('INSERT INTO file_semantic_embeddings
+                        (file_id, chunk_index, chunk_text, embedding, created_at) VALUES (?, ?, ?, ?::vector, NOW())', $bindings);
+                }
 
-            // Update file registry
-            DB::update(
-                "UPDATE file_registry SET semantic_indexed_at = NOW(), semantic_chunk_count = ? WHERE id = ?",
-                [$indexed, $fileId]
-            );
+                return true;
+            }, function () use ($fileId, $indexed): void {
+                DB::update('UPDATE file_registry SET semantic_indexed_at = NOW(), semantic_chunk_count = ? WHERE id = ?', [$indexed, $fileId]);
+            });
 
             Log::info('SemanticSearch: File indexed', [
                 'file_id' => $fileId,
@@ -224,9 +220,11 @@ class SemanticSearchService
                 'success' => true,
                 'file_id' => $fileId,
                 'chunks_indexed' => $indexed,
+                'content_source_verified' => false,
             ];
         } catch (Exception $e) {
             Log::error('SemanticSearch: Indexing failed', ['file_id' => $fileId, 'error' => $e->getMessage()]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -266,6 +264,7 @@ class SemanticSearchService
         }
 
         $fileIds = array_column($unindexed, 'id');
+
         return $this->batchIndex($fileIds);
     }
 
@@ -277,7 +276,7 @@ class SemanticSearchService
     {
         $filePath = $file->file_path;
 
-        if (!file_exists($filePath)) {
+        if (! file_exists($filePath)) {
             return null;
         }
 
@@ -376,11 +375,11 @@ class SemanticSearchService
                 // Keep overlap from end of current chunk
                 $words = explode(' ', $currentChunk);
                 $overlapWords = array_slice($words, -($overlap / 5));
-                $currentChunk = implode(' ', $overlapWords) . ' ';
+                $currentChunk = implode(' ', $overlapWords).' ';
                 $currentLength = strlen($currentChunk);
             }
 
-            $currentChunk .= $sentence . ' ';
+            $currentChunk .= $sentence.' ';
             $currentLength += $sentenceLength + 1;
         }
 
@@ -399,9 +398,11 @@ class SemanticSearchService
     {
         try {
             $result = app(AIService::class)->generateEmbedding($text);
+
             return $result['success'] ? $result['embedding'] : null;
         } catch (Exception $e) {
             Log::warning('SemanticSearch: Embedding failed', ['error' => $e->getMessage()]);
+
             return null;
         }
     }
@@ -415,37 +416,39 @@ class SemanticSearchService
         try {
             // Get representative embedding for file
             $fileEmbedding = DB::connection('pgsql_rag')->selectOne(
-                "SELECT embedding FROM file_semantic_embeddings
+                'SELECT embedding FROM file_semantic_embeddings
                  WHERE file_id = ?
                  ORDER BY chunk_index
-                 LIMIT 1",
+                 LIMIT 1',
                 [$fileId]
             );
 
-            if (!$fileEmbedding) {
+            if (! $fileEmbedding) {
                 return ['success' => false, 'error' => 'File not indexed'];
             }
 
             // Step 1: Find similar embeddings in pgsql_rag
             $embeddingResults = DB::connection('pgsql_rag')->select(
-                "SELECT DISTINCT ON (fse.file_id)
+                'SELECT DISTINCT ON (fse.file_id)
                     fse.file_id,
                     1 - (fse.embedding <=> ?::vector) as similarity
                  FROM file_semantic_embeddings fse
                  WHERE fse.file_id != ?
                  ORDER BY fse.file_id, similarity DESC
-                 LIMIT ?",
+                 LIMIT ?',
                 [$fileEmbedding->embedding, $fileId, $limit]
             );
 
             // Step 2: Enrich with file metadata from MySQL
             $similarFiles = [];
-            if (!empty($embeddingResults)) {
+            if (! empty($embeddingResults)) {
                 $ids = array_column($embeddingResults, 'file_id');
                 $placeholders = implode(',', array_fill(0, count($ids), '?'));
                 $fileRows = DB::select("SELECT id, original_filename, mime_type FROM file_registry WHERE id IN ({$placeholders})", $ids);
                 $fileMap = [];
-                foreach ($fileRows as $fr) { $fileMap[$fr->id] = $fr; }
+                foreach ($fileRows as $fr) {
+                    $fileMap[$fr->id] = $fr;
+                }
 
                 foreach ($embeddingResults as $er) {
                     $fr = $fileMap[$er->file_id] ?? null;
@@ -465,6 +468,7 @@ class SemanticSearchService
             ];
         } catch (Exception $e) {
             Log::error('SemanticSearch: findSimilarFiles failed', ['file_id' => $fileId, 'error' => $e->getMessage()]);
+
             return ['success' => false, 'error' => $e->getMessage()];
         }
     }
@@ -477,12 +481,12 @@ class SemanticSearchService
     {
         try {
             // file_registry is MySQL, file_semantic_embeddings is PostgreSQL — two-step pattern
-            $validIds = DB::select("SELECT id FROM file_registry");
+            $validIds = DB::select('SELECT id FROM file_registry');
             if (empty($validIds)) {
                 return 0;
             }
 
-            $idList = array_map(fn($row) => $row->id, $validIds);
+            $idList = array_map(fn ($row) => $row->id, $validIds);
             $placeholders = implode(',', array_fill(0, count($idList), '?'));
 
             return DB::connection('pgsql_rag')->delete(
@@ -491,6 +495,7 @@ class SemanticSearchService
             );
         } catch (Exception $e) {
             Log::warning('SemanticSearch: removeDeletedFiles failed', ['error' => $e->getMessage()]);
+
             return 0;
         }
     }
@@ -500,7 +505,7 @@ class SemanticSearchService
         try {
             // Clear and re-index
             DB::connection('pgsql_rag')->delete(
-                "DELETE FROM file_semantic_embeddings WHERE file_id = ?",
+                'DELETE FROM file_semantic_embeddings WHERE file_id = ?',
                 [$fileId]
             );
         } catch (\Throwable $e) {
@@ -519,11 +524,11 @@ class SemanticSearchService
     {
         try {
             $pgStats = DB::connection('pgsql_rag')->selectOne(
-                "SELECT
+                'SELECT
                     COUNT(DISTINCT file_id) as indexed_files,
                     COUNT(*) as total_chunks,
                     AVG(LENGTH(chunk_text)) as avg_chunk_length
-                 FROM file_semantic_embeddings"
+                 FROM file_semantic_embeddings'
             );
         } catch (Exception $e) {
             Log::warning('SemanticSearch: file_semantic_embeddings table not available', ['error' => $e->getMessage()]);
@@ -532,10 +537,10 @@ class SemanticSearchService
 
         try {
             $mysqlStats = DB::selectOne(
-                "SELECT
+                'SELECT
                     COUNT(*) as total_files,
                     SUM(CASE WHEN semantic_indexed_at IS NOT NULL THEN 1 ELSE 0 END) as indexed_count
-                 FROM file_registry"
+                 FROM file_registry'
             );
         } catch (\Throwable $e) {
             // semantic_indexed_at column may not exist yet

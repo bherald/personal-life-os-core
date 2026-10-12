@@ -20,7 +20,7 @@ namespace App\Services;
  * All logic is pure (no LLM, no DB) — zero latency overhead beyond splitting.
  * Scoring uses TF-weighted term overlap (consistent and deterministic).
  *
- * Reference: "Lost in the Middle" (Liu et al., ACL 2023)
+ * Reference: "Lost in the Middle" (Liu et al., TACL 2024)
  */
 class LongContextRerankService
 {

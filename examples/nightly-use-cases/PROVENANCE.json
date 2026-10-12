@@ -1,0 +1,66 @@
+[
+  {
+    "file": "examples/nightly-use-cases/cyber-news/advisory.md",
+    "sha256": "0d858caa1994f765b1e9fceb1cff37057f2b7df8195e561f6019308740b6338d",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  },
+  {
+    "file": "examples/nightly-use-cases/cyber-news/correction.md",
+    "sha256": "7081515c865ff1312d9307b34ed3bc0fa9d8bd9d9eb2daf6e5e421f87420c313",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  },
+  {
+    "file": "examples/nightly-use-cases/local-news/notice-a.html",
+    "sha256": "0937b64bd0fd6980583f7e0e39c55456b49ca36be5321bae1590e9bef413f408",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  },
+  {
+    "file": "examples/nightly-use-cases/local-news/notice-b.html",
+    "sha256": "0aee84f134fc02085d0831538cf552e71f30ed3bae9ae2aa0b259b1c51ca0f73",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  },
+  {
+    "file": "examples/nightly-use-cases/local-news/feed.xml",
+    "sha256": "9eaeaf44aecee4f3e33924438b561c45338f357f809f6c1a770989b137d02233",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  },
+  {
+    "file": "examples/nightly-use-cases/weather/forecast-a.md",
+    "sha256": "9a0cb8493a1f3579911f95d27df9a09524c3f7c01b84305e5721c60ad46865ad",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  },
+  {
+    "file": "examples/nightly-use-cases/weather/forecast-b.md",
+    "sha256": "eb5907a37bc8e2a63010339b36a64ae2789a8ada43044e870cb235796bbc67df",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  },
+  {
+    "file": "examples/nightly-use-cases/video-transcript/transcript.txt",
+    "sha256": "8172567198b76cfe967c14fd9227e1bdcb52b679388aac592b71ff333e8b37b4",
+    "origin": "Original synthetic public demonstration fixture written for this release preparation",
+    "copied_external_material": false,
+    "fictional": true,
+    "license": "See repository LICENSE; no third-party text or real data included"
+  }
+]

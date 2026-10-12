@@ -588,15 +588,21 @@ class DataRemovalService
      */
     public function completeReview(int $id, string $reviewedBy, string $action, ?string $notes = null): bool
     {
+        if (! in_array($action, ['approve', 'reject'], true)) {
+            return false;
+        }
+
+        $status = $action === 'reject' ? 'ignored' : 'pending';
         $sql = "UPDATE removal_requests SET
+                    status = ?,
                     requires_review = 0,
                     reviewed_by = ?,
                     reviewed_at = NOW(),
                     review_notes = ?,
                     updated_at = NOW()
-                WHERE id = ?";
+                WHERE id = ? AND status = 'pending' AND requires_review = 1";
 
-        $result = DB::update($sql, [$reviewedBy, $notes, $id]) > 0;
+        $result = DB::update($sql, [$status, $reviewedBy, $notes, $id]) > 0;
 
         if ($result) {
             $this->logActivity($id, 'manual_action', "Review completed: {$action}", [

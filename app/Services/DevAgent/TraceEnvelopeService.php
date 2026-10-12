@@ -42,8 +42,9 @@ class TraceEnvelopeService
             return ['success' => false, 'error' => 'trace_disabled'];
         }
 
-        if ($this->containsForbiddenKey($event)) {
-            return ['success' => false, 'error' => 'forbidden_raw_field'];
+        $prepared = $this->prepareEnvelope($event);
+        if (! ($prepared['success'] ?? false)) {
+            return $prepared;
         }
 
         $dir = $this->traceDir();
@@ -57,8 +58,147 @@ class TraceEnvelopeService
             return ['success' => false, 'error' => 'trace_disk_low'];
         }
 
-        $now = CarbonImmutable::now('UTC');
-        $envelope = $this->buildEnvelope($event, $now);
+        $envelope = $prepared['event'];
+        $json = $prepared['json'];
+        $recordedAt = CarbonImmutable::parse((string) $envelope['recorded_at'])->utc();
+
+        $path = $this->fileForDate($recordedAt, $dir);
+        $written = @file_put_contents($path, $json.PHP_EOL, FILE_APPEND | LOCK_EX);
+        if ($written === false) {
+            return ['success' => false, 'error' => 'trace_write_failed'];
+        }
+
+        return [
+            'success' => true,
+            'trace_id' => $envelope['trace_id'],
+            'event_id' => $envelope['event_id'],
+            'event' => $envelope,
+            'path' => $path,
+        ];
+    }
+
+    /**
+     * Remove only strict date-named trace files older than the retention cutoff.
+     *
+     * @return array<string, mixed>
+     */
+    public function pruneRetention(int $retentionDays, int $maxFiles = 100, bool $execute = false): array
+    {
+        $retentionDays = max(1, min(3650, $retentionDays));
+        $maxFiles = max(1, min(1000, $maxFiles));
+        $dir = $this->traceDir();
+        $cutoff = CarbonImmutable::now('UTC')->startOfDay()->subDays($retentionDays);
+
+        $payload = [
+            'schema' => 'plos.dev_agent.trace_retention.v1',
+            'status' => 'pass',
+            'dry_run' => ! $execute,
+            'executed' => $execute,
+            'retention_days' => $retentionDays,
+            'max_files' => $maxFiles,
+            'cutoff_date' => $cutoff->toDateString(),
+            'directory_class' => 'storage_app_dev_agent_traces',
+            'eligible_files' => 0,
+            'eligible_bytes' => 0,
+            'selected_files' => 0,
+            'selected_bytes' => 0,
+            'deleted_files' => 0,
+            'deleted_bytes' => 0,
+            'failures' => 0,
+            'truncated' => false,
+            'candidates' => [],
+            'failed_files' => [],
+        ];
+
+        if (! is_dir($dir)) {
+            $payload['status'] = 'unavailable';
+
+            return $payload;
+        }
+
+        $candidates = [];
+        foreach (glob($dir.'/*.ndjson') ?: [] as $path) {
+            if (! is_string($path) || ! is_file($path)) {
+                continue;
+            }
+
+            $filename = basename($path);
+            if (preg_match('/^(\d{4}-\d{2}-\d{2})\.ndjson$/', $filename, $matches) !== 1) {
+                continue;
+            }
+
+            try {
+                $date = CarbonImmutable::createFromFormat('!Y-m-d', $matches[1], 'UTC');
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if (! $date instanceof CarbonImmutable || ! $date->lessThan($cutoff)) {
+                continue;
+            }
+
+            $bytes = @filesize($path);
+            $candidates[] = [
+                'path' => $path,
+                'filename' => $filename,
+                'date' => $date->toDateString(),
+                'bytes' => $bytes === false ? 0 : max(0, (int) $bytes),
+            ];
+        }
+
+        usort($candidates, static fn (array $left, array $right): int => $left['date'] <=> $right['date']);
+
+        $payload['eligible_files'] = count($candidates);
+        $payload['eligible_bytes'] = array_sum(array_column($candidates, 'bytes'));
+        $payload['truncated'] = count($candidates) > $maxFiles;
+        $selected = array_slice($candidates, 0, $maxFiles);
+        $payload['selected_files'] = count($selected);
+        $payload['selected_bytes'] = array_sum(array_column($selected, 'bytes'));
+        $payload['candidates'] = array_map(
+            static fn (array $candidate): array => [
+                'filename' => $candidate['filename'],
+                'date' => $candidate['date'],
+                'bytes' => $candidate['bytes'],
+            ],
+            $selected
+        );
+
+        if (! $execute) {
+            return $payload;
+        }
+
+        foreach ($selected as $candidate) {
+            if (@unlink($candidate['path'])) {
+                $payload['deleted_files']++;
+                $payload['deleted_bytes'] += $candidate['bytes'];
+
+                continue;
+            }
+
+            $payload['failures']++;
+            $payload['failed_files'][] = $candidate['filename'];
+        }
+
+        if ($payload['failures'] > 0) {
+            $payload['status'] = 'partial';
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Build and size-check the exact sanitized envelope without filesystem I/O.
+     *
+     * @param  array<string,mixed>  $event
+     * @return array{success:bool,event?:array<string,mixed>,json?:string,error?:string}
+     */
+    public function prepareEnvelope(array $event): array
+    {
+        if ($this->containsForbiddenKey($event)) {
+            return ['success' => false, 'error' => 'forbidden_raw_field'];
+        }
+
+        $envelope = $this->buildEnvelope($event, CarbonImmutable::now('UTC'));
         $json = json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
         if ($json === false) {
@@ -81,18 +221,10 @@ class TraceEnvelopeService
             return ['success' => false, 'error' => 'trace_event_too_large'];
         }
 
-        $path = $this->fileForDate($now, $dir);
-        $written = @file_put_contents($path, $json.PHP_EOL, FILE_APPEND | LOCK_EX);
-        if ($written === false) {
-            return ['success' => false, 'error' => 'trace_write_failed'];
-        }
-
         return [
             'success' => true,
-            'trace_id' => $envelope['trace_id'],
-            'event_id' => $envelope['event_id'],
             'event' => $envelope,
-            'path' => $path,
+            'json' => $json,
         ];
     }
 

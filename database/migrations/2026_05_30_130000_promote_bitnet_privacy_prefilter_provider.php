@@ -228,7 +228,7 @@ return new class extends Migration
             'total_failures' => 0,
             'success_rate' => 100,
             'quality_rating' => 6,
-            'vetting_notes' => '2026-05-30 RTS: routed through deterministic table prefilter plus BitNet gate; 120/120 expanded privacy eval, 0 dangerous false-allows; not for general text, coding, Genea facts, summaries, or writeback.',
+            'vetting_notes' => '2026-05-30 RTC: routed through deterministic table prefilter plus BitNet gate; 120/120 expanded privacy eval, 0 dangerous false-allows; not for general text, coding, Genea facts, summaries, or writeback.',
             'vetted_at' => $now,
             'vetted_by' => 'codex-rts',
             'last_seen_at' => $now,

@@ -14,10 +14,147 @@ class WeatherAPI extends BaseNode
     private const DEFAULT_RUNTIME_POLICY = [
         'connect_timeout_seconds' => 5,
         'request_timeout_seconds' => 15,
+        'observation_stale_after_seconds' => 3600,
+        'observation_future_tolerance_seconds' => 300,
     ];
 
     /** @var array<string,mixed>|null */
     private ?array $runtimePolicy = null;
+
+    /** Read observed NWS conditions without substituting a forecast or another provider. */
+    public function currentObservation(float $latitude, float $longitude): array
+    {
+        $rejected = [];
+        $requestDiagnostic = null;
+        try {
+            if (! is_finite($latitude) || ! is_finite($longitude)
+                || $latitude < -90 || $latitude > 90 || $longitude < -180 || $longitude > 180) {
+                throw new Exception('Invalid latitude or longitude');
+            }
+            $base = rtrim((string) config('services.weather.nws_api_url', 'https://api.weather.gov'), '/');
+            $read = function (string $url) use ($base, &$requestDiagnostic): array {
+                // Follow only links on the configured weather API origin/path.
+                if (! str_starts_with($url, $base.'/')) {
+                    throw new Exception('NWS response supplied an unexpected source URL');
+                }
+                $requestDiagnostic = ['request_url' => $url, 'http_status' => null];
+                $response = $this->nwsGet($url);
+                $requestDiagnostic['http_status'] = $response->status();
+                if (! $response->successful() || ! is_array($response->json())) {
+                    throw new Exception('NWS observation request failed');
+                }
+
+                return $response->json();
+            };
+            $pointUrl = $base.'/points/'.round($latitude, 4).','.round($longitude, 4);
+            $point = $read($pointUrl)['properties'] ?? [];
+            $stationsUrl = $point['observationStations'] ?? null;
+            if (! is_string($stationsUrl)) {
+                throw new Exception('NWS point has no observation stations');
+            }
+            $stations = $read($stationsUrl);
+            $station = $stations['features'][0] ?? [];
+            $stationUrl = $station['id'] ?? null;
+            if (! is_string($stationUrl)) {
+                throw new Exception('NWS returned no observation station');
+            }
+            $url = rtrim($stationUrl, '/').'/observations/latest';
+            $feature = $read($url);
+            $observation = $feature['properties'] ?? [];
+            $observationId = $feature['id'] ?? $observation['@id'] ?? null;
+            $usable = function (mixed $record, mixed $id, string $requestUrl) use (&$rejected): bool {
+                $reasons = $this->observationRejectionReasons($record);
+                if ($reasons !== []) {
+                    $rejected[] = ['request_url' => $requestUrl,
+                        'observation_id' => is_string($id) ? $id : null, 'reason_codes' => $reasons];
+                }
+
+                return $reasons === [];
+            };
+            $selection = 'latest_station_observation';
+            if (! $usable($observation, $observationId, $url)) {
+                // Latest reports can omit temperature. Inspect a bounded set of
+                // actual records at this same station; never synthesize a report.
+                $url = rtrim($stationUrl, '/').'/observations?limit=12';
+                $recent = $read($url)['features'] ?? [];
+                $candidates = [];
+                foreach (array_slice(is_array($recent) ? $recent : [], 0, 12) as $feature) {
+                    $record = $feature['properties'] ?? null;
+                    if ($usable($record, $feature['id'] ?? $record['@id'] ?? null, $url)) {
+                        $candidates[] = ['properties' => $record, 'id' => $feature['id'] ?? $record['@id'] ?? null];
+                    }
+                }
+                usort($candidates, static fn ($a, $b) => strtotime($b['properties']['timestamp']) <=> strtotime($a['properties']['timestamp']));
+                if ($candidates === []) {
+                    throw new Exception('NWS recent station observations failed validation; see rejected_observations');
+                }
+                $observation = $candidates[0]['properties'];
+                $observationId = $candidates[0]['id'];
+                $selection = 'newest_complete_record_among_12_recent_station_observations';
+            }
+            $observedAt = $observation['timestamp'];
+            $retrievedAt = now();
+            $age = $retrievedAt->getTimestamp() - strtotime($observedAt);
+            $staleAfter = $this->runtimePolicyInt('observation_stale_after_seconds');
+            $freshness = $age < 0 ? 'future' : ($age > $staleAfter ? 'stale' : 'fresh');
+            $observationUrl = is_string($observationId) && str_starts_with($observationId, rtrim($stationUrl, '/').'/observations/')
+                && ! str_ends_with($observationId, '/latest') ? $observationId : null;
+
+            return ['success' => true, 'source' => 'National Weather Service', 'source_url' => $url,
+                'point_url' => $pointUrl, 'location' => $this->nwsLocationName($point),
+                'station' => $station['properties']['stationIdentifier'] ?? $observation['station'] ?? $stationUrl,
+                'station_name' => $station['properties']['name'] ?? null,
+                'station_geometry' => $station['geometry'] ?? null,
+                'observed_at' => $observedAt, 'retrieved_at' => $retrievedAt->toIso8601String(),
+                'observation_id' => is_string($observationId) ? $observationId : null,
+                'observation_url' => $observationUrl,
+                'observation_age_seconds' => $age,
+                'observation_age_basis' => 'retrieved_at',
+                'freshness' => $freshness, 'is_current' => $freshness === 'fresh',
+                'stale_after_seconds' => $staleAfter,
+                'warnings' => $freshness === 'fresh' ? [] : ['observation_'.$freshness],
+                'rejected_observations' => $rejected,
+                'observation_selection' => $selection,
+                'observation' => $observation];
+        } catch (\Throwable $error) {
+            return ['success' => false, 'source' => 'National Weather Service',
+                'error' => $error instanceof Exception ? $error->getMessage() : 'Invalid NWS observation response',
+                'rejected_observations' => $rejected, 'request_diagnostic' => $requestDiagnostic,
+                'observation' => null];
+        }
+    }
+
+    /** Field-level diagnostics without retaining provider bodies in logs. */
+    private function observationRejectionReasons(mixed $record): array
+    {
+        if (! is_array($record)) {
+            return ['invalid_observation_record'];
+        }
+        $reasons = [];
+        $timestamp = $record['timestamp'] ?? null;
+        $validTimestamp = is_string($timestamp)
+            && preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $timestamp)
+            && strtotime($timestamp) !== false;
+        if ($validTimestamp) {
+            new \DateTimeImmutable($timestamp);
+            $errors = \DateTimeImmutable::getLastErrors();
+            $validTimestamp = $errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0);
+        }
+        if (! $validTimestamp) {
+            $reasons[] = $timestamp === null ? 'missing_timestamp' : 'invalid_timestamp';
+        } elseif (strtotime($timestamp) > now()->getTimestamp() + $this->runtimePolicyInt('observation_future_tolerance_seconds')) {
+            $reasons[] = 'future_timestamp';
+        }
+        $temperature = $record['temperature']['value'] ?? null;
+        if (! is_numeric($temperature) || ! is_finite((float) $temperature)) {
+            $reasons[] = $temperature === null ? 'missing_temperature' : 'invalid_temperature';
+        }
+        if (! in_array($record['temperature']['unitCode'] ?? null, ['wmoUnit:degC', 'wmoUnit:degF', 'wmoUnit:K'], true)) {
+            $reasons[] = 'unsupported_temperature_unit';
+        }
+
+        return $reasons;
+    }
 
     public function execute(array $input): array
     {

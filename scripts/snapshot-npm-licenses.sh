@@ -46,6 +46,9 @@ const trees = [
   { label: 'mcp-servers/plos', path: 'mcp-servers/plos', lockfile: 'mcp-servers/plos/package-lock.json', modules: 'mcp-servers/plos/node_modules' },
 ].filter((tree) => fs.existsSync(tree.lockfile));
 
+const reviewedMetadataPath = 'docs/public-release/npm-reviewed-metadata.json';
+const reviewedMetadata = fs.existsSync(reviewedMetadataPath) ? JSON.parse(fs.readFileSync(reviewedMetadataPath, 'utf8')).packages : {};
+
 const packageMetadataOverrides = new Map([
   ['@cfworker/json-schema', {
     license: 'MIT',
@@ -173,6 +176,15 @@ for (const tree of trees) {
       homepage: String(packageJson?.homepage || metadata.homepage || ''),
       source: source || (packageJson ? 'package.json' : 'package-lock'),
     };
+
+    const reviewed = reviewedMetadata[`${row.name}@${row.version}`];
+    if (!row.license && reviewed && reviewed.name === row.name && reviewed.version === row.version) {
+      row.license = reviewed.license;
+      row.bucket = licenseBucket(row.license);
+      row.repository = reviewed.repository;
+      row.homepage = reviewed.source_url;
+      row.source = 'reviewed-exact-version-registry-metadata';
+    }
 
     const metadataOverride = packageMetadataOverrides.get(row.name);
     if (metadataOverride) {

@@ -16,14 +16,15 @@ class JoplinYouTubeOrganize extends Command
                             {--dry-run : Show what would be done without making changes}
                             {--list-categories : List available categories and their keywords}
                             {--consolidate : Process ALL Watch Later folders, not just primary}
-                            {--ai-categorize : Use AI for notes that don\'t match keyword categories}';
+                            {--ai-categorize : Use AI for notes that don\'t match keyword categories}
+                            {--delete-exact-duplicates : Delete duplicate notes only when they share an exact YouTube video ID}';
 
     /**
      * The console command description.
      *
      * @var string
      */
-    protected $description = 'Organize YouTube Watch Later folder: remove duplicates and categorize videos into subfolders';
+    protected $description = 'Move YouTube Watch Later notes into topic notebooks without automatic deletion';
 
     /**
      * Execute the console command.
@@ -48,6 +49,7 @@ class JoplinYouTubeOrganize extends Command
         $dryRun = $this->option('dry-run');
         $consolidate = $this->option('consolidate');
         $useAI = $this->option('ai-categorize');
+        $deleteExactDuplicates = $this->option('delete-exact-duplicates');
 
         if ($dryRun) {
             $this->warn('DRY RUN MODE - No changes will be made');
@@ -65,9 +67,9 @@ class JoplinYouTubeOrganize extends Command
             $organizer->setOutput($this->output);
 
             if ($consolidate) {
-                $stats = $organizer->organizeAll($dryRun, $useAI);
+                $stats = $organizer->organizeAll($dryRun, $useAI, $deleteExactDuplicates);
             } else {
-                $stats = $organizer->organize($dryRun);
+                $stats = $organizer->organize($dryRun, $deleteExactDuplicates);
             }
 
             if (! empty($stats['skipped'])) {
@@ -98,6 +100,7 @@ class JoplinYouTubeOrganize extends Command
                 array_splice($rows, 1, 0, [
                     ['Extra Folders Found', $stats['extra_folders_found']],
                     ['Extra Folders Deleted', $stats['extra_folders_deleted']],
+                    ['Extra Subfolders Deleted', $stats['extra_subfolders_deleted'] ?? 0],
                     ['AI Categorized', $stats['ai_categorized']],
                 ]);
 
@@ -116,6 +119,7 @@ class JoplinYouTubeOrganize extends Command
                 + (int) ($stats['notes_moved'] ?? 0)
                 + (int) ($stats['categories_created'] ?? 0)
                 + (int) ($stats['extra_folders_deleted'] ?? 0)
+                + (int) ($stats['extra_subfolders_deleted'] ?? 0)
                 + (int) ($stats['ai_categorized'] ?? 0);
 
             $this->line('[ITEMS_PROCESSED:'.max(0, $successfulOperations).']');

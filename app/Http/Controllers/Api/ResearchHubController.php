@@ -3,13 +3,21 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\AdaptiveModeService;
+use App\Services\AgentHandoffService;
+use App\Services\AgentLoopService;
+use App\Services\AgentMetrics\AgentUsefulYieldService;
 use App\Services\AgentProceduralMemoryService;
 use App\Services\Genealogy\PersonService;
+use App\Services\RemediationExecutionService;
+use App\Services\RemediationRegistryService;
 use App\Services\Review\ReviewContextEnrichmentService;
 use App\Services\Review\ReviewTargetReferenceService;
 use App\Services\ReviewTypeRegistryService;
+use App\Services\SpeculativeExecutionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -83,6 +91,9 @@ class ResearchHubController extends Controller
             return response()->json(['success' => false, 'error' => 'Malformed unified id'], 400);
         }
         [$type, $idStr] = [$m[1], $m[2]];
+        if ($this->registry->isInspectionOnly($type)) {
+            return response()->json(['success' => false, 'error' => 'Inspection-only reviews cannot be changed.'], 422);
+        }
 
         // Phase 3 only wires the genealogy_finding partial-apply path.
         // Other types fall back to whole-item approve/reject endpoints.
@@ -140,15 +151,20 @@ class ResearchHubController extends Controller
     /**
      * Get stats for all review types + agent status
      */
-    public function stats(): JsonResponse
+    public function stats(Request $request): JsonResponse
     {
-        $reviewStats = $this->registry->getAllStats();
+        $minConfidence = $this->reviewMinConfidence($request);
+        $reviewStats = $this->registry->getAllStats($minConfidence);
+        $visibleReviewStats = $this->visibleReviewStats($reviewStats);
         $agentStats = $this->getAgentStats();
 
         return response()->json([
             'reviews' => $reviewStats,
+            'visible_reviews' => $visibleReviewStats,
             'agents' => $agentStats,
             'total_pending' => $reviewStats['_total'] ?? 0,
+            'visible_total_pending' => $visibleReviewStats['_total'] ?? ($reviewStats['_visible_total'] ?? 0),
+            'min_confidence' => $minConfidence,
         ]);
     }
 
@@ -162,43 +178,52 @@ class ResearchHubController extends Controller
         $limit = min((int) $request->query('limit', 25), 500);
         $offset = max((int) $request->query('offset', 0), 0);
         $includeExpired = (bool) $request->query('include_expired', false);
+        $includeInspections = $request->boolean('include_inspections');
+        $producerId = $this->reviewProducerId($request);
 
         // Hide low-confidence research findings from the human review surface
         // until research raises them above the threshold. NULL-confidence
         // items (system alerts, non-scored types) always pass through.
         // Default 0.55 matches the operator's expected visibility cutoff;
         // pass min_confidence=0 to disable.
-        $minConfidenceRaw = $request->query('min_confidence');
-        $minConfidence = $minConfidenceRaw === null
-            ? (float) config('review_queue.min_confidence', 0.55)
-            : (float) $minConfidenceRaw;
-        if ($minConfidence <= 0.0) {
-            $minConfidence = null;
-        }
+        $minConfidence = $this->reviewMinConfidence($request);
 
         // If specific type requested
         if ($type) {
-            $result = $this->registry->fetchItems($type, $limit, $offset, $minConfidence);
+            if (! $includeInspections && $this->registry->isInspectionOnly($type)) {
+                return response()->json([
+                    'items' => [],
+                    'total' => 0,
+                    'has_more' => false,
+                    'stats' => [],
+                    'types' => $this->registry->getTypes(),
+                    'min_confidence' => $minConfidence,
+                    'producer_counts' => [],
+                ]);
+            }
+
+            $result = $this->registry->fetchItems($type, $limit, $offset, $minConfidence, $producerId);
             if ($includeExpired) {
-                $result = $this->mergeExpiredItems($result, $type, $limit, $offset);
+                $result = $this->mergeExpiredItems($result, $type, $limit, $offset, $producerId);
             }
 
             return response()->json([
                 'items' => $result['items'] ?? [],
                 'total' => $result['total'] ?? 0,
                 'has_more' => $result['has_more'] ?? false,
-                'stats' => $this->registry->getAllStats(),
+                'stats' => $this->registry->getAllStats($minConfidence),
                 'types' => $this->registry->getTypes(),
                 'min_confidence' => $minConfidence,
+                'producer_counts' => $result['producer_counts'] ?? [],
             ]);
         }
 
         // Otherwise fetch all (optionally filtered by category)
-        $result = $this->registry->fetchAllItems($category, $limit, $offset, $minConfidence);
+        $result = $this->registry->fetchAllItems($category, $limit, $offset, $minConfidence, $producerId, $includeInspections);
         if ($includeExpired) {
-            $result = $this->mergeExpiredItems($result, null, $limit, $offset);
+            $result = $this->mergeExpiredItems($result, null, $limit, $offset, $producerId);
         }
-        $stats = $this->registry->getAllStats();
+        $stats = $this->registry->getAllStats($minConfidence);
 
         // INF-10c: Enrich items with remediation availability
         $items = $this->enrichItemsWithRemediation($result['items']);
@@ -211,9 +236,64 @@ class ResearchHubController extends Controller
             'total' => $result['total'],
             'has_more' => $result['has_more'],
             'stats' => $stats,
+            'visible_stats' => $this->visibleReviewStats($stats),
             'types' => $this->registry->getTypes(),
             'min_confidence' => $minConfidence,
+            'producer_counts' => $result['producer_counts'] ?? [],
         ]);
+    }
+
+    private function reviewProducerId(Request $request): ?string
+    {
+        $producerId = trim((string) $request->query('agent_id', ''));
+
+        return $producerId === '' ? null : mb_substr($producerId, 0, 191);
+    }
+
+    private function reviewMinConfidence(Request $request): ?float
+    {
+        $minConfidenceRaw = $request->query('min_confidence');
+        $minConfidence = $minConfidenceRaw === null
+            ? (float) config('review_queue.min_confidence', 0.55)
+            : (float) $minConfidenceRaw;
+
+        return $minConfidence > 0.0 ? $minConfidence : null;
+    }
+
+    /**
+     * Convert raw review stats into the operator-visible count surface while
+     * preserving raw totals for diagnostics and backlog reports.
+     *
+     * @param  array<string, mixed>  $reviewStats
+     * @return array<string, mixed>
+     */
+    private function visibleReviewStats(array $reviewStats): array
+    {
+        $visible = [];
+        $total = 0;
+
+        foreach ($reviewStats as $key => $stat) {
+            if ($key === '_total' || $key === '_visible_total') {
+                continue;
+            }
+            if (! is_array($stat)) {
+                continue;
+            }
+
+            $visibleTotal = (int) ($stat['visible_total'] ?? $stat['total'] ?? 0);
+            $rawTotal = (int) ($stat['total'] ?? $visibleTotal);
+            $visible[$key] = array_merge($stat, [
+                'total' => $visibleTotal,
+                'raw_total' => $rawTotal,
+            ]);
+            if (($stat['inspection_only'] ?? false) !== true) {
+                $total += $visibleTotal;
+            }
+        }
+
+        $visible['_total'] = $total;
+
+        return $visible;
     }
 
     /**
@@ -357,6 +437,16 @@ class ResearchHubController extends Controller
         $lineDecisions = $request->input('line_decisions');
         if (is_array($lineDecisions)) {
             $meta['line_decisions'] = array_slice($lineDecisions, 0, 50);
+        }
+
+        $fields = $request->input('fields_to_submit');
+        if (is_array($fields)) {
+            $meta['fields_to_submit'] = array_slice(array_values($fields), 0, 20);
+        }
+
+        $profileUrl = $request->input('profile_url');
+        if (is_string($profileUrl) && trim($profileUrl) !== '') {
+            $meta['profile_url'] = mb_substr(trim($profileUrl), 0, 500);
         }
 
         return $meta;
@@ -528,6 +618,21 @@ class ResearchHubController extends Controller
         }
 
         [$type, $id] = $parts;
+        try {
+            $context = $this->enrichment->getContext($unifiedId);
+            if (is_array($context['item'] ?? null)) {
+                return (object) $context['item'];
+            }
+
+            $registeredType = $this->registry->getType($type);
+            if (is_array($registeredType)
+                && ($registeredType['source_table'] ?? 'agent_review_queue') !== 'agent_review_queue') {
+                return null;
+            }
+        } catch (\Throwable) {
+            return null;
+        }
+
         $column = $this->resolveLookupColumn($type, $id);
 
         return DB::selectOne(
@@ -559,7 +664,7 @@ class ResearchHubController extends Controller
     /**
      * Render a mobile-friendly HTML confirmation page after approve/reject.
      */
-    private function renderActionPage(string $action, ?object $item, string $unifiedId, ?string $error = null): \Illuminate\Http\Response
+    private function renderActionPage(string $action, ?object $item, string $unifiedId, ?string $error = null): Response
     {
         $agentLabels = [
             'genealogy-researcher' => 'Genealogy Researcher',
@@ -674,7 +779,7 @@ HTML;
     /**
      * Render a mobile-friendly detail view page with approve/reject buttons.
      */
-    private function renderViewPage(object $item, string $unifiedId): \Illuminate\Http\Response
+    private function renderViewPage(object $item, string $unifiedId): Response
     {
         $agentLabels = [
             'genealogy-researcher' => 'Genealogy Researcher',
@@ -715,12 +820,20 @@ HTML;
         $baseUrl = rtrim((string) config('app.public_url', config('app.url')), '/');
         $approveUrl = $this->escapeHtmlAttribute("{$baseUrl}/api/research-hub/quick-approve/{$unifiedId}");
         $rejectUrl = $this->escapeHtmlAttribute("{$baseUrl}/api/research-hub/quick-reject/{$unifiedId}");
-        $hubUrl = $this->escapeHtmlAttribute("{$baseUrl}/research-hub?unified_id=".rawurlencode($unifiedId));
+        $requiresPictureReview = ($item->review_type ?? null) === 'face';
+        $hubPath = $requiresPictureReview
+            ? '/knowledge?source=review&type=face&unified_id='.rawurlencode($unifiedId)
+            : '/research-hub?unified_id='.rawurlencode($unifiedId);
+        $hubUrl = $this->escapeHtmlAttribute($baseUrl.$hubPath);
 
         $isPending = ($item->status ?? '') === 'pending';
-        $actionButtons = $isPending
-            ? "<a class='btn approve' href='{$approveUrl}'>Approve</a><a class='btn reject' href='{$rejectUrl}'>Reject</a>"
-            : "<div class='resolved'>Already {$status}</div>";
+        if (! $isPending) {
+            $actionButtons = "<div class='resolved'>Already {$status}</div>";
+        } elseif ($requiresPictureReview) {
+            $actionButtons = "<a class='btn inspect' href='{$hubUrl}'>Review picture match</a>";
+        } else {
+            $actionButtons = "<a class='btn approve' href='{$approveUrl}'>Approve</a><a class='btn reject' href='{$rejectUrl}'>Reject</a>";
+        }
 
         $priorityBadge = match ((int) ($item->priority ?? 0)) {
             2 => "<span style='color:#ff4444;font-weight:600'>URGENT</span>",
@@ -747,6 +860,7 @@ HTML;
   .btn { flex: 1; text-align: center; padding: 0.9em; border-radius: 8px; text-decoration: none; font-size: 0.95em; font-weight: 600; }
   .approve { background: #238636; color: #fff; }
   .reject { background: #da3633; color: #fff; }
+  .inspect { background: #1f6feb; color: #fff; }
   .resolved { text-align: center; color: #8b949e; font-style: italic; padding: 0.8em; }
   .hub-link { display: block; text-align: center; color: #58a6ff; margin-top: 1em; font-size: 0.85em; text-decoration: none; }
 </style>
@@ -834,9 +948,21 @@ HTML;
 
     private function summarizeItemForPage(object $item, int $limit = 1200): string
     {
+        $rawDetails = $item->details ?? null;
+        if (is_array($rawDetails)) {
+            $details = $rawDetails;
+        } elseif (is_object($rawDetails)) {
+            $details = (array) $rawDetails;
+        } elseif (is_string($rawDetails) && trim($rawDetails) !== '') {
+            $decoded = json_decode($rawDetails, true);
+            $details = is_array($decoded) ? $decoded : null;
+        } else {
+            $details = null;
+        }
+
         $decorated = $this->registry->decorateItemForDisplay((string) ($item->review_type ?? ''), [
             'summary' => $item->summary ?? '',
-            'details' => json_decode($item->details ?? 'null', true),
+            'details' => $details,
         ]);
 
         $displaySummary = (string) ($decorated['details_human'] ?? $decorated['summary'] ?? $item->summary ?? '');
@@ -885,6 +1011,9 @@ HTML;
         }
 
         [$prefix, $id] = $parts;
+        if ($this->registry->isInspectionOnly($prefix)) {
+            return response()->json(['success' => false, 'error' => 'Inspection-only reviews cannot be changed.'], 422);
+        }
         $newExpiry = now()->addDays(7)->format('Y-m-d H:i:s');
         $count = 0;
 
@@ -900,7 +1029,7 @@ HTML;
                     );
                     if ($count === 0) {
                         // Try as agent_id
-                        $count = app(\App\Services\AgentLoopService::class)->reviveExpiredItems($id);
+                        $count = app(AgentLoopService::class)->reviveExpiredItems($id);
                     }
                     break;
 
@@ -947,8 +1076,13 @@ HTML;
      * Enriches each expired row with ui_schema/color/source from its registry entry
      * so DynamicReviewCard can render it the same as a live item.
      */
-    private function mergeExpiredItems(array $result, ?string $type, int $limit, int $offset): array
-    {
+    private function mergeExpiredItems(
+        array $result,
+        ?string $type,
+        int $limit,
+        int $offset,
+        ?string $producerId = null
+    ): array {
         try {
             $params = [];
             $typeClause = '';
@@ -956,12 +1090,18 @@ HTML;
                 $typeClause = ' AND review_type = ?';
                 $params[] = $type;
             }
+            $producerClause = '';
+            if ($producerId !== null) {
+                $producerClause = ' AND agent_id = ?';
+                $params[] = $producerId;
+            }
             $expired = DB::select(
                 "SELECT id, agent_id, review_type, title, summary, details, confidence, priority,
                         status, token, expires_at, created_at, updated_at
                  FROM agent_review_queue
                  WHERE (status = 'expired' OR (status = 'pending' AND expires_at IS NOT NULL AND expires_at < NOW()))
                  {$typeClause}
+                 {$producerClause}
                  ORDER BY created_at DESC
                  LIMIT 100",
                 $params
@@ -1194,7 +1334,7 @@ HTML;
     /**
      * Agent Reports Dashboard — aggregated metrics for all agents
      */
-    public function agentReports(Request $request): JsonResponse
+    public function agentReports(Request $request, AgentUsefulYieldService $yieldService): JsonResponse
     {
         $range = $request->query('range', '24h');
         $interval = match ($range) {
@@ -1202,6 +1342,12 @@ HTML;
             '7d' => 'INTERVAL 7 DAY',
             '30d' => 'INTERVAL 30 DAY',
             default => 'INTERVAL 24 HOUR',
+        };
+        $rangeHours = match ($range) {
+            '1h' => 1,
+            '7d' => 168,
+            '30d' => 720,
+            default => 24,
         };
 
         try {
@@ -1276,6 +1422,8 @@ HTML;
                 FROM agent_episodes
                 WHERE created_at > DATE_SUB(NOW(), {$interval})
             ");
+            $agentSummary = $yieldService->enrich($agentSummary, $rangeHours);
+            $totals = (object) array_merge((array) $totals, $yieldService->totals($agentSummary));
 
             return response()->json([
                 'range' => $range,
@@ -1314,7 +1462,7 @@ HTML;
         };
 
         try {
-            $handoffService = app(\App\Services\AgentHandoffService::class);
+            $handoffService = app(AgentHandoffService::class);
             $stats = $handoffService->getStats($hours);
             $history = $handoffService->getHandoffHistory(50);
 
@@ -1433,7 +1581,7 @@ HTML;
     public function agentProcedures(Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\AgentProceduralMemoryService::class);
+            $service = app(AgentProceduralMemoryService::class);
             $filters = [];
 
             if ($request->has('agent_id')) {
@@ -1462,7 +1610,7 @@ HTML;
     public function agentProcedureStats(): JsonResponse
     {
         try {
-            $service = app(\App\Services\AgentProceduralMemoryService::class);
+            $service = app(AgentProceduralMemoryService::class);
             $stats = $service->getDashboardStats();
 
             return response()->json(['success' => true, 'data' => $stats]);
@@ -1477,7 +1625,7 @@ HTML;
     public function retireProcedure(int $id): JsonResponse
     {
         try {
-            $service = app(\App\Services\AgentProceduralMemoryService::class);
+            $service = app(AgentProceduralMemoryService::class);
             $result = $service->retireProcedure($id);
 
             return response()->json(['success' => $result]);
@@ -1492,7 +1640,7 @@ HTML;
     public function restoreProcedure(int $id): JsonResponse
     {
         try {
-            $service = app(\App\Services\AgentProceduralMemoryService::class);
+            $service = app(AgentProceduralMemoryService::class);
             $result = $service->restoreProcedure($id);
 
             return response()->json(['success' => $result]);
@@ -1506,7 +1654,7 @@ HTML;
     public function speculativeStats(Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\SpeculativeExecutionService::class);
+            $service = app(SpeculativeExecutionService::class);
             $agentId = $request->query('agent_id');
             $stats = $service->getStats($agentId);
 
@@ -1519,7 +1667,7 @@ HTML;
     public function speculativeHistory(Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\SpeculativeExecutionService::class);
+            $service = app(SpeculativeExecutionService::class);
             $agentId = $request->query('agent_id');
             $limit = min(100, max(1, (int) $request->query('limit', 20)));
             $runs = $service->getHistory($limit, $agentId);
@@ -1533,7 +1681,7 @@ HTML;
     public function speculativeDetail(string $specRunId): JsonResponse
     {
         try {
-            $service = app(\App\Services\SpeculativeExecutionService::class);
+            $service = app(SpeculativeExecutionService::class);
             $result = $service->getResult($specRunId);
 
             if ($result) {
@@ -1566,7 +1714,7 @@ HTML;
                 return response()->json(['success' => false, 'error' => 'agent_id and task required'], 422);
             }
 
-            $service = app(\App\Services\SpeculativeExecutionService::class);
+            $service = app(SpeculativeExecutionService::class);
             $result = $service->execute($agentId, $task, ['trigger_type' => 'manual']);
 
             return response()->json($result);
@@ -1578,7 +1726,7 @@ HTML;
     public function speculativeCancel(string $specRunId): JsonResponse
     {
         try {
-            $service = app(\App\Services\SpeculativeExecutionService::class);
+            $service = app(SpeculativeExecutionService::class);
             $cancelled = $service->cancel($specRunId);
 
             return response()->json(['success' => $cancelled]);
@@ -1594,7 +1742,7 @@ HTML;
     public function adaptiveModeStats(Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\AdaptiveModeService::class);
+            $service = app(AdaptiveModeService::class);
             $agentId = $request->query('agent_id');
             $stats = $service->getStats($agentId);
 
@@ -1607,7 +1755,7 @@ HTML;
     public function adaptiveModeHistory(string $agentId): JsonResponse
     {
         try {
-            $service = app(\App\Services\AdaptiveModeService::class);
+            $service = app(AdaptiveModeService::class);
             $history = $service->getSelectionHistory($agentId);
 
             return response()->json(['success' => true, 'history' => $history]);
@@ -1619,7 +1767,7 @@ HTML;
     public function adaptiveModeRecommend(string $agentId, Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\AdaptiveModeService::class);
+            $service = app(AdaptiveModeService::class);
             $task = $request->query('task');
             $taskKey = $task ? $service->classifyTask($agentId, $task) : null;
             $scores = $service->scoreModes($agentId, $taskKey);
@@ -1652,7 +1800,7 @@ HTML;
     private function enrichItemsWithRemediation(array $items): array
     {
         try {
-            $registry = app(\App\Services\RemediationRegistryService::class);
+            $registry = app(RemediationRegistryService::class);
             $allActions = $registry->getAllActions();
             $actionMap = [];
             foreach ($allActions as $action) {
@@ -1758,7 +1906,7 @@ HTML;
     {
         [$typeName] = explode(':', $unifiedId, 2);
 
-        $remediation = app(\App\Services\RemediationRegistryService::class)
+        $remediation = app(RemediationRegistryService::class)
             ->getActionForFinding($typeName);
 
         if (! $remediation) {
@@ -1768,7 +1916,7 @@ HTML;
             ]);
         }
 
-        $registry = app(\App\Services\RemediationRegistryService::class);
+        $registry = app(RemediationRegistryService::class);
 
         return response()->json([
             'has_remediation' => true,
@@ -1795,8 +1943,11 @@ HTML;
     public function executeRemediation(Request $request, string $unifiedId): JsonResponse
     {
         [$typeName] = explode(':', $unifiedId, 2);
+        if ($this->registry->isInspectionOnly($typeName)) {
+            return response()->json(['success' => false, 'error' => 'Inspection-only reviews cannot be changed.'], 422);
+        }
 
-        $result = app(\App\Services\RemediationExecutionService::class)->executeFindingType(
+        $result = app(RemediationExecutionService::class)->executeFindingType(
             $typeName,
             $request->boolean('confirmed')
         );
@@ -1829,7 +1980,7 @@ HTML;
      */
     public function remediationRegistry(): JsonResponse
     {
-        $registry = app(\App\Services\RemediationRegistryService::class);
+        $registry = app(RemediationRegistryService::class);
 
         return response()->json([
             'actions' => $registry->getAllActions(),

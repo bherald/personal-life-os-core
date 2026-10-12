@@ -58,9 +58,9 @@ class JoplinFilesService
     /**
      * List all Joplin note files
      */
-    public function listNotes(): array
+    public function listNotes(bool $strict = false): array
     {
-        $files = $this->listDirectory($this->joplinPath);
+        $files = $this->listDirectory($this->joplinPath, $strict);
 
         // Filter to only .md files (exclude .lock, .resource, .sync folders)
         $notes = [];
@@ -76,16 +76,77 @@ class JoplinFilesService
     /**
      * Get a specific note by ID
      */
-    public function getNote(string $noteId): ?array
+    public function getNote(string $noteId, bool $strict = false): ?array
     {
         $filename = $noteId.'.md';
-        $content = $this->getFileContent($this->joplinPath.$filename);
+        $content = $this->getFileContent($this->joplinPath.$filename, $strict);
 
         if (! $content) {
             return null;
         }
 
-        return $this->parseNote($content);
+        $note = $this->parseNote($content, $strict ? $noteId : null);
+        if ($strict && ($note['id'] !== $noteId || $note['type'] < 1 || ($note['metadata']['encryption_applied'] ?? '0') !== '0')) {
+            throw new \RuntimeException('Joplin item is incomplete or unreadable; refusing creation');
+        }
+
+        return $note;
+    }
+
+    /** Match the source identity, never a title or an incidental transcript link. */
+    public function youtubeVideoId(array $note): ?string
+    {
+        $source = $note['metadata']['source_url'] ?? '';
+        if ($source === '') {
+            $body = $note['content'] ?? '';
+            if (str_contains($body, '<!-- PLOS:YOUTUBE-KNOWLEDGE:')) {
+                return null;
+            }
+            // Only the opening provenance block; later headings belong to source content.
+            $header = preg_split('/^(?:#{2,6}\s|---\s*$|```)/m', $body, 2)[0];
+            if (! preg_match('/^(?:\*\*(?:Video|Source(?: video| URL)?|YouTube|URL)(?::\*\*|\*\*:)|(?:Video|Source(?: video| URL)?|YouTube|URL):)[ \t]*(.+)$/mi', $header, $line)) {
+                return null;
+            }
+            $source = $line[1];
+        }
+
+        // URL parsing keeps query keys exact and video IDs case-sensitive.
+        if (! preg_match('~https?://[^\s<>)\]]+~i', $source, $url)) {
+            return null;
+        }
+        $parts = parse_url($url[0]);
+        $host = strtolower($parts['host'] ?? '');
+        $path = $parts['path'] ?? '';
+        $id = null;
+        if ($host === 'youtu.be') {
+            $id = ltrim($path, '/');
+        } elseif (in_array($host, ['youtube.com', 'www.youtube.com', 'm.youtube.com'], true)) {
+            if ($path === '/watch') {
+                parse_str($parts['query'] ?? '', $query);
+                $id = $query['v'] ?? null;
+            } elseif (preg_match('~^/(?:embed|shorts|live|v)/([^/]+)$~', $path, $match)) {
+                $id = $match[1];
+            }
+        }
+
+        return is_string($id) && preg_match('/^[A-Za-z0-9_-]{11}$/D', $id) ? $id : null;
+    }
+
+    public function findYouTubeVideoNote(string $videoId): ?array
+    {
+        $matches = [];
+        foreach ($this->listNotes(true) as $file) {
+            $note = $this->getNote(substr($file, 0, -3), true);
+            if ($note === null) {
+                throw new \RuntimeException('Joplin catalogue changed; retry before creating');
+            }
+            if ($note['type'] === 1 && $this->youtubeVideoId($note) === $videoId) {
+                $matches[] = $note;
+            }
+        }
+        usort($matches, fn (array $a, array $b): int => [$a['created_time'], $a['id']] <=> [$b['created_time'], $b['id']]);
+
+        return $matches[0] ?? null;
     }
 
     /**
@@ -229,7 +290,7 @@ class JoplinFilesService
      * parent_id: yyy
      * ...metadata fields...
      */
-    protected function parseNote(string $content): array
+    protected function parseNote(string $content, ?string $expectedId = null): array
     {
         $lines = explode("\n", $content);
 
@@ -247,7 +308,9 @@ class JoplinFilesService
         // First, find where metadata starts (first line matching "key: value" pattern)
         $metadataStartIndex = -1;
         for ($i = 0; $i < count($lines); $i++) {
-            if (preg_match('/^(id|parent_id|created_time|updated_time|type_|is_conflict|latitude|longitude):\s*/', $lines[$i])) {
+            if ($expectedId !== null
+                ? trim($lines[$i]) === 'id: '.$expectedId
+                : preg_match('/^(id|parent_id|created_time|updated_time|type_|is_conflict|latitude|longitude):\s*/', $lines[$i])) {
                 $metadataStartIndex = $i;
                 break;
             }
@@ -307,12 +370,16 @@ class JoplinFilesService
     /**
      * List files in directory (filesystem-first, WebDAV fallback)
      */
-    protected function listDirectory(string $path): array
+    protected function listDirectory(string $path, bool $strict = false): array
     {
         // Filesystem-first
         if ($this->localPath && $path === $this->joplinPath) {
             $files = [];
-            foreach (scandir($this->localPath) as $file) {
+            $entries = @scandir($this->localPath);
+            if ($entries === false && $strict) {
+                throw new \RuntimeException('Joplin catalogue read failed; refusing creation');
+            }
+            foreach ($entries ?: [] as $file) {
                 if ($file !== '.' && $file !== '..' && ! str_starts_with($file, '.')) {
                     $files[] = $file;
                 }
@@ -330,12 +397,23 @@ class JoplinFilesService
             ->send('PROPFIND', $url);
 
         if (! $response->successful()) {
+            if ($strict) {
+                throw new \RuntimeException('Joplin catalogue read failed; refusing creation');
+            }
             Log::error('Failed to list Joplin directory', [
                 'path' => $path,
                 'status' => $response->status(),
             ]);
 
             return [];
+        }
+
+        if ($strict) {
+            if ($response->status() !== 207) {
+                throw new \RuntimeException('Invalid Joplin catalogue response; refusing creation');
+            }
+
+            return $this->strictWebDavFiles($response->body(), $url);
         }
 
         // Parse WebDAV XML response
@@ -352,16 +430,69 @@ class JoplinFilesService
         return $files;
     }
 
+    /** A failed or malformed DAV listing cannot establish that an item is absent. */
+    private function strictWebDavFiles(string $body, string $url): array
+    {
+        $previous = libxml_use_internal_errors(true);
+        try {
+            $document = new \DOMDocument;
+            if (trim($body) === '' || ! $document->loadXML($body, LIBXML_NONET) || $document->doctype !== null
+                || $document->documentElement?->localName !== 'multistatus'
+                || $document->documentElement?->namespaceURI !== 'DAV:') {
+                throw new \RuntimeException('Malformed Joplin catalogue; refusing creation');
+            }
+            $xpath = new \DOMXPath($document);
+            $xpath->registerNamespace('dav', 'DAV:');
+            $responses = $xpath->query('/dav:multistatus/dav:response');
+            $root = rtrim(rawurldecode(parse_url($url, PHP_URL_PATH)), '/');
+            $foundRoot = false;
+            $files = [];
+            foreach ($responses as $response) {
+                $hrefs = $xpath->query('dav:href', $response);
+                $statuses = $xpath->query('dav:status|dav:propstat/dav:status', $response);
+                if ($hrefs->length !== 1 || $statuses->length === 0) {
+                    throw new \RuntimeException('Incomplete Joplin catalogue; refusing creation');
+                }
+                foreach ($statuses as $status) {
+                    if (! preg_match('~^HTTP/\S+ 2[0-9]{2}(?: |$)~', trim($status->textContent))) {
+                        throw new \RuntimeException('Partial Joplin catalogue; refusing creation');
+                    }
+                }
+                $path = rtrim(rawurldecode(parse_url(trim($hrefs->item(0)->textContent), PHP_URL_PATH)), '/');
+                if ($path === $root) {
+                    $foundRoot = true;
+                } elseif (dirname($path) === $root) {
+                    $files[] = basename($path);
+                } else {
+                    throw new \RuntimeException('Unexpected Joplin catalogue path; refusing creation');
+                }
+            }
+            if (! $foundRoot) {
+                throw new \RuntimeException('Missing Joplin catalogue root; refusing creation');
+            }
+
+            return array_values(array_unique($files));
+        } finally {
+            libxml_clear_errors();
+            libxml_use_internal_errors($previous);
+        }
+    }
+
     /**
      * Get file content (filesystem-first, WebDAV fallback)
      */
-    protected function getFileContent(string $path): ?string
+    protected function getFileContent(string $path, bool $strict = false): ?string
     {
         // Filesystem-first
         $localFile = JoplinPaths::localFile($this->localPath, $this->joplinPath, $path);
         if ($localFile) {
             if (file_exists($localFile) && is_readable($localFile)) {
-                return file_get_contents($localFile);
+                $content = @file_get_contents($localFile);
+                if ($content === false && $strict) {
+                    throw new \RuntimeException('Joplin item read failed; refusing creation');
+                }
+
+                return $content === false ? null : $content;
             }
         }
 
@@ -373,6 +504,10 @@ class JoplinFilesService
             ->get($url);
 
         if (! $response->successful()) {
+            if ($strict && $response->status() !== 404) {
+                throw new \RuntimeException('Joplin item read failed; refusing creation');
+            }
+
             return null;
         }
 

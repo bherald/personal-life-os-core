@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Traits\RecursionAware;
 use Exception;
 use Illuminate\Support\Facades\DB;
@@ -28,15 +29,15 @@ class KnowledgeGraphService
 
     private const SCHEDULED_BATCH_CHAR_LIMIT = 2500;
 
-    private const SCHEDULED_BATCH_SPACY_ENTITY_LIMIT = 8;
+    private const SCHEDULED_BATCH_SPACY_ENTITY_LIMIT = 4;
 
     private const SCHEDULED_BATCH_MAX_TOKENS = 700;
 
-    private const SCHEDULED_BATCH_RETRY_MAX_TOKENS = 500;
+    private const SCHEDULED_BATCH_RETRY_MAX_TOKENS = 700;
 
-    private const SCHEDULED_BATCH_ENTITY_OUTPUT_LIMIT = 6;
+    private const SCHEDULED_BATCH_ENTITY_OUTPUT_LIMIT = 4;
 
-    private const SCHEDULED_BATCH_REL_OUTPUT_LIMIT = 6;
+    private const SCHEDULED_BATCH_REL_OUTPUT_LIMIT = 4;
 
     private AIService $aiService;
 
@@ -142,6 +143,7 @@ class KnowledgeGraphService
         $sourceDocId = $options['source_document_id'] ?? null;
         $minConfidence = $options['min_confidence'] ?? 0.5;
         $scheduledBatch = ! empty($options['scheduled_batch']);
+        $managedModelHost = $scheduledBatch && ($options['managed_model_host'] ?? false) === true;
         $maxTokens = $scheduledBatch ? self::SCHEDULED_BATCH_MAX_TOKENS : 4000;
         $allowRetryPrompt = ! $scheduledBatch;
 
@@ -150,6 +152,9 @@ class KnowledgeGraphService
         // Used by the catch-up lane (scheduled_jobs id=133) to spread KG extraction
         // across local Ollama roles so available GPUs work in parallel.
         $preferredInstance = $options['preferred_instance'] ?? 'primary';
+        if ($managedModelHost && $preferredInstance !== 'secondary') {
+            throw new \InvalidArgumentException('Managed knowledge-graph batches require the secondary Ollama instance.');
+        }
         $modelRoleOverride = $options['model_role_override'] ?? null;
         $scheduledAllowedInstances = match ($preferredInstance) {
             'secondary' => ['ollama_secondary'],
@@ -193,7 +198,7 @@ Return exactly one minified JSON object:
 {"entities":[{"name":"string","type":"{$typeList}"}],"relationships":[{"subject":"string","subject_type":"type","predicate":"string","object":"string","object_type":"type","confidence":0.9,"source_snippet":"text"}]}
 
 Rules:
-- At most 6 entities and 6 relationships
+- At most 4 entities and 4 relationships
 - Prioritize people, places, events, and explicit family/work/location relationships
 - Keep source_snippet under 40 chars
 - Use lowercase_underscore predicates
@@ -237,7 +242,7 @@ Return exactly one minified JSON object:
 {"entities":[{"name":"Entity Name","type":"person|organization|location|concept|event|document|date|product|technology|other"}],"relationships":[{"subject":"Entity Name","subject_type":"type","predicate":"relationship_type","object":"Other Entity","object_type":"type","confidence":0.9,"source_snippet":"text"}]}
 
 Rules:
-- At most 6 entities and 6 relationships
+- At most 4 entities and 4 relationships
 - Prefer explicit people, places, dates, and key events
 - Use lowercase_underscore predicates
 - Keep source_snippet under 40 chars
@@ -298,6 +303,18 @@ Rules:
 PROMPT;
             }
 
+            $managedRoute = $managedModelHost ? [
+                'model' => 'qwen3:8b',
+                'model_override' => 'qwen3:8b',
+                'preferred_ollama_instance_ids' => ['ollama_secondary'],
+                'ollama_required_no_fallback' => true,
+                'disable_cascade' => true,
+                'use_cache' => false,
+                'dedup' => false,
+                '_skip_decompose' => true,
+                'suppressAlert' => true,
+            ] : [];
+
             $result = $this->aiService->process($prompt, [
                 'factual_mode' => true,
                 'max_tokens' => $maxTokens,
@@ -306,10 +323,22 @@ PROMPT;
                 'skip_if_busy' => ! $scheduledBatch,
                 'ollama_lock_wait_seconds' => $scheduledBatch ? 15 : 30,
                 'allowed_ollama_instance_ids' => $scheduledBatch ? $scheduledAllowedInstances : null,
+                ...$managedRoute,
             ]);
 
+            if ($managedModelHost && (($result['success'] ?? false) !== true
+                || ($result['provider'] ?? null) !== 'ollama_secondary'
+                || (isset($result['model']) && ($result['model'] ?? null) !== 'qwen3:8b'))) {
+                return [
+                    'success' => false,
+                    'error' => 'Managed .87 Ollama extraction returned an inexact target response.',
+                    'entities' => [],
+                    'relationships' => [],
+                ];
+            }
+
             if (! $result['success']) {
-                if ($scheduledBatch) {
+                if ($scheduledBatch && ! $managedModelHost) {
                     Log::warning('KnowledgeGraph: Scheduled batch degrading after AI extraction failure', [
                         'source_document_id' => $sourceDocId,
                         'error' => $result['error'] ?? 'AI extraction failed',
@@ -384,7 +413,7 @@ Return ONLY this structure:
 {"entities":[{"name":"string","type":"person|organization|location|concept|event|document|date|product|technology|other"}],"relationships":[{"subject":"string","subject_type":"type","predicate":"relationship_type","object":"string","object_type":"type","confidence":0.9,"source_snippet":"text"}]}
 
 Rules:
-- At most 6 entities and 6 relationships
+- At most 4 entities and 4 relationships
 - Prefer explicit people, places, dates, and key events
 - Keep source_snippet under 40 chars
 - Use lowercase_underscore predicates
@@ -400,7 +429,19 @@ RETRY_PROMPT;
                     'skip_if_busy' => false,
                     'ollama_lock_wait_seconds' => 15,
                     'allowed_ollama_instance_ids' => $scheduledAllowedInstances,
+                    ...$managedRoute,
                 ]);
+
+                if ($managedModelHost && (($retryResult['success'] ?? false) !== true
+                    || ($retryResult['provider'] ?? null) !== 'ollama_secondary'
+                    || (isset($retryResult['model']) && ($retryResult['model'] ?? null) !== 'qwen3:8b'))) {
+                    return [
+                        'success' => false,
+                        'error' => 'Managed .87 Ollama retry returned an inexact target response.',
+                        'entities' => [],
+                        'relationships' => [],
+                    ];
+                }
 
                 if ($retryResult['success']) {
                     $extracted = $this->parseJsonFromResponse($retryResult['response']);
@@ -408,7 +449,7 @@ RETRY_PROMPT;
             }
 
             if (! $extracted) {
-                if ($scheduledBatch) {
+                if ($scheduledBatch && ! $managedModelHost) {
                     Log::warning('KnowledgeGraph: Scheduled batch falling back after parse failure', [
                         'source_document_id' => $sourceDocId,
                         'spacy_entities' => count($spacyEntities),
@@ -569,6 +610,9 @@ RETRY_PROMPT;
             ];
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('KnowledgeGraph: Extraction failed', [
                 'error' => $e->getMessage(),
                 'text_length' => strlen($text),
@@ -1368,6 +1412,9 @@ RETRY_PROMPT;
             return $entities;
 
         } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::debug('KnowledgeGraph: SpaCy extraction failed, falling back to LLM-only', [
                 'error' => $e->getMessage(),
             ]);
@@ -1424,10 +1471,9 @@ RETRY_PROMPT;
         $response = trim(preg_replace('/^\xEF\xBB\xBF/', '', $response));
         $response = $this->stripReasoningWrappers($response);
 
-        // Log raw response for debugging
         Log::debug('KnowledgeGraph: Parsing AI response', [
             'response_length' => strlen($response),
-            'response_preview' => substr($response, 0, 500),
+            'response_sha256' => hash('sha256', $response),
         ]);
 
         foreach ($this->buildJsonParseCandidates($response) as $candidate) {
@@ -1438,7 +1484,8 @@ RETRY_PROMPT;
         }
 
         Log::warning('KnowledgeGraph: Failed to parse JSON from response', [
-            'response_preview' => substr($response, 0, 1000),
+            'response_length' => strlen($response),
+            'response_sha256' => hash('sha256', $response),
             'json_error' => json_last_error_msg(),
         ]);
 
@@ -1907,7 +1954,10 @@ RETRY_PROMPT;
         if ($persist) {
             try {
                 $this->persistQualityRun($result, $sampleSize);
+                $result['persisted'] = true;
             } catch (\Throwable $e) {
+                $result['persisted'] = false;
+                $result['persistence_error'] = $e->getMessage();
                 Log::error('KG quality persist failed', ['error' => $e->getMessage()]);
             }
         }
@@ -2165,12 +2215,8 @@ RETRY_PROMPT;
                 return ['success' => false, 'error' => 'Document content too short for entity extraction'];
             }
 
-            // Truncate to avoid token limits
-            if (strlen($content) > 8000) {
-                $content = substr($content, 0, 8000);
-            }
-
-            // Add title context
+            // Preserve the complete source. The shared pipeline must report a
+            // model capacity failure instead of silently dropping evidence.
             $text = $doc->title ? "Title: {$doc->title}\n\n{$content}" : $content;
 
             $result = $this->extractEntities($text, [

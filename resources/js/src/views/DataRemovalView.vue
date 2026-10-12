@@ -144,7 +144,7 @@
             <div v-for="broker in filteredBrokers" :key="broker.id" class="bg-[#2d2d2d] rounded-lg border-2 border-[#444] p-4 hover:border-accent transition">
               <div class="flex justify-between items-start mb-2">
                 <div class="flex items-center gap-2">
-                  <span class="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                  <span class="inline-block w-2.5 h-2.5 rounded-full shrink-0"
                         :class="broker.health_status === 'healthy' ? 'bg-[#27ae60]' : broker.health_status === 'degraded' ? 'bg-[#f39c12]' : broker.health_status === 'broken' ? 'bg-[#e74c3c]' : 'bg-[#95a5a6]'"
                         :title="'Health: ' + (broker.health_status || 'unknown')"></span>
                   <div>
@@ -178,6 +178,9 @@
 
         <!-- Requests Tab -->
         <div v-if="activeTab === 'requests'">
+          <div v-if="requestLinkError" role="alert" class="mb-4 rounded border border-red-500 bg-red-500/10 p-3 text-sm text-red-300">
+            {{ requestLinkError }}
+          </div>
           <!-- Relisting Alert Banner -->
           <div v-if="relistings.length > 0" class="mb-4 bg-[#e74c3c]/10 border-2 border-[#e74c3c] rounded-lg p-4 flex items-center gap-3">
             <span class="text-2xl">&#9888;</span>
@@ -201,12 +204,12 @@
             </select>
           </div>
 
-          <div v-if="filteredRequests.length === 0" class="text-center py-12 bg-[#2d2d2d] rounded-lg border-2 border-[#444]">
+          <div v-if="visibleRequests.length === 0" class="text-center py-12 bg-[#2d2d2d] rounded-lg border-2 border-[#444]">
             <p class="text-[#95a5a6]">No removal requests found</p>
           </div>
 
           <div v-else class="space-y-3">
-            <div v-for="request in filteredRequests" :key="request.id" class="bg-[#2d2d2d] rounded-lg border-2 border-[#444] p-4">
+            <div v-for="request in visibleRequests" :id="`removal-request-${request.id}`" :key="request.id" class="bg-[#2d2d2d] rounded-lg border-2 border-[#444] p-4">
               <div class="flex justify-between items-start">
                 <div>
                   <div class="flex items-center gap-2">
@@ -266,7 +269,18 @@
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"></path>
                     </svg>
                   </button>
+                  <button type="button" class="btn-secondary text-xs" :aria-expanded="selectedRequestId === Number(request.id)" @click="selectedRequestId = selectedRequestId === Number(request.id) ? null : Number(request.id)">
+                    {{ selectedRequestId === Number(request.id) ? 'Hide Details' : 'View Details' }}
+                  </button>
                 </div>
+              </div>
+              <div v-if="selectedRequestId === Number(request.id)" class="mt-4 border-t border-[#444] pt-4 text-sm text-[#e0e0e0] space-y-2">
+                <div><span class="text-[#95a5a6]">Request:</span> #{{ request.id }} · {{ formatStatus(request.status) }}</div>
+                <div><span class="text-[#95a5a6]">Person and broker:</span> {{ request.subject_name }} · {{ request.broker_name }}</div>
+                <div v-if="request.profile_url" class="break-all"><span class="text-[#95a5a6]">Profile:</span> {{ request.profile_url }}</div>
+                <div v-if="request.ai_notes" class="whitespace-pre-wrap"><span class="text-[#95a5a6]">Assessment:</span> {{ request.ai_notes }}</div>
+                <div v-if="request.review_notes" class="whitespace-pre-wrap"><span class="text-[#95a5a6]">Review notes:</span> {{ request.review_notes }}</div>
+                <div v-if="request.created_at"><span class="text-[#95a5a6]">Created:</span> {{ formatDate(request.created_at) }}</div>
               </div>
             </div>
           </div>
@@ -509,7 +523,7 @@
       </div>
 
       <!-- Subject Modal -->
-      <div v-if="showSubjectModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div v-if="showSubjectModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
         <div class="bg-[#2d2d2d] rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
           <div class="p-6">
             <h3 class="text-xl font-bold text-[#e0e0e0] mb-4">
@@ -580,7 +594,7 @@
       </div>
 
       <!-- Broker Modal -->
-      <div v-if="showBrokerModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div v-if="showBrokerModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
         <div class="bg-[#2d2d2d] rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
           <div class="p-6">
             <h3 class="text-xl font-bold text-[#e0e0e0] mb-4">
@@ -665,7 +679,7 @@
       </div>
 
       <!-- Activity Modal -->
-      <div v-if="showActivityModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div v-if="showActivityModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
         <div class="bg-[#2d2d2d] rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
           <div class="p-6">
             <div class="flex justify-between items-center mb-4">
@@ -700,7 +714,7 @@
       </div>
 
       <!-- Delete Confirmation Modal -->
-      <div v-if="showDeleteModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div v-if="showDeleteModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
         <div class="bg-[#2d2d2d] rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
           <h3 class="text-xl font-bold text-[#e0e0e0] mb-4">Confirm Delete</h3>
           <p class="text-[#95a5a6] mb-6">
@@ -717,7 +731,7 @@
       </div>
 
       <!-- Field Selection Modal -->
-      <div v-if="showFieldsModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div v-if="showFieldsModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
         <div class="bg-[#2d2d2d] rounded-lg shadow-xl max-w-lg w-full mx-4">
           <div class="p-6">
             <h3 class="text-xl font-bold text-[#e0e0e0] mb-2">Privacy Controls</h3>
@@ -771,7 +785,8 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue';
+import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue';
+import { useRoute } from 'vue-router';
 
 // State
 const loading = ref(true);
@@ -783,6 +798,12 @@ const brokers = ref([]);
 const requests = ref([]);
 const reviewQueue = ref([]);
 const activityLog = ref([]);
+const route = useRoute();
+const selectedRequestId = ref(null);
+const linkedRequest = ref(null);
+const requestLinkError = ref('');
+let requestLinkSequence = 0;
+let requestsLoaded = false;
 
 // Filters
 const brokerFilter = ref('');
@@ -876,6 +897,48 @@ const filteredRequests = computed(() => {
   if (!requestFilter.value) return requests.value;
   return requests.value.filter(r => r.status === requestFilter.value);
 });
+const visibleRequests = computed(() => {
+  const rows = filteredRequests.value;
+  if (linkedRequest.value && !rows.some(request => Number(request.id) === Number(linkedRequest.value.id))) {
+    return [linkedRequest.value, ...rows];
+  }
+  return rows;
+});
+
+const selectLinkedRequest = async (rawId) => {
+  const sequence = ++requestLinkSequence;
+  linkedRequest.value = null;
+  requestLinkError.value = '';
+  selectedRequestId.value = null;
+  if (rawId === undefined) return;
+  activeTab.value = 'requests';
+  requestFilter.value = '';
+  if (typeof rawId !== 'string' || !/^[1-9]\d*$/.test(rawId) || !Number.isSafeInteger(Number(rawId))) {
+    requestLinkError.value = 'Invalid removal request link.';
+    return;
+  }
+
+  const requestId = Number(rawId);
+  try {
+    let request = requests.value.find(item => Number(item.id) === requestId);
+    if (!request) {
+      const response = await fetch(`/api/data-removal/requests/${requestId}`);
+      if (!response.ok) throw new Error('Removal request could not be loaded.');
+      const payload = await response.json();
+      request = payload.data;
+      if (!payload.success || Number(request?.id) !== requestId) throw new Error('Removal request could not be loaded.');
+      if (sequence !== requestLinkSequence) return;
+      linkedRequest.value = request;
+    }
+    if (sequence !== requestLinkSequence) return;
+    selectedRequestId.value = requestId;
+    await nextTick();
+    document.getElementById(`removal-request-${requestId}`)?.scrollIntoView({ block: 'nearest' });
+  } catch (error) {
+    if (sequence !== requestLinkSequence) return;
+    requestLinkError.value = error.message || 'Removal request could not be loaded.';
+  }
+};
 
 // Methods
 const fetchData = async () => {
@@ -896,13 +959,17 @@ const fetchData = async () => {
     const brokersData = await brokersRes.json();
     brokers.value = brokersData.data || [];
     const requestsData = await requestsRes.json();
+    if (!requestsRes.ok || !requestsData.success) throw new Error('Failed to load removal requests.');
     requests.value = requestsData.data || [];
     const reviewData = await reviewRes.json();
     reviewQueue.value = reviewData.data || [];
   } catch (error) {
     console.error('Failed to fetch data:', error);
+    if (route.query.request !== undefined) requestLinkError.value = 'Failed to load removal requests.';
   }
   loading.value = false;
+  requestsLoaded = true;
+  if (route.query.request !== undefined) await selectLinkedRequest(route.query.request);
 };
 
 const refreshData = () => {
@@ -1471,6 +1538,10 @@ watch(activeTab, (tab) => {
   if (tab === 'requests' && relistings.value.length === 0) loadRelistings();
 });
 
+watch(() => route.query.request, (requestId) => {
+  if (requestsLoaded) void selectLinkedRequest(requestId);
+});
+
 onMounted(() => {
   fetchData();
   loadRelistings();
@@ -1478,32 +1549,50 @@ onMounted(() => {
 </script>
 
 <style scoped>
+@reference "../../../css/app.css";
 .card {
-  @apply bg-[#2d2d2d] rounded-lg p-4 shadow-lg border border-[#444];
+  @apply rounded-lg p-4 shadow-lg border;
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
 }
 
 .label {
-  @apply block text-sm font-medium text-[#95a5a6] mb-1;
+  @apply block text-sm font-medium mb-1;
+  color: var(--color-text-secondary);
 }
 
 .form-input {
-  @apply w-full px-4 py-2 bg-[#1a1a1a] border border-[#444] rounded-lg text-[#e0e0e0] focus:ring-2 focus:ring-accent focus:border-transparent;
+  @apply w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-accent focus:border-transparent;
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
 }
 
 .form-textarea {
-  @apply w-full px-4 py-2 bg-[#1a1a1a] border border-[#444] rounded-lg text-[#e0e0e0] focus:ring-2 focus:ring-accent focus:border-transparent resize-y;
+  @apply w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-accent focus:border-transparent resize-y;
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
 }
 
 .form-select {
-  @apply w-full px-4 py-2 bg-[#1a1a1a] border border-[#444] rounded-lg text-[#e0e0e0] focus:ring-2 focus:ring-accent focus:border-transparent;
+  @apply w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-accent focus:border-transparent;
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
 }
 
 .form-select-sm {
-  @apply px-3 py-1 bg-[#1a1a1a] border border-[#444] rounded text-sm text-[#e0e0e0] focus:ring-2 focus:ring-accent focus:border-transparent;
+  @apply px-3 py-1 border rounded text-sm focus:ring-2 focus:ring-accent focus:border-transparent;
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
 }
 
 .form-checkbox {
-  @apply w-4 h-4 text-accent bg-[#1a1a1a] border-[#444] rounded focus:ring-accent;
+  @apply w-4 h-4 text-accent rounded focus:ring-accent;
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border);
 }
 
 .btn-primary {
@@ -1515,34 +1604,48 @@ onMounted(() => {
 }
 
 .btn-secondary {
-  @apply px-4 py-2 bg-[#34495e] text-[#e0e0e0] rounded-lg hover:bg-[#2c3e50] transition disabled:opacity-50;
+  @apply px-4 py-2 rounded-lg transition disabled:opacity-50;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
+.btn-secondary:hover { background: var(--color-bg-hover); }
 
 .btn-danger {
-  @apply px-4 py-2 bg-[#e74c3c] text-white rounded-lg hover:bg-[#c0392b] transition disabled:opacity-50;
+  @apply px-4 py-2 text-white rounded-lg transition disabled:opacity-50;
+  background: var(--ops-danger);
 }
 
 .btn-icon {
-  @apply p-2 rounded-lg hover:bg-[#34495e] transition text-[#95a5a6] hover:text-[#e0e0e0];
+  @apply p-2 rounded-lg transition;
+  color: var(--color-text-secondary);
 }
+.btn-icon:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 
 .btn-icon-sm {
-  @apply p-1 rounded hover:bg-[#34495e] transition text-[#95a5a6] hover:text-[#e0e0e0];
+  @apply p-1 rounded transition;
+  color: var(--color-text-secondary);
 }
+.btn-icon-sm:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 
 .btn-success-sm {
-  @apply px-3 py-1 bg-[#27ae60] text-white rounded text-sm hover:bg-[#229954] transition disabled:opacity-50;
+  @apply px-3 py-1 text-white rounded text-sm transition disabled:opacity-50;
+  background: var(--ops-success);
 }
 
 .btn-danger-sm {
-  @apply px-3 py-1 bg-[#e74c3c] text-white rounded text-sm hover:bg-[#c0392b] transition disabled:opacity-50;
+  @apply px-3 py-1 text-white rounded text-sm transition disabled:opacity-50;
+  background: var(--ops-danger);
 }
 
 .badge-warning {
-  @apply px-2 py-0.5 bg-[#f39c12] text-white rounded-full text-xs font-medium;
+  @apply px-2 py-0.5 rounded-full text-xs font-medium;
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  color: var(--ops-warning);
 }
 
 .badge-category {
-  @apply px-2 py-0.5 bg-[#34495e] text-[#e0e0e0] rounded text-xs;
+  @apply px-2 py-0.5 rounded text-xs;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 </style>

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\OllamaEvalLedgerService;
 use App\Services\OllamaEvalRunnerService;
 use Illuminate\Console\Command;
 use InvalidArgumentException;
@@ -11,13 +12,17 @@ class OllamaEvalRunCommand extends Command
     protected $signature = 'ollama:eval-run
         {model : Model name or provider:model target to evaluate}
         {--provider= : Optional provider override when model is unprefixed}
+        {--instance= : Pin evaluation to one Ollama instance id}
         {--case=* : Optional case id(s) to run}
+        {--max-tokens= : Bound every selected case to the same output-token cap}
+        {--record : Persist a content-free evidence summary}
         {--json : Emit JSON output}';
 
     protected $description = 'Run fixed Sprint A eval fixtures against a model target';
 
     public function __construct(
-        private readonly OllamaEvalRunnerService $runner
+        private readonly OllamaEvalRunnerService $runner,
+        private readonly OllamaEvalLedgerService $ledger
     ) {
         parent::__construct();
     }
@@ -28,9 +33,15 @@ class OllamaEvalRunCommand extends Command
             $result = $this->runner->runModel(
                 (string) $this->argument('model'),
                 $this->option('case') !== [] ? (array) $this->option('case') : null,
-                $this->option('provider') ? (string) $this->option('provider') : null
+                $this->option('provider') ? (string) $this->option('provider') : null,
+                $this->option('instance') ? (string) $this->option('instance') : null,
+                $this->option('max-tokens') !== null ? (int) $this->option('max-tokens') : null
             );
-        } catch (InvalidArgumentException $e) {
+
+            if ($this->option('record')) {
+                $result['evidence_record'] = $this->ledger->record($result);
+            }
+        } catch (InvalidArgumentException|\RuntimeException $e) {
             $this->error($e->getMessage());
 
             return self::FAILURE;

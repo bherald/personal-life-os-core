@@ -9,6 +9,8 @@ use App\Services\DataRemovalService;
 use App\Services\BrokerScraperService;
 use App\Services\BrokerDiscoveryService;
 use App\Services\DataRemoval\BrokerHealthService;
+use App\Services\DataRemoval\BrokerListSyncService;
+use App\Services\DataRemoval\PrivacyRequestReviewDecisionService;
 use App\Services\DataRemoval\RelistingDetectionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -27,15 +29,18 @@ class DataRemovalController extends Controller
     private DataRemovalService $dataRemovalService;
     private BrokerScraperService $scraperService;
     private BrokerDiscoveryService $discoveryService;
+    private PrivacyRequestReviewDecisionService $privacyReviewDecisionService;
 
     public function __construct(
         DataRemovalService $dataRemovalService,
         BrokerScraperService $scraperService,
-        BrokerDiscoveryService $discoveryService
+        BrokerDiscoveryService $discoveryService,
+        PrivacyRequestReviewDecisionService $privacyReviewDecisionService
     ) {
         $this->dataRemovalService = $dataRemovalService;
         $this->scraperService = $scraperService;
         $this->discoveryService = $discoveryService;
+        $this->privacyReviewDecisionService = $privacyReviewDecisionService;
     }
 
     // ========================================
@@ -736,20 +741,35 @@ class DataRemovalController extends Controller
             $validated = $request->validate([
                 'action' => 'required|in:approve,reject',
                 'reviewed_by' => 'nullable|string|max:100',
-                'notes' => 'nullable|string',
+                'notes' => 'nullable|string|max:2000',
+                'reason_code' => 'nullable|string|max:80',
+                'profile_url' => 'nullable|string|max:500',
+                'fields_to_submit' => 'nullable|array|min:1',
+                'fields_to_submit.*' => 'string|in:name,email,phone,address,city,state,zip,dob,aliases',
             ]);
 
-            $this->dataRemovalService->completeReview(
-                $id,
-                $validated['reviewed_by'] ?? 'user',
-                $validated['action'],
-                $validated['notes'] ?? null
-            );
+            if ($validated['action'] === 'approve') {
+                $fields = $validated['fields_to_submit'] ?? $this->dataRemovalService->getFieldsToSubmit($id);
+                $fields = array_values(array_intersect($fields, [
+                    'name', 'email', 'phone', 'address', 'city', 'state', 'zip', 'dob', 'aliases',
+                ]));
+                $result = $this->privacyReviewDecisionService->approve(
+                    $id,
+                    $validated['notes'] ?? null,
+                    [
+                        'fields_to_submit' => $fields,
+                        'profile_url' => $validated['profile_url'] ?? ($removalRequest->profile_url ?? null),
+                    ]
+                );
+            } else {
+                $result = $this->privacyReviewDecisionService->reject(
+                    $id,
+                    $validated['notes'] ?? null,
+                    ['reason_code' => $validated['reason_code'] ?? 'do_not_submit']
+                );
+            }
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Review completed',
-            ]);
+            return response()->json($result, ($result['success'] ?? false) ? 200 : 422);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'success' => false,
@@ -1102,16 +1122,22 @@ class DataRemovalController extends Controller
     public function syncBadbool(): JsonResponse
     {
         try {
-            // BADBOOL sync: fetch known broker list and compare
-            $existingBrokers = DB::select('SELECT domain FROM data_brokers');
-            $existingDomains = array_column($existingBrokers, 'domain');
+            $preview = app(BrokerListSyncService::class)->previewSync();
+            if (($preview['success'] ?? false) !== true) {
+                return response()->json([
+                    'success' => false,
+                    'error' => $preview['error'] ?? 'Source comparison failed',
+                ], 502);
+            }
 
             return response()->json([
                 'success' => true,
                 'data' => [
-                    'existing_brokers' => count($existingDomains),
-                    'message' => 'BADBOOL sync check complete. Manual broker database import available.',
-                    'status' => 'ready',
+                    'read_only' => true,
+                    'source' => $preview['source'],
+                    'summary' => $preview['summary'],
+                    'url_changes' => $preview['url_changes'],
+                    'unmatched_brokers' => $preview['unmatched_brokers'],
                 ],
             ]);
         } catch (\Exception $e) {

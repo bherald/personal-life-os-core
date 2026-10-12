@@ -34,13 +34,41 @@ class AgentActionabilityGateService
 
     public function classifyReviewSubmission(array $params, array $details): array
     {
+        $classification = $this->classifyActionability($params, $details);
+        $classification['pushover_allowed'] = $classification['pushover_allowed']
+            && $this->permitsReviewPushover($params);
+
+        return $classification;
+    }
+
+    public function permitsReviewPushover(array $params): bool
+    {
+        $reviewType = strtolower(trim((string) ($params['review_type'] ?? 'finding')));
+        $findingType = strtolower(trim((string) ($params['finding_type'] ?? '')));
+        $agentId = strtolower(trim((string) ($params['agent_id'] ?? '')));
+        $policy = $this->registryPolicyFor($reviewType) ?? $this->registryPolicyFor($findingType);
+
+        if (($policy['pushover_allowed'] ?? null) !== true) {
+            return false;
+        }
+
+        if (str_starts_with($reviewType, 'genealogy_')
+            || str_starts_with($findingType, 'genealogy_')
+            || str_starts_with($agentId, 'genealogy-')) {
+            return ($this->registryPolicyFor('genealogy_finding')['pushover_allowed'] ?? null) === true;
+        }
+
+        return true;
+    }
+
+    private function classifyActionability(array $params, array $details): array
+    {
         $reviewType = strtolower((string) ($params['review_type'] ?? 'finding'));
         $findingType = strtolower((string) ($params['finding_type'] ?? ''));
         $agentId = strtolower((string) ($params['agent_id'] ?? ''));
         $confidence = $this->numericConfidence($params['confidence'] ?? null);
         $text = $this->contextText($params, $details);
         $hardFailReasons = $this->qualityHardFailReasons($details);
-        $policy = $this->policyFor($reviewType) ?? $this->policyFor($findingType);
 
         if ($this->hasPromptInjectionMarker($text)) {
             return $this->envelope(
@@ -51,10 +79,17 @@ class AgentActionabilityGateService
         }
 
         if ($this->hasExplicitState($params, $details)) {
+            $policy = $this->policyFor($reviewType) ?? $this->policyFor($findingType);
+
             return $this->envelope(
                 $this->explicitState($params, $details),
                 ['explicit_actionability_state'],
-                'Caller supplied an actionability state.'
+                'Caller supplied an actionability state.',
+                is_array($policy) ? [
+                    'pushover_allowed' => $policy['pushover_allowed'] ?? null,
+                    'policy_source' => 'review_type_registry',
+                    'policy_review_type' => $policy['review_type'],
+                ] : []
             );
         }
 
@@ -67,6 +102,7 @@ class AgentActionabilityGateService
         }
 
         if ($hardFailReasons !== []) {
+            $policy = $this->policyFor($reviewType) ?? $this->policyFor($findingType);
             $minConfidence = is_array($policy) ? ($policy['min_confidence'] ?? null) : null;
             if ($confidence !== null && $minConfidence !== null && $confidence < $minConfidence) {
                 return $this->envelope(
@@ -110,6 +146,8 @@ class AgentActionabilityGateService
                 'Routine status output should be observed through digests and logs.'
             );
         }
+
+        $policy = $this->policyFor($reviewType) ?? $this->policyFor($findingType);
 
         if ($policy !== null) {
             $policyState = (string) ($policy['state'] ?? self::STATE_REVIEW_READY);
@@ -383,6 +421,18 @@ class AgentActionabilityGateService
      */
     private function policyFor(string $reviewType): ?array
     {
+        $policy = $this->registryPolicyFor($reviewType);
+
+        return $policy !== null && in_array($policy['state'], self::STATES, true) ? $policy : null;
+    }
+
+    /**
+     * Read delivery permission even when the optional actionability state is unset.
+     *
+     * @return array{review_type:string,state:string,min_confidence:?float,pushover_allowed:?bool}|null
+     */
+    private function registryPolicyFor(string $reviewType): ?array
+    {
         $reviewType = strtolower(trim($reviewType));
         if ($reviewType === '') {
             return null;
@@ -426,9 +476,6 @@ class AgentActionabilityGateService
         }
 
         $state = strtolower(trim((string) ($row->actionability_state ?? '')));
-        if (! in_array($state, self::STATES, true)) {
-            return $this->policyCache[$reviewType] = null;
-        }
 
         return $this->policyCache[$reviewType] = [
             'review_type' => (string) $row->name,

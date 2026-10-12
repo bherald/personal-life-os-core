@@ -268,6 +268,9 @@ class OpsArcRetentionCommand extends Command
             'batch_size' => (int) ($payload['batch_size'] ?? 0),
             'max_rows' => (int) ($payload['max_rows'] ?? 0),
             'sleep_ms' => (int) ($payload['sleep_ms'] ?? 0),
+            'max_runtime_seconds' => isset($payload['max_runtime_seconds'])
+                ? (int) $payload['max_runtime_seconds']
+                : null,
             'table' => [
                 'name' => (string) ($table['name'] ?? 'agent_recursion_calls'),
                 'estimated_rows' => (int) ($table['estimated_rows'] ?? 0),
@@ -291,6 +294,7 @@ class OpsArcRetentionCommand extends Command
                 'uses_created_at_index' => (bool) ($safety['uses_created_at_index'] ?? true),
                 'summary_table_preserved' => (string) ($safety['summary_table_preserved'] ?? 'recursion_effectiveness'),
                 'requires_execute_flag' => (bool) ($safety['requires_execute_flag'] ?? true),
+                'runtime_bounded' => (bool) ($safety['runtime_bounded'] ?? false),
             ],
             'posture' => [
                 'aggregate_only' => true,

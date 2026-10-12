@@ -2,8 +2,10 @@
 
 namespace App\Console\Commands;
 
+use App\Services\RaptorCommunityLinkRuntimePolicyService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 
 /**
  * GR-6: RAPTOR-Graph Bridge — link RAPTOR summaries to KG communities
@@ -23,28 +25,42 @@ use Illuminate\Support\Facades\DB;
 class RaptorLinkCommunitiesCommand extends Command
 {
     protected $signature = 'rag:link-raptor-communities
-        {--limit=500 : Maximum summaries to link per run}
+        {--limit= : Explicit maximum summaries to inspect; required outside stats mode}
+        {--execute : Write resolved community links}
         {--force : Re-link already-linked summaries}
         {--stats : Show linkage statistics and exit}
-        {--dry-run : Show what would be linked without writing}';
+        {--dry-run : Explicitly select read-only preview mode}';
 
     protected $description = 'Link RAPTOR summaries to their dominant KG communities (GR-6)';
 
-    /** Minimum entity votes for a community to be considered dominant */
-    private const MIN_VOTES = 1;
-
-    public function handle(): int
+    public function handle(RaptorCommunityLinkRuntimePolicyService $runtimePolicy): int
     {
         if ($this->option('stats')) {
             return $this->showStats();
         }
 
-        $limit  = (int) $this->option('limit');
-        $force  = $this->option('force');
-        $dryRun = $this->option('dry-run');
+        $execute = (bool) $this->option('execute');
+        $explicitDryRun = (bool) $this->option('dry-run');
+        if ($execute && $explicitDryRun) {
+            $this->error('--execute and --dry-run cannot be combined.');
+
+            return self::INVALID;
+        }
+
+        try {
+            $policy = $runtimePolicy->required();
+            $limit = $runtimePolicy->resolveLimit($this->option('limit'), $policy);
+        } catch (RuntimeException $exception) {
+            $this->error($exception->getMessage());
+
+            return self::INVALID;
+        }
+
+        $force = (bool) $this->option('force');
+        $dryRun = ! $execute;
 
         if ($dryRun) {
-            $this->warn('DRY RUN — no changes will be written');
+            $this->warn('DRY RUN - no changes will be written');
         }
 
         // Select summaries to process
@@ -60,6 +76,7 @@ class RaptorLinkCommunitiesCommand extends Command
 
         if (empty($summaries)) {
             $this->info('No RAPTOR summaries pending community linkage.');
+
             return Command::SUCCESS;
         }
 
@@ -79,14 +96,17 @@ class RaptorLinkCommunitiesCommand extends Command
         $bar->start();
 
         foreach ($summaries as $summary) {
-            $communityId = $this->findDominantCommunity($summary->document_id);
+            $communityId = $this->findDominantCommunity(
+                (int) $summary->document_id,
+                $policy['minimum_entity_votes'],
+            );
 
             if ($communityId === null) {
                 $stats['no_community']++;
             } else {
-                if (!$dryRun) {
+                if (! $dryRun) {
                     DB::connection('pgsql_rag')->update(
-                        "UPDATE raptor_summaries SET kg_community_id = ? WHERE id = ?",
+                        'UPDATE raptor_summaries SET kg_community_id = ? WHERE id = ?',
                         [$communityId, $summary->id]
                     );
                 }
@@ -103,13 +123,13 @@ class RaptorLinkCommunitiesCommand extends Command
         $this->table(
             ['Metric', 'Value'],
             [
-                ['Summaries Linked',        $stats['linked']],
+                [$dryRun ? 'Summaries Would Link' : 'Summaries Linked', $stats['linked']],
                 ['No Community Found',      $stats['no_community']],
                 ['Remaining Unlinked',      $pending - count($summaries)],
             ]
         );
 
-        $this->info(sprintf('[ITEMS_PROCESSED:%d]', $stats['linked']));
+        $this->info(sprintf('[ITEMS_PROCESSED:%d]', $dryRun ? 0 : $stats['linked']));
 
         return Command::SUCCESS;
     }
@@ -120,9 +140,9 @@ class RaptorLinkCommunitiesCommand extends Command
      * Traces: document → KG triples → entity community votes → majority community.
      * Returns null if no entities or no community associations exist.
      */
-    private function findDominantCommunity(int $documentId): ?int
+    private function findDominantCommunity(int $documentId, int $minimumEntityVotes): ?int
     {
-        $row = DB::connection('pgsql_rag')->selectOne("
+        $row = DB::connection('pgsql_rag')->selectOne('
             SELECT kge.primary_community_id, COUNT(*) AS votes
             FROM knowledge_graph kg
             JOIN knowledge_graph_entities kge
@@ -132,9 +152,9 @@ class RaptorLinkCommunitiesCommand extends Command
             GROUP BY kge.primary_community_id
             ORDER BY votes DESC
             LIMIT 1
-        ", [$documentId]);
+        ', [$documentId]);
 
-        if (!$row || (int) $row->votes < self::MIN_VOTES) {
+        if (! $row || (int) $row->votes < $minimumEntityVotes) {
             return null;
         }
 
@@ -143,16 +163,16 @@ class RaptorLinkCommunitiesCommand extends Command
 
     private function showStats(): int
     {
-        $stats = DB::connection('pgsql_rag')->selectOne("
+        $stats = DB::connection('pgsql_rag')->selectOne('
             SELECT
                 COUNT(*) AS total_summaries,
                 COUNT(kg_community_id) AS linked,
                 COUNT(*) FILTER (WHERE kg_community_id IS NULL) AS unlinked,
                 COUNT(DISTINCT kg_community_id) AS distinct_communities
             FROM raptor_summaries
-        ");
+        ');
 
-        $levelStats = DB::connection('pgsql_rag')->select("
+        $levelStats = DB::connection('pgsql_rag')->select('
             SELECT
                 level,
                 level_name,
@@ -161,7 +181,7 @@ class RaptorLinkCommunitiesCommand extends Command
             FROM raptor_summaries
             GROUP BY level, level_name
             ORDER BY level
-        ");
+        ');
 
         $this->info('RAPTOR-Graph Bridge Statistics:');
         $this->table(
@@ -174,7 +194,7 @@ class RaptorLinkCommunitiesCommand extends Command
             ]
         );
 
-        if (!empty($levelStats)) {
+        if (! empty($levelStats)) {
             $this->info('By Level:');
             $rows = [];
             foreach ($levelStats as $row) {

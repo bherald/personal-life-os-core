@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use Exception;
 use Illuminate\Support\Facades\Log;
 
@@ -34,21 +35,25 @@ use Illuminate\Support\Facades\Log;
 class RetryService
 {
     private const DEFAULT_MAX_ATTEMPTS = 3;
+
     private const DEFAULT_BASE_DELAY = 1000; // milliseconds
+
     private const DEFAULT_MAX_DELAY = 30000; // milliseconds
+
     private const DEFAULT_JITTER_PERCENT = 25; // ±25%
 
     /**
      * Execute an operation with retry logic
      *
-     * @param callable $operation Operation to execute
-     * @param int $maxAttempts Maximum number of attempts (default: 3)
-     * @param string $backoffStrategy Backoff strategy: 'exponential', 'linear', 'fixed'
-     * @param callable|null $shouldRetry Function to determine if exception should be retried
-     * @param int|null $baseDelay Base delay in milliseconds (default: 1000)
-     * @param int|null $maxDelay Maximum delay in milliseconds (default: 30000)
-     * @param string|null $operationName Name for logging (default: null)
+     * @param  callable  $operation  Operation to execute
+     * @param  int  $maxAttempts  Maximum number of attempts (default: 3)
+     * @param  string  $backoffStrategy  Backoff strategy: 'exponential', 'linear', 'fixed'
+     * @param  callable|null  $shouldRetry  Function to determine if exception should be retried
+     * @param  int|null  $baseDelay  Base delay in milliseconds (default: 1000)
+     * @param  int|null  $maxDelay  Maximum delay in milliseconds (default: 30000)
+     * @param  string|null  $operationName  Name for logging (default: null)
      * @return mixed Result of operation
+     *
      * @throws Exception If all attempts fail
      */
     public function retry(
@@ -83,11 +88,14 @@ class RetryService
                 return $result;
 
             } catch (Exception $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 $lastException = $e;
 
                 // Check if we should retry this exception
-                if ($shouldRetry && !$shouldRetry($e)) {
-                    Log::info("RetryService: Exception not retryable", [
+                if ($shouldRetry && ! $shouldRetry($e)) {
+                    Log::info('RetryService: Exception not retryable', [
                         'operation' => $operationName ?? 'unknown',
                         'exception' => get_class($e),
                         'message' => $e->getMessage(),
@@ -127,10 +135,10 @@ class RetryService
     /**
      * Calculate delay for next retry attempt
      *
-     * @param int $attempt Current attempt number (1-based)
-     * @param string $strategy Backoff strategy
-     * @param int $baseDelay Base delay in milliseconds
-     * @param int $maxDelay Maximum delay in milliseconds
+     * @param  int  $attempt  Current attempt number (1-based)
+     * @param  string  $strategy  Backoff strategy
+     * @param  int  $baseDelay  Base delay in milliseconds
+     * @param  int  $maxDelay  Maximum delay in milliseconds
      * @return int Delay in milliseconds
      */
     private function calculateDelay(
@@ -150,12 +158,13 @@ class RetryService
                 $delay = $delay + random_int(-$jitter, $jitter);
 
                 // Cap at max delay
-                return min((int)$delay, $maxDelay);
+                return min((int) $delay, $maxDelay);
 
             case 'linear':
                 // Linear backoff: delay = baseDelay * attempt
                 // Attempt 1: 1s, Attempt 2: 2s, Attempt 3: 3s
                 $delay = $baseDelay * $attempt;
+
                 return min($delay, $maxDelay);
 
             case 'fixed':
@@ -164,6 +173,7 @@ class RetryService
 
             default:
                 Log::warning("RetryService: Unknown backoff strategy '{$strategy}', using exponential");
+
                 return $this->calculateDelay($attempt, 'exponential', $baseDelay, $maxDelay);
         }
     }
@@ -171,8 +181,8 @@ class RetryService
     /**
      * Quick helper: Retry HTTP requests
      *
-     * @param callable $httpCall HTTP call to execute
-     * @param int $maxAttempts Maximum attempts
+     * @param  callable  $httpCall  HTTP call to execute
+     * @param  int  $maxAttempts  Maximum attempts
      * @return mixed HTTP response
      */
     public function retryHttp(callable $httpCall, int $maxAttempts = 3): mixed
@@ -184,6 +194,7 @@ class RetryService
             shouldRetry: function (Exception $e) {
                 // Retry on network errors, not on client errors (4xx)
                 $message = $e->getMessage();
+
                 return str_contains($message, 'timeout') ||
                        str_contains($message, 'Connection refused') ||
                        str_contains($message, 'Connection reset') ||
@@ -199,8 +210,8 @@ class RetryService
     /**
      * Quick helper: Retry database operations
      *
-     * @param callable $dbCall Database call to execute
-     * @param int $maxAttempts Maximum attempts
+     * @param  callable  $dbCall  Database call to execute
+     * @param  int  $maxAttempts  Maximum attempts
      * @return mixed Query result
      */
     public function retryDatabase(callable $dbCall, int $maxAttempts = 2): mixed
@@ -213,6 +224,7 @@ class RetryService
             shouldRetry: function (Exception $e) {
                 // Retry on deadlocks and connection errors
                 $message = $e->getMessage();
+
                 return str_contains($message, 'Deadlock') ||
                        str_contains($message, 'Lock wait timeout') ||
                        str_contains($message, 'Connection lost') ||
@@ -225,8 +237,8 @@ class RetryService
     /**
      * Quick helper: Retry AI/LLM calls
      *
-     * @param callable $aiCall AI call to execute
-     * @param int $maxAttempts Maximum attempts (default: 2)
+     * @param  callable  $aiCall  AI call to execute
+     * @param  int  $maxAttempts  Maximum attempts (default: 2)
      * @return mixed AI response
      */
     public function retryAI(callable $aiCall, int $maxAttempts = 2): mixed
@@ -239,6 +251,7 @@ class RetryService
             shouldRetry: function (Exception $e) {
                 // Only retry on timeout/connection, not on invalid responses
                 $message = $e->getMessage();
+
                 return str_contains($message, 'timeout') ||
                        str_contains($message, 'Connection refused') ||
                        str_contains($message, 'Connection reset') ||
@@ -247,5 +260,4 @@ class RetryService
             operationName: 'AI Call'
         );
     }
-
 }

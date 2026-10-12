@@ -43,15 +43,20 @@ class FaceMatcherService
      * @param  int  $treeId  Genealogy tree ID (default 4)
      * @return array Match result with person_id or queue action
      */
-    public function matchFaceName(string $faceName, int $treeId = 4): array
+    public function matchFaceName(string $faceName, int $treeId = 4, array $excludedPersonIds = []): array
     {
         $faceName = trim($faceName);
         if (empty($faceName) || strtolower($faceName) === 'unknown') {
             return ['match_type' => 'skip', 'reason' => 'Empty or unknown name'];
         }
 
+        $excludedPersonIds = $this->normalizePersonIds($excludedPersonIds);
+
         // Step 1: Try exact match
-        $exactMatches = $this->findExactMatches($faceName, $treeId);
+        $exactMatches = $this->excludePersonMatches(
+            $this->findExactMatches($faceName, $treeId),
+            $excludedPersonIds
+        );
 
         if (count($exactMatches) === 1) {
             // Embedded names are evidence, not proof. Default to operator review.
@@ -74,7 +79,10 @@ class FaceMatcherService
         }
 
         // Step 2: Try fuzzy matches (SOUNDEX, nicknames, typos)
-        $fuzzyMatches = $this->findFuzzyMatches($faceName, $treeId);
+        $fuzzyMatches = $this->excludePersonMatches(
+            $this->findFuzzyMatches($faceName, $treeId),
+            $excludedPersonIds
+        );
 
         if (count($fuzzyMatches) === 1 && $fuzzyMatches[0]->confidence >= 90) {
             if ($this->allowMetadataAutoLink()) {
@@ -404,12 +412,13 @@ class FaceMatcherService
 
         // Get unlinked faces
         $faces = DB::select("
-            SELECT frf.id, frf.file_registry_id, frf.person_name
-            FROM file_registry_faces frf
+            SELECT frf.*, fr.current_path, fr.status AS file_status
+            FROM file_registry_faces frf JOIN file_registry fr ON fr.id = frf.file_registry_id
             WHERE frf.genealogy_person_id IS NULL
             AND frf.person_name IS NOT NULL
             AND frf.person_name != ''
             AND frf.person_name != 'Unknown'
+            AND fr.status = 'active' AND COALESCE(frf.hidden, 0) = 0 AND frf.source_current = 1 AND frf.superseded_at IS NULL
             ORDER BY frf.id ASC
             LIMIT ?
         ", [$limit]);
@@ -417,7 +426,21 @@ class FaceMatcherService
         foreach ($faces as $face) {
             $results['processed']++;
 
-            $match = $this->matchFaceName($face->person_name, $treeId);
+            $face->source_evidence = app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($face);
+            if (! ($face->source_evidence['success'] ?? false)) {
+                $this->addToQueue($face, ['match_type' => 'no_match', 'confidence' => 0,
+                    'details' => ['metadata' => ['audit_hold' => ['reason_codes' => [$face->source_evidence['reason']]]]]], $treeId);
+                $results['queued']++;
+                $results['skipped']++;
+
+                continue;
+            }
+
+            $match = $this->matchFaceName(
+                $face->person_name,
+                $treeId,
+                $this->rejectedPersonIdsForFace((int) $face->id)
+            );
 
             if ($match['match_type'] === 'skip') {
                 $results['skipped']++;
@@ -426,18 +449,22 @@ class FaceMatcherService
             }
 
             if ($match['action'] === 'auto_link' && isset($match['person_id'])) {
-                $bridgeResult = app(FaceLinkBridgeService::class)->syncFaceLink(
+                $bridgeResult = app(FaceLinkBridgeService::class)->syncAutomaticFaceLink(
                     (int) $face->id,
                     (int) $match['person_id']
                 );
 
-                if ($bridgeResult['success'] ?? false) {
-                    $results['auto_linked']++;
+                if (in_array($bridgeResult['reason'] ?? null, [
+                    'operator_identity_confirmation_required', 'face_region_confirmation_required',
+                ], true)) {
+                    $match['suggested_person_id'] = $match['person_id'];
+                    $this->addToQueue($face, $match, $treeId);
+                    $results['queued']++;
                 } else {
                     $results['skipped']++;
                 }
 
-                Log::info('FaceMatcherService: Auto-linked face via genealogy bridge', [
+                Log::info('FaceMatcherService: Automatic genealogy bridge checked', [
                     'face_id' => $face->id,
                     'face_name' => $face->person_name,
                     'person_id' => $match['person_id'],
@@ -491,14 +518,25 @@ class FaceMatcherService
             SELECT gm.id as media_id
             FROM file_registry fr
             JOIN genealogy_media gm ON gm.nextcloud_path = fr.current_path
-            WHERE fr.id = ?
-        ', [$face->file_registry_id]);
+            WHERE fr.id = ? AND gm.tree_id = ?
+        ', [$face->file_registry_id, $treeId]);
+
+        $suggestedPersonId = isset($match['suggested_person_id']) ? (int) $match['suggested_person_id'] : null;
+        if ($suggestedPersonId !== null && $suggestedPersonId > 0 && $this->faceHasRejectedPerson((int) $face->id, $suggestedPersonId)) {
+            Log::info('FaceMatcherService: Suppressed previously rejected face/person suggestion', [
+                'face_id' => $face->id,
+                'face_name' => $face->person_name,
+                'person_id' => $suggestedPersonId,
+            ]);
+
+            return;
+        }
 
         // Check if already in queue (pending or ignored)
         $existing = DB::selectOne("
             SELECT id FROM genealogy_face_match_queue
-            WHERE face_name = ? AND tree_id = ? AND status IN ('pending', 'ignored')
-        ", [$face->person_name, $treeId]);
+            WHERE file_registry_face_id = ? AND tree_id = ? AND status IN ('pending', 'ignored')
+        ", [$face->id, $treeId]);
 
         if ($existing) {
             return; // Already queued
@@ -507,8 +545,8 @@ class FaceMatcherService
         DB::insert("
             INSERT INTO genealogy_face_match_queue
             (tree_id, media_id, file_registry_face_id, face_name, suggested_person_id,
-             match_type, confidence_score, face_region, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())
+             match_type, confidence_score, face_region, match_details, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW(), NOW())
         ", [
             $treeId,
             $mediaLink->media_id ?? null,
@@ -517,8 +555,89 @@ class FaceMatcherService
             $match['suggested_person_id'] ?? null,
             $match['match_type'],
             $match['confidence'] ?? 0,
-            json_encode(['file_registry_face_id' => $face->id]),
+            json_encode(['x' => $face->region_x ?? null, 'y' => $face->region_y ?? null, 'w' => $face->region_w ?? null, 'h' => $face->region_h ?? null]),
+            json_encode(array_merge($match['details'] ?? [], ($face->source_evidence['success'] ?? false) ? [
+                'source_sha256' => $face->source_evidence['source_sha256'], 'source_path' => $face->source_evidence['source_path'],
+                'face_region_convention' => 'normalized_top_left',
+            ] : ['evidence_hold_reason' => $face->source_evidence['reason'] ?? 'face_source_provenance_missing'])),
         ]);
+    }
+
+    /**
+     * @param  array<int|string, mixed>  $personIds
+     * @return list<int>
+     */
+    private function normalizePersonIds(array $personIds): array
+    {
+        return array_values(array_unique(array_filter(
+            array_map('intval', $personIds),
+            fn (int $id): bool => $id > 0
+        )));
+    }
+
+    /**
+     * @param  array<int, object>  $matches
+     * @param  list<int>  $excludedPersonIds
+     * @return array<int, object>
+     */
+    private function excludePersonMatches(array $matches, array $excludedPersonIds): array
+    {
+        if ($excludedPersonIds === []) {
+            return $matches;
+        }
+
+        return array_values(array_filter(
+            $matches,
+            fn (object $match): bool => ! in_array((int) ($match->id ?? 0), $excludedPersonIds, true)
+        ));
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function rejectedPersonIdsForFace(int $fileRegistryFaceId): array
+    {
+        try {
+            $rows = DB::select('
+                SELECT suggested_person_id, status, match_details
+                FROM genealogy_face_match_queue
+                WHERE file_registry_face_id = ?
+            ', [$fileRegistryFaceId]);
+        } catch (Exception $e) {
+            return [];
+        }
+
+        $ids = [];
+        foreach ($rows as $row) {
+            if (($row->status ?? null) === 'rejected' && $row->suggested_person_id !== null) {
+                $ids[] = (int) $row->suggested_person_id;
+            }
+
+            $details = json_decode((string) ($row->match_details ?? ''), true);
+            if (! is_array($details)) {
+                continue;
+            }
+
+            foreach (($details['rejected_candidate_ids'] ?? []) as $id) {
+                $ids[] = (int) $id;
+            }
+
+            $latest = $details['latest_candidate_decision'] ?? null;
+            if (
+                is_array($latest)
+                && ($latest['action'] ?? null) === 'not_this_person'
+                && isset($latest['genealogy_person_id'])
+            ) {
+                $ids[] = (int) $latest['genealogy_person_id'];
+            }
+        }
+
+        return $this->normalizePersonIds($ids);
+    }
+
+    private function faceHasRejectedPerson(int $fileRegistryFaceId, int $personId): bool
+    {
+        return in_array($personId, $this->rejectedPersonIdsForFace($fileRegistryFaceId), true);
     }
 
     /**

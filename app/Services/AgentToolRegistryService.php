@@ -3,6 +3,9 @@
 namespace App\Services;
 
 use App\Engine\MCPRouter;
+use App\Services\UnifiedCli\CliToolOutcomeUnknown;
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
+use Closure;
 use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -26,16 +29,30 @@ class AgentToolRegistryService
 {
     private ?array $toolConfig = null;
 
+    private bool $toolConfigLoadedInternally = false;
+
     private ?AgentGuardrailService $guardrailService = null;
 
     private ?MCPRouter $mcpRouter = null;
 
     private ?AgentToolErrorSanitizerService $toolErrorSanitizer = null;
 
+    public function __construct(
+        private readonly ?Closure $toolProvider = null,
+        private readonly ?Closure $callRecorder = null,
+        private readonly bool $losslessResults = false,
+        private readonly ?Closure $confirmationVerifier = null,
+        private readonly ?AgentGuardrailService $localGuardrails = null,
+        private readonly ?AgentDSGovernanceService $localGovernance = null,
+        private readonly ?Closure $localMcpCaller = null,
+        private readonly ?Closure $localServiceFactory = null,
+        private readonly ?Closure $localServiceCaller = null,
+    ) {}
+
     private function getGuardrailService(): AgentGuardrailService
     {
         if ($this->guardrailService === null) {
-            $this->guardrailService = app(AgentGuardrailService::class);
+            $this->guardrailService = $this->localGuardrails ?? app(AgentGuardrailService::class);
         }
 
         return $this->guardrailService;
@@ -61,8 +78,17 @@ class AgentToolRegistryService
 
     private function getToolConfig(): array
     {
+        if ($this->toolProvider !== null) {
+            $tools = ($this->toolProvider)();
+            if (! is_array($tools)) {
+                throw new \RuntimeException('Tool definition provider returned invalid definitions.');
+            }
+
+            return $tools;
+        }
         if ($this->toolConfig === null) {
             $this->toolConfig = $this->loadToolsFromDB();
+            $this->toolConfigLoadedInternally = true;
         }
 
         return $this->toolConfig;
@@ -346,49 +372,80 @@ class AgentToolRegistryService
 
     public function getToolsForAgent(string $agentId, array $agentPermissions = []): array
     {
-        if (empty($agentPermissions)) {
-            // Load from skill if not provided
-            $skillLoader = app(SkillLoaderService::class);
-            $config = $skillLoader->getSkillConfig($agentId);
-            $agentPermissions = $config['permissions'] ?? [];
-            // Also check if skill declares specific tool names
-            $declaredTools = $config['tools'] ?? [];
-        } else {
-            $declaredTools = [];
+        if (! empty($agentPermissions)) {
+            return $this->filterToolsForAgent(
+                $this->getToolConfig(),
+                [],
+                $agentPermissions,
+                false
+            );
         }
 
-        $allTools = $this->getToolConfig();
-        $available = $this->filterToolsForAgent($allTools, $declaredTools, $agentPermissions);
-        $missingDeclared = $this->findMissingDeclaredTools($available, $declaredTools);
+        $contract = $this->resolveToolContractForAgent($agentId);
 
-        // Long-lived workers may hold a stale in-memory registry after deploys or
-        // migrations. Refresh once from DB before treating a declared tool as missing.
-        if (! empty($missingDeclared)) {
-            $this->toolConfig = null;
-            $allTools = $this->getToolConfig();
-            $available = $this->filterToolsForAgent($allTools, $declaredTools, $agentPermissions);
-            $missingDeclared = $this->findMissingDeclaredTools($available, $declaredTools);
-        }
-
-        // Warn about declared tools that didn't resolve to any registry entry
-        foreach ($missingDeclared as $declared) {
-            Log::warning('AgentToolRegistry: declared tool not found in registry', [
+        foreach ($contract['unresolved_declared_tools'] as $declared) {
+            Log::warning('AgentToolRegistry: declared tool not found or not authorized', [
                 'agent' => $agentId,
                 'tool' => $declared,
             ]);
             $this->trackMissingTool($agentId, $declared);
         }
 
-        return $available;
+        return $contract['tools'];
     }
 
-    private function filterToolsForAgent(array $allTools, array $declaredTools, array $agentPermissions): array
+    /**
+     * @param  array<string, mixed>|null  $skillConfig
+     * @return array{skill_found:bool,declared_tools:list<string>,tools:array<string,array<string,mixed>>,unresolved_declared_tools:list<string>}
+     */
+    public function resolveToolContractForAgent(string $agentId, ?array $skillConfig = null): array
     {
+        $skillConfig ??= app(SkillLoaderService::class)->getSkillConfig($agentId);
+        if (! is_array($skillConfig)) {
+            return [
+                'skill_found' => false,
+                'declared_tools' => [],
+                'tools' => [],
+                'unresolved_declared_tools' => [],
+            ];
+        }
+
+        $agentPermissions = array_values(array_filter(
+            (array) ($skillConfig['permissions'] ?? []),
+            static fn (mixed $permission): bool => is_string($permission) && trim($permission) !== ''
+        ));
+        $declaredTools = SkillLoaderService::declaredToolNames($skillConfig);
+        $allTools = $this->getToolConfig();
+        $available = $this->filterToolsForAgent($allTools, $declaredTools, $agentPermissions, true);
+        $unresolved = $this->findMissingDeclaredTools($available, $declaredTools);
+
+        // Long-lived workers may hold registry state from before a deploy or
+        // migration. Refresh once before rejecting an agent contract.
+        if ($unresolved !== [] && $this->toolConfigLoadedInternally) {
+            $this->toolConfig = null;
+            $allTools = $this->getToolConfig();
+            $available = $this->filterToolsForAgent($allTools, $declaredTools, $agentPermissions, true);
+            $unresolved = $this->findMissingDeclaredTools($available, $declaredTools);
+        }
+
+        return [
+            'skill_found' => true,
+            'declared_tools' => $declaredTools,
+            'tools' => $available,
+            'unresolved_declared_tools' => $unresolved,
+        ];
+    }
+
+    private function filterToolsForAgent(
+        array $allTools,
+        array $declaredTools,
+        array $agentPermissions,
+        bool $restrictToDeclared
+    ): array {
         $available = [];
 
         foreach ($allTools as $toolName => $toolDef) {
-            // If skill declares specific tools, filter to those
-            if (! empty($declaredTools) && ! in_array($toolName, $declaredTools, true)) {
+            if ($restrictToDeclared && ! in_array($toolName, $declaredTools, true)) {
                 // Check if the tool name matches a service class name (e.g., "RecordHintService")
                 $matchByService = false;
                 foreach ($declaredTools as $declared) {
@@ -404,7 +461,7 @@ class AgentToolRegistryService
 
             // Check permissions (AND-based: agent must have ALL required permissions)
             $requiredPerms = $toolDef['permissions'] ?? [];
-            if (! empty($requiredPerms) && ! empty($agentPermissions)) {
+            if (! empty($requiredPerms)) {
                 $hasAllPermissions = true;
                 foreach ($requiredPerms as $perm) {
                     if (! in_array($perm, $agentPermissions, true)) {
@@ -527,6 +584,9 @@ class AgentToolRegistryService
                 if (! is_array($pDef)) {
                     continue; // Skip scalar values (malformed entries)
                 }
+                if (($pDef['x_context_only'] ?? false) === true) {
+                    continue;
+                }
                 $req = ($pDef['required'] ?? false) ? 'required' : 'optional';
                 $type = $pDef['type'] ?? 'any';
                 $desc = $pDef['description'] ?? $type;
@@ -589,7 +649,7 @@ class AgentToolRegistryService
      * @param  array  $context  Runtime context (tree_id, agent_id, etc.)
      * @return array ['success' => bool, 'result' => mixed, 'error' => ?string]
      */
-    public function executeTool(string $toolName, array $params, array $context = []): array
+    public function executeTool(string $toolName, array $params, array $context = [], bool $authorizeOnly = false): array
     {
         $startTime = microtime(true);
         $tools = $this->getToolConfig();
@@ -603,7 +663,7 @@ class AgentToolRegistryService
 
         $toolDef = $tools[$toolName];
         $agentId = $context['agent_id'] ?? null;
-        $runtimeBlock = $this->currentToolRuntimeBlock($toolName);
+        $runtimeBlock = $this->currentToolRuntimeBlock($toolName, $toolDef);
         if ($runtimeBlock !== null) {
             $reason = $this->sanitizeToolError($runtimeBlock['reason']);
             Log::warning('AgentToolRegistry: tool blocked by current registry policy', [
@@ -625,7 +685,7 @@ class AgentToolRegistryService
             ];
         }
 
-        $dsDecision = app(AgentDSGovernanceService::class)->evaluateToolExecution($toolName, $toolDef, $params, $context);
+        $dsDecision = ($this->localGovernance ?? app(AgentDSGovernanceService::class))->evaluateToolExecution($toolName, $toolDef, $params, $context);
         if (! ($dsDecision['allowed'] ?? false)) {
             $reason = $this->sanitizeToolError($dsDecision['reason'] ?? 'Blocked by bounded governance');
             Log::warning('AgentToolRegistry: bounded governance blocked tool', [
@@ -635,12 +695,14 @@ class AgentToolRegistryService
                 'tool_class' => $dsDecision['tool_class'] ?? null,
                 'reason' => $reason,
             ]);
-            app(AgentAuditService::class)->recordGuardrail(
-                sessionId: (string) ($context['session_id'] ?? ''),
-                agentName: (string) ($agentId ?? 'agent'),
-                detail: "bounded governance blocked {$toolName}",
-                context: $dsDecision,
-            );
+            if ($this->callRecorder === null) {
+                app(AgentAuditService::class)->recordGuardrail(
+                    sessionId: (string) ($context['session_id'] ?? ''),
+                    agentName: (string) ($agentId ?? 'agent'),
+                    detail: "bounded governance blocked {$toolName}",
+                    context: $dsDecision,
+                );
+            }
             $this->recordToolCall($toolName, $toolDef['mcp_server'] ?? null, $toolDef['mcp_tool'] ?? null, $context, 'agent', false, $startTime, $reason, null, $params, riskLevel: $toolDef['risk_level'] ?? 'read');
 
             return [
@@ -680,7 +742,9 @@ class AgentToolRegistryService
         // legitimate read-class tools like `tool:file_read`. For
         // MCP-backed tools the policy layer routes to evaluateMcpTool
         // so the per-tool/trust-boundary/path classifier applies too.
-        $context['risk_level'] = $context['risk_level'] ?? ($toolDef['risk_level'] ?? 'read');
+        // Registry metadata is authoritative. Caller context must not downgrade
+        // a state-changing tool to read-class and bypass policy.
+        $context['risk_level'] = $toolDef['risk_level'] ?? 'read';
         if (! empty($toolDef['mcp_server'])) {
             $context['mcp_server'] = $toolDef['mcp_server'];
         }
@@ -707,16 +771,23 @@ class AgentToolRegistryService
 
             // 3. Requires confirmation — request it and return pending
             if ($guardrailResult['requires_confirmation'] || ($toolDef['requires_confirmation'] ?? false)) {
-                $token = $this->getGuardrailService()->requestConfirmation("tool:{$toolName}", $context, $agentId);
+                if ($this->confirmationVerifier !== null) {
+                    if (($this->confirmationVerifier)($toolName, $params, $context, $toolDef, $guardrailResult) !== true) {
+                        return ['success' => false, 'result' => null, 'confirmation_pending' => true,
+                            'result_text' => "Tool '{$toolName}' requires operator approval in this CLI session."];
+                    }
+                } else {
+                    $token = $this->getGuardrailService()->requestConfirmation("tool:{$toolName}", $context, $agentId);
 
-                return [
-                    'success' => false,
-                    'result' => null,
-                    'error' => "Tool '{$toolName}' requires human confirmation. Approval requested (token: {$token}).",
-                    'result_text' => "Tool '{$toolName}' requires human confirmation before execution. A notification has been sent for approval.",
-                    'confirmation_pending' => true,
-                    'confirmation_token' => $token,
-                ];
+                    return [
+                        'success' => false,
+                        'result' => null,
+                        'error' => "Tool '{$toolName}' requires human confirmation. Approval requested (token: {$token}).",
+                        'result_text' => "Tool '{$toolName}' requires human confirmation before execution. A notification has been sent for approval.",
+                        'confirmation_pending' => true,
+                        'confirmation_token' => $token,
+                    ];
+                }
             }
         } catch (Exception $e) {
             // Guardrail service failure is fail-closed — block tool execution
@@ -728,6 +799,10 @@ class AgentToolRegistryService
                 'success' => false,
                 'result_text' => $this->toolErrorLine("Tool '{$toolName}' blocked: guardrail service unavailable", $safeError),
             ];
+        }
+
+        if ($authorizeOnly) {
+            return ['success' => true, 'authorized' => true, 'result' => null, 'result_text' => 'Current policy checks passed; no action executed.'];
         }
 
         // 4. Composite tools — route through ToolCompositionService pipeline
@@ -769,27 +844,58 @@ class AgentToolRegistryService
         $mcpTool = $toolDef['mcp_tool'] ?? null;
         if ($mcpServer && $mcpTool) {
             // Merge context values (tree_id, agent_id, etc.) into params for MCP tools
-            $mergedParams = array_merge($context, $params);
-            $result = $this->executeMCPTool($mcpServer, $mcpTool, $mergedParams, $toolName);
+            $mergedParams = $this->localMcpCaller !== null || $this->losslessResults ? $params : array_merge($context, $params);
+            $result = $this->executeMCPTool($mcpServer, $mcpTool, $mergedParams, $toolName, $context, $toolDef);
             $this->recordToolCall($toolName, $mcpServer, $mcpTool, $context, 'agent', $result['success'], $startTime, $result['error'] ?? null, strlen($result['result_text'] ?? ''), $params, riskLevel: $toolDef['risk_level'] ?? 'read');
 
             return $result;
         }
 
         // 6. Standard PHP service execution path
+        if ($this->localServiceCaller !== null) {
+            $delegated = ($this->localServiceCaller)($toolName, $params, $context, $toolDef);
+            if ($delegated !== null) {
+                if (! is_array($delegated) || ! is_bool($delegated['success'] ?? null)
+                    || ! is_string($delegated['result_text'] ?? null)) {
+                    throw new CliToolOutcomeUnknown('Framework service returned no complete typed result; inspect its outcome before resuming.');
+                }
+                $this->recordToolCall($toolName, null, null, $context, 'agent', $delegated['success'], $startTime,
+                    $delegated['error'] ?? null, strlen($delegated['result_text']), $params, riskLevel: $toolDef['risk_level'] ?? 'read');
+
+                return $delegated;
+            }
+        }
         $serviceClass = $toolDef['service'];
         $method = $toolDef['method'];
+        $invocationStarted = false;
 
         try {
             $resolvedParams = $this->resolveParameters($toolDef, $params, $context);
-            $service = app($serviceClass);
+            if ($this->localServiceFactory === null) {
+                $service = app($serviceClass);
+            } else {
+                try {
+                    $service = ($this->localServiceFactory)($serviceClass, $context, $toolDef);
+                } catch (\Throwable) {
+                    throw new \RuntimeException('Session service binding is unavailable.');
+                }
+                if (! $service instanceof $serviceClass) {
+                    throw new \RuntimeException('Session service binding differs from the registered service class.');
+                }
+            }
+            $invocationStarted = true;
             $result = call_user_func_array([$service, $method], $resolvedParams);
+            if ($result === null && is_string($toolDef['null_result_error'] ?? null)) {
+                $result = ['success' => false, 'error' => $toolDef['null_result_error']];
+            }
             $serialized = $this->serializeResult($result);
             $toolSucceeded = ! $this->isLogicalFailureResult($result);
             $toolError = $toolSucceeded ? null : $this->extractLogicalFailureMessage($result);
             if (! $toolSucceeded) {
                 $toolError = $this->sanitizeToolError($toolError ?? 'Tool reported failure');
-                $serialized = $this->toolErrorLine("Tool '{$toolName}' reported failure", $toolError);
+                if (! $this->losslessResults && CliWorkflowExecutionScope::current() === null) {
+                    $serialized = $this->toolErrorLine("Tool '{$toolName}' reported failure", $toolError);
+                }
             }
 
             Log::debug('AgentToolRegistry: Tool executed', [
@@ -808,6 +914,9 @@ class AgentToolRegistryService
             ];
 
         } catch (\Throwable $e) {
+            if ($this->losslessResults && $invocationStarted) {
+                throw new CliToolOutcomeUnknown("Tool '{$toolName}' failed after dispatch; inspect its outcome before resuming.", previous: $e);
+            }
             $safeError = $this->sanitizeToolError($e->getMessage());
             Log::warning('AgentToolRegistry: Tool execution failed', [
                 'tool' => $toolName,
@@ -825,8 +934,14 @@ class AgentToolRegistryService
         }
     }
 
-    private function currentToolRuntimeBlock(string $toolName): ?array
+    private function currentToolRuntimeBlock(string $toolName, array $expectedDefinition): ?array
     {
+        if ($this->toolProvider !== null) {
+            $current = $this->getToolConfig()[$toolName] ?? null;
+
+            return $current === $expectedDefinition ? null : ['availability_status' => 'changed',
+                'reason' => "Tool '{$toolName}' was removed or changed before execution."];
+        }
         if (! Schema::hasTable('agent_tool_registry') || ! Schema::hasColumn('agent_tool_registry', 'name')) {
             return null;
         }
@@ -906,11 +1021,18 @@ class AgentToolRegistryService
     /**
      * Execute a tool via MCP bridge
      */
-    private function executeMCPTool(string $mcpServer, string $mcpTool, array $params, string $registryName): array
+    private function executeMCPTool(string $mcpServer, string $mcpTool, array $params, string $registryName, array $context, array $definition): array
     {
         try {
-            $result = $this->getMCPRouter()->callTool($mcpServer, $mcpTool, $params);
+            if ($this->losslessResults && $this->localMcpCaller === null) {
+                throw new \RuntimeException('Lossless MCP execution requires the session-owned MCP adapter.');
+            }
+            $result = $this->localMcpCaller !== null
+                ? ($this->localMcpCaller)($mcpServer, $mcpTool, $params, $context, $definition)
+                : $this->getMCPRouter()->callTool($mcpServer, $mcpTool, $params);
             $serialized = $this->serializeResult($result);
+            $outcome = (new MCPToolResultValidatorService)->outcome($result, mcpEnvelope: true);
+            $success = ! $outcome['failed'];
 
             Log::debug('AgentToolRegistry: MCP tool executed', [
                 'registry_name' => $registryName,
@@ -920,11 +1042,15 @@ class AgentToolRegistryService
             ]);
 
             return [
-                'success' => true,
+                'success' => $success,
+                'outcome' => $outcome,
                 'result' => $result,
                 'result_text' => $serialized,
             ];
         } catch (Exception $e) {
+            if ($this->losslessResults && $e instanceof CliToolOutcomeUnknown) {
+                throw $e;
+            }
             $safeError = $this->sanitizeToolError($e->getMessage());
             Log::warning('AgentToolRegistry: MCP tool execution failed', [
                 'registry_name' => $registryName,
@@ -952,10 +1078,8 @@ class AgentToolRegistryService
         return $this->getToolErrorSanitizer()->errorLine($prefix, $error);
     }
 
-    /**
-     * Resolve parameters: validate required, apply defaults, order by method signature
-     */
-    private function resolveParameters(array $toolDef, array $params, array $context): array
+    /** Resolve the exact named values used by dispatch, including table defaults and bundles. */
+    public function resolveNamedParameters(array $toolDef, array $params, array $context): array
     {
         $paramDefs = $toolDef['parameters'] ?? [];
 
@@ -992,10 +1116,25 @@ class AgentToolRegistryService
             // Also check snake_case version for context lookup (treeId -> tree_id)
             $snakeName = ltrim(strtolower(preg_replace('/[A-Z]/', '_$0', $name)), '_');
             $pluralSnakeName = str_ends_with($snakeName, '_id') ? $snakeName.'s' : null;
-            $contextAlias = match ($snakeName) {
-                'from_agent' => 'agent_id',
-                default => null,
-            };
+            $configuredContextAlias = trim((string) ($def['x_context_alias'] ?? ''));
+            $contextAlias = $configuredContextAlias !== ''
+                ? $configuredContextAlias
+                : match ($snakeName) {
+                    'from_agent' => 'agent_id',
+                    default => null,
+                };
+
+            if (($def['x_context_only'] ?? false) === true) {
+                $contextValue = $context[$name] ?? $context[$snakeName] ?? ($contextAlias !== null ? ($context[$contextAlias] ?? null) : null);
+                if ($contextValue === null && ($def['required'] ?? false)) {
+                    throw new Exception("Missing required runtime context: {$name}");
+                }
+                $namedValues[$name] = $contextValue === null
+                    ? ($def['default'] ?? null)
+                    : $this->castParam($contextValue, $def['type'] ?? 'string');
+
+                continue;
+            }
 
             if (isset($params[$name])) {
                 $namedValues[$name] = $this->castParam($params[$name], $def['type'] ?? 'string');
@@ -1015,6 +1154,75 @@ class AgentToolRegistryService
                 throw new Exception("Missing required parameter: {$name}");
             }
         }
+
+        // A context-only alias of a declared tool field also inherits that
+        // field's resolved default. Otherwise omitted model arguments silently
+        // revert to the PHP method default instead of the operator's table value.
+        foreach ($paramDefs as $name => $definition) {
+            if (! is_array($definition)) {
+                continue;
+            }
+            $alias = $definition['x_context_alias'] ?? null;
+            $snakeName = ltrim(strtolower(preg_replace('/[A-Z]/', '_$0', $name)), '_');
+            if (($definition['x_context_only'] ?? false) === true && is_string($alias)
+                && isset($paramDefs[$alias], $namedValues[$alias])
+                && ! isset($context[$name]) && ! isset($context[$snakeName])
+                && ! array_key_exists($name, $params)) {
+                $namedValues[$name] = $this->castParam($namedValues[$alias], $definition['type'] ?? 'string');
+            }
+        }
+
+        // Table-owned grouping binds flat tool fields to existing service
+        // options/filter arguments, equally for PLOS and CLI dispatch.
+        foreach ($paramDefs as $target => $definition) {
+            if (! is_array($definition) || ! array_key_exists('x_parameter_bundle', $definition)) {
+                continue;
+            }
+            $sources = $definition['x_parameter_bundle'];
+            if (($definition['x_context_only'] ?? false) !== true
+                || ! in_array($definition['type'] ?? null, ['array', 'object'], true)
+                || ! is_array($sources) || ! array_is_list($sources) || $sources === []) {
+                throw new Exception('Invalid registered parameter bundle.');
+            }
+            $bundle = [];
+            foreach ($sources as $source) {
+                if (! is_string($source) || $source === $target || ! array_key_exists($source, $namedValues)) {
+                    throw new Exception('Registered parameter bundle references an undeclared field.');
+                }
+                if ($namedValues[$source] !== null) {
+                    $bundle[$source] = $namedValues[$source];
+                }
+            }
+            $namedValues[$target] = $bundle;
+        }
+
+        // CLI adapters may explicitly pack flat native fields into an existing
+        // service's options argument. Never infer this from leftover arguments.
+        if ($this->losslessResults) {
+            foreach ($toolDef['cli_parameter_bundles'] ?? [] as $target => $sources) {
+                if (! is_string($target) || isset($namedValues[$target]) || ! is_array($sources) || ! array_is_list($sources)) {
+                    throw new Exception('Invalid CLI parameter bundle.');
+                }
+                $bundle = [];
+                foreach ($sources as $source) {
+                    if (! is_string($source) || ! array_key_exists($source, $namedValues)) {
+                        throw new Exception('CLI parameter bundle references an undeclared field.');
+                    }
+                    if (array_key_exists($source, $params)) {
+                        $bundle[$source] = $namedValues[$source];
+                    }
+                }
+                $namedValues[$target] = $bundle;
+            }
+        }
+
+        return $namedValues;
+    }
+
+    /** Resolve parameters and order them by the existing service method signature. */
+    private function resolveParameters(array $toolDef, array $params, array $context): array
+    {
+        $namedValues = $this->resolveNamedParameters($toolDef, $params, $context);
 
         // Order by method signature using reflection (handles JSON key order != method param order)
         try {
@@ -1101,6 +1309,9 @@ class AgentToolRegistryService
      */
     private function serializeResult(mixed $result, int $maxLength = 8000): string
     {
+        if ($this->losslessResults || CliWorkflowExecutionScope::current() !== null) {
+            return is_string($result) ? $result : json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        }
         if (is_string($result)) {
             return substr($result, 0, $maxLength);
         }
@@ -1342,6 +1553,19 @@ class AgentToolRegistryService
         return array_keys($this->getToolConfig());
     }
 
+    /** Resolve one currently enabled registry entry without a skill grant. */
+    public function resolveEnabledRegisteredTool(string $name): ?array
+    {
+        // An operator override must not inherit the registry's pre-migration
+        // config fallback when the live table is unavailable or revoked.
+        if (! DB::table('agent_tool_registry')->where('name', $name)->where('enabled', 1)
+            ->whereNotIn('availability_status', ['disabled', 'unavailable'])->exists()) {
+            return null;
+        }
+
+        return $this->getToolConfig()[$name] ?? null;
+    }
+
     /**
      * List only registry tools legal under the supplied offline/hybrid profile.
      * This is a catalog filter, not an execution gate; executeTool still
@@ -1406,6 +1630,14 @@ class AgentToolRegistryService
         ?array $params = null,
         ?string $riskLevel = null
     ): void {
+        if ($this->callRecorder !== null) {
+            ($this->callRecorder)(['tool' => $toolName, 'mcp_server' => $mcpServer, 'mcp_tool' => $mcpTool,
+                'session_id' => $context['session_id'] ?? null, 'success' => $success,
+                'duration_ms' => (int) round((microtime(true) - $startTime) * 1000),
+                'error' => $errorMessage, 'result_bytes' => $resultSize, 'risk_level' => $riskLevel]);
+
+            return;
+        }
         try {
             $errorMessage = $errorMessage !== null ? $this->sanitizeToolError($errorMessage) : null;
             $durationMs = (int) round((microtime(true) - $startTime) * 1000);
@@ -1435,6 +1667,8 @@ class AgentToolRegistryService
                 $paramsSummary,
                 $resultSize,
             ]);
+            $toolCallRowId = (int) DB::getPdo()->lastInsertId();
+            $toolCallId = $toolCallRowId > 0 ? 'plos_call_'.$toolCallRowId : null;
             // INF-3: Structured audit log
             app(AgentAuditService::class)->recordToolCall(
                 sessionId: $context['session_id'] ?? '',
@@ -1444,6 +1678,7 @@ class AgentToolRegistryService
                 durationMs: (float) $durationMs,
                 outcome: $success ? 'success' : 'failure',
                 error: $errorMessage,
+                toolCallId: $toolCallId,
             );
         } catch (\Throwable $e) {
             // Analytics recording must never break tool execution
@@ -1480,7 +1715,7 @@ class AgentToolRegistryService
         // Check: guardrails
         // Fix C: mirror the live executeTool() path so simulation sees the
         // same policy verdict. Pass risk_level + mcp refs in context.
-        $context['risk_level'] = $context['risk_level'] ?? ($toolDef['risk_level'] ?? 'read');
+        $context['risk_level'] = $toolDef['risk_level'] ?? 'read';
         if (! empty($toolDef['mcp_server'])) {
             $context['mcp_server'] = $toolDef['mcp_server'];
         }

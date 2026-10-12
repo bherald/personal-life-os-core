@@ -3,16 +3,20 @@
 namespace App\Services\Genealogy;
 
 use App\Services\FileRegistryLifecycleService;
+use App\Services\FileRegistryService;
 use App\Services\Genealogy\SourceAudit\SourceAuditWorkbookService;
 use App\Services\Review\ReviewContextEnrichmentService;
 use App\Services\Review\ReviewTargetReferenceService;
 use App\Services\SystemConfigService;
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Process\Process;
 
 /**
  * Genealogy MCP Service
@@ -224,7 +228,8 @@ class GenealogyMCPService
 
     public function __construct(
         GenealogyService $genealogy,
-        GedcomExportService $exporter
+        GedcomExportService $exporter,
+        private readonly bool $completeMediaProfiles = false,
     ) {
         $this->genealogy = $genealogy;
         $this->exporter = $exporter;
@@ -454,6 +459,18 @@ class GenealogyMCPService
         ];
 
         $limit = $this->clampRuntimeLimit($limit, 'tree_search_max_results_per_type', 100);
+        if (! $this->genealogyDatabaseAvailable()) {
+            $offline = app(OfflineGenealogyGedcomService::class);
+            $offlineTreeId = $offline->resolveTreeId($tree_id);
+
+            return ($offlineTreeId === null ? null : $offline->treeSearch($offlineTreeId, $query, $type, $limit))
+                ?? [
+                    'tool' => 'tree_search',
+                    'success' => false,
+                    'error' => 'Genealogy database is unavailable and no admitted local GEDCOM snapshot is configured.',
+                    'timestamp' => now()->toIso8601String(),
+                ];
+        }
         $queryParam = "%{$query}%";
 
         if ($type === 'person' || $type === 'all') {
@@ -462,7 +479,7 @@ class GenealogyMCPService
                     WHERE (given_name LIKE ? OR surname LIKE ? OR CONCAT(given_name, ' ', surname) LIKE ?)";
             $params = [$queryParam, $queryParam, $queryParam];
 
-            if ($tree_id) {
+            if ($tree_id !== null) {
                 $sql .= ' AND tree_id = ?';
                 $params[] = $tree_id;
             }
@@ -479,13 +496,13 @@ class GenealogyMCPService
                            h.given_name as husband_given, h.surname as husband_surname,
                            w.given_name as wife_given, w.surname as wife_surname
                     FROM genealogy_families f
-                    LEFT JOIN genealogy_persons h ON f.husband_id = h.id
-                    LEFT JOIN genealogy_persons w ON f.wife_id = w.id
-                    WHERE h.given_name LIKE ? OR h.surname LIKE ?
-                       OR w.given_name LIKE ? OR w.surname LIKE ?';
+                    LEFT JOIN genealogy_persons h ON f.husband_id = h.id AND h.tree_id = f.tree_id
+                    LEFT JOIN genealogy_persons w ON f.wife_id = w.id AND w.tree_id = f.tree_id
+                    WHERE (h.given_name LIKE ? OR h.surname LIKE ?
+                       OR w.given_name LIKE ? OR w.surname LIKE ?)';
             $params = [$queryParam, $queryParam, $queryParam, $queryParam];
 
-            if ($tree_id) {
+            if ($tree_id !== null) {
                 $sql .= ' AND f.tree_id = ?';
                 $params[] = $tree_id;
             }
@@ -499,10 +516,10 @@ class GenealogyMCPService
         if ($type === 'source' || $type === 'all') {
             $sql = 'SELECT id, tree_id, title, author, publication AS publication_info, repository AS repository_id
                     FROM genealogy_sources
-                    WHERE title LIKE ? OR author LIKE ?';
+                    WHERE (title LIKE ? OR author LIKE ?)';
             $params = [$queryParam, $queryParam];
 
-            if ($tree_id) {
+            if ($tree_id !== null) {
                 $sql .= ' AND tree_id = ?';
                 $params[] = $tree_id;
             }
@@ -657,6 +674,14 @@ class GenealogyMCPService
                 'timestamp' => now()->toIso8601String(),
             ];
         } catch (\Exception $e) {
+            if ($this->offlineFallbackAllowed($e)) {
+                $fallback = app(OfflineGenealogyGedcomService::class)
+                    ->personSearch($tree_id, $query, $include_living, $limit);
+                if ($fallback !== null) {
+                    return $fallback;
+                }
+            }
+
             return [
                 'tool' => 'person_search',
                 'success' => false,
@@ -1493,6 +1518,14 @@ class GenealogyMCPService
                 'timestamp' => now()->toIso8601String(),
             ];
         } catch (\Exception $e) {
+            if ($this->offlineFallbackAllowed($e)) {
+                $fallback = app(OfflineGenealogyGedcomService::class)
+                    ->personProfile($person_id, $limit);
+                if ($fallback !== null) {
+                    return $fallback;
+                }
+            }
+
             return [
                 'tool' => 'person_profile',
                 'success' => false,
@@ -2364,6 +2397,13 @@ class GenealogyMCPService
 
             $params[] = $limit;
 
+            $preserveText = CliWorkflowExecutionScope::current() !== null;
+            $textColumns = [];
+            foreach (['research_question' => 500, 'selection_reason' => 300, 'scope_reason' => 300,
+                'evidence_summary' => 500, 'conflicts_found' => 300, 'outcome_reason' => 500] as $column => $previewLimit) {
+                $textColumns[] = $preserveText ? "t.{$column}" : "LEFT(t.{$column}, {$previewLimit}) AS {$column}";
+            }
+
             $tasks = DB::select('
                 SELECT t.id,
                        t.tree_id,
@@ -2373,12 +2413,7 @@ class GenealogyMCPService
                        t.priority,
                        t.status,
                        t.outcome_state,
-                       LEFT(t.research_question, 500) AS research_question,
-                       LEFT(t.selection_reason, 300) AS selection_reason,
-                       LEFT(t.scope_reason, 300) AS scope_reason,
-                       LEFT(t.evidence_summary, 500) AS evidence_summary,
-                       LEFT(t.conflicts_found, 300) AS conflicts_found,
-                       LEFT(t.outcome_reason, 500) AS outcome_reason,
+                       '.implode(",\n                       ", $textColumns).',
                        COALESCE(JSON_LENGTH(t.sources_checked), 0) AS sources_checked_count,
                        t.started_at,
                        t.completed_at,
@@ -2429,9 +2464,61 @@ class GenealogyMCPService
         }
     }
 
-    /**
-     * Return read-only detail for one genealogy research task.
-     */
+    /** Run the existing Artisan task handler with explicit per-run permissions. */
+    public function research_task_run(int $tree_id, int $task_id, array $options = []): array
+    {
+        $flags = ['use_current_cli_settings', 'save_cli_settings', 'confirm_non_face', 'confirm_review_write',
+            'confirm_person_creation', 'confirm_canonical_facts', 'confirm_downloads', 'confirm_writeback',
+            'confirm_scheduled_enablement', 'confirm_unanchored'];
+        if ($tree_id < 1 || $task_id < 1 || array_diff(array_keys($options), ['dry_run', 'max_iterations', 'timeout_minutes', ...$flags]) !== []) {
+            throw new \InvalidArgumentException('Select one existing task and tree, using the declared task-run options.');
+        }
+        foreach (['dry_run', ...$flags] as $flag) {
+            if (array_key_exists($flag, $options) && ! is_bool($options[$flag])) {
+                throw new \InvalidArgumentException("{$flag} must be a boolean.");
+            }
+        }
+        $dryRun = $options['dry_run'] ?? true;
+        $arguments = ['--tree' => $tree_id, '--task-id' => [$task_id], '--json' => true, '--execute' => ! $dryRun];
+        foreach (['max_iterations' => [8, 12], 'timeout_minutes' => [20, 60]] as $name => [$default, $maximum]) {
+            $value = $options[$name] ?? $default;
+            if (! is_int($value) || $value < 1 || $value > $maximum) {
+                throw new \InvalidArgumentException("{$name} must be an integer between 1 and {$maximum}.");
+            }
+            $arguments['--'.str_replace('_', '-', $name)] = $value;
+        }
+        foreach ($flags as $flag) {
+            $arguments['--'.str_replace('_', '-', $flag)] = $options[$flag] ?? false;
+        }
+        // Own the output buffer: nested Artisan calls must not replace this
+        // task's output through the console kernel's last-output accessor.
+        $output = new BufferedOutput;
+        try {
+            $exit = Artisan::call('genealogy:research-task-run', $arguments, $output);
+        } catch (\Throwable $error) {
+            return ['tool' => 'research_task_run', 'success' => false, 'tree_id' => $tree_id, 'task_id' => $task_id,
+                'dry_run' => $dryRun, 'outcome_unknown' => true, 'error' => $error->getMessage(), 'output' => $output->fetch()];
+        }
+        $bytes = $output->fetch();
+        try {
+            $result = json_decode($bytes, true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException $error) {
+            return ['tool' => 'research_task_run', 'success' => false, 'tree_id' => $tree_id, 'task_id' => $task_id,
+                'dry_run' => $dryRun, 'exit_code' => $exit, 'outcome_unknown' => true,
+                'error' => 'Task handler returned no complete JSON result; inspect retained output before retrying.', 'output' => $bytes];
+        }
+        $selected = is_array($result) && ($result['selected_count'] ?? null) === 1;
+        $ran = $selected && ($result['results'][0]['success'] ?? false) === true;
+        $success = $exit === 0 && $selected && ($dryRun || $ran);
+
+        return ['tool' => 'research_task_run', 'success' => $success, 'tree_id' => $tree_id, 'task_id' => $task_id,
+            'dry_run' => $dryRun, 'exit_code' => $exit, 'result' => $result, 'output' => $bytes,
+            'error' => $success ? null : ($result['error'] ?? $result['results'][0]['reason'] ?? ($selected
+                ? 'The selected task did not complete successfully; inspect its retained result.'
+                : "Research task not found in tree {$tree_id}: {$task_id}"))];
+    }
+
+    /** Return read-only detail for one genealogy research task. */
     public function research_task_profile(int $tree_id, int $task_id): array
     {
         Log::info('GenealogyMCPService: research_task_profile called', [
@@ -2570,8 +2657,9 @@ class GenealogyMCPService
             ];
         }
 
-        $researchQuestion = trim($research_question);
-        if (mb_strlen($researchQuestion) < 20) {
+        $preserveInput = CliWorkflowExecutionScope::current() !== null;
+        $researchQuestion = $preserveInput ? $research_question : trim($research_question);
+        if (mb_strlen(trim($researchQuestion)) < 20) {
             return [
                 'tool' => 'research_task_create',
                 'success' => false,
@@ -2630,22 +2718,38 @@ class GenealogyMCPService
                 }
             }
 
-            $relatedPeople = $this->normalizePositiveIdList($related_people_used, 50);
-            $sourceIds = $this->normalizePositiveIdList($sources_checked, 50);
+            $text = fn (?string $value, int $limit): ?string => $preserveInput ? $value : $this->compactToolText((string) $value, $limit);
+            $ids = function (array $values) use ($preserveInput): array {
+                if (! $preserveInput) {
+                    return $this->normalizePositiveIdList($values, 50);
+                }
+                foreach ($values as $value) {
+                    if (! is_int($value) || $value < 1) {
+                        throw new \InvalidArgumentException('Research task references must be positive integer IDs; input was not modified.');
+                    }
+                }
+
+                return array_values($values);
+            };
+            if ($preserveInput && $outcome_state !== null && mb_strlen($outcome_state) > 30) {
+                throw new \InvalidArgumentException('Research task outcome_state exceeds its 30-character field; input was not shortened.');
+            }
+            $relatedPeople = $ids($related_people_used);
+            $sourceIds = $ids($sources_checked);
             $taskData = [
                 'tree_id' => $requestedTreeId,
                 'person_id' => $person_id,
                 'task_type' => $taskType,
                 'priority' => $priority,
                 'research_question' => $researchQuestion,
-                'selection_reason' => $this->compactToolText((string) $selection_reason, 1000),
-                'scope_reason' => $this->compactToolText((string) $scope_reason, 1000),
+                'selection_reason' => $text($selection_reason, 1000),
+                'scope_reason' => $text($scope_reason, 1000),
                 'related_people_used' => $relatedPeople,
                 'sources_checked' => $sourceIds,
-                'evidence_summary' => $this->compactToolText((string) $evidence_summary, 2000),
-                'conflicts_found' => $this->compactToolText((string) $conflicts_found, 2000),
-                'outcome_state' => $this->compactToolText((string) $outcome_state, 100),
-                'outcome_reason' => $this->compactToolText((string) $outcome_reason, 1000),
+                'evidence_summary' => $text($evidence_summary, 2000),
+                'conflicts_found' => $text($conflicts_found, 2000),
+                'outcome_state' => $text($outcome_state, 100),
+                'outcome_reason' => $text($outcome_reason, 1000),
                 'parameters' => array_merge($parameters, [
                     'created_by_tool' => 'research_task_create',
                     'actor' => $actor,
@@ -2696,7 +2800,7 @@ class GenealogyMCPService
                     'task_type' => $taskType,
                     'priority' => $priority,
                 ],
-                $plan,
+                $preserveInput ? ['task_input_sha256' => hash('sha256', json_encode($plan, JSON_THROW_ON_ERROR)), 'fields' => array_keys($plan)] : $plan,
                 $taskId
                     ? "Delete or complete genealogy_research_tasks.id={$taskId} if this task was created in error."
                     : 'No task ID was returned; inspect genealogy_research_tasks and service logs before retrying.',
@@ -2745,8 +2849,8 @@ class GenealogyMCPService
                        p.id as person_id, p.given_name, p.surname
                 FROM genealogy_citations gc
                 JOIN genealogy_sources s ON gc.source_id = s.id
-                LEFT JOIN genealogy_media m ON gc.media_id = m.id
-                LEFT JOIN genealogy_persons p ON gc.person_id = p.id
+                LEFT JOIN genealogy_media m ON gc.media_id = m.id AND m.tree_id = s.tree_id
+                LEFT JOIN genealogy_persons p ON gc.person_id = p.id AND p.tree_id = s.tree_id
                 WHERE s.tree_id = ?
             ';
             $params = [$tree_id];
@@ -4585,6 +4689,10 @@ class GenealogyMCPService
                            FROM file_registry fr
                            JOIN file_registry_faces ff ON ff.file_registry_id = fr.id
                            WHERE COALESCE(ff.hidden, 0) = 0
+                             AND ff.source_current = 1
+                             AND ff.superseded_at IS NULL
+                             AND ff.source_sha256 IS NOT NULL
+                             AND ff.face_region_convention = 'normalized_top_left'
                              AND (
                                   fr.current_path = gm.nextcloud_path
                                   OR fr.current_path = gm.original_path
@@ -4613,6 +4721,10 @@ class GenealogyMCPService
                            FROM file_registry fr
                            JOIN file_registry_faces ff ON ff.file_registry_id = fr.id
                            WHERE COALESCE(ff.hidden, 0) = 0
+                             AND ff.source_current = 1
+                             AND ff.superseded_at IS NULL
+                             AND ff.source_sha256 IS NOT NULL
+                             AND ff.face_region_convention = 'normalized_top_left'
                              AND (
                                   NULLIF(ff.person_name, '') IS NOT NULL
                                   OR ff.genealogy_person_id IS NOT NULL
@@ -4820,6 +4932,10 @@ class GenealogyMCPService
                            FROM file_registry fr
                            JOIN file_registry_faces ff ON ff.file_registry_id = fr.id
                            WHERE COALESCE(ff.hidden, 0) = 0
+                             AND ff.source_current = 1
+                             AND ff.superseded_at IS NULL
+                             AND ff.source_sha256 IS NOT NULL
+                             AND ff.face_region_convention = 'normalized_top_left'
                              AND (
                                   fr.current_path = gm.nextcloud_path
                                   OR fr.current_path = gm.original_path
@@ -4848,6 +4964,10 @@ class GenealogyMCPService
                            FROM file_registry fr
                            JOIN file_registry_faces ff ON ff.file_registry_id = fr.id
                            WHERE COALESCE(ff.hidden, 0) = 0
+                             AND ff.source_current = 1
+                             AND ff.superseded_at IS NULL
+                             AND ff.source_sha256 IS NOT NULL
+                             AND ff.face_region_convention = 'normalized_top_left'
                              AND (
                                   NULLIF(ff.person_name, '') IS NOT NULL
                                   OR ff.genealogy_person_id IS NOT NULL
@@ -5124,7 +5244,7 @@ class GenealogyMCPService
             $marked = [];
             $failed = [];
 
-            foreach ($mediaIds as $mediaId) {
+            foreach ($mediaIds as $position => $mediaId) {
                 $row = $rowsById[$mediaId] ?? null;
                 if (! $row) {
                     $failed[] = $mediaId;
@@ -5309,7 +5429,7 @@ class GenealogyMCPService
             $applied = [];
             $failed = [];
 
-            foreach ($mediaIds as $mediaId) {
+            foreach ($mediaIds as $position => $mediaId) {
                 $row = $rowsById[$mediaId] ?? null;
                 if (! $row) {
                     $failed[] = $mediaId;
@@ -5357,6 +5477,20 @@ class GenealogyMCPService
 
                 $apply = $this->applyMediaQuarantine($tree_id, $row, $paths, $reason, $actor);
                 $results[] = $apply;
+                if (($apply['outcome'] ?? null) === 'unknown' || ($apply['recovery_required'] ?? false) === true) {
+                    $failed[] = $mediaId;
+                    foreach (array_slice($mediaIds, $position + 1) as $notAttemptedId) {
+                        $failed[] = $notAttemptedId;
+                        $results[] = [
+                            'media_id' => $notAttemptedId,
+                            'eligible' => false,
+                            'applied' => false,
+                            'state' => 'not_attempted',
+                            'reason' => 'Cleanup stopped because an earlier file move requires recovery.',
+                        ];
+                    }
+                    break;
+                }
                 if (($apply['applied'] ?? false) === true) {
                     $applied[] = $mediaId;
                 } else {
@@ -6102,16 +6236,32 @@ class GenealogyMCPService
                 ];
             }
 
-            $apply = $this->applyMediaDuplicateConsolidation($tree_id, $drop_media_id, $keep_media_id, $plan);
-
-            $fileDeleted = true;
             $dropPath = (string) ($plan['drop_media']['nextcloud_path'] ?? '');
-            $keepPath = (string) ($plan['keep_media']['nextcloud_path'] ?? '');
-            if ($dropPath !== '' && $dropPath !== $keepPath && file_exists($dropPath)) {
-                $fileDeleted = @unlink($dropPath);
+            $dropDiskPath = $this->mediaDiskPath((object) $plan['drop_media']);
+            $keepDiskPath = $this->mediaDiskPath((object) $plan['keep_media']);
+            $configuredDataPath = trim((string) config('services.nextcloud.data_path', ''));
+            $dataRoot = $configuredDataPath !== '' ? realpath($configuredDataPath) : false;
+            if ($dropDiskPath === null || $keepDiskPath === null || $dataRoot === false
+                || ! str_starts_with($dropDiskPath, rtrim($dataRoot, '/').'/')
+                || ! str_starts_with($keepDiskPath, rtrim($dataRoot, '/').'/')) {
+                return [
+                    'tool' => 'media_duplicate_consolidate',
+                    'success' => false,
+                    'tree_id' => $tree_id,
+                    'dry_run' => false,
+                    'applied' => false,
+                    'error' => 'Both media files must resolve inside the configured Nextcloud data directory before consolidation.',
+                    'timestamp' => now()->toIso8601String(),
+                ];
             }
 
-            if ($dropPath !== '') {
+            $apply = $this->applyMediaDuplicateConsolidation($tree_id, $drop_media_id, $keep_media_id, $plan);
+
+            $sharedFile = $dropDiskPath === $keepDiskPath;
+            $fileDeleted = ! $sharedFile && @unlink($dropDiskPath);
+            $fileHandled = $sharedFile || $fileDeleted;
+
+            if ($fileDeleted && $dropPath !== '') {
                 DB::update('
                     UPDATE file_registry
                     SET status = "deleted",
@@ -6130,7 +6280,7 @@ class GenealogyMCPService
                 'media_duplicate_consolidate',
                 'consolidate_byte_identical_media',
                 $actor,
-                $fileDeleted,
+                $fileHandled,
                 [
                     'tree_id' => $tree_id,
                     'drop_media_id' => $drop_media_id,
@@ -6151,14 +6301,14 @@ class GenealogyMCPService
 
             return [
                 'tool' => 'media_duplicate_consolidate',
-                'success' => $fileDeleted,
+                'success' => $fileHandled,
                 'tree_id' => $tree_id,
                 'tree_name' => $tree->name ?? null,
                 'dry_run' => false,
                 'eligible' => true,
                 'applied' => true,
                 'file_deleted' => $fileDeleted,
-                'file_exists_after' => $dropPath !== '' ? file_exists($dropPath) : null,
+                'file_exists_after' => file_exists($dropDiskPath),
                 'plan' => $plan,
                 'result' => $apply,
                 'timestamp' => now()->toIso8601String(),
@@ -6184,7 +6334,10 @@ class GenealogyMCPService
             'face_limit' => $face_limit,
         ]);
 
-        $faceLimit = max(1, min(100, $face_limit));
+        if ($this->completeMediaProfiles && $face_limit < 1) {
+            throw new \InvalidArgumentException('Face selection limit must be positive; no replacement limit was applied.');
+        }
+        $faceLimit = $this->completeMediaProfiles ? $face_limit : max(1, min(100, $face_limit));
 
         try {
             $tree = $this->genealogy->getTree($tree_id);
@@ -6198,16 +6351,16 @@ class GenealogyMCPService
             }
 
             $media = DB::selectOne(
-                'SELECT id, tree_id, gedcom_id, uid, media_type, title, media_date,
+                ($this->completeMediaProfiles ? 'SELECT *' : 'SELECT id, tree_id, gedcom_id, uid, media_type, title, media_date,
                         description, ai_description, transcription_text, transcription,
                         subject_tags, exif_data, original_path, nextcloud_path, local_filename,
                         file_format, mime_type, file_size, file_exists, width, height,
                         has_faces, face_count, analysis_status, analysis_error,
                         enrichment_status, enrichment_error, rag_indexed_at,
-                        analyzed_at, enriched_at, imported_at, created_at, updated_at
+                        analyzed_at, enriched_at, imported_at, created_at, updated_at').'
                  FROM genealogy_media
-                 WHERE id = ?',
-                [$media_id]
+                 WHERE id = ?'.($this->completeMediaProfiles ? ' AND tree_id = ?' : ''),
+                $this->completeMediaProfiles ? [$media_id, $tree_id] : [$media_id]
             );
             if (! $media) {
                 return [
@@ -6253,25 +6406,24 @@ class GenealogyMCPService
                         fm.created_at
                  FROM genealogy_family_media fm
                  JOIN genealogy_families f ON f.id = fm.family_id
-                 LEFT JOIN genealogy_persons h ON h.id = f.husband_id
-                 LEFT JOIN genealogy_persons w ON w.id = f.wife_id
+                 LEFT JOIN genealogy_persons h ON h.id = f.husband_id'.($this->completeMediaProfiles ? ' AND h.tree_id = ?' : '').'
+                 LEFT JOIN genealogy_persons w ON w.id = f.wife_id'.($this->completeMediaProfiles ? ' AND w.tree_id = ?' : '').'
                  WHERE fm.media_id = ?
                    AND f.tree_id = ?
                  ORDER BY fm.id ASC',
-                [$media_id, $tree_id]
+                $this->completeMediaProfiles ? [$tree_id, $tree_id, $media_id, $tree_id] : [$media_id, $tree_id]
             );
 
             $citations = DB::select(
-                'SELECT c.id, c.source_id, s.title AS source_title,
+                ($this->completeMediaProfiles ? 'SELECT c.*, s.title AS source_title' : 'SELECT c.id, c.source_id, s.title AS source_title,
                         c.person_id, c.family_id, c.fact_type, c.page, c.quality,
                         c.evidence_type, c.information_type, c.evidence_analysis,
-                        c.text, c.created_at
+                        c.text, c.created_at').'
                  FROM genealogy_citations c
-                 LEFT JOIN genealogy_sources s ON s.id = c.source_id
+                 LEFT JOIN genealogy_sources s ON s.id = c.source_id'.($this->completeMediaProfiles ? ' AND s.tree_id = ?' : '').'
                  WHERE c.media_id = ?
-                 ORDER BY c.id DESC
-                 LIMIT 50',
-                [$media_id]
+                 ORDER BY c.id DESC'.($this->completeMediaProfiles ? '' : "\n                 LIMIT 50"),
+                $this->completeMediaProfiles ? [$tree_id, $media_id] : [$media_id]
             );
 
             $faceMatches = DB::select(
@@ -6283,15 +6435,20 @@ class GenealogyMCPService
                         q.face_region, q.match_details, q.review_notes,
                         q.created_at, q.updated_at
                  FROM genealogy_face_match_queue q
-                 LEFT JOIN genealogy_persons p ON p.id = q.suggested_person_id
+                 LEFT JOIN genealogy_persons p ON p.id = q.suggested_person_id'.($this->completeMediaProfiles ? ' AND p.tree_id = ?' : '').'
                  WHERE q.media_id = ?
                    AND q.tree_id = ?
                  ORDER BY FIELD(q.status, \'pending\', \'approved\', \'auto_linked\', \'rejected\', \'ignored\'),
                           q.confidence_score DESC,
                           q.id DESC
                  LIMIT ?',
-                [$media_id, $tree_id, $faceLimit]
+                $this->completeMediaProfiles ? [$tree_id, $media_id, $tree_id, $faceLimit] : [$media_id, $tree_id, $faceLimit]
             );
+
+            $selection = $this->completeMediaProfiles ? ['media_representation' => 'complete_database_row',
+                'face_selection' => ['requested_limit' => $faceLimit, 'total_matches' => (int) DB::selectOne(
+                    'SELECT COUNT(*) AS count FROM genealogy_face_match_queue WHERE media_id = ? AND tree_id = ?',
+                    [$media_id, $tree_id])->count], 'identity_decisions_applied' => false] : [];
 
             return [
                 'tool' => 'media_profile',
@@ -6299,10 +6456,10 @@ class GenealogyMCPService
                 'tree_id' => $tree_id,
                 'tree_name' => $tree->name ?? null,
                 'media_id' => $media_id,
-                'media' => $this->buildMediaProfileRow($media),
+                'media' => $this->completeMediaProfiles ? (array) $media : $this->buildMediaProfileRow($media),
                 'linked_persons' => $linkedPersons,
                 'linked_families' => $linkedFamilies,
-                'citations' => $this->excerptCitationRows($citations),
+                'citations' => $this->completeMediaProfiles ? $citations : $this->excerptCitationRows($citations),
                 'face_matches' => $faceMatches,
                 'counts' => [
                     'linked_persons' => count($linkedPersons),
@@ -6311,6 +6468,7 @@ class GenealogyMCPService
                     'face_matches_returned' => count($faceMatches),
                 ],
                 'timestamp' => now()->toIso8601String(),
+                ...$selection,
             ];
         } catch (\Exception $e) {
             return [
@@ -6499,6 +6657,10 @@ class GenealogyMCPService
                  JOIN file_registry_faces ff ON ff.file_registry_id = fr.id
                  LEFT JOIN genealogy_persons p ON p.id = ff.genealogy_person_id AND p.tree_id = ?
                  WHERE COALESCE(ff.hidden, 0) = 0
+                   AND ff.source_current = 1
+                   AND ff.superseded_at IS NULL
+                   AND ff.source_sha256 IS NOT NULL
+                   AND ff.face_region_convention = \'normalized_top_left\'
                    AND (
                         fr.current_path = ?
                         OR fr.current_path = ?
@@ -7406,6 +7568,7 @@ class GenealogyMCPService
             }
 
             $fileRegistryUpdated = 0;
+            $faceSyncUpdated = 0;
             if ($matchedRegistryIds !== []) {
                 $placeholders = implode(',', array_fill(0, count($matchedRegistryIds), '?'));
                 $registryTags = $this->mergeStringTags([], array_merge(['genealogy', 'tree:'.$requestedTreeId, 'person:'.$person_id], $subjectTags));
@@ -7433,13 +7596,16 @@ class GenealogyMCPService
                 );
 
                 if ($selectedFace) {
-                    DB::update(
+                    $faceSyncUpdated = DB::update(
                         'UPDATE file_registry_faces
                          SET person_name = ?, genealogy_person_id = ?, verified = 1, source = "manual", updated_at = NOW()
-                         WHERE id = ?',
-                        [$personName, $person_id, (int) $selectedFace->id]
+                         WHERE id = ? AND source_current = 1 AND superseded_at IS NULL
+                           AND source_sha256 = ? AND face_region_convention = ?',
+                        [$personName, $person_id, (int) $selectedFace->id, $selectedFace->source_sha256, 'normalized_top_left']
                     );
-                    $this->upsertOperatorVerifiedFaceQueue($requestedTreeId, $media_id, $person_id, $personName, $selectedFace, $familyLabel, $animalSubjects);
+                    if ($faceSyncUpdated === 1) {
+                        $this->upsertOperatorVerifiedFaceQueue($requestedTreeId, $media_id, $person_id, $personName, $selectedFace, $familyLabel, $animalSubjects);
+                    }
                 }
             }
 
@@ -7480,7 +7646,8 @@ class GenealogyMCPService
                     'genealogy_media' => 1,
                     'genealogy_person_media' => $personMediaUpdated,
                     'file_registry' => $fileRegistryUpdated,
-                    'selected_face_id' => $selectedFace ? (int) $selectedFace->id : null,
+                    'selected_face_id' => $faceSyncUpdated === 1 ? (int) $selectedFace->id : null,
+                    'face_sync_held' => $selectedFace !== null && $faceSyncUpdated !== 1,
                     'memory_id' => $memoryId,
                 ],
                 'timestamp' => now()->toIso8601String(),
@@ -13200,6 +13367,8 @@ class GenealogyMCPService
 
     private function buildResearchTaskProfileRow(object $task): array
     {
+        $preserveText = CliWorkflowExecutionScope::current() !== null;
+
         return [
             'id' => (int) $task->id,
             'tree_id' => (int) $task->tree_id,
@@ -13222,15 +13391,15 @@ class GenealogyMCPService
             'scope_reason' => $task->scope_reason ?? null,
             'related_people_used' => $this->decodeJsonField($task->related_people_used ?? null),
             'sources_checked' => $this->decodeJsonField($task->sources_checked ?? null),
-            'evidence_summary' => $this->textProfile((string) ($task->evidence_summary ?? ''), 1600),
-            'conflicts_found' => $this->textProfile((string) ($task->conflicts_found ?? ''), 1200),
+            'evidence_summary' => $this->textProfile((string) ($task->evidence_summary ?? ''), 1600, $preserveText),
+            'conflicts_found' => $this->textProfile((string) ($task->conflicts_found ?? ''), 1200, $preserveText),
             'outcome' => [
                 'state' => $task->outcome_state ?? null,
-                'reason' => $this->textProfile((string) ($task->outcome_reason ?? ''), 1600),
+                'reason' => $this->textProfile((string) ($task->outcome_reason ?? ''), 1600, $preserveText),
             ],
             'parameters' => $this->decodeJsonField($task->parameters ?? null),
             'results' => $this->decodeJsonField($task->results ?? null),
-            'error_message' => $this->textProfile((string) ($task->error_message ?? ''), 1200),
+            'error_message' => $this->textProfile((string) ($task->error_message ?? ''), 1200, $preserveText),
             'queue' => [
                 'status' => $task->queue_status ?? null,
                 'priority_score' => isset($task->queue_priority_score) ? (float) $task->queue_priority_score : null,
@@ -13250,7 +13419,7 @@ class GenealogyMCPService
             'completed_at' => $task->completed_at ?? null,
             'created_at' => $task->created_at ?? null,
             'updated_at' => $task->updated_at ?? null,
-        ];
+        ] + ($preserveText ? ['cli_execution_settings' => $this->decodeJsonField($task->cli_execution_scope ?? null)['settings'] ?? null] : []);
     }
 
     private function researchTaskNextAction(object $task): string
@@ -14421,6 +14590,7 @@ class GenealogyMCPService
             $result['drop_person_links_deleted'] = DB::delete('DELETE FROM genealogy_person_media WHERE media_id = ?', [$dropMediaId]);
             $result['drop_media_deleted'] = DB::delete('DELETE FROM genealogy_media WHERE id = ? AND tree_id = ?', [$dropMediaId, $treeId]);
             DB::update('UPDATE genealogy_media SET updated_at = NOW(), rag_indexed_at = NULL WHERE id = ? AND tree_id = ?', [$keepMediaId, $treeId]);
+            $this->genealogy->updateTreeStats($treeId);
         });
 
         return $result;
@@ -14445,12 +14615,26 @@ class GenealogyMCPService
 
     private function mediaFileSha256(object $media): ?string
     {
-        $path = (string) ($media->nextcloud_path ?? '');
-        if ($path === '' || ! is_file($path) || ! is_readable($path)) {
+        $path = $this->mediaDiskPath($media);
+        if ($path === null || ! is_readable($path)) {
             return null;
         }
 
         return hash_file('sha256', $path) ?: null;
+    }
+
+    private function mediaDiskPath(object $media): ?string
+    {
+        $path = (string) ($media->nextcloud_path ?? '');
+        if ($path === '') {
+            return null;
+        }
+
+        if (! is_file($path)) {
+            $path = $this->nextcloudDiskPath($path);
+        }
+
+        return $path !== null && is_file($path) ? (realpath($path) ?: null) : null;
     }
 
     /**
@@ -14601,15 +14785,28 @@ class GenealogyMCPService
 
         $placeholders = implode(',', array_fill(0, count($registryIds), '?'));
 
-        return DB::select(
-            "SELECT id, file_registry_id, face_index, person_name, genealogy_person_id,
-                    region_x, region_y, region_w, region_h, confidence, source, verified
-             FROM file_registry_faces
-             WHERE file_registry_id IN ({$placeholders})
-               AND COALESCE(hidden, 0) = 0
-             ORDER BY verified DESC, confidence DESC, id",
+        $faces = DB::select(
+            "SELECT frf.id, frf.file_registry_id, frf.face_index, frf.person_name, frf.genealogy_person_id,
+                    frf.region_x, frf.region_y, frf.region_w, frf.region_h, frf.confidence, frf.source, frf.verified,
+                    frf.source_sha256, frf.face_region_convention, frf.source_current, frf.superseded_at,
+                    fr.current_path, fr.status AS file_status
+             FROM file_registry_faces frf
+             JOIN file_registry fr ON fr.id = frf.file_registry_id
+             WHERE frf.file_registry_id IN ({$placeholders})
+               AND COALESCE(frf.hidden, 0) = 0
+               AND frf.source_current = 1
+               AND frf.superseded_at IS NULL
+               AND frf.source_sha256 IS NOT NULL
+               AND frf.face_region_convention = 'normalized_top_left'
+               AND fr.status = 'active'
+             ORDER BY frf.verified DESC, frf.confidence DESC, frf.id",
             $registryIds
         );
+
+        return array_values(array_filter(
+            $faces,
+            static fn (object $face): bool => app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($face)['success'] ?? false
+        ));
     }
 
     /**
@@ -15712,6 +15909,132 @@ class GenealogyMCPService
             ];
         }
 
+        if (file_exists($targetDiskPath) || is_link($targetDiskPath)) {
+            return [
+                'media_id' => $mediaId,
+                'title' => $row->title ?? null,
+                'eligible' => true,
+                'applied' => false,
+                'reason' => 'Quarantine destination already exists; source file and media rows were left unchanged.',
+                'failure_code' => 'physical_target_path_owned',
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
+            ];
+        }
+
+        $sourceStatBeforeMove = @lstat($sourceDiskPath);
+        if (! is_array($sourceStatBeforeMove) || (($sourceStatBeforeMove['mode'] & 0170000) !== 0100000)) {
+            return [
+                'media_id' => $mediaId,
+                'title' => $row->title ?? null,
+                'eligible' => true,
+                'applied' => false,
+                'reason' => 'Source file ownership could not be verified; no file move was attempted.',
+                'failure_code' => 'physical_source_stat_unavailable',
+                'recovery_required' => true,
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
+            ];
+        }
+
+        try {
+            $targetOwner = app(FileRegistryService::class)->currentExactSourcePath($targetNextcloudPath);
+            if ($targetOwner !== null) {
+                return [
+                    'media_id' => $mediaId,
+                    'title' => $row->title ?? null,
+                    'eligible' => true,
+                    'applied' => false,
+                    'reason' => 'Target registry path is already owned; source file and media rows were left unchanged.',
+                    'failure_code' => 'registry_target_path_owned',
+                    'source_nextcloud_path' => $sourceNextcloudPath,
+                    'planned_nextcloud_path' => $targetNextcloudPath,
+                ];
+            }
+        } catch (\Throwable $error) {
+            return [
+                'media_id' => $mediaId,
+                'title' => $row->title ?? null,
+                'eligible' => true,
+                'applied' => false,
+                'reason' => 'Target registry path could not be proved available; source file and media rows were left unchanged.',
+                'failure_code' => 'registry_target_path_requires_review',
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
+            ];
+        }
+
+        $sourceHandle = @fopen($sourceDiskPath, 'rb');
+        $openedSourceStat = is_resource($sourceHandle) ? @fstat($sourceHandle) : false;
+        $sourceHash = null;
+        if (is_array($openedSourceStat) && (($openedSourceStat['mode'] & 0170000) === 0100000)
+            && $openedSourceStat['dev'] === $sourceStatBeforeMove['dev']
+            && $openedSourceStat['ino'] === $sourceStatBeforeMove['ino']) {
+            $hashContext = hash_init('sha256');
+            hash_update_stream($hashContext, $sourceHandle);
+            $sourceHash = hash_final($hashContext);
+            $openedSourceStatAfterHash = @fstat($sourceHandle);
+        } else {
+            $openedSourceStatAfterHash = false;
+        }
+        if (is_resource($sourceHandle)) {
+            fclose($sourceHandle);
+        }
+        if (! is_array($openedSourceStat) || ! is_array($openedSourceStatAfterHash)
+            || (($openedSourceStatAfterHash['mode'] & 0170000) !== 0100000)
+            || $openedSourceStat['dev'] !== $openedSourceStatAfterHash['dev']
+            || $openedSourceStat['ino'] !== $openedSourceStatAfterHash['ino']
+            || $openedSourceStat['size'] !== $openedSourceStatAfterHash['size']
+            || $openedSourceStat['dev'] !== $sourceStatBeforeMove['dev']
+            || $openedSourceStat['ino'] !== $sourceStatBeforeMove['ino']
+            || ! is_string($sourceHash)) {
+            return [
+                'media_id' => $mediaId,
+                'title' => $row->title ?? null,
+                'eligible' => true,
+                'applied' => false,
+                'reason' => 'Source inode changed while it was being pinned; no file move was attempted.',
+                'failure_code' => 'physical_source_inode_changed',
+                'recovery_required' => true,
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
+            ];
+        }
+
+        try {
+            if (DB::transactionLevel() !== 0 || DB::connection()->getPdo()->inTransaction()) {
+                return [
+                    'media_id' => $mediaId,
+                    'title' => $row->title ?? null,
+                    'eligible' => true,
+                    'applied' => false,
+                    'reason' => 'An ambient database transaction is active; no file move was attempted.',
+                    'failure_code' => 'ambient_database_transaction_active',
+                    'recovery_required' => false,
+                    'source_nextcloud_path' => $sourceNextcloudPath,
+                    'planned_nextcloud_path' => $targetNextcloudPath,
+                ];
+            }
+        } catch (\Throwable) {
+            return [
+                'media_id' => $mediaId,
+                'title' => $row->title ?? null,
+                'eligible' => true,
+                'applied' => false,
+                'reason' => 'Database transaction state could not be verified; no file move was attempted.',
+                'failure_code' => 'database_transaction_state_unavailable',
+                'recovery_required' => false,
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
+            ];
+        }
+
+        $expectedSource = [
+            'dev' => (int) $openedSourceStatAfterHash['dev'],
+            'ino' => (int) $openedSourceStatAfterHash['ino'],
+            'size' => (int) $openedSourceStatAfterHash['size'],
+            'sha256' => $sourceHash,
+        ];
         $targetDir = dirname($targetDiskPath);
         if (! is_dir($targetDir) && ! mkdir($targetDir, 0775, true) && ! is_dir($targetDir)) {
             return [
@@ -15724,13 +16047,72 @@ class GenealogyMCPService
             ];
         }
 
-        if (! rename($sourceDiskPath, $targetDiskPath)) {
+        $move = $this->runPinnedNoReplaceMove($sourceDiskPath, $targetDiskPath, $expectedSource);
+        if (($move['state'] ?? null) !== 'moved' || ! $this->atomicMoveMatchesExpected($move['moved'] ?? null, $expectedSource)) {
             return [
                 'media_id' => $mediaId,
                 'title' => $row->title ?? null,
                 'eligible' => true,
                 'applied' => false,
-                'reason' => 'File move failed; media row was not deleted.',
+                'reason' => ($move['state'] ?? null) === 'recovery_required'
+                    ? 'Atomic move outcome requires recovery; no genealogy rows were changed.'
+                    : 'Atomic no-overwrite move could not be proved; source and genealogy rows were left unchanged.',
+                'failure_code' => ($move['state'] ?? null) === 'recovery_required'
+                    ? 'physical_move_outcome_unknown'
+                    : (($move['reason'] ?? null) === 'target_owned'
+                        ? 'physical_target_path_owned'
+                        : 'physical_move_unsupported_or_held'),
+                'move_reason' => $move['reason'] ?? 'invalid_helper_response',
+                'moved_file' => $move['moved'] ?? null,
+                'source_current' => $move['source_current'] ?? null,
+                'recovery_required' => ($move['state'] ?? null) === 'recovery_required',
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
+            ];
+        }
+
+        $sourceAfterMove = @lstat($sourceDiskPath);
+        $targetAfterMove = @lstat($targetDiskPath);
+        if ($sourceAfterMove !== false || ! is_array($targetAfterMove)
+            || (($targetAfterMove['mode'] & 0170000) !== 0100000)
+            || (int) $targetAfterMove['dev'] !== $expectedSource['dev']
+            || (int) $targetAfterMove['ino'] !== $expectedSource['ino']
+            || (int) $targetAfterMove['size'] !== $expectedSource['size']) {
+            return [
+                'media_id' => $mediaId,
+                'title' => $row->title ?? null,
+                'eligible' => true,
+                'applied' => false,
+                'reason' => 'Atomic move postimage or retained source replacement requires recovery; no genealogy rows were changed.',
+                'failure_code' => 'physical_move_postimage_requires_recovery',
+                'recovery_required' => true,
+                'source_exists' => $sourceAfterMove !== false,
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
+            ];
+        }
+        $targetHandle = @fopen($targetDiskPath, 'rb');
+        $targetStat = is_resource($targetHandle) ? @fstat($targetHandle) : false;
+        $targetHash = null;
+        if (is_array($targetStat) && (($targetStat['mode'] & 0170000) === 0100000)
+            && (int) $targetStat['dev'] === $expectedSource['dev']
+            && (int) $targetStat['ino'] === $expectedSource['ino']) {
+            $targetHashContext = hash_init('sha256');
+            hash_update_stream($targetHashContext, $targetHandle);
+            $targetHash = hash_final($targetHashContext);
+        }
+        if (is_resource($targetHandle)) {
+            fclose($targetHandle);
+        }
+        if ($targetHash !== $expectedSource['sha256']) {
+            return [
+                'media_id' => $mediaId,
+                'title' => $row->title ?? null,
+                'eligible' => true,
+                'applied' => false,
+                'reason' => 'Moved file digest could not be verified; no genealogy rows were changed.',
+                'failure_code' => 'physical_move_postimage_requires_recovery',
+                'recovery_required' => true,
                 'source_nextcloud_path' => $sourceNextcloudPath,
                 'planned_nextcloud_path' => $targetNextcloudPath,
             ];
@@ -15743,14 +16125,30 @@ class GenealogyMCPService
                 DB::delete('DELETE FROM genealogy_media WHERE id = ? AND tree_id = ?', [$mediaId, $treeId]);
             });
         } catch (\Throwable $e) {
-            @rename($targetDiskPath, $sourceDiskPath);
+            // The transaction may have committed before its acknowledgement was lost.
+            // Leave the file in quarantine and require an operator to reconcile both stores.
+            $sourceAfterTransactionError = @lstat($sourceDiskPath);
+            $targetAfterTransactionError = @lstat($targetDiskPath);
 
             return [
                 'media_id' => $mediaId,
                 'title' => $row->title ?? null,
                 'eligible' => true,
-                'applied' => false,
-                'reason' => 'Database update failed after file move; attempted to move file back.',
+                'applied' => null,
+                'outcome' => 'unknown',
+                'database_outcome' => 'unknown',
+                'reason' => 'Database transaction outcome is unknown after the physical move; file retained for recovery.',
+                'failure_code' => 'database_outcome_unknown_after_move',
+                'recovery_required' => true,
+                'source_path_exists_after_transaction_error' => $sourceAfterTransactionError !== false,
+                'quarantine_path_exists_after_transaction_error' => $targetAfterTransactionError !== false,
+                'quarantine_path_matches_moved_file' => is_array($targetAfterTransactionError)
+                    && (($targetAfterTransactionError['mode'] & 0170000) === 0100000)
+                    && (int) $targetAfterTransactionError['dev'] === $expectedSource['dev']
+                    && (int) $targetAfterTransactionError['ino'] === $expectedSource['ino']
+                    && (int) $targetAfterTransactionError['size'] === $expectedSource['size'],
+                'source_nextcloud_path' => $sourceNextcloudPath,
+                'planned_nextcloud_path' => $targetNextcloudPath,
                 'error' => $e->getMessage(),
             ];
         }
@@ -15766,12 +16164,109 @@ class GenealogyMCPService
         ];
     }
 
+    /** @param array{dev:int,ino:int,size:int,sha256:string} $expected */
+    private function runPinnedNoReplaceMove(string $source, string $target, array $expected): array
+    {
+        $helperConfig = (string) config('file_registry.path_move.helper', '');
+        $helper = str_starts_with($helperConfig, DIRECTORY_SEPARATOR) ? $helperConfig : base_path($helperConfig);
+        $python = (string) config('file_registry.discovery.python_binary', '/usr/bin/python3');
+        $timeout = (int) config('file_registry.path_move.timeout_seconds', 60);
+        $maxOutputBytes = (int) config('file_registry.path_move.max_output_bytes', 8192);
+        if ($helper === '' || ! is_file($helper) || ! is_executable($python) || $timeout < 1
+            || $maxOutputBytes < 256 || $maxOutputBytes > 65536) {
+            return ['state' => 'held', 'reason' => 'atomic_move_helper_unavailable'];
+        }
+
+        try {
+            $process = new Process([
+                $python,
+                $helper,
+                '--source', $source,
+                '--target', $target,
+                '--expected-dev', (string) $expected['dev'],
+                '--expected-ino', (string) $expected['ino'],
+                '--expected-size', (string) $expected['size'],
+                '--expected-sha256', $expected['sha256'],
+            ], base_path(), null, null, $timeout);
+            $process->run();
+            $output = $process->getOutput();
+            if (strlen($output) > $maxOutputBytes) {
+                return ['state' => 'recovery_required', 'reason' => 'atomic_move_response_too_large'];
+            }
+            $result = json_decode(trim($output), true);
+            if (! is_array($result) || ! in_array($result['state'] ?? null, ['moved', 'held', 'recovery_required'], true)) {
+                return ['state' => 'recovery_required', 'reason' => 'atomic_move_response_invalid'];
+            }
+
+            $state = $result['state'];
+            $allowedReasons = [
+                'source_not_regular', 'source_pin_changed', 'source_hash_changed', 'target_owned',
+                'noreplace_unavailable', 'cross_device_move_unsupported', 'atomic_move_failed',
+                'move_postimage_unverified', 'moved_postimage_mismatch', 'source_path_reoccupied_after_move',
+                'directory_fsync_failed',
+            ];
+            $allowedKeys = match ($state) {
+                'moved' => ['state', 'source_absent', 'moved'],
+                'held' => ['state', 'reason'],
+                default => ['state', 'reason', 'moved', 'source_current'],
+            };
+            if (array_diff(array_keys($result), $allowedKeys) !== []
+                || ! array_key_exists('state', $result)
+                || ($state === 'moved' && (($result['source_absent'] ?? null) !== true
+                    || ! array_key_exists('moved', $result)))
+                || ($state !== 'moved' && ! in_array($result['reason'] ?? null, $allowedReasons, true))) {
+                return ['state' => 'recovery_required', 'reason' => 'atomic_move_response_invalid'];
+            }
+            if (isset($result['moved']) && (! is_array($result['moved'])
+                || array_diff(array_keys($result['moved']), ['dev', 'ino', 'size', 'sha256']) !== []
+                || count($result['moved']) !== 4
+                || ! is_int($result['moved']['dev'] ?? null) || ! is_int($result['moved']['ino'] ?? null)
+                || ! is_int($result['moved']['size'] ?? null) || ! is_string($result['moved']['sha256'] ?? null)
+                || preg_match('/^[a-f0-9]{64}$/', $result['moved']['sha256']) !== 1)) {
+                return ['state' => 'recovery_required', 'reason' => 'atomic_move_response_invalid'];
+            }
+            if (is_array($result['source_current'] ?? null) && (array_diff(array_keys($result['source_current']), ['dev', 'ino', 'size', 'same_inode']) !== []
+                || count($result['source_current']) !== 4
+                || ! is_int($result['source_current']['dev'] ?? null) || ! is_int($result['source_current']['ino'] ?? null)
+                || ! is_int($result['source_current']['size'] ?? null) || ! is_bool($result['source_current']['same_inode'] ?? null))) {
+                return ['state' => 'recovery_required', 'reason' => 'atomic_move_response_invalid'];
+            }
+            if (($result['state'] ?? null) === 'moved') {
+                $moved = $result['moved'] ?? null;
+                if ($process->getExitCode() !== 0 || ($result['source_absent'] ?? null) !== true
+                    || ! is_array($moved) || ($moved['dev'] ?? null) !== $expected['dev']
+                    || ($moved['ino'] ?? null) !== $expected['ino'] || ($moved['size'] ?? null) !== $expected['size']
+                    || ($moved['sha256'] ?? null) !== $expected['sha256']) {
+                    return ['state' => 'recovery_required', 'reason' => 'atomic_move_postimage_mismatch',
+                        'moved' => is_array($moved) ? $moved : null];
+                }
+            } elseif ($process->getExitCode() === 0) {
+                return ['state' => 'recovery_required', 'reason' => 'atomic_move_exit_mismatch'];
+            }
+
+            return $result;
+        } catch (\Throwable) {
+            // Timeout or transport failure can occur after renameat2 committed.
+            return ['state' => 'recovery_required', 'reason' => 'atomic_move_outcome_unknown'];
+        }
+    }
+
+    private function atomicMoveMatchesExpected(mixed $moved, array $expected): bool
+    {
+        return is_array($moved)
+            && ($moved['dev'] ?? null) === $expected['dev']
+            && ($moved['ino'] ?? null) === $expected['ino']
+            && ($moved['size'] ?? null) === $expected['size']
+            && ($moved['sha256'] ?? null) === $expected['sha256'];
+    }
+
     private function markFileRegistryPathDeleted(string $path, string $actor, string $reason): int
     {
         $files = DB::select(
             'SELECT id, asset_uuid, current_path FROM file_registry WHERE current_path = ?',
             [$path]
         );
+        $files = array_values(array_filter($files, static fn ($file): bool => $file->current_path === $path));
 
         $deleteReason = mb_substr('genealogy missing-file media cleanup by '.$actor.': '.$reason, 0, 255);
         $lifecycle = app(FileRegistryLifecycleService::class);
@@ -15795,6 +16290,7 @@ class GenealogyMCPService
             'SELECT id, asset_uuid, current_path FROM file_registry WHERE current_path = ?',
             [$oldPath]
         );
+        $files = array_values(array_filter($files, static fn ($file): bool => $file->current_path === $oldPath));
 
         $moveReason = mb_substr('genealogy media quarantine by '.$actor.': '.$reason, 0, 255);
         $lifecycle = app(FileRegistryLifecycleService::class);
@@ -17561,8 +18057,11 @@ class GenealogyMCPService
     /**
      * @return array{length: int, excerpt: string|null, truncated: bool}
      */
-    private function textProfile(string $text, int $limit = 1200): array
+    private function textProfile(string $text, int $limit = 1200, bool $preserveText = false): array
     {
+        if ($preserveText) {
+            return ['length' => mb_strlen($text), 'excerpt' => $text, 'truncated' => false];
+        }
         $text = trim($text);
         $length = mb_strlen($text);
 
@@ -18825,6 +19324,33 @@ class GenealogyMCPService
         sort($ids);
 
         return array_slice($ids, 0, max(1, $limit));
+    }
+
+    private function genealogyDatabaseAvailable(): bool
+    {
+        try {
+            return Schema::hasTable('genealogy_persons');
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function offlineFallbackAllowed(\Throwable $error): bool
+    {
+        $message = mb_strtolower($error->getMessage());
+
+        return (
+            str_contains($message, 'genealogy_persons')
+            && (
+                str_contains($message, "doesn't exist")
+                || str_contains($message, 'no such table')
+                || str_contains($message, 'base table or view not found')
+            )
+        )
+            || str_contains($message, 'connection refused')
+            || str_contains($message, 'unknown error while connecting')
+            || str_contains($message, 'server has gone away')
+            || str_contains($message, 'php_network_getaddresses');
     }
 
     private function treeIdRequiredResponse(string $tool): array

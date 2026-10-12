@@ -1,8 +1,8 @@
 <template>
   <div class="card">
     <div class="flex items-center justify-between mb-4">
-      <h3 class="text-lg font-semibold text-[#e0e0e0] flex items-center gap-2">
-        <svg class="w-5 h-5 text-[#f39c12]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <h3 class="text-lg font-semibold text-theme-primary flex items-center gap-2">
+        <svg class="w-5 h-5 text-ops-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
         </svg>
         Active Shipments
@@ -11,7 +11,7 @@
         <template v-if="!disabled">
           <button
             @click="scanEmails"
-            class="text-accent hover:text-[#2980b9] text-xs flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+            class="text-accent hover:text-accent-dark text-xs flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
             :disabled="scanning"
             title="Scan emails for new shipments"
           >
@@ -20,25 +20,25 @@
             </svg>
             Scan
           </button>
-          <span class="text-[#666]">|</span>
+          <span class="text-theme-secondary">|</span>
         </template>
-        <span class="text-xs text-[#95a5a6]">{{ shipments.length }} active</span>
+        <span class="text-xs text-theme-secondary">{{ shipments.length }} active</span>
       </div>
     </div>
 
     <!-- Loading State -->
     <div v-if="loading" class="text-center py-6">
       <div class="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
-      <p class="mt-2 text-[#95a5a6] text-sm">Loading shipments...</p>
+      <p class="mt-2 text-theme-secondary text-sm">Loading shipments...</p>
     </div>
 
     <!-- Empty State -->
     <div v-else-if="shipments.length === 0" class="text-center py-8">
-      <svg class="w-12 h-12 mx-auto text-[#444] mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <svg class="w-12 h-12 mx-auto text-theme-secondary mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
       </svg>
-      <p class="text-[#95a5a6]">No active shipments</p>
-      <p class="text-xs text-[#666] mt-1">
+      <p class="text-theme-secondary">No active shipments</p>
+      <p class="text-xs text-theme-secondary mt-1">
         {{ disabled ? 'Shipment tracking is disabled; Thunderbird MCP handles email.' : 'Shipping emails will be tracked automatically' }}
       </p>
     </div>
@@ -48,17 +48,17 @@
       <div
         v-for="shipment in shipments"
         :key="shipment.id"
-        class="flex items-center justify-between p-3 rounded-lg bg-[#34495e]/50 hover:bg-[#34495e] transition-colors"
+        class="flex items-center justify-between p-3 rounded-lg bg-theme-tertiary hover:bg-theme-hover transition-colors"
       >
         <div class="flex items-center gap-3 flex-1 min-w-0">
           <!-- Carrier Icon -->
           <div class="text-xl" :title="shipment.carrier">{{ getCarrierIcon(shipment.carrier) }}</div>
 
           <div class="flex-1 min-w-0">
-            <p class="font-medium text-[#e0e0e0] text-sm truncate">{{ shipment.description || 'Package' }}</p>
+            <p class="font-medium text-theme-primary text-sm truncate">{{ shipment.description || 'Package' }}</p>
             <div class="flex items-center gap-2 mt-0.5">
-              <span class="text-xs text-[#666] uppercase">{{ shipment.carrier }}</span>
-              <span v-if="shipment.expected_delivery_at" class="text-xs text-[#95a5a6]">
+              <span class="text-xs text-theme-secondary uppercase">{{ shipment.carrier }}</span>
+              <span v-if="shipment.expected_delivery_at" class="text-xs text-theme-secondary">
                 {{ formatExpectedDelivery(shipment.expected_delivery_at) }}
               </span>
             </div>
@@ -75,7 +75,7 @@
           <div class="flex items-center gap-1">
             <button
               @click="markReceived(shipment)"
-              class="p-1 text-[#27ae60] hover:bg-[#27ae60]/20 rounded transition-colors"
+              class="p-1 text-ops-success hover:bg-ops-accent-soft rounded transition-colors"
               title="Mark as received"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -84,7 +84,7 @@
             </button>
             <button
               @click="archiveShipment(shipment)"
-              class="p-1 text-[#95a5a6] hover:bg-[#95a5a6]/20 rounded transition-colors"
+              class="p-1 text-theme-secondary hover:bg-theme-hover rounded transition-colors"
               title="Archive"
             >
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -270,7 +270,7 @@ class OpsFaceIntegrityAuditCommand extends Command
         if ((int) ($plan['actions']['clear_whitespace_only_face_names'] ?? 0) > 0) {
             $applied['whitespace_only_face_names_cleared'] = DB::update(
                 "UPDATE file_registry_faces
-                 SET person_name = '', genealogy_person_id = NULL, verified = 0, cluster_id = NULL, updated_at = NOW()
+                 SET person_name = '', updated_at = NOW()
                  WHERE person_name IS NOT NULL
                    AND person_name <> ''
                    AND TRIM(person_name) = ''"

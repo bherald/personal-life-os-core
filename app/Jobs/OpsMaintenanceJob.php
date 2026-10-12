@@ -2,21 +2,36 @@
 
 namespace App\Jobs;
 
+use App\Services\AuthoritativeSourceDiscoveryService;
+use App\Services\AutoHealService;
 use App\Services\BiasMaintenanceService;
+use App\Services\ComputeRouterService;
+use App\Services\DataRemoval\BrokerHealthPolicyService;
+use App\Services\DataRemoval\BrokerHealthService;
 use App\Services\FileRegistryService;
+use App\Services\LLMPoolManagerService;
 use App\Services\NewsArticleService;
+use App\Services\NextcloudFileApiService;
 use App\Services\NextcloudService;
+use App\Services\OllamaModelRegistryService;
 use App\Services\Ops\AgentRecursionCallsRetentionService;
 use App\Services\OpsMCPService;
+use App\Services\RssFeedHealthService;
+use App\Services\ScheduledJobService;
+use App\Services\SourceCredibilityService;
 use App\Services\SystemConfigService;
 use App\Services\WorkflowDiagnosticsService;
+use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Redis;
 use Throwable;
 
 /**
@@ -63,6 +78,11 @@ class OpsMaintenanceJob implements ShouldQueue
         'old_workflow_runs_retention_days' => 90,
         'workflow_runs_delete_limit' => 5000,
         'log_rotation_max_bytes' => 10485760,
+        'recursion_purge_retention_days' => 3,
+        'recursion_purge_batch_size' => 5000,
+        'recursion_purge_max_rows' => 500000,
+        'recursion_purge_sleep_ms' => 100,
+        'recursion_purge_max_runtime_seconds' => 600,
     ];
 
     /**
@@ -146,7 +166,7 @@ class OpsMaintenanceJob implements ShouldQueue
     {
         Log::info('Ops: Approaching timeout, saving checkpoint and dispatching continuation', [
             'session_id' => $this->sessionId,
-            'checkpoint' => $this->checkpoint,
+            'checkpoint' => $this->checkpointSummary($this->checkpoint),
             'elapsed_seconds' => round(microtime(true) - $this->jobStartTime, 2),
         ]);
 
@@ -179,10 +199,9 @@ class OpsMaintenanceJob implements ShouldQueue
             $this->checkpoint = $savedCheckpoint;
             Log::info('Ops: Resuming from checkpoint', [
                 'session_id' => $this->sessionId,
-                'checkpoint' => $this->checkpoint,
+                'checkpoint' => $this->checkpointSummary($this->checkpoint),
             ]);
-            // Clear checkpoint after loading
-            Cache::forget($cacheKey);
+            $this->saveCheckpoint();
         } else {
             // New session - initialize empty checkpoint
             $this->checkpoint = [
@@ -193,6 +212,10 @@ class OpsMaintenanceJob implements ShouldQueue
                 'maintenance_stats' => [],
                 'all_issues' => [],
                 'logged_issue_titles' => [],
+                'current_phase' => null,
+                'current_step' => null,
+                'phase1_completed_steps' => [],
+                'phase1_results' => [],
             ];
         }
     }
@@ -217,7 +240,9 @@ class OpsMaintenanceJob implements ShouldQueue
         $this->jobStartTime = microtime(true);
         $this->loadCheckpoint();
 
-        $isResume = $this->checkpoint['phase1_complete'] || $this->checkpoint['phase2_complete'];
+        $isResume = $this->checkpoint['phase1_complete']
+            || $this->checkpoint['phase2_complete']
+            || ! empty($this->checkpoint['phase1_completed_steps']);
         Log::info($isResume ? 'Resuming Consolidated Nightly Maintenance Job' : 'Starting Consolidated Nightly Maintenance Job', [
             'session_id' => $this->sessionId,
         ]);
@@ -234,42 +259,15 @@ class OpsMaintenanceJob implements ShouldQueue
             Log::info('Ops: Phase 1 - Database Maintenance');
 
             try {
-                // 1a. Check for failed scheduled jobs and alert
-                Log::info('Ops: Phase 1a - checking failed scheduled jobs');
-                $failedScheduledJobs = $this->checkFailedScheduledJobs();
-                if (! empty($failedScheduledJobs)) {
-                    $maintenanceStats['failed_scheduled_jobs'] = $failedScheduledJobs;
-                    Log::warning('Ops: Failed scheduled jobs detected', $failedScheduledJobs);
+                $phase1 = $this->runPhase1WithCheckpoint($maintenanceStats);
+                $maintenanceStats = $phase1['maintenance_stats'];
+
+                if ($phase1['continuation_dispatched']) {
+                    return;
                 }
 
-                // 1b. DB backups are handled by external/root cron on prod.
-                // Keep ops maintenance out of the backup path to avoid duplicate work
-                // and permission drift against root-owned backup directories.
-                Log::info('Ops: Phase 1b - skipping DB backups (external cron)');
-                $maintenanceStats['backups'] = ['skipped' => 'external cron'];
-
-                // 1c. Clean old data
-                Log::info('Ops: Phase 1c - cleaning failed jobs');
-                $maintenanceStats['old_failed_jobs'] = $this->cleanOldFailedJobs();
-                Log::info('Ops: Phase 1c - cleaning workflow runs');
-                $maintenanceStats['old_workflow_runs'] = $this->cleanOldWorkflowRuns();
-                Log::info('Ops: Phase 1c - cleaning orphaned workflow data');
-                $maintenanceStats['orphaned_data'] = $this->cleanOrphanedData();
-                Log::info('Ops: Phase 1c - expiring stale agent sessions');
-                $maintenanceStats['stale_agent_sessions'] = $this->expireStaleAgentSessions();
-                Log::info('Ops: Phase 1c - purging recursion calls');
-                $maintenanceStats['recursion_calls_purged'] = $this->purgeOldRecursionCalls();
-
-                // 1d. Rotate large logs
-                Log::info('Ops: Phase 1d - rotating logs');
-                $maintenanceStats['logs_rotated'] = $this->rotateLogs();
-
-                // 1e. Refresh database statistics
-                Log::info('Ops: Phase 1e - refreshing database statistics');
-                $maintenanceStats['tables_optimized'] = $this->optimizeDatabase();
-
                 Log::info('Ops: Database maintenance complete', $maintenanceStats);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 Log::error('Ops: Phase 1 failed, continuing to next phase', [
                     'error' => $e->getMessage(),
                 ]);
@@ -404,7 +402,7 @@ class OpsMaintenanceJob implements ShouldQueue
                     'space_freed_mb' => $cleanupResults['summary']['space_freed_mb'] ?? 0,
                     'rows_deleted' => $cleanupResults['summary']['total_rows_deleted'] ?? 0,
                 ]);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 Log::error('Ops: Phase 2 failed, continuing to next phase', [
                     'error' => $e->getMessage(),
                 ]);
@@ -459,13 +457,14 @@ class OpsMaintenanceJob implements ShouldQueue
 
                 // INF-10b: Auto-heal cycle — detect issues, execute read-risk remediations
                 try {
-                    $autoHeal = app(\App\Services\AutoHealService::class);
+                    $autoHeal = app(AutoHealService::class);
                     $healResults = $autoHeal->run();
                     $maintenanceStats['auto_heal'] = [
                         'detected' => count($healResults['detected']),
                         'healed' => count($healResults['healed']),
                         'skipped' => count($healResults['skipped']),
                         'failed' => count($healResults['failed']),
+                        'held' => count($healResults['held'] ?? []),
                     ];
                     if (! empty($healResults['healed'])) {
                         Log::info('Ops: Auto-heal actions taken', $healResults['healed']);
@@ -498,7 +497,7 @@ class OpsMaintenanceJob implements ShouldQueue
 
                     // FC-2: Monthly Bayesian source credibility recalculation
                     try {
-                        $credService = app(\App\Services\SourceCredibilityService::class);
+                        $credService = app(SourceCredibilityService::class);
                         $bayesianResults = $credService->recalculateAllBayesian();
                         $maintenanceStats['bayesian_recalc'] = $bayesianResults;
                         Log::info('Ops: Bayesian source credibility recalc complete', $bayesianResults);
@@ -507,7 +506,7 @@ class OpsMaintenanceJob implements ShouldQueue
                         $maintenanceStats['bayesian_recalc'] = ['error' => $e->getMessage()];
                     }
                 }
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 Log::error('Ops: Phase 3 failed, continuing to reporting', [
                     'error' => $e->getMessage(),
                 ]);
@@ -533,8 +532,8 @@ class OpsMaintenanceJob implements ShouldQueue
             }
 
             // Step 6b: Auto-resolve stale transient issues (e.g., log errors that self-corrected)
-            // If a transient issue hasn't recurred in 6 hours, it's likely self-corrected
-            $staleResolved = $ops->autoResolveStaleTransientIssues(6);
+            // Staleness window is table-owned by OpsMCP runtime policy.
+            $staleResolved = $ops->autoResolveStaleTransientIssues();
             if ($staleResolved > 0) {
                 $maintenanceStats['stale_issues_resolved'] = $staleResolved;
             }
@@ -555,7 +554,7 @@ class OpsMaintenanceJob implements ShouldQueue
             ]);
 
             // Step 8: Cache report for daily digest (N118: consolidated into ops:daily-report)
-            // No longer sends its own Pushover — daily report at 5:50 AM pulls this data.
+            // No longer sends its own Pushover; the 5:00 AM daily report pulls this data.
             Log::info('Ops: Caching report for daily digest...');
             Cache::put('ops_maintenance_report', [
                 'health' => $healthResults,
@@ -590,7 +589,7 @@ class OpsMaintenanceJob implements ShouldQueue
                     'notification_error' => $alertResult['error'] ?? 'Unknown',
                 ]);
             }
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             Log::error('Ops: Phase 4 (Reporting) failed', [
                 'error' => $e->getMessage(),
             ]);
@@ -700,11 +699,18 @@ class OpsMaintenanceJob implements ShouldQueue
      */
     public function failed(?Throwable $exception): void
     {
+        $persistedCheckpoint = Cache::get(self::CHECKPOINT_KEY.':'.$this->sessionId);
+        $failureCheckpoint = is_array($persistedCheckpoint) ? $persistedCheckpoint : $this->checkpoint;
+        $exceptionClass = $exception !== null ? $exception::class : 'unknown';
+        $sessionReceipt = substr(hash('sha256', $this->sessionId), 0, 16);
+        $errorReceipt = substr(hash('sha256', $exceptionClass.'|'.($exception?->getMessage() ?? '')), 0, 16);
+
         Log::error('Ops Maintenance Job failed', [
-            'session_id' => $this->sessionId,
-            'error' => $exception?->getMessage(),
+            'session_receipt' => $sessionReceipt,
+            'exception_class' => $exceptionClass,
+            'error_receipt' => $errorReceipt,
             'attempts' => $this->attempts(),
-            'checkpoint' => $this->checkpoint ?? [],
+            'checkpoint' => $this->checkpointSummary($failureCheckpoint),
         ]);
 
         // Try to send a failure notification
@@ -712,7 +718,7 @@ class OpsMaintenanceJob implements ShouldQueue
             $ops = new OpsMCPService;
             $ops->ops_alert([
                 'title' => '🚨 PLOS Ops Job Failed',
-                'message' => "Ops maintenance job failed after {$this->attempts()} attempts.\n\nSession: {$this->sessionId}\nError: ".($exception?->getMessage() ?? 'Unknown'),
+                'message' => "Ops maintenance job failed after {$this->attempts()} attempts.\n\nSession receipt: {$sessionReceipt}\nError receipt: {$errorReceipt}\nException class: {$exceptionClass}",
                 'priority' => 1,
             ]);
         } catch (Throwable $e) {
@@ -769,7 +775,7 @@ class OpsMaintenanceJob implements ShouldQueue
             $cleared = 0;
 
             // Check for stale circuit breaker keys (older than 1 hour)
-            $redis = \Illuminate\Support\Facades\Redis::connection();
+            $redis = Redis::connection();
             $keys = $redis->keys('circuit_breaker:*');
 
             foreach ($keys as $key) {
@@ -827,17 +833,27 @@ class OpsMaintenanceJob implements ShouldQueue
             }
 
             // Scan for new files (simplified catalog scan)
-            $scanResults = $fileRegistry->scanAndRegisterNew($this->nextcloudLibraryRoot(), 500);
+            $scanResults = $fileRegistry->scanAndRegisterNew($this->nextcloudLibraryRoot(), 500, [
+                'deadline' => hrtime(true) / 1000000000 + max(0, $this->timeout - (microtime(true) - $this->jobStartTime)),
+            ]);
 
-            if ($scanResults['registered'] > 0) {
-                $results['actions']['file_catalog_scan'] = [
-                    'performed' => true,
-                    'scanned' => $scanResults['scanned'],
-                    'registered' => $scanResults['registered'],
-                    'skipped' => $scanResults['skipped_unchanged'] ?? 0,
-                ];
-                Log::info('Ops: File catalog scan complete', $scanResults);
-            }
+            $results['actions']['file_catalog_scan'] = [
+                'performed' => true,
+                'scanned' => $scanResults['scanned'],
+                'registered' => $scanResults['registered'],
+                'skipped' => $scanResults['skipped_unchanged'] ?? 0,
+                'state' => $scanResults['state'] ?? 'unproven',
+                'scope_id' => $scanResults['scope_id'] ?? null,
+                'epoch' => $scanResults['epoch'] ?? null,
+                'revision' => $scanResults['revision'] ?? null,
+                'discovery_complete' => ($scanResults['discovery_complete'] ?? false) === true,
+                'intake_complete' => ($scanResults['intake_complete'] ?? false) === true,
+                'pending_work' => $scanResults['pending_work'] ?? 0,
+                'held_work' => $scanResults['held_work'] ?? 0,
+                'next_attempt_at' => $scanResults['next_attempt_at'] ?? null,
+                'stop_reason' => $scanResults['stop_reason'] ?? null,
+            ];
+            Log::info('Ops: File catalog discovery slice finished', $scanResults);
         } catch (\Exception $e) {
             $this->logPhaseError('file_catalog', $e, $results);
         }
@@ -885,7 +901,7 @@ class OpsMaintenanceJob implements ShouldQueue
             $cleared = 0;
 
             // Check for stale circuit breaker keys (older than 1 hour)
-            $redis = \Illuminate\Support\Facades\Redis::connection();
+            $redis = Redis::connection();
             $keys = $redis->keys('circuit_breaker:*');
 
             foreach ($keys as $key) {
@@ -959,17 +975,27 @@ class OpsMaintenanceJob implements ShouldQueue
             }
 
             // Scan for new files (simplified catalog scan)
-            $scanResults = $fileRegistry->scanAndRegisterNew($this->nextcloudLibraryRoot(), 500);
+            $scanResults = $fileRegistry->scanAndRegisterNew($this->nextcloudLibraryRoot(), 500, [
+                'deadline' => hrtime(true) / 1000000000 + max(0, $this->timeout - (microtime(true) - $this->jobStartTime)),
+            ]);
 
-            if ($scanResults['registered'] > 0) {
-                $results['actions']['file_catalog_scan'] = [
-                    'performed' => true,
-                    'scanned' => $scanResults['scanned'],
-                    'registered' => $scanResults['registered'],
-                    'skipped' => $scanResults['skipped_unchanged'] ?? 0,
-                ];
-                Log::info('Ops: File catalog scan complete', $scanResults);
-            }
+            $results['actions']['file_catalog_scan'] = [
+                'performed' => true,
+                'scanned' => $scanResults['scanned'],
+                'registered' => $scanResults['registered'],
+                'skipped' => $scanResults['skipped_unchanged'] ?? 0,
+                'state' => $scanResults['state'] ?? 'unproven',
+                'scope_id' => $scanResults['scope_id'] ?? null,
+                'epoch' => $scanResults['epoch'] ?? null,
+                'revision' => $scanResults['revision'] ?? null,
+                'discovery_complete' => ($scanResults['discovery_complete'] ?? false) === true,
+                'intake_complete' => ($scanResults['intake_complete'] ?? false) === true,
+                'pending_work' => $scanResults['pending_work'] ?? 0,
+                'held_work' => $scanResults['held_work'] ?? 0,
+                'next_attempt_at' => $scanResults['next_attempt_at'] ?? null,
+                'stop_reason' => $scanResults['stop_reason'] ?? null,
+            ];
+            Log::info('Ops: File catalog discovery slice finished', $scanResults);
 
         } catch (\Exception $e) {
             $this->logPhaseError('file_catalog', $e, $results);
@@ -992,7 +1018,7 @@ class OpsMaintenanceJob implements ShouldQueue
 
         // 8. Authoritative Source Discovery & Health Check (Self-growing research sources)
         try {
-            $sourceDiscovery = app(\App\Services\AuthoritativeSourceDiscoveryService::class);
+            $sourceDiscovery = app(AuthoritativeSourceDiscoveryService::class);
 
             // Seed industry-standard sources (idempotent - only adds missing ones)
             $seedResults = $sourceDiscovery->seedIndustrySources();
@@ -1015,7 +1041,7 @@ class OpsMaintenanceJob implements ShouldQueue
 
         // 9. Ollama Model Registry Sync (Discover new models, alert for vetting)
         try {
-            $modelRegistry = app(\App\Services\OllamaModelRegistryService::class);
+            $modelRegistry = app(OllamaModelRegistryService::class);
 
             // Sync models from Ollama with database registry
             $syncResults = $modelRegistry->syncModels();
@@ -1041,9 +1067,9 @@ class OpsMaintenanceJob implements ShouldQueue
             $this->logPhaseError('ollama_model_registry', $e, $results);
         }
 
-        // 10. LLM Pool Health Check (All LLM instances - Ollama, Claude, future providers)
+        // 10. LLM Pool Health Check (all configured providers)
         try {
-            $poolManager = app(\App\Services\LLMPoolManagerService::class);
+            $poolManager = app(LLMPoolManagerService::class);
 
             // Run health check on all instances
             $healthResults = $poolManager->healthCheckAllInstances();
@@ -1079,13 +1105,16 @@ class OpsMaintenanceJob implements ShouldQueue
 
         // 10b. Compute Instance Health Check & Circuit Recovery
         try {
-            $computeRouter = app(\App\Services\ComputeRouterService::class);
-            $computeResults = $computeRouter->probeUnhealthyInstances();
+            $computeRouter = app(ComputeRouterService::class);
+            $computeResults = $computeRouter->healthCheckAll();
 
             $circuitsReset = count(array_filter($computeResults, fn ($r) => $r['circuit_reset'] ?? false));
+            $healthy = count(array_filter($computeResults, fn ($r) => $r['healthy'] ?? false));
             $results['actions']['compute_health_check'] = [
                 'performed' => true,
-                'instances_probed' => count($computeResults),
+                'instances_checked' => count($computeResults),
+                'healthy' => $healthy,
+                'unhealthy' => count($computeResults) - $healthy,
                 'circuits_reset' => $circuitsReset,
             ];
 
@@ -1103,7 +1132,7 @@ class OpsMaintenanceJob implements ShouldQueue
 
         // 11. RSS Feed Self-Healing (detect redirects, auto-correct, mark dead feeds)
         try {
-            $rssHealthService = app(\App\Services\RssFeedHealthService::class);
+            $rssHealthService = app(RssFeedHealthService::class);
 
             // First, check all workflow feeds for health
             $feedCheckResults = $rssHealthService->checkAllWorkflowFeeds();
@@ -1156,7 +1185,7 @@ class OpsMaintenanceJob implements ShouldQueue
 
         // 13. Semantic Cache Pruning (prevent Redis memory bloat)
         try {
-            $redis = \Illuminate\Support\Facades\Redis::connection(config('cache.stores.redis.connection', 'cache'));
+            $redis = Redis::connection(config('cache.stores.redis.connection', 'cache'));
             $cachePrefix = config('cache.prefix', config('database.redis.options.prefix', ''));
             $dbPrefix = config('database.redis.options.prefix', '');
 
@@ -1212,33 +1241,8 @@ class OpsMaintenanceJob implements ShouldQueue
             $this->logPhaseError('research_rejection_cleanup', $e, $results);
         }
 
-        // 15. GPU Lock Cleanup (stale ollama_busy_lock, whisper_gpu_lock preventing jobs)
-        try {
-            $redis = \Illuminate\Support\Facades\Redis::connection();
-            $prefix = config('database.redis.options.prefix', '');
-            $staleLocks = [];
-
-            $gpuLocks = ['ollama_busy_lock', 'whisper_gpu_lock', 'claude_cli_slots'];
-            foreach ($gpuLocks as $lockName) {
-                $ttl = $redis->ttl($lockName);
-                // If lock exists with no TTL (-1) or abnormally long TTL (> 30 min for GPU, > 1 hour for CLI)
-                $maxTtl = ($lockName === 'claude_cli_slots') ? 3600 : 1800;
-                if ($ttl === -1 || $ttl > $maxTtl) {
-                    $redis->del($lockName);
-                    $staleLocks[] = $lockName;
-                    Log::info('Ops: Cleared stale GPU lock', ['lock' => $lockName, 'ttl' => $ttl]);
-                }
-            }
-
-            if (! empty($staleLocks)) {
-                $results['actions']['gpu_lock_cleanup'] = [
-                    'performed' => true,
-                    'locks_cleared' => $staleLocks,
-                ];
-            }
-        } catch (\Exception $e) {
-            $this->logPhaseError('gpu_lock_cleanup', $e, $results);
-        }
+        // 15. GPU custody observation. TTL is not physical work-end proof.
+        $this->observeGpuLockCustody($results);
 
         // 16. Auto-resolve stale system issues (not seen in 24 hours)
         try {
@@ -1259,7 +1263,7 @@ class OpsMaintenanceJob implements ShouldQueue
 
         // 17. Horizon Queue Maintenance (stuck reserved jobs, failed job cleanup)
         try {
-            $redis = \Illuminate\Support\Facades\Redis::connection();
+            $redis = Redis::connection();
             $queues = array_values(array_unique(array_filter([
                 config('queue.connections.redis.queue', 'default'),
                 'high',
@@ -1272,25 +1276,7 @@ class OpsMaintenanceJob implements ShouldQueue
             $stuckJobsCleared = 0;
             $prefix = config('database.redis.options.prefix', '');
 
-            foreach ($queues as $queue) {
-                // Check reserved jobs (currently being processed)
-                // Jobs stuck in reserved for >2 hours are likely orphaned
-                $reservedKey = "queues:{$queue}:reserved";
-                $stuckThreshold = time() - 7200; // 2 hours ago
-
-                // ZRANGEBYSCORE returns jobs with score (reserved_at timestamp) older than threshold
-                $stuckJobs = $redis->zrangebyscore($reservedKey, 0, $stuckThreshold);
-
-                if (! empty($stuckJobs)) {
-                    foreach ($stuckJobs as $job) {
-                        // Remove from reserved and push back to queue for retry
-                        $redis->zrem($reservedKey, $job);
-                        $redis->rpush("queues:{$queue}", $job);
-                        $stuckJobsCleared++;
-                    }
-                    Log::warning("Ops: Cleared stuck jobs from {$queue} queue", ['count' => count($stuckJobs)]);
-                }
-            }
+            $results['actions']['reserved_job_recovery'] = $this->observeReservedJobCustody($redis, $queues);
 
             // Clean up old failed jobs (older than 7 days)
             $failedCleaned = 0;
@@ -1303,7 +1289,7 @@ class OpsMaintenanceJob implements ShouldQueue
             }
 
             // Check if Horizon is not running and try to restart
-            $horizonProcess = trim(\Illuminate\Support\Facades\Process::timeout(5)->run([
+            $horizonProcess = trim(Process::timeout(5)->run([
                 'pgrep',
                 '-f',
                 'artisan horizon$',
@@ -1312,13 +1298,13 @@ class OpsMaintenanceJob implements ShouldQueue
 
             if (empty($horizonProcess)) {
                 // Try to restart Horizon via systemd if available
-                $systemdStatus = trim(\Illuminate\Support\Facades\Process::timeout(5)->run([
+                $systemdStatus = trim(Process::timeout(5)->run([
                     'systemctl',
                     'is-enabled',
                     'laravel-horizon.service',
                 ])->output());
                 if ($systemdStatus === 'enabled') {
-                    \Illuminate\Support\Facades\Process::timeout(15)->run([
+                    Process::timeout(15)->run([
                         'sudo',
                         'systemctl',
                         'restart',
@@ -1348,13 +1334,14 @@ class OpsMaintenanceJob implements ShouldQueue
         try {
             $tableExists = DB::select("SHOW TABLES LIKE 'data_brokers'");
             if (! empty($tableExists)) {
-                // Only run if it's been >24h since last batch check
+                $brokerHealthPolicy = app(BrokerHealthPolicyService::class);
+                $runIntervalHours = $brokerHealthPolicy->runIntervalHours();
                 $lastBatchCheck = Cache::get('ops:broker_health_batch_last');
-                if (! $lastBatchCheck || now()->diffInHours($lastBatchCheck) >= 24) {
-                    $brokerHealthService = app(\App\Services\DataRemoval\BrokerHealthService::class);
-                    $batchResult = $brokerHealthService->batchHealthCheck(20);
+                if (! $lastBatchCheck || now()->diffInHours($lastBatchCheck) >= $runIntervalHours) {
+                    $brokerHealthService = app(BrokerHealthService::class);
+                    $batchResult = $brokerHealthService->batchHealthCheck($brokerHealthPolicy->batchSize());
 
-                    Cache::put('ops:broker_health_batch_last', now(), now()->addDays(7));
+                    Cache::put('ops:broker_health_batch_last', now(), now()->addHours($runIntervalHours));
 
                     $results['actions']['broker_health_check'] = [
                         'performed' => true,
@@ -1500,11 +1487,11 @@ class OpsMaintenanceJob implements ShouldQueue
         // 23. Genealogy RAG Index (incremental, persons not yet indexed)
         try {
             // Run genealogy:rag-index command for new/updated persons
-            $exitCode = \Illuminate\Support\Facades\Artisan::call('genealogy:rag-index', [
+            $exitCode = Artisan::call('genealogy:rag-index', [
                 '--limit' => 100,
             ]);
 
-            $output = \Illuminate\Support\Facades\Artisan::output();
+            $output = Artisan::output();
             $indexed = 0;
             if (preg_match('/Indexed (\d+)/', $output, $matches)) {
                 $indexed = (int) $matches[1];
@@ -1759,6 +1746,81 @@ class OpsMaintenanceJob implements ShouldQueue
     }
 
     /**
+     * Run Phase 1 as resumable steps so a Horizon retry does not repeat every
+     * completed cleanup before reaching the slow step again.
+     *
+     * @param  array<string,mixed>  $maintenanceStats
+     * @return array{maintenance_stats:array<string,mixed>,continuation_dispatched:bool}
+     */
+    private function runPhase1WithCheckpoint(array $maintenanceStats): array
+    {
+        $steps = [
+            'failed_scheduled_jobs' => fn (): array => $this->checkFailedScheduledJobs(),
+            'backups' => function (): array {
+                Log::info('Ops: Phase 1b - skipping DB backups (external cron)');
+
+                return ['skipped' => 'external cron'];
+            },
+            'old_failed_jobs' => fn (): int => $this->cleanOldFailedJobs(),
+            'old_workflow_runs' => fn (): int => $this->cleanOldWorkflowRuns(),
+            'orphaned_data' => fn (): array => $this->cleanOrphanedData(),
+            'stale_agent_sessions' => fn (): int => $this->expireStaleAgentSessions(),
+            'recursion_calls_purged' => fn (): int => $this->purgeOldRecursionCalls(),
+            'logs_rotated' => fn (): int => $this->rotateLogs(),
+            'tables_optimized' => fn (): int => $this->optimizeDatabase(),
+        ];
+
+        foreach ($steps as $step => $operation) {
+            $maintenanceStats[$step] = $this->runCheckpointedPhase1Step($step, $operation);
+            $this->checkpoint['maintenance_stats'] = $maintenanceStats;
+            $this->saveCheckpoint();
+
+            if ($this->shouldDispatchContinuation()) {
+                $this->dispatchContinuation();
+
+                return [
+                    'maintenance_stats' => $maintenanceStats,
+                    'continuation_dispatched' => true,
+                ];
+            }
+        }
+
+        $this->checkpoint['current_phase'] = null;
+        $this->checkpoint['current_step'] = null;
+        $this->saveCheckpoint();
+
+        return [
+            'maintenance_stats' => $maintenanceStats,
+            'continuation_dispatched' => false,
+        ];
+    }
+
+    private function runCheckpointedPhase1Step(string $step, callable $operation): mixed
+    {
+        $completed = is_array($this->checkpoint['phase1_completed_steps'] ?? null)
+            ? $this->checkpoint['phase1_completed_steps']
+            : [];
+        if (in_array($step, $completed, true)) {
+            return $this->checkpoint['phase1_results'][$step] ?? null;
+        }
+
+        $this->checkpoint['current_phase'] = 'phase1';
+        $this->checkpoint['current_step'] = $step;
+        $this->saveCheckpoint();
+
+        Log::info('Ops: Phase 1 step starting', ['step' => $step]);
+        $result = $operation();
+
+        $this->checkpoint['phase1_results'][$step] = $result;
+        $this->checkpoint['phase1_completed_steps'][] = $step;
+        $this->checkpoint['current_step'] = null;
+        $this->saveCheckpoint();
+        Log::info('Ops: Phase 1 step complete', ['step' => $step]);
+
+        return $result;
+    }
+
+    /**
      * Check for failed scheduled jobs and send Pushover alert
      */
     private function checkFailedScheduledJobs(): array
@@ -1787,12 +1849,12 @@ class OpsMaintenanceJob implements ShouldQueue
                 // Use job's configured timeout_minutes + 10 min buffer, or default 60 min if not set
                 if ($job->last_run_status === 'running') {
                     // Check for adaptive timeout extension (Redis deadline key)
-                    $deadline = \Illuminate\Support\Facades\Cache::get("scheduler:job:{$job->id}:deadline");
+                    $deadline = Cache::get("scheduler:job:{$job->id}:deadline");
                     if ($deadline && $deadline > time()) {
                         continue; // Job has active timeout extension — not stuck
                     }
 
-                    $runTime = now()->diffInMinutes(\Carbon\Carbon::parse($job->last_run_at));
+                    $runTime = now()->diffInMinutes(Carbon::parse($job->last_run_at));
                     $timeoutMinutes = (int) ($job->timeout_minutes ?? 0);
                     if ($timeoutMinutes <= 0) {
                         $timeoutMinutes = $this->runtimePolicyInt('default_scheduled_job_timeout_minutes');
@@ -1816,7 +1878,7 @@ class OpsMaintenanceJob implements ShouldQueue
 
             // Auto-fix stuck jobs using ScheduledJobService
             if (! empty($stuckJobIds)) {
-                $schedulerService = app(\App\Services\ScheduledJobService::class);
+                $schedulerService = app(ScheduledJobService::class);
                 $fixed = $schedulerService->fixStuckJobs();
                 Log::info('Ops: Auto-fixed stuck scheduled jobs', ['count' => $fixed, 'jobs' => $stuckJobIds]);
             }
@@ -1998,10 +2060,12 @@ class OpsMaintenanceJob implements ShouldQueue
      */
     private function purgeOldRecursionCalls(): int
     {
-        $retentionDays = (int) config('recursion.retention_days', 30);
-        $batchSize = (int) config('recursion.retention_maintenance_batch_size', 5000);
-        $maxRows = (int) config('recursion.retention_maintenance_max_rows', 500000);
-        $sleepMs = (int) config('recursion.retention_maintenance_sleep_ms', 100);
+        $policy = $this->recursionPurgePolicy();
+        $retentionDays = $policy['retention_days'];
+        $batchSize = $policy['batch_size'];
+        $maxRows = $policy['max_rows'];
+        $sleepMs = $policy['sleep_ms'];
+        $maxRuntimeSeconds = $policy['max_runtime_seconds'];
 
         try {
             $result = app(AgentRecursionCallsRetentionService::class)->collect(
@@ -2010,6 +2074,7 @@ class OpsMaintenanceJob implements ShouldQueue
                 batchSize: $batchSize,
                 maxRows: $maxRows,
                 sleepMs: $sleepMs,
+                maxRuntimeSeconds: $maxRuntimeSeconds,
             );
             $totalDeleted = (int) ($result['deleted_rows'] ?? 0);
 
@@ -2020,6 +2085,7 @@ class OpsMaintenanceJob implements ShouldQueue
                     'batch_size' => $batchSize,
                     'max_rows' => $maxRows,
                     'sleep_ms' => $sleepMs,
+                    'max_runtime_seconds' => $maxRuntimeSeconds,
                     'status' => $result['status'] ?? 'unknown',
                     'stopped_reason' => $result['stopped_reason'] ?? 'unknown',
                 ]);
@@ -2035,6 +2101,43 @@ class OpsMaintenanceJob implements ShouldQueue
         return $totalDeleted;
     }
 
+    /**
+     * @return array{retention_days:int,batch_size:int,max_rows:int,sleep_ms:int,max_runtime_seconds:int}
+     */
+    private function recursionPurgePolicy(): array
+    {
+        $policy = $this->runtimePolicy();
+        $bounds = [
+            'recursion_purge_retention_days' => [1, 3650],
+            'recursion_purge_batch_size' => [1, 50000],
+            'recursion_purge_max_rows' => [1, 1000000],
+            'recursion_purge_sleep_ms' => [1, 5000],
+            'recursion_purge_max_runtime_seconds' => [1, 3600],
+        ];
+        $resolved = [];
+
+        foreach ($bounds as $key => [$minimum, $maximum]) {
+            $value = $policy[$key] ?? null;
+            if (! is_int($value) || $value < $minimum || $value > $maximum) {
+                throw new \RuntimeException("Ops maintenance runtime policy has invalid {$key}.");
+            }
+            $resolved[$key] = $value;
+        }
+
+        $continuationReserve = $this->runtimePolicyInt('continuation_threshold_seconds');
+        if ($resolved['recursion_purge_max_runtime_seconds'] > $this->timeout - $continuationReserve) {
+            throw new \RuntimeException('Ops maintenance recursion purge runtime exceeds the dispatch budget.');
+        }
+
+        return [
+            'retention_days' => $resolved['recursion_purge_retention_days'],
+            'batch_size' => $resolved['recursion_purge_batch_size'],
+            'max_rows' => $resolved['recursion_purge_max_rows'],
+            'sleep_ms' => $resolved['recursion_purge_sleep_ms'],
+            'max_runtime_seconds' => $resolved['recursion_purge_max_runtime_seconds'],
+        ];
+    }
+
     private function dedicatedBiasMaintenanceEnabled(): bool
     {
         try {
@@ -2043,12 +2146,54 @@ class OpsMaintenanceJob implements ShouldQueue
             );
 
             return (int) ($row->enabled ?? 0) === 1;
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             Log::warning('Ops: Failed to check dedicated bias maintenance schedule', [
                 'error' => $e->getMessage(),
             ]);
 
             return false;
+        }
+    }
+
+    private function observeReservedJobCustody(object $redis, array $queues): array
+    {
+        $count = 0;
+        try {
+            foreach ($queues as $queue) {
+                $jobs = $redis->zrangebyscore("queues:{$queue}:reserved", 0, time() - 7200);
+                if (! is_array($jobs)) {
+                    throw new \RuntimeException('reserved_job_observation_unavailable');
+                }
+                $count += count($jobs);
+            }
+        } catch (Throwable) {
+            return ['performed' => false, 'stuck_jobs_requeued' => 0, 'reason_code' => 'reserved_job_observation_unavailable'];
+        }
+
+        return ['performed' => false, 'stuck_jobs_requeued' => 0, 'jobs_held' => $count,
+            'reason_code' => $count > 0 ? 'reserved_job_work_end_unproven' : null];
+    }
+
+    private function observeGpuLockCustody(array &$results): void
+    {
+        try {
+            $redis = Redis::connection();
+            $held = [];
+            foreach (['ollama_busy_lock', 'whisper_gpu_lock'] as $lockName) {
+                $ttl = $redis->ttl($lockName);
+                if (! is_int($ttl) || $ttl < -2) {
+                    throw new \RuntimeException('lock_observation_unavailable');
+                }
+                if (Cache::has($lockName) || $ttl !== -2) {
+                    $held[] = $lockName;
+                }
+            }
+            $results['actions']['gpu_lock_cleanup'] = ['performed' => false, 'locks_cleared' => [],
+                'locks_held' => $held, 'reason_code' => $held === [] ? null : 'lock_work_end_unproven'];
+        } catch (Throwable) {
+            $results['actions']['gpu_lock_cleanup'] = ['performed' => false, 'locks_cleared' => [],
+                'reason_code' => 'lock_observation_unavailable'];
+            $results['errors']['gpu_lock_cleanup'] = 'lock_observation_unavailable';
         }
     }
 
@@ -2120,6 +2265,31 @@ class OpsMaintenanceJob implements ShouldQueue
         return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
     }
 
+    /** @param array<string,mixed> $checkpoint */
+    private function checkpointSummary(array $checkpoint): array
+    {
+        $completedPhase1Steps = is_array($checkpoint['phase1_completed_steps'] ?? null)
+            ? array_values(array_filter(
+                $checkpoint['phase1_completed_steps'],
+                static fn (mixed $step): bool => is_string($step) && $step !== '',
+            ))
+            : [];
+
+        return [
+            'phase1_complete' => (bool) ($checkpoint['phase1_complete'] ?? false),
+            'phase2_complete' => (bool) ($checkpoint['phase2_complete'] ?? false),
+            'routine_complete' => (bool) ($checkpoint['routine_complete'] ?? false),
+            'current_phase' => is_string($checkpoint['current_phase'] ?? null)
+                ? $checkpoint['current_phase']
+                : null,
+            'current_step' => is_string($checkpoint['current_step'] ?? null)
+                ? $checkpoint['current_step']
+                : null,
+            'phase1_completed_steps' => $completedPhase1Steps,
+            'phase1_completed_step_count' => count($completedPhase1Steps),
+        ];
+    }
+
     private function positiveInt(mixed $value, int $fallback): int
     {
         if (! is_numeric($value)) {
@@ -2133,6 +2303,6 @@ class OpsMaintenanceJob implements ShouldQueue
 
     private function nextcloudLibraryRoot(): string
     {
-        return '/'.trim((string) config('services.nextcloud.library_root', '/Library'), '/');
+        return app(NextcloudFileApiService::class)->configuredLibraryRoot();
     }
 }

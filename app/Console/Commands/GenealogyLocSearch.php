@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\Genealogy\GenealogyMediaDownloadService;
+use App\Support\SensitiveTextTelemetry;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -16,6 +17,8 @@ use Illuminate\Support\Facades\Log;
  */
 class GenealogyLocSearch extends Command
 {
+    private const QUERY_TELEMETRY_SCOPE = 'genealogy-loc-search';
+
     protected $signature = 'genealogy:loc-search
                             {tree_id : Tree ID for storage}
                             {--query= : Search query (person name, event, etc.)}
@@ -50,12 +53,13 @@ class GenealogyLocSearch extends Command
         $download = $this->option('download');
         $resolution = $this->option('resolution');
 
-        $this->downloadService = new GenealogyMediaDownloadService();
+        $this->downloadService = new GenealogyMediaDownloadService;
 
         // Verify tree exists
-        $tree = DB::selectOne("SELECT * FROM genealogy_trees WHERE id = ?", [$treeId]);
-        if (!$tree) {
+        $tree = DB::selectOne('SELECT * FROM genealogy_trees WHERE id = ?', [$treeId]);
+        if (! $tree) {
             $this->error("Tree ID {$treeId} not found");
+
             return Command::FAILURE;
         }
 
@@ -66,12 +70,13 @@ class GenealogyLocSearch extends Command
         if ($personId) {
             // Get person details for search
             $person = DB::selectOne(
-                "SELECT given_name, surname, death_date FROM genealogy_persons WHERE id = ? AND tree_id = ?",
+                'SELECT given_name, surname, death_date FROM genealogy_persons WHERE id = ? AND tree_id = ?',
                 [$personId, $treeId]
             );
 
-            if (!$person) {
+            if (! $person) {
                 $this->error("Person ID {$personId} not found in tree");
+
                 return Command::FAILURE;
             }
 
@@ -127,20 +132,22 @@ class GenealogyLocSearch extends Command
             }
         } else {
             $this->error('Either --query or --person is required');
+
             return Command::FAILURE;
         }
 
         // Display results
-        if (!$results['success']) {
+        if (! $results['success']) {
             $this->error('Search failed:');
             foreach ($results['errors'] as $error) {
                 $this->line("  - {$error}");
             }
+
             return Command::FAILURE;
         }
 
         $this->newLine();
-        $this->info("Found {$results['total']} total results, showing " . count($results['pages']));
+        $this->info("Found {$results['total']} total results, showing ".count($results['pages']));
         $this->newLine();
 
         if (empty($results['pages'])) {
@@ -150,6 +157,7 @@ class GenealogyLocSearch extends Command
             $this->line('  - Check spelling of names');
             $this->line('  - Expand date range');
             $this->line('  - LOC coverage is 1736-1963');
+
             return Command::SUCCESS;
         }
 
@@ -160,8 +168,8 @@ class GenealogyLocSearch extends Command
                 $index + 1,
                 $page['date'],
                 substr($page['title'], 0, 40),
-                $page['city'] . ', ' . strtoupper(substr($page['state'], 0, 2)),
-                count($page['image_urls']) . ' img',
+                $page['city'].', '.strtoupper(substr($page['state'], 0, 2)),
+                count($page['image_urls']).' img',
             ];
         }
 
@@ -174,11 +182,11 @@ class GenealogyLocSearch extends Command
         $this->newLine();
         $this->comment('Result previews:');
         foreach (array_slice($results['pages'], 0, 5) as $index => $page) {
-            $this->line(($index + 1) . ". {$page['title']} ({$page['date']})");
-            if (!empty($page['description'])) {
+            $this->line(($index + 1).". {$page['title']} ({$page['date']})");
+            if (! empty($page['description'])) {
                 $desc = strip_tags($page['description']);
                 $desc = preg_replace('/\s+/', ' ', $desc);
-                $this->line("   " . substr($desc, 0, 150) . "...");
+                $this->line('   '.substr($desc, 0, 150).'...');
             }
             $this->line("   URL: {$page['url']}");
             $this->newLine();
@@ -201,7 +209,7 @@ class GenealogyLocSearch extends Command
                 $this->line("  [{$num}] {$page['title']} ({$page['date']})");
 
                 // Download the first image URL
-                if (!empty($page['image_urls'])) {
+                if (! empty($page['image_urls'])) {
                     $imageUrl = $page['image_urls'][0];
                     $downloadResult = $this->downloadService->downloadChroniclingAmericaPage(
                         $imageUrl,
@@ -209,17 +217,17 @@ class GenealogyLocSearch extends Command
                         $resolution
                     );
 
-                    if ($downloadResult['success'] && !empty($downloadResult['files'])) {
+                    if ($downloadResult['success'] && ! empty($downloadResult['files'])) {
                         $file = $downloadResult['files'][0];
                         $downloaded++;
-                        $this->info("      Downloaded: {$file['filename']} (" . round($file['size'] / 1024) . " KB)");
+                        $this->info("      Downloaded: {$file['filename']} (".round($file['size'] / 1024).' KB)');
 
                         // Create media record
                         $mediaId = $this->downloadService->createMediaRecord($treeId, $file['filepath'], [
                             'title' => "{$page['title']} - {$page['date']}",
                             'source' => 'LOC Chronicling America',
                             'source_url' => $page['url'],
-                            'description' => "Historical newspaper from {$page['city']}, {$page['state']}. " .
+                            'description' => "Historical newspaper from {$page['city']}, {$page['state']}. ".
                                 "Date: {$page['date']}. Source: Library of Congress Chronicling America.",
                         ]);
 
@@ -245,12 +253,12 @@ class GenealogyLocSearch extends Command
             );
 
             if ($downloaded > 0) {
-                $this->info("Files saved to: " . storage_path('app/public/genealogy/downloaded'));
+                $this->info('Files saved to: '.storage_path('app/public/genealogy/downloaded'));
             }
 
             Log::info('LOC Chronicling America download completed', [
                 'tree_id' => $treeId,
-                'query' => $query ?? "person:{$personId}",
+                ...SensitiveTextTelemetry::query($query ?? "person:{$personId}", self::QUERY_TELEMETRY_SCOPE),
                 'downloaded' => $downloaded,
                 'failed' => $failed,
             ]);

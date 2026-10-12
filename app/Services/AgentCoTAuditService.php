@@ -20,6 +20,14 @@ use Illuminate\Support\Facades\Log;
  */
 class AgentCoTAuditService
 {
+    public const EVIDENCE_LINEAGE_CURRENT_OBSERVATION = 'current_observation';
+
+    public const EVIDENCE_LINEAGE_ADVISORY_MEMORY = 'advisory_memory';
+
+    public const EVIDENCE_LINEAGE_STATE_CHANGE = 'state_change';
+
+    public const EVIDENCE_LINEAGE_FAILED = 'failed';
+
     /**
      * Keywords indicating evidence-grounded reasoning.
      * A write operation needs ≥2 of these to pass.
@@ -67,12 +75,12 @@ class AgentCoTAuditService
     /**
      * Audit LLM reasoning before a tool call executes.
      *
-     * @param string $agentId      Agent identifier
-     * @param string $reasoning    Full LLM response (reasoning + tool call block)
-     * @param string $toolName     Tool about to be executed
-     * @param array  $toolParams   Parameters for the tool
-     * @param array  $priorCalls   Recent tool call history [{tool, params}]
-     * @param array  $skillConfig  Agent skill config (may contain cot_audit settings)
+     * @param  string  $agentId  Agent identifier
+     * @param  string  $reasoning  Full LLM response (reasoning + tool call block)
+     * @param  string  $toolName  Tool about to be executed
+     * @param  array  $toolParams  Parameters for the tool
+     * @param  array  $priorCalls  Recent tool call history [{tool, params}]
+     * @param  array  $skillConfig  Agent skill config (may contain cot_audit settings)
      * @return array{action: string, reason: string, risk: string}
      */
     public function audit(
@@ -84,12 +92,13 @@ class AgentCoTAuditService
         array $skillConfig = []
     ): array {
         // Read-only tools always pass — no audit overhead
-        if (!$this->isHighRisk($toolName)) {
+        if (! $this->isHighRisk($toolName)) {
             // Still check repetition to catch stuck loops
             $repetition = $this->checkRepetition($toolName, $toolParams, $priorCalls);
             if ($repetition['action'] !== 'pass') {
                 return $repetition;
             }
+
             return $this->pass();
         }
 
@@ -100,39 +109,55 @@ class AgentCoTAuditService
         $reasoningLen = strlen($reasoning);
         if ($reasoningLen < self::MIN_REASONING_LENGTH) {
             return $this->block(
-                "Reasoning too brief ({$reasoningLen} chars) for write operation '{$toolName}'. " .
-                "Expand your reasoning with specific evidence before proposing changes.",
+                "Reasoning too brief ({$reasoningLen} chars) for write operation '{$toolName}'. ".
+                'Expand your reasoning with specific evidence before proposing changes.',
                 'thin_reasoning'
             );
         }
 
-        // Rule 2: proposeChange / submitForReview require evidence grounding
+        // Rule 2: prose and recalled memory cannot independently authorize a
+        // state-changing call. Require at least one successful current-run
+        // observation from a read-class tool before evaluating what the model
+        // says that evidence means.
+        $lineage = $this->summarizeEvidenceLineage($priorCalls);
+        if ($lineage[self::EVIDENCE_LINEAGE_CURRENT_OBSERVATION] === 0) {
+            $memoryOnly = $lineage[self::EVIDENCE_LINEAGE_ADVISORY_MEMORY] > 0;
+
+            return $this->block(
+                $memoryOnly
+                    ? "Recalled memory cannot independently justify '{$toolName}'. Gather current evidence with a read-class research tool before proposing changes."
+                    : "No successful current-run evidence observation precedes '{$toolName}'. Gather current evidence with a read-class research tool before proposing changes.",
+                $memoryOnly ? 'memory_only_justification' : 'missing_current_evidence'
+            );
+        }
+
+        // Rule 3: proposeChange / submitForReview require evidence grounding
         if ($this->isProposalTool($toolName)) {
             $evidenceCount = $this->countEvidenceKeywords($normalizedReasoning);
 
             if ($evidenceCount < self::MIN_EVIDENCE_COUNT) {
                 return $this->block(
-                    "Insufficient evidence grounding for '{$toolName}' " .
-                    "({$evidenceCount}/" . self::MIN_EVIDENCE_COUNT . " evidence keywords found). " .
-                    "Cite specific sources, records, or search results before proposing changes.",
+                    "Insufficient evidence grounding for '{$toolName}' ".
+                    "({$evidenceCount}/".self::MIN_EVIDENCE_COUNT.' evidence keywords found). '.
+                    'Cite specific sources, records, or search results before proposing changes.',
                     'insufficient_evidence'
                 );
             }
         }
 
-        // Rule 3: Uncertain language + write operation (no evidence override)
+        // Rule 4: Uncertain language + write operation (no evidence override)
         $hasUncertain = $this->hasUncertainLanguage($normalizedReasoning);
         $evidenceCount ??= $this->countEvidenceKeywords($normalizedReasoning);
 
         if ($hasUncertain && $evidenceCount < self::MIN_EVIDENCE_COUNT) {
             return $this->block(
-                "Uncertain language detected ('I think/probably/might be') in reasoning for '{$toolName}' " .
-                "with no supporting evidence. Use a research tool to verify the claim before proposing.",
+                "Uncertain language detected ('I think/probably/might be') in reasoning for '{$toolName}' ".
+                'with no supporting evidence. Use a research tool to verify the claim before proposing.',
                 'uncertain_assertion'
             );
         }
 
-        // Rule 4: Same tool + same key param repeated in last 3 calls
+        // Rule 5: Same tool + same key param repeated in last 3 calls
         $repetition = $this->checkRepetition($toolName, $toolParams, $priorCalls);
         if ($repetition['action'] !== 'pass') {
             return $repetition;
@@ -142,12 +167,36 @@ class AgentCoTAuditService
     }
 
     /**
+     * Classify a completed tool call for later sensitive-action enforcement.
+     * Memory remains useful context, but it is not a fresh observation.
+     */
+    public function classifyEvidenceLineage(string $toolName, array $toolDef, bool $success): string
+    {
+        if (! $success) {
+            return self::EVIDENCE_LINEAGE_FAILED;
+        }
+
+        if (($toolDef['risk_level'] ?? 'read') !== 'read') {
+            return self::EVIDENCE_LINEAGE_STATE_CHANGE;
+        }
+
+        $normalizedName = strtolower($toolName);
+        $normalizedCategory = strtolower((string) ($toolDef['category'] ?? ''));
+        if (str_contains($normalizedName, 'memory') || str_contains($normalizedCategory, 'memory')) {
+            return self::EVIDENCE_LINEAGE_ADVISORY_MEMORY;
+        }
+
+        return self::EVIDENCE_LINEAGE_CURRENT_OBSERVATION;
+    }
+
+    /**
      * Whether to skip auditing for a given agent (e.g., diagnostic/test agents).
      * Checks skill config for `cot_audit: disabled`.
      */
     public function isDisabledForAgent(array $skillConfig): bool
     {
         $setting = $skillConfig['cot_audit'] ?? 'enabled';
+
         return $setting === 'disabled';
     }
 
@@ -163,7 +212,7 @@ class AgentCoTAuditService
 
         // Look at last 3 calls for same tool
         $recent = array_slice($priorCalls, -3);
-        $sameToolCalls = array_filter($recent, fn($c) => ($c['tool'] ?? '') === $toolName);
+        $sameToolCalls = array_filter($recent, fn ($c) => ($c['tool'] ?? '') === $toolName);
 
         if (count($sameToolCalls) < 3) {
             return $this->pass();
@@ -185,13 +234,39 @@ class AgentCoTAuditService
 
         if ($repeatCount >= 3) {
             return $this->warn(
-                "Tool '{$toolName}' called 3+ times with the same key parameter ('{$keyParam}'). " .
-                "Consider trying a different search term, tool, or approach.",
+                "Tool '{$toolName}' called 3+ times with the same key parameter ('{$keyParam}'). ".
+                'Consider trying a different search term, tool, or approach.',
                 'repetition_loop'
             );
         }
 
         return $this->pass();
+    }
+
+    /** @return array<string, int> */
+    private function summarizeEvidenceLineage(array $priorCalls): array
+    {
+        $summary = [
+            self::EVIDENCE_LINEAGE_CURRENT_OBSERVATION => 0,
+            self::EVIDENCE_LINEAGE_ADVISORY_MEMORY => 0,
+            self::EVIDENCE_LINEAGE_STATE_CHANGE => 0,
+            self::EVIDENCE_LINEAGE_FAILED => 0,
+        ];
+
+        foreach ($priorCalls as $call) {
+            if (($call['success'] ?? false) !== true) {
+                $summary[self::EVIDENCE_LINEAGE_FAILED]++;
+
+                continue;
+            }
+
+            $lineage = $call['evidence_lineage'] ?? null;
+            if (is_string($lineage) && array_key_exists($lineage, $summary)) {
+                $summary[$lineage]++;
+            }
+        }
+
+        return $summary;
     }
 
     private function isHighRisk(string $toolName): bool
@@ -215,6 +290,7 @@ class AgentCoTAuditService
                 $count++;
             }
         }
+
         return $count;
     }
 
@@ -225,6 +301,7 @@ class AgentCoTAuditService
                 return true;
             }
         }
+
         return false;
     }
 
@@ -236,7 +313,7 @@ class AgentCoTAuditService
     {
         // Common search/query param names
         foreach (['query', 'search', 'term', 'name', 'surname', 'given_name', 'keyword'] as $key) {
-            if (!empty($params[$key]) && is_string($params[$key])) {
+            if (! empty($params[$key]) && is_string($params[$key])) {
                 return strtolower(trim($params[$key]));
             }
         }

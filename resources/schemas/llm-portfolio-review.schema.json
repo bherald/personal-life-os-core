@@ -1,0 +1,89 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "summary", "coverage", "actions"],
+  "properties": {
+    "schema": { "type": "string", "enum": ["plos.llm_portfolio_review.v1"] },
+    "summary": { "type": "string" },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability_lane", "status", "current_resources", "action_resource_ids"],
+        "properties": {
+          "capability_lane": {
+            "type": "string",
+            "enum": ["fast_text", "standard_text", "quality_reasoning", "coding", "tool_calling", "structured_output", "uncensored_operator", "embeddings", "reranking", "vision_image_input", "image_generation_output", "ocr_document_input", "speech_to_text_input", "text_to_speech_output", "video_input", "video_output", "other_media_input", "other_media_output"]
+          },
+          "status": { "type": "string", "enum": ["covered", "candidate_needed", "retain", "not_currently_required"] },
+          "current_resources": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "action_resource_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource_type", "resource_id", "capability_lanes", "exact_model_revision", "license", "fit", "decision", "priority", "benefit", "evidence_grade", "feedback_signal", "evidence", "source_urls", "risks", "required_validation", "execution_mode"],
+        "properties": {
+          "resource_type": { "type": "string", "enum": ["local_text_model", "external_text_provider", "codex_model", "embedding_model", "reranker_model", "vision_model", "image_generation_model", "ocr_model", "speech_to_text_model", "text_to_speech_model", "video_model", "media_model", "host_route"] },
+          "resource_id": { "type": "string" },
+          "capability_lanes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "exact_model_revision": { "type": "string" },
+          "license": { "type": "string" },
+          "fit": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["target_instance_ids", "hardware_fit", "context_fit", "capability_fit", "privacy_fit", "failure_domain_effect", "overall_fit"],
+            "properties": {
+              "target_instance_ids": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "hardware_fit": { "type": "string", "enum": ["feasible", "conditional", "infeasible", "cloud_managed", "not_applicable"] },
+              "context_fit": { "type": "string", "enum": ["pass", "conditional", "fail", "unknown"] },
+              "capability_fit": { "type": "string", "enum": ["pass", "conditional", "fail", "unknown"] },
+              "privacy_fit": { "type": "string", "enum": ["pass", "conditional", "fail", "unknown"] },
+              "failure_domain_effect": { "type": "string" },
+              "overall_fit": { "type": "string", "enum": ["retain", "candidate", "eval_ready", "reject", "retire_review"] }
+            }
+          },
+          "decision": { "type": "string", "enum": ["add_candidate", "retain", "promote_for_eval", "retire", "reconfigure_codex_role"] },
+          "priority": { "type": "string", "enum": ["high", "medium", "low"] },
+          "benefit": { "type": "string" },
+          "evidence_grade": { "type": "string", "enum": ["A", "B", "C", "D"] },
+          "feedback_signal": { "type": "string", "enum": ["strong_positive", "mixed", "negative", "insufficient", "not_applicable"] },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "source_urls": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "risks": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "required_validation": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "execution_mode": { "type": "string", "enum": ["operator_rtc", "bounded_eval", "observe"] }
+        }
+      }
+    }
+  }
+}

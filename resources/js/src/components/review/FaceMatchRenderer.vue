@@ -117,20 +117,20 @@ const formatDate = (dateStr) => {
   align-items: center;
   gap: 1rem;
   padding: 1rem;
-  background: var(--ops-plum);
+  background: var(--color-accent);
   border-radius: 0 16px 16px 0;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .review-item:hover {
-  background: var(--ops-plum-light, #5c4a72);
+  background: var(--color-bg-hover);
   transform: translateX(4px);
 }
 
 .review-item.selected {
   background: var(--ops-magenta);
-  box-shadow: 0 0 0 2px var(--ops-orange);
+  box-shadow: 0 0 0 2px var(--ops-warning);
 }
 
 .item-checkbox {
@@ -143,7 +143,7 @@ const formatDate = (dateStr) => {
   border-radius: 8px;
   overflow: hidden;
   flex-shrink: 0;
-  background: var(--ops-black);
+  background: #111;
 }
 
 .item-content {
@@ -166,18 +166,18 @@ const formatDate = (dateStr) => {
   font-weight: 600;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
-  background: var(--ops-sky);
-  color: var(--ops-black);
+  background: var(--color-accent);
+  color: white;
 }
 
-.item-confidence.high { background: var(--ops-green); }
-.item-confidence.medium { background: var(--ops-gold); }
-.item-confidence.low { background: var(--ops-sunset); color: var(--ops-white); }
+.item-confidence.high { background: var(--ops-success); }
+.item-confidence.medium { background: var(--ops-warning); }
+.item-confidence.low { background: var(--ops-danger); color: var(--ops-white); }
 
 .item-title {
   font-size: 0.9375rem;
   font-weight: 500;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -185,7 +185,7 @@ const formatDate = (dateStr) => {
 
 .item-summary {
   font-size: 0.8125rem;
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
   margin-top: 0.25rem;
 }
 
@@ -213,8 +213,8 @@ const formatDate = (dateStr) => {
 }
 
 .action-btn.approve {
-  background: var(--ops-green);
-  color: var(--ops-black);
+  background: var(--ops-success);
+  color: white;
 }
 
 .action-btn.approve:hover {
@@ -222,8 +222,8 @@ const formatDate = (dateStr) => {
 }
 
 .action-btn.link {
-  background: var(--ops-sky);
-  color: var(--ops-black);
+  background: var(--color-accent);
+  color: white;
 }
 
 .action-btn.link:hover {
@@ -231,7 +231,7 @@ const formatDate = (dateStr) => {
 }
 
 .action-btn.reject {
-  background: var(--ops-sunset);
+  background: var(--ops-danger);
   color: var(--ops-white);
 }
 

@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\JoplinSyncService;
+use App\Support\SensitiveTextTelemetry;
 use Illuminate\Console\Command;
 
 class JoplinSyncCommand extends Command
@@ -103,6 +104,7 @@ class JoplinSyncCommand extends Command
                     ['Total Files Found', $stats['total_files']],
                     ['Notes Indexed', $stats['notes_indexed']],
                     ['Notes Skipped', $stats['notes_skipped'].' (folders/resources)'],
+                    ['RAG Delete Candidates', $stats['deletion_candidates'] ?? 0],
                     ['Errors', $stats['errors']],
                     ['Duration', $stats['duration_seconds'].' seconds'],
                     ['Started', $stats['start_time']->format('Y-m-d H:i:s')],
@@ -118,9 +120,7 @@ class JoplinSyncCommand extends Command
                 if (! empty($errorSamples)) {
                     $this->warn('Recent error samples:');
                     foreach ($errorSamples as $sample) {
-                        $note = $sample['note_hash'] ?? 'unknown';
-                        $error = $sample['error'] ?? 'unknown error';
-                        $this->line("  - note {$note}: {$error}");
+                        $this->line('  - '.$this->errorSampleSummary($sample));
                     }
                 }
 
@@ -139,13 +139,19 @@ class JoplinSyncCommand extends Command
                 $this->emitJson([
                     'mode' => 'sync',
                     'status' => 'failed',
-                    'error' => $e->getMessage(),
+                    'error_code' => 'joplin_sync_failed',
+                    'exception_type' => $e::class,
+                    'error_receipt' => SensitiveTextTelemetry::content(
+                        $e->getMessage(),
+                        'joplin-sync-command',
+                        'error',
+                    ),
                 ]);
 
                 return self::FAILURE;
             }
 
-            $this->error('✗ Sync failed: '.$e->getMessage());
+            $this->error('Joplin sync failed ('.class_basename($e).').');
             $this->newLine();
             $this->comment('Check logs for more details:');
             $this->line('  tail -f storage/logs/laravel.log');
@@ -181,6 +187,7 @@ class JoplinSyncCommand extends Command
             'total_files' => (int) ($stats['total_files'] ?? 0),
             'notes_indexed' => (int) ($stats['notes_indexed'] ?? 0),
             'notes_skipped' => (int) ($stats['notes_skipped'] ?? 0),
+            'deletion_candidates' => (int) ($stats['deletion_candidates'] ?? 0),
             'errors' => $errors,
             'error_samples' => array_values(array_filter(
                 (array) ($stats['error_samples'] ?? []),
@@ -199,5 +206,17 @@ class JoplinSyncCommand extends Command
         }
 
         return is_string($value) && trim($value) !== '' ? $value : null;
+    }
+
+    /** @param array<string,mixed> $sample */
+    private function errorSampleSummary(array $sample): string
+    {
+        $fingerprint = (string) ($sample['note_receipt']['private_text_fingerprint'] ?? 'unavailable');
+        $shortFingerprint = $fingerprint === 'unavailable'
+            ? $fingerprint
+            : substr($fingerprint, -12);
+        $exceptionType = (string) ($sample['exception_type'] ?? 'unknown_error');
+
+        return "note receipt {$shortFingerprint}: {$exceptionType}";
     }
 }

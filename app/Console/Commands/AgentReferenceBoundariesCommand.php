@@ -13,7 +13,7 @@ class AgentReferenceBoundariesCommand extends Command
         {--compact : Emit compact JSON or text}
         {--json : Emit machine-readable JSON}';
 
-    protected $description = 'Read-only white-room boundary report for external developer-agent references';
+    protected $description = 'Read-only license, attribution, and provenance report for external developer-agent sources';
 
     public function handle(AgentReferenceBoundaryService $boundaries): int
     {
@@ -69,6 +69,7 @@ class AgentReferenceBoundariesCommand extends Command
                 'refresh_required' => (bool) ($row['refresh_required'] ?? false),
                 'snapshot_version' => $row['snapshot_version'] ?? null,
                 'snapshot_release' => $row['snapshot_release'] ?? null,
+                'snapshot_revision' => $row['snapshot_revision'] ?? null,
                 'snapshot_refreshed_at' => $row['snapshot_refreshed_at'] ?? null,
                 'todo_lane' => $row['todo_lane'] ?? null,
                 'todo_state' => $row['todo_state'] ?? null,

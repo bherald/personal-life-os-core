@@ -5,20 +5,38 @@ namespace App\Http\Controllers\Api;
 use App\Engine\AIRouter;
 use App\Engine\MCPRouter;
 use App\Http\Controllers\Controller;
+use App\Rules\NonEmptyUploadedFile;
 use App\Services\AIResponseSanitizer;
 use App\Services\AIService;
 use App\Services\ChatAttachmentService;
+use App\Services\ChatResponseFeedbackService;
+use App\Services\ChatRunFailureService;
+use App\Services\ChatRuntimePolicyService;
+use App\Services\ChatStreamCancellationService;
+use App\Services\ChatToolActivityService;
+use App\Services\ContextPositioningService;
+use App\Services\ImageGenerationService;
+use App\Services\OfflineTtsService;
+use App\Services\OllamaProgressClient;
 use App\Services\OrchestratorService;
 use App\Services\RAGService;
-use GuzzleHttp\Client;
+use App\Services\RagSourceReferenceService;
+use App\Services\WhisperRuntimeService;
+use App\Support\SensitiveTextTelemetry;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class ChatController extends Controller
 {
+    private const RAG_QUERY_TELEMETRY_SCOPE = 'chat-rag';
+
+    /** @var array<string,mixed>|null */
+    private ?array $imageSidecarCapability = null;
+
     /**
      * List all conversations (excluding soft deleted)
      */
@@ -105,8 +123,11 @@ class ChatController extends Controller
     /**
      * Get a conversation with all its messages
      */
-    public function show($id, ChatAttachmentService $attachments)
-    {
+    public function show(
+        $id,
+        ChatAttachmentService $attachments,
+        ChatResponseFeedbackService $responseFeedback
+    ) {
         // Get conversation using raw SQL
         $sql = 'SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL LIMIT 1';
         $conversations = DB::select($sql, [$id]);
@@ -123,6 +144,7 @@ class ChatController extends Controller
         $sql = 'SELECT * FROM chat_messages WHERE conversation_id = ? ORDER BY created_at ASC';
         $messages = DB::select($sql, [$id]);
         $messages = $attachments->appendAttachmentsToMessages($messages);
+        $messages = $responseFeedback->appendToMessages($messages);
 
         return response()->json([
             'success' => true,
@@ -216,7 +238,7 @@ class ChatController extends Controller
             'deep_search' => 'nullable|boolean',
             'multi_step' => 'nullable|boolean',
             'attachments' => 'nullable|array|max:12',
-            'attachments.*' => 'file|max:51200',
+            'attachments.*' => ['file', new NonEmptyUploadedFile, 'max:51200'],
         ]);
         $forceDeepSearch = $validated['deep_search'] ?? false;
         $useMultiStep = $validated['multi_step'] ?? false;
@@ -293,10 +315,34 @@ class ChatController extends Controller
             $ragService = app(RAGService::class);
             $attachmentPrompt = $attachments->prepareForPrompt($storedAttachments, $conversation, $aiService, $privacyRoutingConfig);
             $modelContent = $this->appendAttachmentPrompt($messageContent, $attachmentPrompt['prompt_suffix']);
+            $generatedAttachments = [];
 
             if (! empty($context)) {
                 $lastIndex = array_key_last($context);
                 $context[$lastIndex]['content'] = $modelContent;
+            }
+
+            if ($this->isAudioTranscriptionConversation($conversation)) {
+                $assistantContent = $this->formatTranscriptionResponse(
+                    $attachmentPrompt['transcriptions'] ?? [],
+                    $attachmentPrompt['metadata']['attachments'] ?? []
+                );
+
+                goto persist_assistant_response;
+            }
+
+            $modelCapabilities = $attachmentPrompt['metadata']['model_capabilities'] ?? [];
+            if ($this->isAudioGenerationConversation($conversation, $modelCapabilities)) {
+                $audioResult = $this->generateAudioForChat(
+                    $modelContent,
+                    (int) $id,
+                    $attachments,
+                    app(OfflineTtsService::class)
+                );
+                $assistantContent = $audioResult['content'];
+                $generatedAttachments = [$audioResult['attachment']];
+
+                goto persist_assistant_response;
             }
 
             // AI-8: Multi-step delegation — route through OrchestratorService
@@ -351,10 +397,16 @@ class ChatController extends Controller
                         $doc = $result['document'];
                         $title = $doc->title ?? 'Untitled';
                         $sourceNum = $idx + 1;
-                        $mediaUrl = $doc->media_url ?? null;
-
                         // Use full content if available, otherwise fall back to document content
                         $content = $result['full_content'] ?? $doc->content ?? '';
+                        $sourcePayload = $this->ragSourcePayload(
+                            $doc,
+                            $sourceNum,
+                            $title,
+                            $result['similarity'] ?? null,
+                            strlen($content)
+                        );
+                        $mediaUrl = $sourcePayload['url'];
 
                         $ragContext .= "### [{$sourceNum}] {$title}";
                         if ($mediaUrl) {
@@ -362,15 +414,7 @@ class ChatController extends Controller
                         }
                         $ragContext .= "\n\n{$content}\n\n---\n\n";
 
-                        $ragSources[] = [
-                            'id' => $doc->id,
-                            'num' => $sourceNum,
-                            'title' => $title,
-                            'url' => $mediaUrl,
-                            'type' => $doc->document_type ?? null,
-                            'similarity' => $result['similarity'] ?? null,
-                            'content_length' => strlen($content),
-                        ];
+                        $ragSources[] = $sourcePayload;
                     }
 
                     $ragContext .= "---\nRULES:\n";
@@ -386,8 +430,14 @@ class ChatController extends Controller
                         $doc = $result['document'];
                         $title = $doc->title ?? 'Untitled';
                         $sourceNum = $idx + 1;
-                        $mediaUrl = $doc->media_url ?? null;
                         $contentPreview = substr($doc->content ?? '', 0, 400);
+                        $sourcePayload = $this->ragSourcePayload(
+                            $doc,
+                            $sourceNum,
+                            $title,
+                            $result['similarity'] ?? null
+                        );
+                        $mediaUrl = $sourcePayload['url'];
 
                         $ragContext .= "[{$sourceNum}] **{$title}**";
                         if ($mediaUrl) {
@@ -395,14 +445,7 @@ class ChatController extends Controller
                         }
                         $ragContext .= "\n{$contentPreview}...\n\n";
 
-                        $ragSources[] = [
-                            'id' => $doc->id,
-                            'num' => $sourceNum,
-                            'title' => $title,
-                            'url' => $mediaUrl,
-                            'type' => $doc->document_type ?? null,
-                            'similarity' => $result['similarity'] ?? null,
-                        ];
+                        $ragSources[] = $sourcePayload;
                     }
 
                     $ragContext .= "---\nRULES:\n";
@@ -452,6 +495,7 @@ class ChatController extends Controller
             $sanitizer = app(AIResponseSanitizer::class);
             $assistantContent = $sanitizer->sanitize($assistantContent, $modelName);
 
+            persist_assistant_response:
             // Tool calls are tracked in the AIRouter logs, extract if available
             $toolCalls = null; // processWithTools doesn't return tool_calls directly
             $tokens = null; // Estimate based on response length
@@ -467,6 +511,7 @@ class ChatController extends Controller
                 [$id, 'assistant', $assistantContent, $toolCallsJson, $tokens, $assistantNow, $assistantNow]
             );
             $assistantMessageId = DB::getPdo()->lastInsertId();
+            $attachments->attachToMessage($generatedAttachments, (int) $assistantMessageId);
 
             // Auto-generate title from first user message if needed
             if (is_null($conversation->title) && count($messages) === 1) {
@@ -492,21 +537,47 @@ class ChatController extends Controller
             ]);
 
         } catch (\Exception $e) {
-            // Log error and return error response
-            \Log::error('Chat AI Error: '.$e->getMessage());
+            \Log::error('Chat AI request failed', [
+                'exception_class' => $e::class,
+            ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'AI processing failed: '.$e->getMessage(),
+                'message' => 'AI processing failed',
             ], 500);
         }
+    }
+
+    /** @return array<string, mixed> */
+    private function ragSourcePayload(
+        object $document,
+        int $number,
+        string $title,
+        mixed $similarity,
+        ?int $contentLength = null
+    ): array {
+        $source = app(RagSourceReferenceService::class)->reference($document);
+        $payload = [
+            'id' => $document->id,
+            'num' => $number,
+            'title' => $title,
+            'url' => $source['locator'],
+            'type' => $document->document_type ?? null,
+            'similarity' => $similarity,
+            'source' => $source,
+        ];
+        if ($contentLength !== null) {
+            $payload['content_length'] = $contentLength;
+        }
+
+        return $payload;
     }
 
     /**
      * Try RAG semantic search for relevant context
      *
      * Enhanced with deep search mode that fetches full document content
-     * for top results, enabling comprehensive AI synthesis like Claude Code.
+     * for top results, enabling comprehensive AI synthesis.
      *
      * Modes:
      * - Normal: Returns preview snippets (400 chars) for quick responses
@@ -568,7 +639,7 @@ class ChatController extends Controller
             }
 
             \Log::info('Chat RAG search starting', [
-                'query' => $query,
+                ...SensitiveTextTelemetry::query($query, self::RAG_QUERY_TELEMETRY_SCOPE),
                 'deep_mode' => $isDeepSearch,
             ]);
 
@@ -602,13 +673,15 @@ class ChatController extends Controller
                 $filteredResults = array_filter($searchResults, function ($r) use ($threshold) {
                     return ($r['similarity'] ?? 0) >= $threshold;
                 });
-                $filteredResults = array_values($filteredResults);
+                // deepSearch materializes full content for its requested top N.
+                // Keep prompt candidates within that same finalized rank set.
+                $filteredResults = array_slice(array_values($filteredResults), 0, 50);
 
                 // Get IDs of filtered results for full doc lookup
                 $filteredIds = array_map(fn ($r) => $r['document']->id, $filteredResults);
 
                 \Log::info('Chat RAG deep search completed', [
-                    'query' => $query,
+                    ...SensitiveTextTelemetry::query($query, self::RAG_QUERY_TELEMETRY_SCOPE),
                     'candidates' => count($searchResults),
                     'filtered' => count($filteredResults),
                     'threshold' => $threshold,
@@ -636,14 +709,14 @@ class ChatController extends Controller
                     $results[] = $result;
                 }
 
-                return $results;
+                return app(ContextPositioningService::class)->position($results);
             }
 
             // Normal search: fetch candidates for filtering
             $results = $ragService->search($query, 30);
 
             \Log::info('Chat RAG search completed', [
-                'query' => $query,
+                ...SensitiveTextTelemetry::query($query, self::RAG_QUERY_TELEMETRY_SCOPE),
                 'results_count' => count($results),
                 'top_titles' => array_slice(array_map(fn ($r) => $r['document']->title ?? 'untitled', $results), 0, 3),
             ]);
@@ -674,7 +747,7 @@ class ChatController extends Controller
             if (($isRRFScore && $topSimilarity >= 0.015 && count($finalResults) >= 2) ||
                 (! $isRRFScore && $topSimilarity >= 0.60 && count($finalResults) >= 1)) {
                 \Log::info('Chat RAG upgrading to deep search due to high similarity', [
-                    'query' => $query,
+                    ...SensitiveTextTelemetry::query($query, self::RAG_QUERY_TELEMETRY_SCOPE),
                     'top_similarity' => $topSimilarity,
                     'results_count' => count($finalResults),
                 ]);
@@ -720,12 +793,12 @@ class ChatController extends Controller
                 }
 
                 \Log::info('Chat RAG deep upgrade completed', [
-                    'query' => $query,
+                    ...SensitiveTextTelemetry::query($query, self::RAG_QUERY_TELEMETRY_SCOPE),
                     'results_count' => count($results),
                     'full_docs_count' => count($deepResult['full_documents']),
                 ]);
 
-                return $results;
+                return app(ContextPositioningService::class)->position($results);
             }
 
             \Log::info('Chat RAG returning results', ['count' => count($finalResults)]);
@@ -733,9 +806,8 @@ class ChatController extends Controller
             return $finalResults;
         } catch (\Exception $e) {
             \Log::error('RAG search failed in chat', [
-                'query' => $query,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                ...SensitiveTextTelemetry::query($query, self::RAG_QUERY_TELEMETRY_SCOPE),
+                'exception_class' => $e::class,
             ]);
 
             return [];
@@ -750,13 +822,18 @@ class ChatController extends Controller
      *                            - content: (required) The message content
      *                            - deep_search: (optional) Force deep RAG search with full document content
      */
-    public function sendMessageStream(Request $request, $id, ChatAttachmentService $attachments)
-    {
+    public function sendMessageStream(
+        Request $request,
+        $id,
+        ChatAttachmentService $attachments,
+        ChatRunFailureService $streamFailures,
+        ChatStreamCancellationService $cancellations
+    ) {
         $validated = $request->validate([
             'content' => 'nullable|string',
             'deep_search' => 'nullable|boolean',
             'attachments' => 'nullable|array|max:12',
-            'attachments.*' => 'file|max:51200',
+            'attachments.*' => ['file', new NonEmptyUploadedFile, 'max:51200'],
         ]);
         $forceDeepSearch = $validated['deep_search'] ?? false;
         $uploadedFiles = $this->uploadedAttachments($request);
@@ -820,12 +897,15 @@ class ChatController extends Controller
         }
 
         $userContent = $messageContent;
+        $runId = (string) Str::uuid();
+        $cancellations->register($runId, (int) $id);
 
         // Return SSE stream
-        return response()->stream(function () use ($userContent, $id, $conversation, $context, $forceDeepSearch, $attachments, $storedAttachments) {
+        return response()->stream(function () use ($userContent, $id, $conversation, $context, $forceDeepSearch, $attachments, $storedAttachments, $streamFailures, $cancellations, $runId) {
             $aiService = app(AIService::class);
             $orchestrator = app(OrchestratorService::class);
             $ragService = app(RAGService::class);
+            $toolActivityService = app(ChatToolActivityService::class);
 
             // Set SSE headers via output buffer
             header('Content-Type: text/event-stream');
@@ -842,6 +922,7 @@ class ChatController extends Controller
             $latestUserMessageId = DB::select($sql, [$id, 'user'])[0]->id ?? null;
             echo 'data: '.json_encode([
                 'type' => 'start',
+                'run_id' => $runId,
                 'user_message_id' => $latestUserMessageId,
                 'user_attachments' => $attachmentPayloads,
             ])."\n\n";
@@ -850,6 +931,7 @@ class ChatController extends Controller
 
             $fullContent = '';
             $toolCallsData = [];
+            $streamInterruption = null;
             $detectedIntent = null;
             $ragSources = []; // Track RAG sources for metadata persistence
             $generatedAttachments = [];
@@ -862,6 +944,7 @@ class ChatController extends Controller
             $attachmentPrompt = [
                 'prompt_suffix' => '',
                 'ollama_images' => [],
+                'transcriptions' => [],
                 'metadata' => ['attachments' => []],
                 'payloads' => $attachmentPayloads,
             ];
@@ -878,6 +961,26 @@ class ChatController extends Controller
                 $modelCapabilities = $attachmentPrompt['metadata']['model_capabilities'] ?? [];
                 $isUncensored = $this->isUncensoredConversation($conversation, $modelCapabilities);
 
+                if ($this->isAudioTranscriptionConversation($conversation)) {
+                    echo 'data: '.json_encode([
+                        'type' => 'provider',
+                        'provider' => 'whisper',
+                        'model' => config('services.whisper.model', 'base'),
+                    ])."\n\n";
+                    ob_flush();
+                    flush();
+
+                    $fullContent = $this->formatTranscriptionResponse(
+                        $attachmentPrompt['transcriptions'] ?? [],
+                        $attachmentPrompt['metadata']['attachments'] ?? []
+                    );
+                    echo 'data: '.json_encode(['type' => 'content', 'content' => $fullContent])."\n\n";
+                    ob_flush();
+                    flush();
+
+                    goto save_and_complete;
+                }
+
                 if ($this->isImageGenerationConversation($conversation, $modelCapabilities)) {
                     echo 'data: '.json_encode([
                         'type' => 'provider',
@@ -887,10 +990,36 @@ class ChatController extends Controller
                     ob_flush();
                     flush();
 
-                    $imageResult = $this->generateImageForChat($userContentForModel, (int) $id, $attachments);
+                    $imageResult = $this->generateImageForChat($userContentForModel, $conversation, (int) $id, $attachments);
                     $fullContent = $imageResult['content'];
                     $generatedAttachments = [$imageResult['attachment']];
                     $generatedMediaMetadata = $imageResult['metadata'];
+
+                    echo 'data: '.json_encode(['type' => 'content', 'content' => $fullContent])."\n\n";
+                    ob_flush();
+                    flush();
+
+                    goto save_and_complete;
+                }
+
+                if ($this->isAudioGenerationConversation($conversation, $modelCapabilities)) {
+                    echo 'data: '.json_encode([
+                        'type' => 'provider',
+                        'provider' => 'local_tts',
+                        'model' => $conversation->model ?? 'sidecar:piper',
+                    ])."\n\n";
+                    ob_flush();
+                    flush();
+
+                    $audioResult = $this->generateAudioForChat(
+                        $userContentForModel,
+                        (int) $id,
+                        $attachments,
+                        app(OfflineTtsService::class)
+                    );
+                    $fullContent = $audioResult['content'];
+                    $generatedAttachments = [$audioResult['attachment']];
+                    $generatedMediaMetadata = $audioResult['metadata'];
 
                     echo 'data: '.json_encode(['type' => 'content', 'content' => $fullContent])."\n\n";
                     ob_flush();
@@ -915,7 +1044,7 @@ class ChatController extends Controller
                             : 'You are a helpful AI assistant.');
                     $ollamaMessages = $this->buildOllamaMessages($context, $systemPrompt, $attachmentPrompt['ollama_images']);
 
-                    echo 'data: '.json_encode(['type' => 'provider', 'provider' => 'ollama', 'model' => $chatModel])."\n";
+                    echo 'data: '.json_encode(['type' => 'provider', 'provider' => 'ollama', 'model' => $chatModel])."\n\n";
                     ob_flush();
                     flush();
 
@@ -927,36 +1056,28 @@ class ChatController extends Controller
                     $instances = $aiService->getHealthyOllamaInstances();
                     $ollamaUrl = ! empty($instances) ? $instances[0]['url'] : config('services.ollama.api_url', 'http://127.0.0.1:11434');
 
-                    $client = new Client;
-                    $response = $client->post("{$ollamaUrl}/api/chat", [
-                        'json' => [
-                            'model' => $chatModel ?? $this->resolveUncensoredModel() ?? $this->resolveDefaultOllamaModel(),
-                            'messages' => $ollamaMessages,
-                            'stream' => true,
-                            'options' => ['num_predict' => 2000, 'temperature' => 0.8],
+                    $chatRuntime = app(ChatRuntimePolicyService::class)->required()['direct_ollama_stream'];
+                    $resolvedChatModel = $chatModel ?? $this->resolveUncensoredModel() ?? $this->resolveDefaultOllamaModel();
+                    $streamPolicy = [
+                        'idle_timeout_seconds' => $chatRuntime['idle_timeout_seconds'],
+                        'absolute_timeout_seconds' => $chatRuntime['absolute_timeout_seconds'],
+                        'connect_timeout_seconds' => $chatRuntime['connect_timeout_seconds'],
+                        'log_interval_seconds' => $chatRuntime['progress_log_interval_seconds'],
+                    ];
+                    foreach (app(OllamaProgressClient::class)->streamChat($ollamaUrl, [
+                        'model' => $resolvedChatModel,
+                        'messages' => $ollamaMessages,
+                        'options' => [
+                            'num_predict' => $chatRuntime['num_predict'],
+                            'temperature' => $chatRuntime['temperature'],
                         ],
-                        'stream' => true,
-                        'timeout' => 120,
-                    ]);
-
-                    $stream = $response->getBody();
-                    $buffer = '';
-                    while (! $stream->eof()) {
-                        $buffer .= $stream->read(1024);
-                        while (($pos = strpos($buffer, "\n")) !== false) {
-                            $line = substr($buffer, 0, $pos);
-                            $buffer = substr($buffer, $pos + 1);
-                            if (empty(trim($line))) {
-                                continue;
-                            }
-                            $data = json_decode($line, true);
-                            if ($data && isset($data['message']['content'])) {
-                                $token = $data['message']['content'];
-                                $fullContent .= $token;
-                                echo 'data: '.json_encode(['type' => 'content', 'content' => $token])."\n\n";
-                                ob_flush();
-                                flush();
-                            }
+                    ], $streamPolicy) as $data) {
+                        if (isset($data['message']['content'])) {
+                            $token = $data['message']['content'];
+                            $fullContent .= $token;
+                            echo 'data: '.json_encode(['type' => 'content', 'content' => $token])."\n\n";
+                            ob_flush();
+                            flush();
                         }
                     }
 
@@ -1022,7 +1143,8 @@ class ChatController extends Controller
 
                     // Determine if RAG results are useful (top similarity > 0.6 for cosine)
                     $topSimilarity = ! empty($ragResults) ? ($ragResults[0]['similarity'] ?? 0) : 0;
-                    $hasRelevantRAG = $topSimilarity >= 0.60;
+                    $ragFallbackThreshold = app(ChatRuntimePolicyService::class)->required()['rag']['fallback_cosine_threshold'];
+                    $hasRelevantRAG = $topSimilarity >= $ragFallbackThreshold;
 
                     // If RAG found relevant results, add them to context with source tracking
                     if (! empty($ragResults) && $hasRelevantRAG) {
@@ -1038,10 +1160,16 @@ class ChatController extends Controller
                                 $doc = $result['document'];
                                 $title = $doc->title ?? 'Untitled';
                                 $sourceNum = $idx + 1;
-                                $mediaUrl = $doc->media_url ?? null;
-
                                 // Use full content if available
                                 $content = $result['full_content'] ?? $doc->content ?? '';
+                                $sourcePayload = $this->ragSourcePayload(
+                                    $doc,
+                                    $sourceNum,
+                                    $title,
+                                    $result['similarity'] ?? null,
+                                    strlen($content)
+                                );
+                                $mediaUrl = $sourcePayload['url'];
 
                                 $ragContext .= "### [{$sourceNum}] {$title}";
                                 if ($mediaUrl) {
@@ -1049,15 +1177,7 @@ class ChatController extends Controller
                                 }
                                 $ragContext .= "\n\n{$content}\n\n---\n\n";
 
-                                $ragSources[] = [
-                                    'id' => $doc->id,
-                                    'num' => $sourceNum,
-                                    'title' => $title,
-                                    'url' => $mediaUrl,
-                                    'type' => $doc->document_type ?? null,
-                                    'similarity' => $result['similarity'] ?? null,
-                                    'content_length' => strlen($content),
-                                ];
+                                $ragSources[] = $sourcePayload;
                             }
 
                             $ragContext .= "---\n## STRICT RULES (MUST FOLLOW):\n";
@@ -1074,8 +1194,14 @@ class ChatController extends Controller
                                 $doc = $result['document'];
                                 $title = $doc->title ?? 'Untitled';
                                 $sourceNum = $idx + 1;
-                                $mediaUrl = $doc->media_url ?? null;
                                 $contentPreview = substr($doc->content ?? '', 0, 400);
+                                $sourcePayload = $this->ragSourcePayload(
+                                    $doc,
+                                    $sourceNum,
+                                    $title,
+                                    $result['similarity'] ?? null
+                                );
+                                $mediaUrl = $sourcePayload['url'];
 
                                 $ragContext .= "[{$sourceNum}] **{$title}**";
                                 if ($mediaUrl) {
@@ -1083,14 +1209,7 @@ class ChatController extends Controller
                                 }
                                 $ragContext .= "\n{$contentPreview}...\n\n";
 
-                                $ragSources[] = [
-                                    'id' => $doc->id,
-                                    'num' => $sourceNum,
-                                    'title' => $title,
-                                    'url' => $mediaUrl,
-                                    'type' => $doc->document_type ?? null,
-                                    'similarity' => $result['similarity'] ?? null,
-                                ];
+                                $ragSources[] = $sourcePayload;
                             }
 
                             $ragContext .= "---\n## STRICT RULES (MUST FOLLOW):\n";
@@ -1117,7 +1236,7 @@ class ChatController extends Controller
                         \Log::info('Chat: RAG returned no relevant results, enabling web search', [
                             'query' => $userContent,
                             'top_similarity' => $topSimilarity,
-                            'threshold' => 0.60,
+                            'threshold' => $ragFallbackThreshold,
                         ]);
 
                         // Notify frontend that web search will be used
@@ -1148,20 +1267,33 @@ class ChatController extends Controller
 
                     // Use tool-aware streaming for all modes
 
-                    $aiRouter = app(AIRouter::class);
-                    $systemPrompt = $aiRouter->buildToolAwarePrompt($systemPrompt, true);
-
-                    // Extract model name for Ollama (strip 'ollama:' prefix)
-                    $chatModel = $conversation->model ?? null;
-                    if ($chatModel && str_starts_with($chatModel, 'ollama:')) {
-                        $chatModel = substr($chatModel, 7);
+                    $chatModelReference = (string) ($conversation->model ?? '');
+                    $requiredInstanceId = null;
+                    $chatModel = $chatModelReference;
+                    if (preg_match('#^provider:([a-zA-Z0-9_.-]+)/(.+)$#', $chatModelReference, $matches) === 1) {
+                        $requiredInstanceId = $matches[1];
+                        $chatModel = $matches[2];
+                        // Required OpenAI-compatible candidates are text-only and
+                        // never receive the MCP tool catalog.
+                    } else {
+                        $aiRouter = app(AIRouter::class);
+                        $systemPrompt = $aiRouter->buildToolAwarePrompt($systemPrompt, true);
+                        if (str_starts_with($chatModel, 'ollama:')) {
+                            $chatModel = substr($chatModel, 7);
+                        }
                     }
 
                     foreach ($aiService->processWithToolsStreaming($userContentForModel, array_filter([
-                        'temperature' => 0.7,
-                        'max_tokens' => 2000,
+                        'temperature' => $requiredInstanceId !== null ? 0.1 : 0.7,
+                        'max_tokens' => $requiredInstanceId !== null ? 256 : 2000,
                         'system_prompt' => $systemPrompt,
                         'model' => $chatModel,
+                        'model_override' => $requiredInstanceId !== null ? $chatModel : null,
+                        'model_role' => $requiredInstanceId !== null ? 'deep_offline' : null,
+                        'required_instance_id' => $requiredInstanceId,
+                        'require_model_role' => $requiredInstanceId !== null,
+                        'cancellation_run_id' => $requiredInstanceId !== null ? $runId : null,
+                        'use_cache' => $requiredInstanceId === null,
                     ] + $privacyRoutingConfig)) as $chunk) {
                         // Parse chunk to build full message
                         $chunkData = json_decode(trim($chunk), true);
@@ -1173,13 +1305,26 @@ class ChatController extends Controller
 
                             if ($chunkData['type'] === 'content') {
                                 $fullContent .= $chunkData['content'];
-                            } elseif ($chunkData['type'] === 'tool_call') {
-                                $toolCallsData[] = $chunkData;
+                            } elseif ($chunkData['type'] === 'content_replace') {
+                                $fullContent = (string) ($chunkData['content'] ?? '');
+                            } elseif (in_array($chunkData['type'], ['tool_call', 'tool_result', 'tool_error'], true)) {
+                                $toolCallsData = $toolActivityService->apply($toolCallsData, $chunkData);
+                            } elseif ($chunkData['type'] === 'stream_interrupted') {
+                                $streamInterruption = [
+                                    'message' => (string) ($chunkData['message'] ?? 'Response interrupted after partial output.'),
+                                    'operator_cancelled' => (bool) ($chunkData['operator_cancelled'] ?? false),
+                                    'partial_content_preserved' => (bool) ($chunkData['partial_content_preserved'] ?? ($fullContent !== '')),
+                                    'fallback_suppressed' => (bool) ($chunkData['fallback_suppressed'] ?? true),
+                                    'commit_kind' => $chunkData['commit_kind'] ?? null,
+                                    'correlation_id' => $chunkData['correlation_id'] ?? null,
+                                ];
+                            } elseif ($chunkData['type'] === 'error') {
+                                throw new \RuntimeException((string) ($chunkData['content'] ?? 'Required AI provider failed.'));
                             }
                         }
 
                         // Forward chunk to client (except 'done' which was skipped above)
-                        echo 'data: '.$chunk."\n";
+                        echo 'data: '.rtrim($chunk, "\r\n")."\n\n";
                         ob_flush();
                         flush();
                     }
@@ -1222,6 +1367,9 @@ class ChatController extends Controller
                 }
                 if (! empty($generatedMediaMetadata)) {
                     $metadataArray['generated_media'] = $generatedMediaMetadata;
+                }
+                if ($streamInterruption !== null) {
+                    $metadataArray['stream_interruption'] = $streamInterruption;
                 }
                 $metadata = ! empty($metadataArray) ? json_encode($metadataArray) : null;
 
@@ -1268,6 +1416,7 @@ class ChatController extends Controller
                     'tokens' => $tokens,
                     'intent' => $detectedIntent,
                     'attachment_processing' => $attachmentPrompt['metadata']['attachments'] ?? [],
+                    'tool_calls' => $toolCallsData,
                 ];
                 if (! empty($assistantAttachmentPayloads)) {
                     $completeEvent['assistant_attachments'] = $assistantAttachmentPayloads;
@@ -1279,15 +1428,26 @@ class ChatController extends Controller
                         'source_ids' => array_column($ragSources, 'id'),
                     ]);
                 }
+                if ($streamInterruption !== null) {
+                    $completeEvent['stream_interruption'] = $streamInterruption;
+                }
                 echo 'data: '.json_encode($completeEvent)."\n\n";
                 ob_flush();
                 flush();
 
-            } catch (\Exception $e) {
-                \Log::error('Streaming chat error: '.$e->getMessage());
-                echo 'data: '.json_encode(['type' => 'error', 'message' => $e->getMessage()])."\n\n";
+            } catch (\Throwable $e) {
+                $streamFailure = $streamFailures->event($e, $runId);
+                \Log::error('Streaming chat failed', [
+                    'schema' => $streamFailure['schema'],
+                    'run_id' => $streamFailure['run_id'],
+                    'error_code' => $streamFailure['error_code'],
+                    'exception' => $e,
+                ]);
+                echo 'data: '.json_encode($streamFailure)."\n\n";
                 ob_flush();
                 flush();
+            } finally {
+                $cancellations->clear($runId);
             }
         }, 200, [
             'Content-Type' => 'text/event-stream',
@@ -1295,6 +1455,25 @@ class ChatController extends Controller
             'Connection' => 'keep-alive',
             'X-Accel-Buffering' => 'no',
         ]);
+    }
+
+    public function cancelStream(
+        int $id,
+        string $runId,
+        ChatStreamCancellationService $cancellations
+    ) {
+        if (! Str::isUuid($runId) || ! $cancellations->request($runId, $id)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Active chat stream was not found.',
+            ], 404);
+        }
+
+        return response()->json([
+            'success' => true,
+            'run_id' => $runId,
+            'state' => 'cancellation_requested',
+        ], 202);
     }
 
     /**
@@ -1308,68 +1487,115 @@ class ChatController extends Controller
     }
 
     /**
+     * @param  array<int,string>  $capabilities
+     */
+    private function isAudioGenerationConversation(object $conversation, array $capabilities): bool
+    {
+        return (string) ($conversation->model_mode ?? '') === 'media_output_audio'
+            || in_array('text_to_speech', $capabilities, true)
+            || in_array('audio_output', $capabilities, true);
+    }
+
+    /**
      * @return array{content:string,attachment:object,metadata:array<string,mixed>}
      */
-    private function generateImageForChat(string $prompt, int $conversationId, ChatAttachmentService $attachments): array
+    private function generateAudioForChat(
+        string $text,
+        int $conversationId,
+        ChatAttachmentService $attachments,
+        OfflineTtsService $tts
+    ): array {
+        $text = trim($text);
+        $policy = $this->audioGenerationPolicy();
+        $maxChars = max(1, (int) ($policy['max_input_chars'] ?? 5000));
+        if ($text === '') {
+            throw new \RuntimeException('Speech generation requires text.');
+        }
+        if (mb_strlen($text) > $maxChars) {
+            throw new \RuntimeException("Speech generation input exceeds the configured {$maxChars}-character limit.");
+        }
+
+        $directory = storage_path('app/offline-tts/chat');
+        File::ensureDirectoryExists($directory);
+        $outputPath = $directory.'/'.Str::uuid().'.wav';
+
+        try {
+            $result = $tts->synthesize($text, $outputPath);
+            if (! ($result['success'] ?? false) || ! is_file($outputPath)) {
+                throw new \RuntimeException((string) ($result['error'] ?? 'Local speech synthesis failed.'));
+            }
+
+            $audio = file_get_contents($outputPath);
+            if (! is_string($audio) || $audio === '') {
+                throw new \RuntimeException('Local speech synthesis returned an empty WAV file.');
+            }
+
+            $capability = is_array($result['capability'] ?? null) ? $result['capability'] : [];
+            $metadata = [
+                'provider' => 'local_tts',
+                'engine' => (string) ($capability['engine'] ?? 'unknown'),
+                'voice' => $capability['voice'] ?? null,
+                'model' => basename((string) ($capability['model'] ?? '')) ?: null,
+                'duration_ms' => (int) ($result['duration_ms'] ?? 0),
+                'text_sha256' => hash('sha256', $text),
+                'text_chars' => mb_strlen($text),
+                'runtime_source' => (string) ($policy['runtime_source'] ?? 'configured_local_tts'),
+            ];
+            $attachment = $attachments->storeGeneratedAttachment(
+                $conversationId,
+                $audio,
+                'generated-speech-'.now()->format('Ymd-His').'.wav',
+                'audio/wav',
+                $metadata
+            );
+
+            return [
+                'content' => 'Generated speech locally using '.($metadata['engine'] ?: 'the configured TTS runtime').'.',
+                'attachment' => $attachment,
+                'metadata' => $metadata,
+            ];
+        } finally {
+            File::delete($outputPath);
+        }
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function audioGenerationPolicy(): array
     {
-        $sidecarUrl = rtrim((string) config('services.image_sidecar.url', ''), '/');
-        if ($sidecarUrl === '') {
-            throw new \RuntimeException('Image sidecar URL is not configured.');
-        }
+        try {
+            $row = DB::selectOne(
+                'SELECT metadata FROM llm_model_profiles WHERE profile_name = ? LIMIT 1',
+                ['media_output_audio']
+            );
+            $metadata = json_decode((string) ($row->metadata ?? '{}'), true);
 
-        $sidecarHost = strtolower((string) (parse_url($sidecarUrl, PHP_URL_HOST) ?: ''));
-        $token = trim((string) config('services.image_sidecar.token', ''));
-        $isLoopback = in_array($sidecarHost, ['127.0.0.1', 'localhost', '::1'], true);
-        if ($token === '' && ! $isLoopback) {
-            throw new \RuntimeException('Image sidecar token is required for non-loopback sidecar URLs.');
+            return is_array($metadata) ? $metadata : [];
+        } catch (\Throwable) {
+            return [];
         }
+    }
 
-        $headers = [];
-        if ($token !== '') {
-            $headers['Authorization'] = 'Bearer '.$token;
-        }
-
-        $client = new Client;
-        $response = $client->post($sidecarUrl.'/generate', [
-            'headers' => $headers,
-            'json' => [
-                'prompt' => Str::limit(trim($prompt), 2000, ''),
-                'width' => 384,
-                'height' => 384,
-                'steps' => 14,
-                'guidance_scale' => 5.5,
-            ],
-            'timeout' => (int) config('services.image_sidecar.timeout', 240),
+    /**
+     * @return array{content:string,attachment:object,metadata:array<string,mixed>}
+     */
+    private function generateImageForChat(
+        string $prompt,
+        object $conversation,
+        int $conversationId,
+        ChatAttachmentService $attachments
+    ): array {
+        $model = (string) ($conversation->model ?? 'sidecar:image/sdxl-lightning');
+        $result = app(ImageGenerationService::class)->generate(Str::limit(trim($prompt), 2000, ''), [
+            'model' => $model,
         ]);
-
-        $data = json_decode((string) $response->getBody(), true);
-        if (! is_array($data) || empty($data['ok']) || empty($data['image_base64'])) {
-            throw new \RuntimeException('Image sidecar returned an invalid response.');
-        }
-
-        $content = base64_decode((string) $data['image_base64'], true);
-        if (! is_string($content) || $content === '') {
-            throw new \RuntimeException('Image sidecar returned invalid image data.');
-        }
-
-        $filename = (string) ($data['filename'] ?? 'generated-image.png');
-        $mimeType = (string) ($data['mime_type'] ?? 'image/png');
-        $metadata = [
-            'provider' => 'image_sidecar',
-            'model' => (string) ($data['model'] ?? 'unknown'),
-            'sha256' => (string) ($data['sha256'] ?? hash('sha256', $content)),
-            'seed' => $data['seed'] ?? null,
-            'width' => $data['width'] ?? null,
-            'height' => $data['height'] ?? null,
-            'steps' => $data['steps'] ?? null,
-            'elapsed_seconds' => $data['elapsed_seconds'] ?? null,
-            'sidecar_url' => $sidecarUrl,
-        ];
+        $metadata = $result['metadata'];
         $attachment = $attachments->storeGeneratedAttachment(
             $conversationId,
-            $content,
-            $filename,
-            $mimeType,
+            $result['content'],
+            $result['filename'],
+            $result['mime_type'],
             $metadata
         );
 
@@ -1767,12 +1993,16 @@ class ChatController extends Controller
 
             if ($row) {
                 $capabilities = $this->profileCapabilities($row, (string) $row->model_name, (string) $row->profile_name);
-                $registry = $this->modelRegistrySummary((string) $row->model_name);
+                $registry = $this->profileRuntimeSummary($row);
 
                 return [
                     'id' => $mode,
                     'profile_name' => (string) $row->profile_name,
-                    'model' => $this->modelReferenceForProfile((string) $row->model_name),
+                    'model' => $this->modelReferenceForProfile(
+                        (string) $row->model_name,
+                        (string) $row->profile_name,
+                        $row->metadata ?? null
+                    ),
                     'model_name' => (string) $row->model_name,
                     'description' => (string) ($row->description ?? $row->profile_name),
                     'capabilities' => $capabilities,
@@ -1805,8 +2035,20 @@ class ChatController extends Controller
         ];
     }
 
-    private function modelReferenceForProfile(string $modelName): string
+    private function modelReferenceForProfile(string $modelName, string $profileName = '', mixed $metadataJson = null): string
     {
+        if ($profileName === 'audio_transcription') {
+            return 'tool:'.$modelName;
+        }
+
+        $metadata = is_array($metadataJson) ? $metadataJson : json_decode((string) $metadataJson, true);
+        $instanceId = is_array($metadata) && is_string($metadata['instance_id'] ?? null)
+            ? trim($metadata['instance_id'])
+            : '';
+        if ($instanceId !== '' && ($metadata['required_provider'] ?? false) === true) {
+            return 'provider:'.$instanceId.'/'.$modelName;
+        }
+
         return str_starts_with($modelName, 'sidecar:') ? $modelName : 'ollama:'.$modelName;
     }
 
@@ -1831,6 +2073,13 @@ class ChatController extends Controller
      */
     private function validateAttachmentCapabilities(array $uploadedFiles, object $conversation, ChatAttachmentService $attachments)
     {
+        if ($this->isAudioTranscriptionConversation($conversation) && empty($uploadedFiles)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Audio Transcription requires an audio or video attachment.',
+            ], 422);
+        }
+
         if (empty($uploadedFiles)) {
             return null;
         }
@@ -1883,6 +2132,84 @@ class ChatController extends Controller
     private function appendAttachmentPrompt(string $content, string $suffix): string
     {
         return trim($suffix) === '' ? $content : rtrim($content).$suffix;
+    }
+
+    private function isAudioTranscriptionConversation(object $conversation): bool
+    {
+        return (string) ($conversation->model_mode ?? '') === 'audio_transcription';
+    }
+
+    /**
+     * @param  array<int,array{name:string,text:string,media_type:string}>  $transcriptions
+     * @param  array<int,array<string,mixed>>  $attachments
+     */
+    private function formatTranscriptionResponse(array $transcriptions, array $attachments = []): string
+    {
+        $failureCodes = [];
+        foreach ($attachments as $attachment) {
+            if (! in_array($attachment['media_type'] ?? null, ['audio', 'video'], true)) {
+                continue;
+            }
+
+            $code = $attachment['transcription_failure_code'] ?? null;
+            if (is_string($code) && $code !== '') {
+                $failureCodes[] = in_array($code, [
+                    'runtime_or_input_unavailable', 'gpu_unavailable', 'output_directory_unavailable',
+                    'process_failed', 'empty_transcript', 'transcription_timeout', 'runtime_exception',
+                    'whisper_working_directory_unavailable', 'whisper_input_unavailable',
+                    'audio_extraction_failed', 'unknown_failure',
+                ], true) ? $code : 'unknown_failure';
+            }
+        }
+        $failureCodes = array_values(array_unique($failureCodes));
+
+        $failureMessages = [
+            'runtime_or_input_unavailable' => 'Local speech recognition or its input is unavailable. Check the Whisper runtime and stored attachment, then try again.',
+            'whisper_working_directory_unavailable' => 'Local speech recognition could not prepare temporary storage. Check available storage and try again.',
+            'whisper_input_unavailable' => 'Local speech recognition could not read its input. Check the stored attachment and try again.',
+            'gpu_unavailable' => 'Local speech recognition is unavailable. Retry later or check its status.',
+            'output_directory_unavailable' => 'Local speech recognition could not prepare output storage. Check available storage and try again.',
+            'audio_extraction_failed' => 'Audio could not be prepared for transcription. Check the file format and try again.',
+            'transcription_timeout' => 'Speech recognition timed out. Try a shorter audio file or retry later.',
+            'process_failed' => 'Speech recognition could not complete. Check local speech recognition diagnostics and try again.',
+            'runtime_exception' => 'Speech recognition could not complete. Check local speech recognition diagnostics and try again.',
+            'unknown_failure' => 'Transcription could not be completed. Retry later or check local speech recognition diagnostics.',
+        ];
+        $actionableFailures = array_values(array_filter($failureCodes, static fn (string $code): bool => $code !== 'empty_transcript'));
+        $failureNotice = implode("\n\n", array_unique(array_map(
+            static fn (string $code): string => $failureMessages[$code] ?? $failureMessages['unknown_failure'],
+            $actionableFailures
+        )));
+
+        if (empty($transcriptions)) {
+            return $failureNotice !== ''
+                ? $failureNotice
+                : 'No speech could be transcribed from the attachment. Confirm the file contains audible speech and try again.';
+        }
+
+        $blocks = [];
+        foreach ($transcriptions as $transcription) {
+            $name = Str::limit(preg_replace('/[\r\n`]+/', ' ', (string) ($transcription['name'] ?? 'attachment')), 120, '');
+            $text = trim((string) ($transcription['text'] ?? ''));
+            if ($text === '') {
+                continue;
+            }
+
+            $blocks[] = "`{$name}`\n\n".preg_replace('/^/m', '    ', $text);
+        }
+
+        if (empty($blocks)) {
+            return $failureNotice !== ''
+                ? $failureNotice
+                : 'No speech could be transcribed from the attachment. Confirm the file contains audible speech and try again.';
+        }
+
+        $response = "## Transcript\n\n".implode("\n\n", $blocks);
+        if ($failureNotice !== '') {
+            $response .= "\n\n---\n".$failureNotice;
+        }
+
+        return $response;
     }
 
     /**
@@ -2101,7 +2428,12 @@ class ChatController extends Controller
             'uncensored_coding' => 53,
             'uncensored_text_qwen' => 54,
             'media_output_image' => 60,
-            'audio_transcription' => 70,
+            'media_output_image_quality' => 61,
+            'media_output_image_alternate' => 62,
+            'media_output_image_modern' => 63,
+            'media_output_image_experimental' => 64,
+            'media_output_audio' => 70,
+            'audio_transcription' => 80,
         ];
 
         try {
@@ -2121,7 +2453,7 @@ class ChatController extends Controller
             $id = $profileName === 'default' ? 'standard' : $profileName;
             $capabilities = $this->profileCapabilities($profile, (string) $profile->model_name, $profileName);
             $useCases = $this->decodeList($profile->use_cases ?? null);
-            $registry = $this->modelRegistrySummary((string) $profile->model_name);
+            $registry = $this->profileRuntimeSummary($profile);
             $profileStatus = property_exists($profile, 'status') ? (string) $profile->status : null;
             $qualityRating = property_exists($profile, 'quality_rating') && $profile->quality_rating !== null
                 ? (int) $profile->quality_rating
@@ -2138,6 +2470,7 @@ class ChatController extends Controller
                 'label' => $this->labelForProfile($profileName),
                 'description' => (string) ($profile->description ?? $profileName),
                 'model' => (string) $profile->model_name,
+                'category' => $this->profileCategory($profile, $profileName, $capabilities),
                 'capabilities' => $capabilities,
                 'families' => $this->capabilityFamilies($capabilities, $profileName),
                 'input_capabilities' => array_values(array_intersect($capabilities, ['text_input', 'file_input', 'image_input', 'audio_input', 'video_input', 'code_input'])),
@@ -2153,7 +2486,7 @@ class ChatController extends Controller
                 'status' => $profileStatus ?: ($registry['status'] ?? ((int) $profile->enabled === 1 ? 'active' : 'candidate')),
                 'is_available' => $registry['is_available'],
                 'notes' => (string) ($profile->notes ?? ''),
-                'sort' => $fixedOrder[$profileName] ?? 100,
+                'sort' => $this->profileSortOrder($profile, $profileName, $fixedOrder),
             ];
         }
 
@@ -2163,6 +2496,7 @@ class ChatController extends Controller
                     'id' => 'standard',
                     'profile' => 'default',
                     'label' => 'Standard',
+                    'category' => 'Chat',
                     'description' => 'Default chat model',
                     'model' => $this->resolveDefaultOllamaModel(),
                     'capabilities' => ['text_input', 'text_output'],
@@ -2197,6 +2531,23 @@ class ChatController extends Controller
         ]);
     }
 
+    /**
+     * Prefer a bounded table-owned UI rank when a profile supplies one.
+     *
+     * @param  array<string,int>  $fixedOrder
+     */
+    private function profileSortOrder(object $profile, string $profileName, array $fixedOrder): int
+    {
+        $fallback = $fixedOrder[$profileName] ?? 100;
+        $metadata = json_decode((string) ($profile->metadata ?? '{}'), true);
+        $sortOrder = is_array($metadata) ? ($metadata['ui']['sort_order'] ?? null) : null;
+        if (! is_int($sortOrder) && ! (is_string($sortOrder) && ctype_digit($sortOrder))) {
+            return $fallback;
+        }
+
+        return max(0, min(999, (int) $sortOrder));
+    }
+
     private function labelForProfile(string $profile): string
     {
         $labels = [
@@ -2215,7 +2566,15 @@ class ChatController extends Controller
             'uncensored_coding' => 'Uncensored Coding',
             'uncensored_text_qwen' => 'Uncensored Qwen',
             'media_output_image' => 'Image Generation',
+            'media_output_image_quality' => 'SDXL Base 1.0',
+            'media_output_image_alternate' => 'PixArt Sigma 1024',
+            'media_output_image_modern' => 'FLUX.2 Klein 4B',
+            'media_output_image_experimental' => 'SANA-Sprint 1.6B',
+            'media_output_audio' => 'Speech Generation',
             'audio_transcription' => 'Audio Transcription',
+            'deep_offline_colibri' => 'Deep Offline — GLM-5.2/Colibri',
+            'deep_offline_kimi_k3' => 'Deep Offline — Kimi K3/Colibri',
+            'deep_offline_qwen38' => 'Deep Offline — Qwen3.8-27B/.87',
         ];
 
         return $labels[$profile] ?? ucwords(str_replace('_', ' ', $profile));
@@ -2247,6 +2606,106 @@ class ChatController extends Controller
     }
 
     /**
+     * @return array{quality_rating:int|null,status:string|null,is_available:bool|null}
+     */
+    private function profileRuntimeSummary(object $profile): array
+    {
+        $profileName = (string) ($profile->profile_name ?? '');
+        $modelName = (string) ($profile->model_name ?? '');
+        $metadata = json_decode((string) ($profile->metadata ?? '{}'), true);
+        $instanceId = is_array($metadata) && is_string($metadata['instance_id'] ?? null)
+            ? trim($metadata['instance_id'])
+            : '';
+        if ($instanceId !== '' && ($metadata['required_provider'] ?? false) === true) {
+            try {
+                $instance = DB::table('llm_instances')
+                    ->where('instance_id', $instanceId)
+                    ->first(['is_active', 'is_healthy', 'routability', 'circuit_state']);
+            } catch (\Throwable $e) {
+                $instance = null;
+            }
+            $available = $instance !== null
+                && (int) $instance->is_active === 1
+                && (int) $instance->is_healthy === 1
+                && (string) ($instance->routability ?? 'blocked') === 'allowed'
+                && (string) ($instance->circuit_state ?? 'closed') !== 'open';
+
+            return [
+                'quality_rating' => property_exists($profile, 'quality_rating') && $profile->quality_rating !== null
+                    ? (int) $profile->quality_rating
+                    : null,
+                'status' => $available ? 'available' : 'unavailable',
+                'is_available' => $available,
+            ];
+        }
+        if (str_starts_with($profileName, 'media_output_image') || str_starts_with($modelName, 'sidecar:image/')) {
+            if ($this->imageSidecarCapability === null) {
+                $this->imageSidecarCapability = app(ImageGenerationService::class)->capability(true);
+            }
+            $alias = str_starts_with($modelName, 'sidecar:image/')
+                ? substr($modelName, strlen('sidecar:image/'))
+                : $modelName;
+            foreach ($this->imageSidecarCapability['models'] ?? [] as $model) {
+                if (($model['id'] ?? null) === $alias) {
+                    $available = ($model['installed'] ?? false) === true
+                        && ($model['published'] ?? false) === true;
+
+                    return [
+                        'quality_rating' => null,
+                        'status' => $available ? 'available' : 'unavailable',
+                        'is_available' => $available,
+                    ];
+                }
+            }
+
+            return ['quality_rating' => null, 'status' => 'unavailable', 'is_available' => false];
+        }
+
+        if (! in_array($profileName, ['audio_transcription', 'media_output_audio'], true)) {
+            return $this->modelRegistrySummary($modelName);
+        }
+
+        $capability = $profileName === 'audio_transcription'
+            ? app(WhisperRuntimeService::class)->capability()
+            : app(OfflineTtsService::class)->capability();
+        $available = ($capability['status'] ?? '') === 'available';
+
+        return [
+            'quality_rating' => null,
+            'status' => $available ? 'available' : 'unavailable',
+            'is_available' => $available,
+        ];
+    }
+
+    /**
+     * @param  array<int,string>  $capabilities
+     */
+    private function profileCategory(object $profile, string $profileName, array $capabilities): string
+    {
+        $metadata = json_decode((string) ($profile->metadata ?? '{}'), true);
+        if (is_array($metadata) && is_string($metadata['category'] ?? null) && trim($metadata['category']) !== '') {
+            return mb_substr(trim($metadata['category']), 0, 80);
+        }
+        if (str_starts_with($profileName, 'media_output_image') || in_array('image_output', $capabilities, true)) {
+            return 'Image Generation';
+        }
+        if (in_array('image_input', $capabilities, true)) {
+            return 'Vision';
+        }
+        if (in_array('code_output', $capabilities, true)) {
+            return 'Coding';
+        }
+        if (in_array('audio_output', $capabilities, true) || in_array('audio_input', $capabilities, true)) {
+            return 'Audio';
+        }
+        if (str_contains($profileName, 'uncensored')) {
+            return 'Private / Uncensored';
+        }
+
+        return 'Chat';
+    }
+
+    /**
      * Operator override unlocks candidate/risky profiles, not broken or absent models.
      *
      * @param  array{quality_rating:int|null,status:string|null,is_available:bool|null}  $registry
@@ -2271,6 +2730,7 @@ class ChatController extends Controller
                 'audio_to_text',
                 'video_to_text',
                 'text_to_image',
+                'text_to_speech',
                 'generated_file_output',
                 'ocr_text_extraction',
                 'operator_uncensored',
@@ -2304,6 +2764,8 @@ class ChatController extends Controller
             'ocr_text_extraction' => 'ocr',
             'audio_input' => 'audio',
             'audio_to_text' => 'audio',
+            'audio_output' => 'audio',
+            'text_to_speech' => 'audio',
             'video_input' => 'video',
             'video_to_text' => 'video',
             'image_output' => 'generation',

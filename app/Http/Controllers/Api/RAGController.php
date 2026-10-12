@@ -8,6 +8,8 @@ use App\Services\AIService;
 use App\Services\KnowledgeGraphService;
 use App\Services\MultimodalEmbeddingService;
 use App\Services\QueryRouterService;
+use App\Services\RagEmbeddingProvenanceService;
+use App\Services\RagSourceReferenceService;
 use App\Support\PgVector;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,17 +21,23 @@ class RAGController extends Controller
     private AIService $aiService;
     private KnowledgeGraphService $knowledgeGraphService;
     private MultimodalEmbeddingService $multimodalService;
+    private RagEmbeddingProvenanceService $embeddingProvenance;
+    private RagSourceReferenceService $sourceReferences;
 
     public function __construct(
         RAGService $ragService,
         AIService $aiService,
         KnowledgeGraphService $knowledgeGraphService,
-        MultimodalEmbeddingService $multimodalService
+        MultimodalEmbeddingService $multimodalService,
+        ?RagEmbeddingProvenanceService $embeddingProvenance = null,
+        ?RagSourceReferenceService $sourceReferences = null
     ) {
         $this->ragService = $ragService;
         $this->aiService = $aiService;
         $this->knowledgeGraphService = $knowledgeGraphService;
         $this->multimodalService = $multimodalService;
+        $this->embeddingProvenance = $embeddingProvenance ?? new RagEmbeddingProvenanceService;
+        $this->sourceReferences = $sourceReferences ?? new RagSourceReferenceService;
     }
 
     /**
@@ -128,6 +136,7 @@ class RAGController extends Controller
 
             $results = array_map(function ($result) {
                 $doc = $result['document'] ?? $result;
+                $source = $this->sourceReferences->reference($doc);
                 return [
                     'id' => $doc->id ?? $doc['id'] ?? null,
                     'title' => $doc->title ?? $doc['title'] ?? '',
@@ -136,7 +145,8 @@ class RAGController extends Controller
                     'similarity' => round($result['similarity'] ?? $result['score'] ?? 0, 4),
                     'created_at' => $doc->created_at ?? null,
                     'metadata' => $doc->metadata ?? null,
-                    'media_url' => $doc->media_url ?? null,
+                    'media_url' => $source['locator'],
+                    'source' => $source,
                 ];
             }, $deepResults['results'] ?? []);
 
@@ -164,6 +174,8 @@ class RAGController extends Controller
         return response()->json([
             'query' => $validated['query'],
             'results' => array_map(function ($result) {
+                $source = $this->sourceReferences->reference($result['document']);
+
                 return [
                     'id' => $result['document']->id,
                     'title' => $result['document']->title,
@@ -172,7 +184,8 @@ class RAGController extends Controller
                     'similarity' => round($result['similarity'], 4),
                     'created_at' => $result['document']->created_at,
                     'metadata' => $result['document']->metadata,
-                    'media_url' => $result['document']->media_url ?? null,
+                    'media_url' => $source['locator'],
+                    'source' => $source,
                 ];
             }, $results),
             'count' => count($results),
@@ -238,12 +251,15 @@ class RAGController extends Controller
         return response()->json([
             'source_id' => $id,
             'results' => array_map(function ($result) {
+                $source = $this->sourceReferences->reference($result['document']);
+
                 return [
                     'id' => $result['document']->id,
                     'title' => $result['document']->title,
                     'content' => substr($result['document']->content, 0, 200) . '...',
                     'similarity' => round($result['similarity'], 4),
                     'created_at' => $result['document']->created_at, // Already a string from raw SQL
+                    'source' => $source,
                 ];
             }, $results),
             'count' => count($results),
@@ -359,6 +375,10 @@ class RAGController extends Controller
         // Build update fields and parameters
         $updateFields = [];
         $params = [];
+        $requestedMetadata = is_array($validated['metadata'] ?? null) ? $validated['metadata'] : null;
+        if ($requestedMetadata !== null) {
+            unset($requestedMetadata[RagEmbeddingProvenanceService::METADATA_KEY]);
+        }
 
         if (isset($validated['title'])) {
             $updateFields[] = 'title = ?';
@@ -366,21 +386,41 @@ class RAGController extends Controller
         }
 
         if (isset($validated['content'])) {
-            $updateFields[] = 'content = ?';
-            $params[] = $validated['content'];
-
-            // Regenerate embedding if content changed
-            $embeddingResult = $this->aiService->generateEmbedding($validated['content']);
-            if ($embeddingResult['success'] && !empty($embeddingResult['embedding'])) {
-                $embeddingStr = PgVector::literal($embeddingResult['embedding']);
-                $updateFields[] = 'embedding = ?::vector';
-                $params[] = $embeddingStr;
+            $content = trim($validated['content']);
+            if ($content === '') {
+                return response()->json([
+                    'error' => 'Document content cannot be empty.',
+                ], 422);
             }
+
+            // Generate the replacement vector before changing content so a
+            // provider failure cannot leave a stale content/vector pair.
+            $embeddingResult = $this->aiService->generateEmbedding($content);
+            if (! ($embeddingResult['success'] ?? false) || empty($embeddingResult['embedding'])) {
+                return response()->json([
+                    'error' => 'Embedding regeneration failed; document was not changed.',
+                ], 503);
+            }
+
+            $contentHash = hash('sha256', $content);
+            $metadata = $this->embeddingProvenance->attach($requestedMetadata, $embeddingResult, $contentHash);
+
+            $updateFields[] = 'content = ?';
+            $params[] = $content;
+            $updateFields[] = 'embedding = ?::vector';
+            $params[] = PgVector::literal($embeddingResult['embedding']);
+            $updateFields[] = 'content_hash = ?';
+            $params[] = $contentHash;
+            $updateFields[] = $requestedMetadata === null
+                ? "metadata = COALESCE(metadata, '{}'::jsonb) || ?::jsonb"
+                : 'metadata = ?::jsonb';
+            $params[] = json_encode($metadata, JSON_THROW_ON_ERROR);
+            $requestedMetadata = null;
         }
 
-        if (isset($validated['metadata'])) {
-            $updateFields[] = 'metadata = ?';
-            $params[] = json_encode($validated['metadata']);
+        if ($requestedMetadata !== null) {
+            $updateFields[] = "metadata = COALESCE(metadata, '{}'::jsonb) || ?::jsonb";
+            $params[] = json_encode($requestedMetadata, JSON_THROW_ON_ERROR);
         }
 
         if (!empty($updateFields)) {
@@ -473,10 +513,23 @@ class RAGController extends Controller
 
         // Format embedding for PostgreSQL vector type
         $embeddingStr = PgVector::literal($embeddingResult['embedding']);
+        $content = trim((string) $document->content);
+        $contentHash = hash('sha256', $content);
+        $metadata = $this->embeddingProvenance->attach(null, $embeddingResult, $contentHash);
 
         // Update embedding using raw SQL (PostgreSQL)
-        $sql = "UPDATE rag_documents SET embedding = ?::vector, updated_at = NOW() WHERE id = ?";
-        DB::connection('pgsql_rag')->update($sql, [$embeddingStr, $id]);
+        $sql = "UPDATE rag_documents
+                SET embedding = ?::vector,
+                    content_hash = ?,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || ?::jsonb,
+                    updated_at = NOW()
+                WHERE id = ?";
+        DB::connection('pgsql_rag')->update($sql, [
+            $embeddingStr,
+            $contentHash,
+            json_encode($metadata, JSON_THROW_ON_ERROR),
+            $id,
+        ]);
 
         // Fetch updated document
         $sql = "SELECT * FROM rag_documents WHERE id = ? LIMIT 1";
@@ -1183,7 +1236,7 @@ class RAGController extends Controller
             return response()->json([
                 'success' => false,
                 'error' => 'Failed to fetch traces',
-                'details' => $e->getMessage(),
+                'error_type' => $e::class,
             ], 500);
         }
     }

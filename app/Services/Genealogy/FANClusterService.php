@@ -80,23 +80,24 @@ class FANClusterService
     /**
      * Create a new FAN cluster for a person
      *
-     * @param int $personId Person ID (research subject)
-     * @param string $name Cluster name
-     * @param array $options Additional options (research_period, location, notes)
+     * @param  int  $personId  Person ID (research subject)
+     * @param  string  $name  Cluster name
+     * @param  array  $options  Additional options (research_period, location, notes)
      * @return int New cluster ID
+     *
      * @throws InvalidArgumentException
      */
     public function createCluster(int $personId, string $name, array $options = []): int
     {
         // Validate person exists
-        $person = DB::selectOne("SELECT id, given_name, surname FROM genealogy_persons WHERE id = ?", [$personId]);
-        if (!$person) {
+        $person = DB::selectOne('SELECT id, given_name, surname FROM genealogy_persons WHERE id = ?', [$personId]);
+        if (! $person) {
             throw new InvalidArgumentException("Person not found: {$personId}");
         }
 
-        $sql = "INSERT INTO genealogy_fan_clusters
+        $sql = 'INSERT INTO genealogy_fan_clusters
                 (person_id, cluster_name, research_period, location, notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, NOW(), NOW())";
+                VALUES (?, ?, ?, ?, ?, NOW(), NOW())';
 
         DB::insert($sql, [
             $personId,
@@ -120,17 +121,16 @@ class FANClusterService
     /**
      * Get a cluster by ID
      *
-     * @param int $clusterId Cluster ID
-     * @return object|null
+     * @param  int  $clusterId  Cluster ID
      */
     public function getCluster(int $clusterId): ?object
     {
-        $sql = "SELECT c.*,
-                       p.given_name, p.surname, p.birth_date, p.death_date,
+        $sql = 'SELECT c.*,
+                       p.given_name, p.surname, p.birth_date, p.death_date, p.tree_id,
                        (SELECT COUNT(*) FROM genealogy_fan_members WHERE cluster_id = c.id) as member_count
                 FROM genealogy_fan_clusters c
                 JOIN genealogy_persons p ON p.id = c.person_id
-                WHERE c.id = ?";
+                WHERE c.id = ?';
 
         return DB::selectOne($sql, [$clusterId]);
     }
@@ -138,16 +138,15 @@ class FANClusterService
     /**
      * Get all clusters for a person
      *
-     * @param int $personId Person ID
-     * @return array
+     * @param  int  $personId  Person ID
      */
     public function getClustersForPerson(int $personId): array
     {
-        $sql = "SELECT c.*,
+        $sql = 'SELECT c.*,
                        (SELECT COUNT(*) FROM genealogy_fan_members WHERE cluster_id = c.id) as member_count
                 FROM genealogy_fan_clusters c
                 WHERE c.person_id = ?
-                ORDER BY c.created_at DESC";
+                ORDER BY c.created_at DESC';
 
         return DB::select($sql, [$personId]);
     }
@@ -155,9 +154,8 @@ class FANClusterService
     /**
      * Update a cluster
      *
-     * @param int $clusterId Cluster ID
-     * @param array $data Update data
-     * @return bool
+     * @param  int  $clusterId  Cluster ID
+     * @param  array  $data  Update data
      */
     public function updateCluster(int $clusterId, array $data): bool
     {
@@ -175,23 +173,23 @@ class FANClusterService
             return false;
         }
 
-        $fields[] = "updated_at = NOW()";
+        $fields[] = 'updated_at = NOW()';
         $params[] = $clusterId;
 
-        $sql = "UPDATE genealogy_fan_clusters SET " . implode(', ', $fields) . " WHERE id = ?";
+        $sql = 'UPDATE genealogy_fan_clusters SET '.implode(', ', $fields).' WHERE id = ?';
+
         return DB::update($sql, $params) > 0;
     }
 
     /**
      * Delete a cluster and all its members
      *
-     * @param int $clusterId Cluster ID
-     * @return bool
+     * @param  int  $clusterId  Cluster ID
      */
     public function deleteCluster(int $clusterId): bool
     {
         // Members will cascade delete via FK
-        return DB::delete("DELETE FROM genealogy_fan_clusters WHERE id = ?", [$clusterId]) > 0;
+        return DB::delete('DELETE FROM genealogy_fan_clusters WHERE id = ?', [$clusterId]) > 0;
     }
 
     // =========================================================================
@@ -201,52 +199,53 @@ class FANClusterService
     /**
      * Add a member to a FAN cluster
      *
-     * @param int $clusterId Cluster ID
-     * @param array $memberData Member data
+     * @param  int  $clusterId  Cluster ID
+     * @param  array  $memberData  Member data
      * @return int New member ID
+     *
      * @throws InvalidArgumentException
      */
     public function addMember(int $clusterId, array $memberData): int
     {
         // Validate cluster exists
         $cluster = $this->getCluster($clusterId);
-        if (!$cluster) {
+        if (! $cluster) {
             throw new InvalidArgumentException("Cluster not found: {$clusterId}");
         }
 
         // Validate required fields
         if (empty($memberData['member_name'])) {
-            throw new InvalidArgumentException("member_name is required");
+            throw new InvalidArgumentException('member_name is required');
         }
         if (empty($memberData['source_record_type'])) {
-            throw new InvalidArgumentException("source_record_type is required");
+            throw new InvalidArgumentException('source_record_type is required');
         }
 
         // Validate relationship type
         $relationshipType = $memberData['relationship_type'] ?? 'other';
-        if (!array_key_exists($relationshipType, self::RELATIONSHIP_TYPES)) {
+        if (! array_key_exists($relationshipType, self::RELATIONSHIP_TYPES)) {
             throw new InvalidArgumentException("Invalid relationship_type: {$relationshipType}");
         }
 
         // Validate confidence
         $confidence = $memberData['confidence'] ?? 'medium';
-        if (!array_key_exists($confidence, self::CONFIDENCE_LEVELS)) {
+        if (! array_key_exists($confidence, self::CONFIDENCE_LEVELS)) {
             throw new InvalidArgumentException("Invalid confidence level: {$confidence}");
         }
 
         // Validate member_person_id if provided
-        if (!empty($memberData['member_person_id'])) {
-            $memberPerson = DB::selectOne("SELECT id FROM genealogy_persons WHERE id = ?", [$memberData['member_person_id']]);
-            if (!$memberPerson) {
+        if (! empty($memberData['member_person_id'])) {
+            $memberPerson = DB::selectOne('SELECT id FROM genealogy_persons WHERE id = ? AND tree_id = ?', [$memberData['member_person_id'], $cluster->tree_id]);
+            if (! $memberPerson) {
                 throw new InvalidArgumentException("Member person not found: {$memberData['member_person_id']}");
             }
         }
 
-        $sql = "INSERT INTO genealogy_fan_members
+        $sql = 'INSERT INTO genealogy_fan_members
                 (cluster_id, member_person_id, member_name, relationship_type,
                  source_record_type, source_citation, interaction_date,
                  interaction_description, confidence, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())';
 
         DB::insert($sql, [
             $clusterId,
@@ -266,20 +265,21 @@ class FANClusterService
     /**
      * Get all members of a cluster
      *
-     * @param int $clusterId Cluster ID
-     * @return array
+     * @param  int  $clusterId  Cluster ID
      */
     public function getClusterMembers(int $clusterId): array
     {
-        $sql = "SELECT m.*,
+        $sql = 'SELECT m.*,
                        p.given_name as linked_given_name,
                        p.surname as linked_surname,
                        p.birth_date as linked_birth_date,
                        p.death_date as linked_death_date
                 FROM genealogy_fan_members m
-                LEFT JOIN genealogy_persons p ON p.id = m.member_person_id
+                JOIN genealogy_fan_clusters c ON c.id = m.cluster_id
+                JOIN genealogy_persons owner ON owner.id = c.person_id
+                LEFT JOIN genealogy_persons p ON p.id = m.member_person_id AND p.tree_id = owner.tree_id
                 WHERE m.cluster_id = ?
-                ORDER BY m.interaction_date ASC, m.member_name ASC";
+                ORDER BY m.interaction_date ASC, m.member_name ASC';
 
         return DB::select($sql, [$clusterId]);
     }
@@ -287,9 +287,8 @@ class FANClusterService
     /**
      * Update a cluster member
      *
-     * @param int $memberId Member ID
-     * @param array $data Update data
-     * @return bool
+     * @param  int  $memberId  Member ID
+     * @param  array  $data  Update data
      */
     public function updateMember(int $memberId, array $data): bool
     {
@@ -299,7 +298,7 @@ class FANClusterService
         $allowedFields = [
             'member_person_id', 'member_name', 'relationship_type',
             'source_record_type', 'source_citation', 'interaction_date',
-            'interaction_description', 'confidence'
+            'interaction_description', 'confidence',
         ];
 
         foreach ($allowedFields as $field) {
@@ -314,38 +313,42 @@ class FANClusterService
         }
 
         $params[] = $memberId;
-        $sql = "UPDATE genealogy_fan_members SET " . implode(', ', $fields) . " WHERE id = ?";
+        $sql = 'UPDATE genealogy_fan_members SET '.implode(', ', $fields).' WHERE id = ?';
+
         return DB::update($sql, $params) > 0;
     }
 
     /**
      * Remove a member from a cluster
      *
-     * @param int $memberId Member ID
-     * @return bool
+     * @param  int  $memberId  Member ID
      */
     public function removeMember(int $memberId): bool
     {
-        return DB::delete("DELETE FROM genealogy_fan_members WHERE id = ?", [$memberId]) > 0;
+        return DB::delete('DELETE FROM genealogy_fan_members WHERE id = ?', [$memberId]) > 0;
     }
 
     /**
      * Link a cluster member to a person in the database
      *
-     * @param int $memberId Member ID
-     * @param int $personId Person ID to link
-     * @return bool
+     * @param  int  $memberId  Member ID
+     * @param  int  $personId  Person ID to link
      */
     public function linkMemberToPerson(int $memberId, int $personId): bool
     {
-        // Validate person exists
-        $person = DB::selectOne("SELECT id, given_name, surname FROM genealogy_persons WHERE id = ?", [$personId]);
-        if (!$person) {
+        $person = DB::selectOne('
+            SELECT p.id FROM genealogy_fan_members m
+            JOIN genealogy_fan_clusters c ON c.id = m.cluster_id
+            JOIN genealogy_persons owner ON owner.id = c.person_id
+            JOIN genealogy_persons p ON p.id = ? AND p.tree_id = owner.tree_id
+            WHERE m.id = ?
+        ', [$personId, $memberId]);
+        if (! $person) {
             throw new InvalidArgumentException("Person not found: {$personId}");
         }
 
         return DB::update(
-            "UPDATE genealogy_fan_members SET member_person_id = ? WHERE id = ?",
+            'UPDATE genealogy_fan_members SET member_person_id = ? WHERE id = ?',
             [$personId, $memberId]
         ) > 0;
     }
@@ -359,19 +362,19 @@ class FANClusterService
      *
      * Analyzes census events to find neighbors (same household or nearby enumeration).
      *
-     * @param int $personId Person ID
-     * @param int|null $year Optional census year filter
+     * @param  int  $personId  Person ID
+     * @param  int|null  $year  Optional census year filter
      * @return array Extracted potential FAN members
      */
     public function extractFromCensus(int $personId, ?int $year = null): array
     {
-        $person = DB::selectOne("SELECT id, tree_id, given_name, surname FROM genealogy_persons WHERE id = ?", [$personId]);
-        if (!$person) {
+        $person = DB::selectOne('SELECT id, tree_id, given_name, surname FROM genealogy_persons WHERE id = ?', [$personId]);
+        if (! $person) {
             throw new InvalidArgumentException("Person not found: {$personId}");
         }
 
         // Get census events for this person
-        $yearFilter = $year ? "AND YEAR(e.event_date) = ?" : "";
+        $yearFilter = $year ? 'AND YEAR(e.event_date) = ?' : '';
         $params = [$personId];
         if ($year) {
             $params[] = $year;
@@ -403,18 +406,18 @@ class FANClusterService
                        AND YEAR(e.event_date) = ?
                        AND e.event_place LIKE ?
                      ORDER BY p.surname, p.given_name
-                     LIMIT " . config('genealogy.fan_census_neighbor_limit', 100),
+                     LIMIT ".config('genealogy.fan_census_neighbor_limit', 100),
                     [
                         $person->tree_id,
                         $personId,
                         $censusYear,
-                        '%' . $this->extractLocationKey($event->event_place) . '%',
+                        '%'.$this->extractLocationKey($event->event_place).'%',
                     ]
                 );
 
                 foreach ($neighbors as $neighbor) {
                     $results[] = [
-                        'member_name' => trim($neighbor->given_name . ' ' . $neighbor->surname),
+                        'member_name' => trim($neighbor->given_name.' '.$neighbor->surname),
                         'member_person_id' => $neighbor->id,
                         'relationship_type' => 'neighbor',
                         'source_record_type' => 'census',
@@ -433,13 +436,13 @@ class FANClusterService
     /**
      * Extract witnesses from vital records (marriages, wills, deeds)
      *
-     * @param int $personId Person ID
+     * @param  int  $personId  Person ID
      * @return array Extracted witnesses
      */
     public function extractWitnesses(int $personId): array
     {
-        $person = DB::selectOne("SELECT id, tree_id, given_name, surname FROM genealogy_persons WHERE id = ?", [$personId]);
-        if (!$person) {
+        $person = DB::selectOne('SELECT id, tree_id, given_name, surname FROM genealogy_persons WHERE id = ?', [$personId]);
+        if (! $person) {
             throw new InvalidArgumentException("Person not found: {$personId}");
         }
 
@@ -447,14 +450,14 @@ class FANClusterService
 
         // Check for marriages where this person was a spouse
         $marriages = DB::select(
-            "SELECT f.id, f.marriage_date, f.marriage_place,
+            'SELECT f.id, f.marriage_date, f.marriage_place,
                     h.id as husband_id, h.given_name as husband_given, h.surname as husband_surname,
                     w.id as wife_id, w.given_name as wife_given, w.surname as wife_surname
              FROM genealogy_families f
              LEFT JOIN genealogy_persons h ON h.id = f.husband_id
              LEFT JOIN genealogy_persons w ON w.id = f.wife_id
              WHERE (f.husband_id = ? OR f.wife_id = ?)
-               AND f.tree_id = ?",
+               AND f.tree_id = ?',
             [$personId, $personId, $person->tree_id]
         );
 
@@ -472,14 +475,14 @@ class FANClusterService
                 if ($event->description && preg_match_all('/witness[es]*[:\s]+([^,;.]+)/i', $event->description, $matches)) {
                     foreach ($matches[1] as $witnessName) {
                         $witnessName = trim($witnessName);
-                        if (!empty($witnessName)) {
+                        if (! empty($witnessName)) {
                             $results[] = [
                                 'member_name' => $witnessName,
                                 'member_person_id' => $this->findPersonByName($person->tree_id, $witnessName),
                                 'relationship_type' => 'witness',
                                 'source_record_type' => 'marriage_witness',
                                 'interaction_date' => $marriage->marriage_date ?? $event->event_date,
-                                'interaction_description' => "Witness to marriage",
+                                'interaction_description' => 'Witness to marriage',
                                 'source_citation' => "Marriage record, {$marriage->marriage_place}",
                                 'confidence' => 'high',
                             ];
@@ -503,12 +506,12 @@ class FANClusterService
             if (preg_match_all('/witness[es]*[:\s]+([^,;.]+)/i', $event->description, $matches)) {
                 foreach ($matches[1] as $witnessName) {
                     $witnessName = trim($witnessName);
-                    if (!empty($witnessName)) {
+                    if (! empty($witnessName)) {
                         $results[] = [
                             'member_name' => $witnessName,
                             'member_person_id' => $this->findPersonByName($person->tree_id, $witnessName),
                             'relationship_type' => 'witness',
-                            'source_record_type' => strtolower($event->event_type) . '_witness',
+                            'source_record_type' => strtolower($event->event_type).'_witness',
                             'interaction_date' => $event->event_date,
                             'interaction_description' => "Witness to {$event->event_type}",
                             'source_citation' => "{$event->event_type} record, {$event->event_place}",
@@ -534,7 +537,7 @@ class FANClusterService
             if (preg_match_all('/witness[es]*[:\s]+([^,;.]+)/i', $text, $matches)) {
                 foreach ($matches[1] as $witnessName) {
                     $witnessName = trim($witnessName);
-                    if (!empty($witnessName)) {
+                    if (! empty($witnessName)) {
                         $results[] = [
                             'member_name' => $witnessName,
                             'member_person_id' => $this->findPersonByName($person->tree_id, $witnessName),
@@ -556,13 +559,13 @@ class FANClusterService
     /**
      * Extract godparents and church associates
      *
-     * @param int $personId Person ID
+     * @param  int  $personId  Person ID
      * @return array Extracted church associates
      */
     public function extractChurchAssociates(int $personId): array
     {
-        $person = DB::selectOne("SELECT id, tree_id, given_name, surname FROM genealogy_persons WHERE id = ?", [$personId]);
-        if (!$person) {
+        $person = DB::selectOne('SELECT id, tree_id, given_name, surname FROM genealogy_persons WHERE id = ?', [$personId]);
+        if (! $person) {
             throw new InvalidArgumentException("Person not found: {$personId}");
         }
 
@@ -583,7 +586,7 @@ class FANClusterService
             if (preg_match_all('/(?:godparent|sponsor|godfather|godmother)[s]*[:\s]+([^,;.]+)/i', $event->description, $matches)) {
                 foreach ($matches[1] as $name) {
                     $name = trim($name);
-                    if (!empty($name)) {
+                    if (! empty($name)) {
                         $results[] = [
                             'member_name' => $name,
                             'member_person_id' => $this->findPersonByName($person->tree_id, $name),
@@ -609,13 +612,13 @@ class FANClusterService
     /**
      * Analyze a FAN cluster for patterns and research opportunities
      *
-     * @param int $clusterId Cluster ID
+     * @param  int  $clusterId  Cluster ID
      * @return array Analysis results
      */
     public function analyzeCluster(int $clusterId): array
     {
         $cluster = $this->getCluster($clusterId);
-        if (!$cluster) {
+        if (! $cluster) {
             throw new InvalidArgumentException("Cluster not found: {$clusterId}");
         }
 
@@ -661,7 +664,7 @@ class FANClusterService
         $memberOccurrences = [];
         foreach ($members as $member) {
             $key = strtolower(trim($member->member_name));
-            if (!isset($memberOccurrences[$key])) {
+            if (! isset($memberOccurrences[$key])) {
                 $memberOccurrences[$key] = [
                     'name' => $member->member_name,
                     'person_id' => $member->member_person_id,
@@ -676,8 +679,8 @@ class FANClusterService
         }
 
         // Filter to recurring members (appear 2+ times)
-        $recurringMembers = array_filter($memberOccurrences, fn($m) => $m['count'] >= 2);
-        usort($recurringMembers, fn($a, $b) => $b['count'] - $a['count']);
+        $recurringMembers = array_filter($memberOccurrences, fn ($m) => $m['count'] >= 2);
+        usort($recurringMembers, fn ($a, $b) => $b['count'] - $a['count']);
 
         // Identify potential family members (recurring + witness relationships)
         $potentialFamily = [];
@@ -703,7 +706,7 @@ class FANClusterService
             'cluster_name' => $cluster->cluster_name,
             'subject_person' => [
                 'id' => $cluster->person_id,
-                'name' => trim($cluster->given_name . ' ' . $cluster->surname),
+                'name' => trim($cluster->given_name.' '.$cluster->surname),
             ],
             'total_members' => count($members),
             'linked_members' => $linkedCount,
@@ -724,7 +727,7 @@ class FANClusterService
     /**
      * Suggest research targets based on cluster analysis
      *
-     * @param int $clusterId Cluster ID
+     * @param  int  $clusterId  Cluster ID
      * @return array Research suggestions
      */
     public function suggestResearchTargets(int $clusterId): array
@@ -744,7 +747,7 @@ class FANClusterService
                 'priority' => $priority,
                 'target_name' => $member['name'],
                 'target_person_id' => $member['person_id'],
-                'reason' => "Appears {$member['count']} times in cluster as " . implode(', ', array_unique($member['relationships'])),
+                'reason' => "Appears {$member['count']} times in cluster as ".implode(', ', array_unique($member['relationships'])),
                 'suggested_records' => $this->suggestRecordsForPerson($member['name'], $analysis['common_locations']),
             ];
         }
@@ -754,13 +757,13 @@ class FANClusterService
         $members = $this->getClusterMembers($clusterId);
 
         foreach ($members as $member) {
-            if (!$member->member_person_id && $member->relationship_type === 'witness') {
+            if (! $member->member_person_id && $member->relationship_type === 'witness') {
                 $suggestions[] = [
                     'type' => 'unlinked_witness',
                     'priority' => 'high',
                     'target_name' => $member->member_name,
                     'target_person_id' => null,
-                    'reason' => "Witness to important event, not yet linked to tree",
+                    'reason' => 'Witness to important event, not yet linked to tree',
                     'suggested_records' => $this->suggestRecordsForPerson($member->member_name, $analysis['common_locations']),
                 ];
             }
@@ -792,8 +795,8 @@ class FANClusterService
                 'type' => 'date_expansion',
                 'priority' => 'low',
                 'direction' => 'earlier',
-                'suggested_period' => ($earliestYear - 10) . '-' . $earliestYear,
-                'reason' => "Expand research to earlier period to find migration origins",
+                'suggested_period' => ($earliestYear - 10).'-'.$earliestYear,
+                'reason' => 'Expand research to earlier period to find migration origins',
             ];
 
             // Suggest looking 10 years later
@@ -801,14 +804,15 @@ class FANClusterService
                 'type' => 'date_expansion',
                 'priority' => 'low',
                 'direction' => 'later',
-                'suggested_period' => $latestYear . '-' . ($latestYear + 10),
-                'reason' => "Expand research to later period to track family developments",
+                'suggested_period' => $latestYear.'-'.($latestYear + 10),
+                'reason' => 'Expand research to later period to track family developments',
             ];
         }
 
         // Sort by priority
         usort($suggestions, function ($a, $b) {
             $priorityOrder = ['high' => 0, 'medium' => 1, 'low' => 2];
+
             return ($priorityOrder[$a['priority']] ?? 3) - ($priorityOrder[$b['priority']] ?? 3);
         });
 
@@ -820,13 +824,13 @@ class FANClusterService
      *
      * Returns data structure suitable for network visualization (D3.js, vis.js, etc.)
      *
-     * @param int $clusterId Cluster ID
+     * @param  int  $clusterId  Cluster ID
      * @return array Network data with nodes and edges
      */
     public function getClusterNetwork(int $clusterId): array
     {
         $cluster = $this->getCluster($clusterId);
-        if (!$cluster) {
+        if (! $cluster) {
             throw new InvalidArgumentException("Cluster not found: {$clusterId}");
         }
 
@@ -838,8 +842,8 @@ class FANClusterService
 
         // Add central person (research subject) as node
         $nodes[] = [
-            'id' => 'person_' . $cluster->person_id,
-            'label' => trim($cluster->given_name . ' ' . $cluster->surname),
+            'id' => 'person_'.$cluster->person_id,
+            'label' => trim($cluster->given_name.' '.$cluster->surname),
             'type' => 'subject',
             'person_id' => $cluster->person_id,
             'group' => 'subject',
@@ -848,11 +852,11 @@ class FANClusterService
         // Add cluster members as nodes
         foreach ($members as $member) {
             $nodeId = $member->member_person_id
-                ? 'person_' . $member->member_person_id
-                : 'unlinked_' . $member->id;
+                ? 'person_'.$member->member_person_id
+                : 'unlinked_'.$member->id;
 
             // Avoid duplicate nodes for same person
-            if (!isset($memberNodes[$nodeId])) {
+            if (! isset($memberNodes[$nodeId])) {
                 $memberNodes[$nodeId] = [
                     'id' => $nodeId,
                     'label' => $member->member_name,
@@ -867,7 +871,7 @@ class FANClusterService
 
             // Add edge from subject to member
             $edges[] = [
-                'from' => 'person_' . $cluster->person_id,
+                'from' => 'person_'.$cluster->person_id,
                 'to' => $nodeId,
                 'label' => $member->relationship_type,
                 'relationship_type' => $member->relationship_type,
@@ -883,8 +887,8 @@ class FANClusterService
         }
 
         // Find connections between members (same family, same location, etc.)
-        $linkedMembers = array_filter($members, fn($m) => $m->member_person_id !== null);
-        $memberPersonIds = array_map(fn($m) => $m->member_person_id, $linkedMembers);
+        $linkedMembers = array_filter($members, fn ($m) => $m->member_person_id !== null);
+        $memberPersonIds = array_map(fn ($m) => $m->member_person_id, $linkedMembers);
 
         // Batch fetch all family relationships between cluster members in one query
         $familyEdges = [];
@@ -896,18 +900,18 @@ class FANClusterService
                 array_merge($memberPersonIds, $memberPersonIds)
             );
             foreach ($families as $fam) {
-                $familyEdges[$fam->husband_id . ':' . $fam->wife_id] = true;
-                $familyEdges[$fam->wife_id . ':' . $fam->husband_id] = true;
+                $familyEdges[$fam->husband_id.':'.$fam->wife_id] = true;
+                $familyEdges[$fam->wife_id.':'.$fam->husband_id] = true;
             }
         }
 
         foreach ($linkedMembers as $i => $member1) {
             foreach (array_slice($linkedMembers, $i + 1) as $member2) {
-                $pairKey = $member1->member_person_id . ':' . $member2->member_person_id;
+                $pairKey = $member1->member_person_id.':'.$member2->member_person_id;
                 if (isset($familyEdges[$pairKey])) {
                     $edges[] = [
-                        'from' => 'person_' . $member1->member_person_id,
-                        'to' => 'person_' . $member2->member_person_id,
+                        'from' => 'person_'.$member1->member_person_id,
+                        'to' => 'person_'.$member2->member_person_id,
                         'label' => 'spouse',
                         'relationship_type' => 'family',
                     ];
@@ -919,8 +923,8 @@ class FANClusterService
                     $date2 = $member2->interaction_date ? date('Y', strtotime($member2->interaction_date)) : null;
                     if ($date1 && $date1 === $date2) {
                         $edges[] = [
-                            'from' => 'person_' . $member1->member_person_id,
-                            'to' => 'person_' . $member2->member_person_id,
+                            'from' => 'person_'.$member1->member_person_id,
+                            'to' => 'person_'.$member2->member_person_id,
                             'label' => 'same_census',
                             'relationship_type' => 'co-location',
                             'year' => $date1,
@@ -935,7 +939,7 @@ class FANClusterService
             'cluster_name' => $cluster->cluster_name,
             'subject' => [
                 'id' => $cluster->person_id,
-                'name' => trim($cluster->given_name . ' ' . $cluster->surname),
+                'name' => trim($cluster->given_name.' '.$cluster->surname),
             ],
             'nodes' => $nodes,
             'edges' => $edges,
@@ -943,8 +947,8 @@ class FANClusterService
             'stats' => [
                 'total_nodes' => count($nodes),
                 'total_edges' => count($edges),
-                'linked_members' => count(array_filter($memberNodes, fn($n) => $n['type'] === 'linked')),
-                'unlinked_members' => count(array_filter($memberNodes, fn($n) => $n['type'] === 'unlinked')),
+                'linked_members' => count(array_filter($memberNodes, fn ($n) => $n['type'] === 'linked')),
+                'unlinked_members' => count(array_filter($memberNodes, fn ($n) => $n['type'] === 'unlinked')),
             ],
         ];
     }
@@ -956,8 +960,8 @@ class FANClusterService
     /**
      * Find a person by name in the tree
      *
-     * @param int $treeId Tree ID
-     * @param string $name Name to search
+     * @param  int  $treeId  Tree ID
+     * @param  string  $name  Name to search
      * @return int|null Person ID if found
      */
     private function findPersonByName(int $treeId, string $name): ?int
@@ -987,12 +991,12 @@ class FANClusterService
             $surname = end($parts);
 
             $person = DB::selectOne(
-                "SELECT id FROM genealogy_persons
+                'SELECT id FROM genealogy_persons
                  WHERE tree_id = ?
                    AND (given_name LIKE ? OR given_name = ?)
                    AND (surname LIKE ? OR surname = ?)
-                 LIMIT 1",
-                [$treeId, $givenName . '%', $givenName, $surname . '%', $surname]
+                 LIMIT 1',
+                [$treeId, $givenName.'%', $givenName, $surname.'%', $surname]
             );
 
             if ($person) {
@@ -1006,7 +1010,7 @@ class FANClusterService
     /**
      * Extract location key for matching (county, town, etc.)
      *
-     * @param string $location Full location string
+     * @param  string  $location  Full location string
      * @return string Simplified location key
      */
     private function extractLocationKey(string $location): string
@@ -1018,6 +1022,7 @@ class FANClusterService
 
         // Fall back to first significant word
         $parts = preg_split('/[,\/]+/', $location);
+
         return trim($parts[0] ?? $location);
     }
 
@@ -1030,16 +1035,16 @@ class FANClusterService
 
         if (count($potentialFamily) > 0) {
             $names = array_column($potentialFamily, 'name');
-            $notes[] = "Potential family connections identified: " . implode(', ', array_slice($names, 0, 5));
+            $notes[] = 'Potential family connections identified: '.implode(', ', array_slice($names, 0, 5));
         }
 
         if (count($recurring) > count($potentialFamily)) {
-            $notes[] = count($recurring) . " individuals appear multiple times in the cluster - consider researching these associates.";
+            $notes[] = count($recurring).' individuals appear multiple times in the cluster - consider researching these associates.';
         }
 
-        $unlinked = array_filter($members, fn($m) => $m->member_person_id === null);
+        $unlinked = array_filter($members, fn ($m) => $m->member_person_id === null);
         if (count($unlinked) > 0) {
-            $notes[] = count($unlinked) . " cluster members are not yet linked to persons in the tree.";
+            $notes[] = count($unlinked).' cluster members are not yet linked to persons in the tree.';
         }
 
         return $notes;
@@ -1072,7 +1077,7 @@ class FANClusterService
     private function getSuggestedActionForSourceType(string $sourceType, array $analysis): string
     {
         $locations = array_keys($analysis['common_locations']);
-        $locationStr = !empty($locations) ? "in " . implode(', ', array_slice($locations, 0, 2)) : "";
+        $locationStr = ! empty($locations) ? 'in '.implode(', ', array_slice($locations, 0, 2)) : '';
 
         switch ($sourceType) {
             case 'census':

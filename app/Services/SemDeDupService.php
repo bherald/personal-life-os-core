@@ -2,11 +2,12 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Support\PgVector;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use App\Traits\RecursionAware;
 use Exception;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Semantic Deduplication Service for RAG Documents
@@ -25,15 +26,20 @@ class SemDeDupService
 
     private AIService $aiService;
 
+    private RagEmbeddingProvenanceService $embeddingProvenance;
+
     /** Default similarity threshold for blocking duplicates */
     private const DEFAULT_BLOCK_THRESHOLD = 0.95;
 
     /** Warning threshold - similar but allowed through */
     private const DEFAULT_WARN_THRESHOLD = 0.85;
 
-    public function __construct(AIService $aiService)
-    {
+    public function __construct(
+        AIService $aiService,
+        ?RagEmbeddingProvenanceService $embeddingProvenance = null,
+    ) {
         $this->aiService = $aiService;
+        $this->embeddingProvenance = $embeddingProvenance ?? new RagEmbeddingProvenanceService;
     }
 
     /**
@@ -42,23 +48,23 @@ class SemDeDupService
      * Runs strategies in order: exact hash → title+source → embedding similarity.
      * Returns early on first match.
      *
-     * @param string $content Document content
-     * @param string|null $title Document title
-     * @param string|null $sourceType Source type
-     * @param string|int|null $sourceId Source identifier
-     * @param array $options {
-     *   skip_dedup: bool (force index, skip all checks),
-     *   dedup_threshold: float (override block threshold),
-     *   on_match: string (skip|merge|update),
-     * }
+     * @param  string  $content  Document content
+     * @param  string|null  $title  Document title
+     * @param  string|null  $sourceType  Source type
+     * @param  string|int|null  $sourceId  Source identifier
+     * @param  array  $options  {
+     *                          skip_dedup: bool (force index, skip all checks),
+     *                          dedup_threshold: float (override block threshold),
+     *                          on_match: string (skip|merge|update),
+     *                          }
      * @return array {
-     *   is_duplicate: bool,
-     *   action: string (block|merge|update|warn|allow),
-     *   strategy: string|null,
-     *   matched_document_id: int|null,
-     *   similarity: float|null,
-     *   content_hash: string,
-     * }
+     *               is_duplicate: bool,
+     *               action: string (block|merge|update|warn|allow),
+     *               strategy: string|null,
+     *               matched_document_id: int|null,
+     *               similarity: float|null,
+     *               content_hash: string,
+     *               }
      */
     public function checkDuplicate(
         string $content,
@@ -67,8 +73,9 @@ class SemDeDupService
         string|int|null $sourceId = null,
         array $options = []
     ): array {
-        if (!empty($options['skip_dedup'])) {
+        if (! empty($options['skip_dedup'])) {
             $hash = $this->computeContentHash($content);
+
             return [
                 'is_duplicate' => false,
                 'action' => 'allow',
@@ -96,6 +103,7 @@ class SemDeDupService
         $hashMatch = $this->checkExactHash($contentHash);
         if ($hashMatch) {
             $this->logDedupResult($title, $sourceType, $contentHash, 'exact_hash', $hashMatch, 1.0, 'blocked');
+
             return [
                 'is_duplicate' => true,
                 'action' => 'block',
@@ -112,6 +120,7 @@ class SemDeDupService
             if ($titleMatch) {
                 $action = $onMatch === 'update' ? 'update' : ($onMatch === 'merge' ? 'merge' : 'block');
                 $this->logDedupResult($title, $sourceType, $contentHash, 'title_source', $titleMatch, null, $action);
+
                 return [
                     'is_duplicate' => true,
                     'action' => $action,
@@ -130,6 +139,7 @@ class SemDeDupService
                 $title, $sourceType, $contentHash, 'embedding',
                 $embeddingResult['document_id'], $embeddingResult['similarity'], 'blocked'
             );
+
             return [
                 'is_duplicate' => true,
                 'action' => 'block',
@@ -152,6 +162,7 @@ class SemDeDupService
                 'matched_id' => $warnResult['document_id'],
                 'similarity' => $warnResult['similarity'],
             ]);
+
             return [
                 'is_duplicate' => false,
                 'action' => 'warn',
@@ -164,6 +175,7 @@ class SemDeDupService
 
         // No duplicate found
         $this->logDedupResult($title, $sourceType, $contentHash, 'none', null, null, 'allowed');
+
         return [
             'is_duplicate' => false,
             'action' => 'allow',
@@ -182,7 +194,7 @@ class SemDeDupService
     public function checkExactHash(string $contentHash): ?int
     {
         $result = DB::connection('pgsql_rag')->selectOne(
-            "SELECT id FROM rag_documents WHERE content_hash = ? LIMIT 1",
+            'SELECT id FROM rag_documents WHERE content_hash = ? LIMIT 1',
             [$contentHash]
         );
 
@@ -198,12 +210,12 @@ class SemDeDupService
     {
         if ($sourceId !== null) {
             $result = DB::connection('pgsql_rag')->selectOne(
-                "SELECT id FROM rag_documents WHERE title = ? AND source_type = ? AND source_id = ? LIMIT 1",
+                'SELECT id FROM rag_documents WHERE title = ? AND source_type = ? AND source_id = ? LIMIT 1',
                 [$title, $sourceType, (string) $sourceId]
             );
         } else {
             $result = DB::connection('pgsql_rag')->selectOne(
-                "SELECT id FROM rag_documents WHERE title = ? AND source_type = ? LIMIT 1",
+                'SELECT id FROM rag_documents WHERE title = ? AND source_type = ? LIMIT 1',
                 [$title, $sourceType]
             );
         }
@@ -223,8 +235,9 @@ class SemDeDupService
     {
         try {
             $result = $this->aiService->generateEmbedding($content);
-            if (!$result['success']) {
+            if (! $result['success']) {
                 Log::warning('SemDedup: Embedding generation failed, skipping similarity check');
+
                 return null;
             }
 
@@ -262,6 +275,7 @@ class SemDeDupService
         $content = mb_strtolower($content);
         $content = preg_replace('/\s+/', ' ', $content);
         $content = preg_replace('/[^\p{L}\p{N}\s]/u', '', $content);
+
         return trim($content);
     }
 
@@ -287,8 +301,8 @@ class SemDeDupService
     ): void {
         try {
             DB::connection('pgsql_rag')->insert(
-                "INSERT INTO rag_dedup_log (incoming_title, incoming_source_type, incoming_content_hash, strategy, matched_document_id, similarity_score, action_taken, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, NOW())",
+                'INSERT INTO rag_dedup_log (incoming_title, incoming_source_type, incoming_content_hash, strategy, matched_document_id, similarity_score, action_taken, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, NOW())',
                 [
                     $title ? substr($title, 0, 500) : null,
                     $sourceType ? substr($sourceType, 0, 100) : null,
@@ -324,9 +338,11 @@ class SemDeDupService
                  WHERE id = ?",
                 [$metaJson, $existingDocId]
             );
+
             return true;
         } catch (Exception $e) {
             Log::error('SemDedup: Metadata merge failed', ['doc_id' => $existingDocId, 'error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -334,46 +350,172 @@ class SemDeDupService
     /**
      * Update existing document content, re-generate embedding
      */
-    public function updateExisting(int $existingDocId, string $content, ?string $title, ?array $metadata): bool
-    {
+    public function updateExisting(
+        int $existingDocId,
+        string $content,
+        ?string $title,
+        ?array $metadata,
+        bool $invalidateDerived = false,
+        ?callable $publicationGuard = null,
+        bool $preserveContent = false,
+    ): bool {
         try {
-            $trimmed = trim($content);
-            $result = $this->aiService->generateEmbedding($trimmed);
-            if (!$result['success']) {
+            $indexContent = $preserveContent ? $content : trim($content);
+            if ($preserveContent) {
+                foreach ([$content, $title] as $text) {
+                    if ($text !== null && (! mb_check_encoding($text, 'UTF-8') || str_contains($text, "\0"))) {
+                        throw new \RuntimeException('Verbatim RAG indexing requires valid UTF-8 text without NUL bytes.');
+                    }
+                }
+                if (trim($content) === '') {
+                    throw new \RuntimeException('Verbatim RAG indexing requires nonempty content.');
+                }
+            }
+            $result = $this->aiService->generateEmbedding($indexContent);
+            if (! $result['success']) {
+                if (! empty($result['controller_failure']) && is_array($result['controller_failure'])) {
+                    throw new InferenceAdmissionException('Embedding admission held', controllerFailure: $result['controller_failure']);
+                }
                 Log::error('SemDedup: Re-embedding failed for update', ['doc_id' => $existingDocId]);
+
                 return false;
             }
 
             $embeddingStr = PgVector::literal($result['embedding']);
-            $contentHash = $this->computeContentHash($content);
+            $contentHash = $preserveContent ? hash('sha256', $content) : $this->computeContentHash($content);
+            $provenanceMetadata = $this->embeddingProvenance->attach(null, $result, $contentHash);
 
-            $params = [$trimmed, $contentHash];
-            $setClauses = "content = ?, content_hash = ?";
+            $params = [$indexContent, $contentHash];
+            $setClauses = 'content = ?, content_hash = ?';
 
             if ($title !== null) {
-                $setClauses .= ", title = ?";
+                $setClauses .= ', title = ?';
                 $params[] = $title;
             }
 
             if ($metadata !== null) {
-                $setClauses .= ", metadata = ?::jsonb";
-                $params[] = json_encode($metadata);
+                $setClauses .= ', metadata = ?::jsonb';
+                $params[] = json_encode(
+                    $this->embeddingProvenance->attach($metadata, $result, $contentHash),
+                    JSON_THROW_ON_ERROR
+                );
+            } else {
+                $setClauses .= ", metadata = COALESCE(metadata, '{}'::jsonb) || ?::jsonb";
+                $params[] = json_encode($provenanceMetadata, JSON_THROW_ON_ERROR);
             }
 
             $params[] = $existingDocId;
 
-            DB::connection('pgsql_rag')->update(
-                "UPDATE rag_documents
-                 SET {$setClauses}, embedding = '{$embeddingStr}'::vector, updated_at = NOW()
-                 WHERE id = ?",
-                $params
-            );
+            $connection = DB::connection('pgsql_rag');
+            $persist = function () use (
+                $connection,
+                $existingDocId,
+                $embeddingStr,
+                $setClauses,
+                $params,
+                $invalidateDerived,
+                $indexContent,
+            ): bool {
+                $contentChanged = false;
+                if ($invalidateDerived) {
+                    $existing = $connection->selectOne(
+                        'SELECT content_hash, content FROM rag_documents WHERE id = ? FOR UPDATE',
+                        [$existingDocId],
+                    );
+                    if ($existing === null) {
+                        return false;
+                    }
 
-            return true;
+                    $contentChanged = (string) ($existing->content ?? '') !== $indexContent;
+                }
+
+                $updated = $connection->update(
+                    "UPDATE rag_documents
+                     SET {$setClauses}, embedding = '{$embeddingStr}'::vector, updated_at = NOW()
+                     WHERE id = ?",
+                    $params
+                );
+                if ($updated < 1) {
+                    return false;
+                }
+
+                if ($invalidateDerived && $contentChanged) {
+                    $this->invalidateDerivedIndexes($connection, $existingDocId);
+                }
+
+                return true;
+            };
+
+            $publish = fn (): bool => $invalidateDerived ? $connection->transaction($persist) : $persist();
+
+            return $publicationGuard !== null ? $publicationGuard($publish) : $publish();
         } catch (Exception $e) {
+            if ($preserveContent || InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('SemDedup: Update existing failed', ['doc_id' => $existingDocId, 'error' => $e->getMessage()]);
+
             return false;
         }
+    }
+
+    private function invalidateDerivedIndexes(object $connection, int $documentId): void
+    {
+        $connection->insert(
+            "INSERT INTO knowledge_graph_edge_history (
+                triple_id, action, old_values, reason, caused_by_triple_id, actor, created_at
+             )
+             SELECT id,
+                    'invalidated',
+                    jsonb_build_object('t_expired', t_expired, 'superseded_by', superseded_by),
+                    'Source document content replaced',
+                    NULL,
+                    'rag_source_identity_upsert',
+                    NOW()
+             FROM knowledge_graph
+             WHERE source_document_id = ? AND t_expired IS NULL",
+            [$documentId],
+        );
+        $connection->update(
+            'UPDATE knowledge_graph
+             SET t_expired = NOW(), updated_at = NOW()
+             WHERE source_document_id = ? AND t_expired IS NULL',
+            [$documentId],
+        );
+
+        foreach ([
+            'knowledge_graph_hyperedges' => 'source_document_id',
+            'rag_chunk_hypotheticals' => 'document_id',
+            'rag_propositions' => 'document_id',
+            'rag_sentence_embeddings' => 'document_id',
+            'raptor_summaries' => 'document_id',
+        ] as $table => $column) {
+            $connection->delete("DELETE FROM {$table} WHERE {$column} = ?", [$documentId]);
+        }
+
+        $connection->update(
+            "UPDATE rag_documents
+             SET context_prefix = NULL,
+                 contextualized_at = NULL,
+                 sentence_positions = NULL,
+                 embedding_mode = 'chunk',
+                 sentence_indexed_at = NULL,
+                 se_eligible = NULL,
+                 raptor_indexed_at = NULL,
+                 raptor_error_count = 0,
+                 raptor_eligible = NULL,
+                 hype_indexed_at = NULL,
+                 hype_error_count = 0,
+                 hype_eligible = NULL,
+                 sparse_embedding = NULL,
+                 splade_indexed_at = NULL,
+                 kg_extracted_at = NULL,
+                 kg_content_hash = NULL,
+                 compressed_content = NULL,
+                 compression_ratio = NULL
+             WHERE id = ?",
+            [$documentId],
+        );
     }
 
     /**
@@ -389,7 +531,7 @@ class SemDeDupService
         $params = [];
 
         if ($documentType) {
-            $whereClause .= " AND document_type = ?";
+            $whereClause .= ' AND document_type = ?';
             $params[] = $documentType;
         }
 
@@ -411,7 +553,7 @@ class SemDeDupService
 
                 // Check for hash duplicates (excluding self)
                 $hashDup = DB::connection('pgsql_rag')->selectOne(
-                    "SELECT id FROM rag_documents WHERE content_hash = ? AND id != ? LIMIT 1",
+                    'SELECT id FROM rag_documents WHERE content_hash = ? AND id != ? LIMIT 1',
                     [$contentHash, $doc->id]
                 );
 
@@ -421,6 +563,7 @@ class SemDeDupService
                         [$hashDup->id, $contentHash, $doc->id]
                     );
                     $stats['duplicates_found']++;
+
                     continue;
                 }
 
@@ -445,11 +588,11 @@ class SemDeDupService
     {
         $stats = ['processed' => 0, 'errors' => 0];
 
-        $whereClause = "WHERE content_hash IS NULL";
+        $whereClause = 'WHERE content_hash IS NULL';
         $params = [];
 
         if ($documentType) {
-            $whereClause .= " AND document_type = ?";
+            $whereClause .= ' AND document_type = ?';
             $params[] = $documentType;
         }
 
@@ -464,7 +607,7 @@ class SemDeDupService
             try {
                 $hash = $this->computeContentHash($doc->content);
                 DB::connection('pgsql_rag')->update(
-                    "UPDATE rag_documents SET content_hash = ? WHERE id = ?",
+                    'UPDATE rag_documents SET content_hash = ? WHERE id = ?',
                     [$hash, $doc->id]
                 );
                 $stats['processed']++;
@@ -481,11 +624,11 @@ class SemDeDupService
      */
     public function findDuplicates(?string $documentType = null): array
     {
-        $whereClause = "WHERE content_hash IS NOT NULL";
+        $whereClause = 'WHERE content_hash IS NOT NULL';
         $params = [];
 
         if ($documentType) {
-            $whereClause .= " AND document_type = ?";
+            $whereClause .= ' AND document_type = ?';
             $params[] = $documentType;
         }
 
@@ -520,6 +663,12 @@ class SemDeDupService
      */
     public function removeDuplicates(bool $dryRun = true, ?string $documentType = null): int
     {
+        if (! $dryRun) {
+            throw new \RuntimeException(
+                'Blind content-hash deletion is disabled; use exact-content source-identity consolidation.',
+            );
+        }
+
         $duplicates = $this->findDuplicates($documentType);
         $removed = 0;
 
@@ -528,7 +677,7 @@ class SemDeDupService
             $idsToRemove = trim($group['all_ids'], '{}');
             $allIds = array_map('intval', explode(',', $idsToRemove));
             $keepId = $group['first_id'];
-            $removeIds = array_filter($allIds, fn($id) => $id !== $keepId);
+            $removeIds = array_filter($allIds, fn ($id) => $id !== $keepId);
 
             if (empty($removeIds)) {
                 continue;
@@ -536,6 +685,7 @@ class SemDeDupService
 
             if ($dryRun) {
                 $removed += count($removeIds);
+
                 continue;
             }
 
@@ -573,9 +723,9 @@ class SemDeDupService
         }
 
         $strategyCounts = DB::connection('pgsql_rag')->select(
-            "SELECT strategy, COUNT(*) as cnt
+            'SELECT strategy, COUNT(*) as cnt
              FROM rag_dedup_log
-             GROUP BY strategy"
+             GROUP BY strategy'
         );
 
         $byStrategy = [];
@@ -584,9 +734,9 @@ class SemDeDupService
         }
 
         $actionCounts = DB::connection('pgsql_rag')->select(
-            "SELECT action_taken, COUNT(*) as cnt
+            'SELECT action_taken, COUNT(*) as cnt
              FROM rag_dedup_log
-             GROUP BY action_taken"
+             GROUP BY action_taken'
         );
 
         $byAction = [];
@@ -595,11 +745,11 @@ class SemDeDupService
         }
 
         $totalDocs = DB::connection('pgsql_rag')->selectOne(
-            "SELECT COUNT(*) as cnt FROM rag_documents"
+            'SELECT COUNT(*) as cnt FROM rag_documents'
         );
 
         $hashCoverage = DB::connection('pgsql_rag')->selectOne(
-            "SELECT COUNT(*) as cnt FROM rag_documents WHERE content_hash IS NOT NULL"
+            'SELECT COUNT(*) as cnt FROM rag_documents WHERE content_hash IS NOT NULL'
         );
 
         return [

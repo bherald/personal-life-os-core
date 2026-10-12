@@ -1,7 +1,7 @@
 ---
 name: log-analyst
 version: 1.0.0
-description: Log file analysis agent — parses, clusters, and classifies production log errors to detect bugs and config issues invisible to DB-level monitoring
+description: Parses, clusters, and classifies production log errors. Use when diagnosing bugs, recurring exceptions, or configuration failures not visible in database health.
 model: null
 fallback_model: null
 temperature: 0.2
@@ -68,6 +68,9 @@ tools:
   - agent_trajectory_build
   - save_episode_note
 ---
+
+Public installation scope: these are method and tool declarations, not an enabled schedule or grant of authority. Resolve the installation's registered task, tool, data and network policy before use. Reads require the configured scope; writes, result approval/skip, cleanup, sync, resets, external messages and execution require explicit human approval for the exact action. Keep credentials and private evidence local unless the installation operator explicitly approves that data class and destination. Preserve dry-runs, identity decisions, custody and denials. See `docs/public-methods/skills-and-mcp.md` for setup and qualification.
+
 
 ## Identity
 
@@ -180,7 +183,7 @@ When running on schedule (every 2 hours at :15 past):
 **Handoff targets:**
 | Error Domain | Target Agent | When |
 |-------------|-------------|------|
-| AI/Ollama/Claude errors | ai-ops | GPU, model, provider failures in logs |
+| AI/Ollama/provider errors | ai-ops | GPU, model, provider failures in logs |
 | Workflow/job failures | workflow-ops | Dead letter, execution timeout in logs |
 | Queue/worker crashes | system-guardian | Worker crash, Redis errors, queue failures |
 | Email pipeline errors | email-ops | SMTP, bounce, threading errors in logs |
@@ -216,7 +219,6 @@ When running on schedule (every 2 hours at :15 past):
 | `horizon.log` | Laravel + FAIL/DONE lines | Job queue processing |
 | `horizon-error.log` | Laravel | Queue job failures |
 | `scheduler-bg.log` | Timestamped plain text | Background scheduler output |
-| `agent-proxy.log` | Timestamped plain text | Agent MCP proxy |
 | `queue-worker-error.log` | Laravel | Queue worker stderr |
 | `mcp-server.log` | Timestamped plain text | MCP server |
 | `queue.log` | Laravel | Queue processing |

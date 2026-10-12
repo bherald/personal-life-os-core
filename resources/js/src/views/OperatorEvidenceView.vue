@@ -6,6 +6,12 @@
         <div class="text-xs text-ops-text-muted uppercase tracking-wide mt-1">Read-only operational evidence</div>
       </div>
       <div class="flex flex-wrap items-center justify-end gap-2">
+        <router-link
+          :to="{ path: '/knowledge', query: { source: 'review' } }"
+          class="inline-flex items-center bg-black border-2 border-ops-lilac text-ops-lilac px-4 py-1.5 rounded-r-full hover:bg-ops-lilac hover:text-black font-semibold uppercase text-xs"
+        >
+          Review Hub
+        </router-link>
         <span
           class="inline-flex max-w-full items-center gap-2 border px-3 py-1.5 rounded-full text-xs font-bold uppercase"
           :class="statusBadgeClass(offlineStatus)"
@@ -227,6 +233,48 @@ const SECTION_DEFINITIONS = [
     ],
   },
   {
+    key: 'runtime_policy_debt',
+    title: 'Runtime Policy Debt',
+    code: 'Aggregate audit',
+    metrics: [
+      { label: 'Evidence', path: 'counts.evidence_status' },
+      { label: 'Open Debt', path: 'counts.debt_open', format: formatBoolean },
+      { label: 'Candidates', path: 'counts.runtime_policy_candidates' },
+      { label: 'Matches', path: 'counts.matches' },
+      { label: 'Files Scanned', path: 'counts.files_scanned' },
+      { label: 'Table References', path: 'counts.table_driven_references' },
+      { label: 'Safety Rails', path: 'counts.intentional_safety_rails' },
+      { label: 'Observability', path: 'counts.observability_references' },
+      { label: 'Runtime Values', path: 'counts.runtime_value_references' },
+      { label: 'Classifications', path: 'counts.by_classification', format: formatKeyValues },
+      { label: 'Patterns', path: 'counts.by_pattern', format: formatKeyValues },
+      { label: 'Latest Run', path: 'freshness.latest_run_at', format: formatTimestamp },
+      { label: 'Run Age', path: 'freshness.latest_run_age_hours', format: formatHours },
+      { label: 'Next Run', path: 'freshness.next_run_at', format: formatTimestamp },
+    ],
+  },
+  {
+    key: 'agent_confidence_calibration',
+    title: 'Agent Confidence Calibration',
+    code: 'Operator decision outcomes',
+    metrics: [
+      { label: 'Evidence', path: 'counts.evidence_status' },
+      { label: 'Samples', path: 'counts.sample_count' },
+      { label: 'Approved', path: 'counts.approved_count' },
+      { label: 'Rejected', path: 'counts.rejected_count' },
+      { label: 'Approval Rate', path: 'counts.observed_approval_rate', format: formatPercent },
+      { label: 'Mean Confidence', path: 'counts.mean_confidence', format: formatPercent },
+      { label: 'ECE', path: 'counts.expected_calibration_error', format: formatPercent },
+      { label: 'Brier', path: 'counts.brier_score' },
+      { label: 'AUROC', path: 'counts.auroc' },
+      { label: 'Threshold Precision', path: 'counts.threshold_precision', format: formatPercent },
+      { label: 'Threshold Samples', path: 'counts.threshold_sample_count' },
+      { label: 'Monotonicity Breaks', path: 'counts.monotonicity_violations' },
+      { label: 'Run Age', path: 'freshness.latest_run_age_hours', format: formatHours },
+      { label: 'Next Run', path: 'freshness.next_run_at', format: formatTimestamp },
+    ],
+  },
+  {
     key: 'scheduler_optimization',
     title: 'Scheduler Optimization',
     code: 'Observe-only',
@@ -343,6 +391,22 @@ const SECTION_DEFINITIONS = [
       { label: 'Move Apply', path: 'counts.move_apply_enabled', format: formatBoolean },
       { label: 'Delete Apply', path: 'counts.delete_apply_enabled', format: formatBoolean },
       { label: 'Canonical Writeback', path: 'counts.canonical_writeback_enabled', format: formatBoolean },
+    ],
+  },
+  {
+    key: 'chat_response_feedback',
+    title: 'Chat Response Feedback',
+    code: 'Explicit operator labels',
+    metrics: [
+      { label: 'Available', path: 'counts.available', format: formatBoolean },
+      { label: 'Window', path: 'counts.window_days', format: formatDays },
+      { label: 'Responses Rated', path: 'counts.feedback_total' },
+      { label: 'Helpful', path: 'counts.helpful_total' },
+      { label: 'Unhelpful', path: 'counts.unhelpful_total' },
+      { label: 'Helpful Rate', path: 'counts.helpful_rate', format: formatPercent },
+      { label: 'Reasons', path: 'counts.reason_counts', format: formatKeyValues },
+      { label: 'Latest', path: 'counts.latest_feedback_at', format: formatTimestamp },
+      { label: 'Raw Content', path: 'counts.raw_content_included', format: formatBoolean },
     ],
   },
   {
@@ -629,6 +693,10 @@ const SECTION_DEFINITIONS = [
       { label: 'Source Packet Claim', path: 'counts.next_safe_handoffs.source_backed_packet.packet_extracted_claim_present', format: formatBoolean },
       { label: 'Source Packet Preview', path: 'counts.next_safe_handoffs.source_backed_packet.packet_preview_only', format: formatBoolean },
       { label: 'Source Packet Canonical', path: 'counts.next_safe_handoffs.source_backed_packet.packet_canonical_mutation', format: formatBoolean },
+      { label: 'Source Packet Candidates', path: 'counts.next_safe_handoffs.source_backed_packet.focus_summary.candidate_rows' },
+      { label: 'Source Packet Stale', path: 'counts.next_safe_handoffs.source_backed_packet.focus_summary.stale_rows' },
+      { label: 'Source Packet High Priority', path: 'counts.next_safe_handoffs.source_backed_packet.focus_summary.high_priority_rows' },
+      { label: 'Source Packet Ages', path: 'counts.next_safe_handoffs.source_backed_packet.focus_summary.age_bucket_counts', format: formatKeyValues },
       { label: 'Remediation Handoff', path: 'counts.next_safe_handoffs.materializable_remediation.available', format: formatBoolean },
       { label: 'Remediation State', path: 'counts.next_safe_handoffs.materializable_remediation.query_state' },
       { label: 'Remediation Status', path: 'counts.next_safe_handoffs.materializable_remediation.materialization_status' },

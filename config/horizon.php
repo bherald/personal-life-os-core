@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Middleware\HorizonPasswordProtection;
 use Illuminate\Support\Str;
 
 $localThin = filter_var(env('HORIZON_LOCAL_THIN', false), FILTER_VALIDATE_BOOLEAN);
@@ -18,6 +19,8 @@ $localEnvironment = $localThin ? [
     ],
 ] : [
     'supervisor-1' => [
+        // Share one worker across the ordinary queues; auto creates one pool per queue.
+        'balance' => false,
         'minProcesses' => 1,
         'maxProcesses' => 1,
         'balanceMaxShift' => 1,
@@ -134,7 +137,7 @@ return [
     |
     */
 
-    'middleware' => ['web', \App\Http\Middleware\HorizonPasswordProtection::class],
+    'middleware' => ['web', HorizonPasswordProtection::class],
 
     /*
     |--------------------------------------------------------------------------

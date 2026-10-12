@@ -512,6 +512,12 @@ class ValidateSqlCommand extends Command
                 $method = $match[2][0];
                 $sql = $match[3][0] !== '' ? $match[3][0] : ($match[4][0] ?? '');
 
+                if ($this->sqlArgumentContinuesWithConcatenation($fullContent, $offset + strlen($match[0][0]))) {
+                    $this->statementsSkipped++;
+
+                    continue;
+                }
+
                 // Unescape
                 $sql = str_replace(['\\n', '\\t', '\\"', "\\'"], ["\n", "\t", '"', "'"], $sql);
 
@@ -578,6 +584,13 @@ class ValidateSqlCommand extends Command
         }
 
         return $statements;
+    }
+
+    private function sqlArgumentContinuesWithConcatenation(string $content, int $offsetAfterString): bool
+    {
+        $tail = substr($content, $offsetAfterString, 80);
+
+        return preg_match('/^\s*\./', $tail) === 1;
     }
 
     private function validateStatement(array $stmt, string $file): void
@@ -726,6 +739,7 @@ class ValidateSqlCommand extends Command
     {
         $tables = [];
         $normalized = preg_replace('/\s+/', ' ', $sql);
+        $cteNames = $this->extractCteNames($normalized);
 
         // Strip INSERT INTO column lists to prevent column names being parsed as tables
         // The column list is the first (...) after INSERT INTO table_name
@@ -770,6 +784,9 @@ class ValidateSqlCommand extends Command
                     if (in_array($lower, $keywords)) {
                         continue;
                     }
+                    if (in_array($lower, $cteNames, true)) {
+                        continue;
+                    }
                     // Skip if looks like a column name (too short and no underscore — heuristic)
                     // Real table names in this codebase use snake_case with underscores
                     // But some don't (e.g., claims, verdicts) so we can't filter on underscore
@@ -779,6 +796,26 @@ class ValidateSqlCommand extends Command
         }
 
         return array_keys($tables);
+    }
+
+    /**
+     * Extract query-local CTE names without suppressing their physical source tables.
+     *
+     * @return array<int, string>
+     */
+    private function extractCteNames(string $sql): array
+    {
+        if (stripos($sql, 'WITH ') === false) {
+            return [];
+        }
+
+        preg_match_all(
+            '/(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([a-z_][a-z0-9_]*)\s*(?:\([^)]*\))?\s+AS\s*\(/i',
+            $sql,
+            $matches
+        );
+
+        return array_values(array_unique(array_map('strtolower', $matches[1] ?? [])));
     }
 
     /**

@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\Genealogy\GenealogyReviewPressureService;
 use App\Services\ScheduledJobService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
@@ -20,8 +21,10 @@ class GenealogyManagerCommand extends Command
 
     protected $description = 'Table-driven manager for Genea supervisor lanes and review-safe processing runway';
 
-    public function __construct(private ScheduledJobService $scheduledJobService)
-    {
+    public function __construct(
+        private ScheduledJobService $scheduledJobService,
+        private GenealogyReviewPressureService $reviewPressureService,
+    ) {
         parent::__construct();
     }
 
@@ -30,6 +33,10 @@ class GenealogyManagerCommand extends Command
         $treeId = max(1, (int) $this->option('tree'));
         $execute = (bool) $this->option('execute') && ! (bool) $this->option('dry-run');
         $config = $this->managerConfig();
+        $pressurePolicy = is_array($config['review_pressure'] ?? null) ? $config['review_pressure'] : [];
+        $reviewWindowDays = max(1, min(30, (int) ($pressurePolicy['window_days'] ?? 7)));
+        $reviewBacklog = $this->reviewBacklogCounts($reviewWindowDays);
+        $faceRepair = $this->faceRepairState($treeId, $pressurePolicy, $reviewBacklog);
 
         $payload = [
             'status' => 'ok',
@@ -40,8 +47,9 @@ class GenealogyManagerCommand extends Command
             'generated_at' => now()->toIso8601String(),
             'policy_source' => 'system_configs.genealogy.supervisor_manager',
             'queue' => $this->queueCounts($treeId),
-            'review_backlog' => $this->reviewBacklogCounts(),
-            'face_repair' => $this->faceRepairState($treeId),
+            'review_backlog' => $reviewBacklog,
+            'face_repair' => $faceRepair,
+            'next_operator_action' => $faceRepair['review_pressure']['next_operator_action'] ?? null,
             'lanes' => [],
             'summary' => [
                 'configured_lanes' => 0,
@@ -52,7 +60,10 @@ class GenealogyManagerCommand extends Command
             ],
             'safety' => [
                 'canonical_writes' => false,
+                'direct_batch_apply' => false,
+                'guarded_source_media_capture' => true,
                 'face_identity_automation' => false,
+                'visible_chrome_capture_requires_operator' => true,
                 'operator_review_required' => true,
                 'scheduler_bookkeeping_required' => true,
             ],
@@ -242,27 +253,48 @@ class GenealogyManagerCommand extends Command
     /**
      * @return array<string,mixed>
      */
-    private function reviewBacklogCounts(): array
+    private function reviewBacklogCounts(int $windowDays): array
     {
         try {
             $row = DB::selectOne("
                 SELECT
-                    COUNT(*) AS pending_total,
-                    SUM(CASE WHEN review_type = 'genealogy_finding' THEN 1 ELSE 0 END) AS genealogy_finding,
-                    SUM(CASE WHEN review_type = 'genealogy_review_packet' THEN 1 ELSE 0 END) AS genealogy_review_packet,
+                    SUM(CASE WHEN status = 'pending' AND (expires_at IS NULL OR expires_at > NOW()) THEN 1 ELSE 0 END) AS pending_total,
+                    SUM(CASE WHEN status = 'pending' AND (expires_at IS NULL OR expires_at > NOW()) AND review_type = 'genealogy_finding' THEN 1 ELSE 0 END) AS genealogy_finding,
+                    SUM(CASE WHEN status = 'pending' AND (expires_at IS NULL OR expires_at > NOW()) AND review_type = 'genealogy_review_packet' THEN 1 ELSE 0 END) AS genealogy_review_packet,
                     SUM(
-                        CASE WHEN review_type = 'genealogy_finding'
+                        CASE WHEN status = 'pending'
+                               AND (expires_at IS NULL OR expires_at > NOW())
+                               AND review_type = 'genealogy_finding'
                                AND JSON_UNQUOTE(JSON_EXTRACT(details, '$.proposals[0].change_type')) = 'source_add'
                                AND JSON_CONTAINS(JSON_EXTRACT(details, '$.actionability_gate.reasons'), JSON_QUOTE('below_actionability_confidence'))
                                AND JSON_UNQUOTE(JSON_EXTRACT(details, '$.ds_governance.writeback_allowed')) = 'false'
                              THEN 1 ELSE 0 END
-                    ) AS weak_source_add_findings
+                    ) AS weak_source_add_findings,
+                    SUM(CASE WHEN review_type = 'genealogy_review_packet'
+                                  AND created_at >= DATE_SUB(NOW(), INTERVAL {$windowDays} DAY)
+                             THEN 1 ELSE 0 END) AS packet_created_in_window,
+                    SUM(CASE WHEN review_type = 'genealogy_review_packet'
+                                  AND reviewed_at >= DATE_SUB(NOW(), INTERVAL {$windowDays} DAY)
+                                  AND status IN ('approved', 'rejected', 'reviewed', 'resolved', 'ignored', 'dismissed')
+                             THEN 1 ELSE 0 END) AS packet_cleared_in_window,
+                    MIN(CASE WHEN review_type = 'genealogy_review_packet'
+                                  AND status = 'pending'
+                                  AND (expires_at IS NULL OR expires_at > NOW())
+                             THEN created_at END) AS oldest_packet_created_at
                 FROM agent_review_queue
-                WHERE status = 'pending'
-                  AND (expires_at IS NULL OR expires_at > NOW())
-            ");
+            ", []);
         } catch (Throwable) {
             $row = null;
+        }
+
+        $oldestPacketCreatedAt = $this->nullableString($row->oldest_packet_created_at ?? null);
+        $oldestPendingDays = null;
+        if ($oldestPacketCreatedAt !== null) {
+            try {
+                $oldestPendingDays = max(0, (int) floor(Carbon::parse($oldestPacketCreatedAt)->diffInHours(now()) / 24));
+            } catch (Throwable) {
+                $oldestPendingDays = null;
+            }
         }
 
         return [
@@ -274,13 +306,19 @@ class GenealogyManagerCommand extends Command
             'triage' => [
                 'weak_source_add_findings' => (int) ($row->weak_source_add_findings ?? 0),
             ],
+            'flow' => [
+                'window_days' => $windowDays,
+                'packets_created' => (int) ($row->packet_created_in_window ?? 0),
+                'packets_cleared' => (int) ($row->packet_cleared_in_window ?? 0),
+                'oldest_pending_days' => $oldestPendingDays,
+            ],
         ];
     }
 
     /**
      * @return array<string,mixed>
      */
-    private function faceRepairState(int $treeId): array
+    private function faceRepairState(int $treeId, array $pressurePolicy, array $reviewBacklog): array
     {
         $findingType = null;
         $maxPendingTotal = null;
@@ -312,12 +350,22 @@ class GenealogyManagerCommand extends Command
             }
         }
 
+        $rawBelowConfiguredRunway = $maxPendingTotal !== null && $pending < $maxPendingTotal;
+        $reviewFlow = is_array($reviewBacklog['flow'] ?? null) ? $reviewBacklog['flow'] : [];
+        $reviewPressure = $this->reviewPressureService->evaluate($pressurePolicy, $pending, $maxPendingTotal, [
+            'created' => (int) ($reviewFlow['packets_created'] ?? 0),
+            'cleared' => (int) ($reviewFlow['packets_cleared'] ?? 0),
+            'oldest_pending_days' => $reviewFlow['oldest_pending_days'] ?? null,
+        ]);
+
         return [
             'config_source' => 'system_configs.faces.face_person_source_repair_plan',
             'finding_type' => $findingType,
             'pending_packets' => $pending,
             'max_pending_total' => $maxPendingTotal,
-            'below_configured_runway' => $maxPendingTotal !== null && $pending < $maxPendingTotal,
+            'raw_below_configured_runway' => $rawBelowConfiguredRunway,
+            'below_configured_runway' => $rawBelowConfiguredRunway && (bool) ($reviewPressure['refill_allowed'] ?? true),
+            'review_pressure' => $reviewPressure,
             'coverage_gap_units' => $this->faceCoverageGapUnits($treeId),
         ];
     }
@@ -544,6 +592,8 @@ class GenealogyManagerCommand extends Command
                 'observed' => (bool) ($faceRepair['below_configured_runway'] ?? false),
                 'pending_packets' => (int) ($faceRepair['pending_packets'] ?? 0),
                 'max_pending_total' => $faceRepair['max_pending_total'] ?? null,
+                'review_pressure_state' => $faceRepair['review_pressure']['state'] ?? 'unknown',
+                'review_pressure_reasons' => $faceRepair['review_pressure']['reasons'] ?? [],
                 'passed' => (bool) $triggers['face_repair_pending_below_max']
                     && (bool) ($faceRepair['below_configured_runway'] ?? false),
             ];

@@ -2,6 +2,7 @@
 
 namespace App\Nodes;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\ContentExtractionService;
 use App\Services\FaceRegionService;
 use Exception;
@@ -31,7 +32,7 @@ class ContentExtractionNode extends BaseNode
             try {
                 $faceService = app(FaceRegionService::class);
                 $service->setFaceRegionService($faceService);
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 // FaceRegionService not available, continue without it
             }
 
@@ -42,7 +43,7 @@ class ContentExtractionNode extends BaseNode
                 return $this->standardOutput(null, [], 'No file path provided');
             }
 
-            if (!file_exists($filePath)) {
+            if (! file_exists($filePath)) {
                 return $this->standardOutput(null, [], "File not found: {$filePath}");
             }
 
@@ -50,7 +51,6 @@ class ContentExtractionNode extends BaseNode
             $options = [
                 'use_vision' => $this->getConfigValue('use_vision', true),
                 'use_ocr' => $this->getConfigValue('use_ocr', true),
-                'use_claude' => $this->getConfigValue('use_claude', true),
                 'extract_entities' => $this->getConfigValue('extract_entities', false),
                 'use_transcription' => $this->getConfigValue('use_transcription', true),
                 'extract_faces' => $this->getConfigValue('extract_faces', false),
@@ -59,7 +59,7 @@ class ContentExtractionNode extends BaseNode
             // Perform extraction
             $result = $service->extract($filePath, $options);
 
-            if (!$result['success']) {
+            if (! $result['success']) {
                 return $this->standardOutput(null, [
                     'file' => basename($filePath),
                     'method' => $result['method'] ?? 'unknown',
@@ -76,24 +76,24 @@ class ContentExtractionNode extends BaseNode
             ];
 
             // Include EXIF if available
-            if (!empty($result['exif'])) {
+            if (! empty($result['exif'])) {
                 $outputData['exif'] = $result['exif'];
             }
 
             // Include face regions if available
-            if (!empty($result['faces'])) {
+            if (! empty($result['faces'])) {
                 $outputData['faces'] = $result['faces'];
                 $outputData['face_count'] = count($result['faces']);
                 $outputData['people'] = array_filter(array_column($result['faces'], 'name'));
             }
 
             // Include audio/video metadata if available
-            if (!empty($result['metadata'])) {
+            if (! empty($result['metadata'])) {
                 $outputData['media_metadata'] = $result['metadata'];
             }
 
             // Include transcription separately if available
-            if (!empty($result['transcription'])) {
+            if (! empty($result['transcription'])) {
                 $outputData['transcription'] = $result['transcription'];
             }
 
@@ -116,12 +116,16 @@ class ContentExtractionNode extends BaseNode
             return $this->standardOutput($outputData, [
                 'file' => basename($filePath),
                 'method' => $result['method'] ?? 'unknown',
-                'has_exif' => !empty($result['exif']),
-                'has_faces' => !empty($result['faces']),
-                'has_transcription' => !empty($result['transcription']),
+                'has_exif' => ! empty($result['exif']),
+                'has_faces' => ! empty($result['faces']),
+                'has_transcription' => ! empty($result['transcription']),
             ]);
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+
             return $this->standardOutput(null, [], $e->getMessage());
         }
     }
@@ -133,34 +137,34 @@ class ContentExtractionNode extends BaseNode
     {
         // Try config first
         $configPath = $this->getConfigValue('file_path', '');
-        if (!empty($configPath)) {
+        if (! empty($configPath)) {
             return $this->replacePlaceholders($configPath, $input);
         }
 
         // Try input data
-        if (!empty($input['file_path'])) {
+        if (! empty($input['file_path'])) {
             return $input['file_path'];
         }
 
-        if (!empty($input['path'])) {
+        if (! empty($input['path'])) {
             return $input['path'];
         }
 
         // Try data.file_path
-        if (!empty($input['data']['file_path'])) {
+        if (! empty($input['data']['file_path'])) {
             return $input['data']['file_path'];
         }
 
-        if (!empty($input['data']['path'])) {
+        if (! empty($input['data']['path'])) {
             return $input['data']['path'];
         }
 
         // Try local_path from download nodes
-        if (!empty($input['local_path'])) {
+        if (! empty($input['local_path'])) {
             return $input['local_path'];
         }
 
-        if (!empty($input['data']['local_path'])) {
+        if (! empty($input['data']['local_path'])) {
             return $input['data']['local_path'];
         }
 
@@ -184,7 +188,7 @@ class ContentExtractionNode extends BaseNode
         }
 
         // Replace data values
-        if (!empty($input['data']) && is_array($input['data'])) {
+        if (! empty($input['data']) && is_array($input['data'])) {
             foreach ($input['data'] as $key => $value) {
                 if (is_string($value)) {
                     $text = str_replace("{data.{$key}}", $value, $text);

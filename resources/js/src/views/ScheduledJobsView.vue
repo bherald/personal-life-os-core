@@ -63,7 +63,8 @@
       <button @click="loadJobs" class="px-4 py-2 bg-ops-violet text-black rounded-r-full hover:bg-ops-lilac text-sm font-semibold uppercase">
         Refresh
       </button>
-      <button @click="showCreateModal = true" class="px-4 py-2 bg-ops-orange text-black rounded-r-full hover:bg-ops-peach text-sm font-semibold uppercase">
+      <button @click="openCreateModal" :disabled="!schedulerPolicy"
+              class="px-4 py-2 bg-ops-orange text-black rounded-r-full hover:bg-ops-peach text-sm font-semibold uppercase disabled:cursor-not-allowed disabled:opacity-50">
         + New Job
       </button>
     </div>
@@ -191,7 +192,7 @@
     </div>
 
     <!-- Create/Edit Modal -->
-    <div v-if="showCreateModal || editingJob" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
+    <div v-if="showCreateModal || editingJob" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div class="bg-black border-2 border-ops-orange rounded-r-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto ops-scroll">
         <div class="p-6">
           <div class="flex items-center justify-between mb-4">
@@ -278,7 +279,9 @@
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label class="block text-sm font-medium text-ops-lilac mb-1 uppercase">Timeout (minutes)</label>
-                <input v-model.number="jobForm.timeout_minutes" type="number" min="1" max="1440"
+                <input v-model.number="jobForm.timeout_minutes" type="number"
+                       :min="schedulerPolicy?.job_timeout.min_minutes"
+                       :max="schedulerPolicy?.job_timeout.max_minutes"
                        class="w-full px-3 py-2 bg-black border-2 border-ops-violet rounded-r-full text-ops-text focus:ring-2 focus:ring-ops-orange focus:border-ops-orange">
               </div>
               <div class="flex items-center pt-6">
@@ -322,7 +325,7 @@
     </div>
 
     <!-- History Modal -->
-    <div v-if="historyJob" class="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
+    <div v-if="historyJob" class="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div class="bg-black border-2 border-ops-grape rounded-r-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto ops-scroll">
         <div class="p-6">
           <div class="flex items-center justify-between mb-4">
@@ -432,6 +435,7 @@ const historyJob = ref(null);
 const jobHistory = ref([]);
 const saving = ref(false);
 const cronValidation = ref(null);
+const schedulerPolicy = ref(null);
 
 const jobForm = ref({
   name: '',
@@ -442,7 +446,7 @@ const jobForm = ref({
   enabled: true,
   run_in_background: true,
   without_overlapping: true,
-  timeout_minutes: 60,
+  timeout_minutes: null,
   notes: '',
   category: '',
   source_module: ''
@@ -491,6 +495,10 @@ const loadJobs = async () => {
     const response = await axios.get('/api/scheduled-jobs', { params });
     if (response.data.success) {
       jobs.value = response.data.data;
+      schedulerPolicy.value = response.data.policy;
+      if (!editingJob.value && jobForm.value.timeout_minutes === null) {
+        jobForm.value.timeout_minutes = schedulerPolicy.value.job_timeout.default_minutes;
+      }
     }
   } catch (error) {
     loadError.value = error.response?.data?.error || error.message;
@@ -574,6 +582,13 @@ const toggleJob = async (job) => {
   }
 };
 
+const openCreateModal = () => {
+  if (!schedulerPolicy.value) return;
+  editingJob.value = null;
+  jobForm.value.timeout_minutes = schedulerPolicy.value.job_timeout.default_minutes;
+  showCreateModal.value = true;
+};
+
 const editJob = (job) => {
   editingJob.value = job;
   jobForm.value = {
@@ -585,7 +600,7 @@ const editJob = (job) => {
     enabled: !!job.enabled,
     run_in_background: !!job.run_in_background,
     without_overlapping: !!job.without_overlapping,
-    timeout_minutes: job.timeout_minutes || 60,
+    timeout_minutes: job.timeout_minutes ?? schedulerPolicy.value.job_timeout.default_minutes,
     notes: job.notes || '',
     category: job.category || '',
     source_module: job.source_module || ''
@@ -663,7 +678,7 @@ const closeModal = () => {
     enabled: true,
     run_in_background: true,
     without_overlapping: true,
-    timeout_minutes: 60,
+    timeout_minutes: schedulerPolicy.value?.job_timeout.default_minutes ?? null,
     notes: '',
     category: '',
     source_module: ''

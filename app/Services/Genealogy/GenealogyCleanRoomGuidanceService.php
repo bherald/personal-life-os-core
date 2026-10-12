@@ -6,26 +6,30 @@ use Illuminate\Support\Str;
 
 class GenealogyCleanRoomGuidanceService
 {
-    public const VERSION = 'gramps-clean-room-2026-06-03';
+    public const VERSION = 'genea-license-aware-provenance-2026-07-11';
 
     /**
-     * Build PLOS-owned Genea guidance inspired by public Gramps/Gramps Web behavior.
-     * No upstream source, prompts, fixtures, UI copy, or implementation details are reused.
+     * Build PLOS-owned Genea evidence and licensed-source guidance.
+     *
+     * The class name is retained for compatibility with existing task-runner wiring.
      */
     public function buildPromptBlock(): string
     {
         return implode("\n", [
             '',
-            'Gramps clean-room Genea discipline for this task:',
-            '- Treat Gramps and Gramps Web as reference behavior only; do not copy upstream code, prompts, UI text, fixtures, or workflow files.',
+            'Genea license-aware provenance discipline for this task:',
+            '- Licensed code, prompts, fixtures, schemas, documentation, assets, and published research may be copied or adapted when their current license and provenance permit it. Record the source URL or repository, revision or access date, license, required attribution or notices, and material modifications.',
+            '- Do not copy proprietary, private, unclear-license, leaked-source-derived, or license-incompatible material. Treat separately licensed models, weights, datasets, media, hosted services, and enterprise folders as separate adoption decisions.',
             '- Produce evidence packets, not bare conclusions. Every proposed fact or relationship needs a subject, claim, source label, citation state, identity bridge, confidence, and review action.',
             '- Keep a hypothesis ledger. Use states such as confirmed, plausible, contradicted, wrong_subject, unresolved, and negative_search instead of collapsing weak leads into facts.',
             '- Treat source_search_all, LOC, and NARA same-name results without a source-text identity bridge as leads only. Put them in HYPOTHESIS_LEDGER or AGENT_ACTIVITY_TRACE as reject, lead, or negative_search; do not emit EVIDENCE_PACKETS with review_action=review_packet for those hits.',
             '- Make agent activity visible. Summarize searches, opened records, API/public-source checks, rejected same-name hits, downloads, proposed changes, and blocked steps.',
+            '- Prefer durable evidence media over URL-only citations. If a public/operator-owned source exposes a stable image, PDF, document, OCR/text export, or repository object, use available capture/download tools and link/cite the resulting media.',
             '- Keep long-running work reviewable. If work is incomplete, say what ran, what remains, what blocked it, and the next bounded action.',
             '- Review before writeback. Drafts, source-backed proposals, person creation, canonical facts, and writeback must stay inside existing bounded tools and review/apply gates.',
             '- Negative evidence counts. Record searched-but-not-found sources when they reduce a hypothesis or explain why a task is deferred.',
-            '- Do not request broad internet access. If another public source, API, scraper, archive catalog, or authenticated site would help, report it as a source/tool gap for separate vetting.',
+            '- Use available public internet, archive, API, repository, and licensed research sources when they fit the task and access terms. Report authenticated, paywalled, rate-limited, scraper-only, or unavailable sources as source/tool gaps for separate access review.',
+            '- Visible Chrome/manual download is a Codex/operator fallback. Scheduled agents should report the exact browser capture need, access posture, and artifact target instead of attempting GUI workflows.',
             '- Do not use face clusters, image similarity, private notes, or unsourced AI summaries as identity proof.',
             '',
             'Use these JSON final markers when possible. If there is nothing to report, use none.',
@@ -33,7 +37,7 @@ class GenealogyCleanRoomGuidanceService
             'HYPOTHESIS_LEDGER: [{"hypothesis":"...","state":"confirmed|plausible|contradicted|wrong_subject|unresolved|negative_search","basis":"...","next_action":"..."}]',
             'AGENT_ACTIVITY_TRACE: [{"action":"search|open|download|reject|propose|writeback_blocked","target":"...","result":"...","reason":"..."}]',
             'SOURCE_TOOL_GAPS: [{"source_or_tool":"...","purpose":"...","access_type":"public|api|scrape|authenticated|operator_manual","risk":"low|medium|high","vetting_needed":"..."}]',
-            'REVIEW_GATES: {"review_first":true,"writeback_blocked_or_bounded":true,"private_payload_avoided":true,"face_evidence_avoided":true}',
+            'REVIEW_GATES: {"review_first":true,"writeback_blocked_or_bounded":true,"private_payload_avoided":true,"face_evidence_avoided":true,"media_capture_attempted_or_gap_logged":true}',
         ])."\n";
     }
 
@@ -73,11 +77,14 @@ class GenealogyCleanRoomGuidanceService
     {
         return [
             'version' => self::VERSION,
-            'source_posture' => 'clean_room_reference_only',
+            'source_posture' => 'license_aware_provenance_reuse',
+            'allows_compatible_licensed_reuse' => true,
+            'requires_license_and_attribution_record' => true,
             'requires_evidence_packets' => true,
             'requires_hypothesis_ledger' => true,
             'requires_activity_trace' => true,
             'requires_source_tool_gap_reporting' => true,
+            'prefers_durable_media_capture' => true,
             'writeback_posture' => 'review_first_bounded_tools_only',
         ];
     }

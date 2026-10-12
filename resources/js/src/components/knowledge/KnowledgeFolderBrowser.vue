@@ -75,7 +75,7 @@ const FolderNode = defineComponent({
       }, [
         // Expand/collapse toggle
         hasChildren ? h('button', {
-          class: 'w-4 h-4 flex items-center justify-center flex-shrink-0 text-ops-text-muted hover:text-ops-peach',
+          class: 'w-4 h-4 flex items-center justify-center shrink-0 text-ops-text-muted hover:text-ops-peach',
           onClick: (e) => { e.stopPropagation(); toggle() }
         }, [
           h('svg', {
@@ -84,10 +84,10 @@ const FolderNode = defineComponent({
           }, [
             h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'stroke-width': '2', d: 'M9 5l7 7-7 7' })
           ])
-        ]) : h('span', { class: 'w-4 flex-shrink-0' }),
+        ]) : h('span', { class: 'w-4 shrink-0' }),
         // Folder icon
         h('svg', {
-          class: 'w-3.5 h-3.5 flex-shrink-0',
+          class: 'w-3.5 h-3.5 shrink-0',
           fill: 'none', stroke: 'currentColor', viewBox: '0 0 24 24'
         }, [
           h('path', {
@@ -100,7 +100,7 @@ const FolderNode = defineComponent({
         // Name
         h('span', { class: 'truncate text-xs' }, props.node.name),
         // Count
-        h('span', { class: 'text-[10px] opacity-40 ml-auto flex-shrink-0' }, props.node.totalCount || props.node.count)
+        h('span', { class: 'text-[10px] opacity-40 ml-auto shrink-0' }, props.node.totalCount || props.node.count)
       ])
 
       const children = expanded.value && hasChildren

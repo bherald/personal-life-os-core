@@ -6,8 +6,13 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ExecuteFileCatalogRagSync;
 use App\Jobs\ExecuteFileRegistryScan;
 use App\Jobs\ThumbnailGenerateJob;
+use App\Services\FileBundleService;
 use App\Services\FileCategorizationRAGService;
+use App\Services\FileCollectionService;
+use App\Services\FileQuarantineService;
 use App\Services\FileRegistryService;
+use App\Services\FileSemanticSearchService;
+use App\Services\FileVersionService;
 use App\Services\SystemConfigService;
 use App\Services\ThumbnailService;
 use Illuminate\Http\JsonResponse;
@@ -15,6 +20,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use Symfony\Component\HttpFoundation\Response;
 
 /**
  * FileCatalogController
@@ -141,6 +147,7 @@ class FileCatalogController extends Controller
                 'path_prefix' => $request->input('path_prefix'),
                 'has_duplicates' => $request->boolean('has_duplicates'),
                 'needs_rag_sync' => $request->boolean('needs_rag_sync'),
+                'include_unavailable' => $request->boolean('include_unavailable') || $request->boolean('include_missing'),
             ];
 
             $limit = min((int) $request->input('limit', 50), 200);
@@ -572,7 +579,7 @@ class FileCatalogController extends Controller
      *
      * GET /api/file-catalog/files/{uuid}/thumbnail/{size?}
      */
-    public function thumbnail(string $uuid, string $size = 'medium'): \Symfony\Component\HttpFoundation\Response
+    public function thumbnail(string $uuid, string $size = 'medium'): Response
     {
         try {
             $service = app(ThumbnailService::class);
@@ -678,7 +685,7 @@ class FileCatalogController extends Controller
     public function listQuarantined(Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileQuarantineService::class);
+            $service = app(FileQuarantineService::class);
             $filters = $request->only(['status', 'reason', 'limit', 'offset']);
             $results = $service->getQuarantinedFiles($filters);
 
@@ -701,7 +708,7 @@ class FileCatalogController extends Controller
                 return response()->json(['success' => false, 'error' => 'file_registry_id required'], 422);
             }
 
-            $service = app(\App\Services\FileQuarantineService::class);
+            $service = app(FileQuarantineService::class);
             $id = $service->quarantineFile($fileRegistryId, $reason, 'manual', $details);
 
             return response()->json(['success' => true, 'quarantine_id' => $id]);
@@ -722,7 +729,7 @@ class FileCatalogController extends Controller
                 return response()->json(['success' => false, 'error' => 'action must be release or delete'], 422);
             }
 
-            $service = app(\App\Services\FileQuarantineService::class);
+            $service = app(FileQuarantineService::class);
             $result = $service->reviewFile($id, $action, $reviewedBy);
 
             return response()->json(['success' => true, 'data' => $result]);
@@ -740,7 +747,7 @@ class FileCatalogController extends Controller
     public function listBundles(Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileBundleService::class);
+            $service = app(FileBundleService::class);
             $filters = $request->only(['type', 'limit', 'offset']);
             $results = $service->getBundles($filters);
 
@@ -755,7 +762,7 @@ class FileCatalogController extends Controller
     public function getBundle(int $id): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileBundleService::class);
+            $service = app(FileBundleService::class);
             $bundle = $service->getBundle($id);
 
             if (! $bundle) {
@@ -776,7 +783,7 @@ class FileCatalogController extends Controller
             $path = $request->input('path', $this->nextcloudLibraryRoot());
             $dryRun = (bool) $request->input('dry_run', true);
 
-            $service = app(\App\Services\FileBundleService::class);
+            $service = app(FileBundleService::class);
             $results = $service->autoDetectBundles($path, $dryRun);
 
             return response()->json(['success' => true, 'data' => $results]);
@@ -794,7 +801,7 @@ class FileCatalogController extends Controller
     public function listCollections(Request $request): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileCollectionService::class);
+            $service = app(FileCollectionService::class);
             $filters = $request->only(['type', 'limit', 'offset']);
             $results = $service->getCollections($filters);
 
@@ -818,7 +825,7 @@ class FileCatalogController extends Controller
                 return response()->json(['success' => false, 'error' => 'name required'], 422);
             }
 
-            $service = app(\App\Services\FileCollectionService::class);
+            $service = app(FileCollectionService::class);
             $id = $service->createCollection($name, $description, $type, $smartCriteria);
 
             return response()->json(['success' => true, 'collection_id' => $id]);
@@ -832,7 +839,7 @@ class FileCatalogController extends Controller
     public function collectionItems(Request $request, int $id): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileCollectionService::class);
+            $service = app(FileCollectionService::class);
             $items = $service->getCollectionItems($id);
 
             return response()->json(['success' => true, 'data' => $items]);
@@ -846,7 +853,7 @@ class FileCatalogController extends Controller
     public function evaluateCollection(int $id): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileCollectionService::class);
+            $service = app(FileCollectionService::class);
             $result = $service->evaluateSmartCollection($id);
 
             return response()->json(['success' => true, 'data' => $result]);
@@ -860,7 +867,7 @@ class FileCatalogController extends Controller
     public function deleteCollection(int $id): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileCollectionService::class);
+            $service = app(FileCollectionService::class);
             DB::delete('DELETE FROM file_collection_items WHERE collection_id = ?', [$id]);
             DB::delete('DELETE FROM file_collections WHERE id = ?', [$id]);
 
@@ -879,7 +886,7 @@ class FileCatalogController extends Controller
     public function fileVersions(int $fileRegistryId): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileVersionService::class);
+            $service = app(FileVersionService::class);
             $versions = $service->getVersionHistory($fileRegistryId);
 
             return response()->json(['success' => true, 'data' => $versions]);
@@ -902,7 +909,7 @@ class FileCatalogController extends Controller
                 return response()->json(['success' => false, 'error' => 'query required'], 422);
             }
 
-            $service = app(\App\Services\FileSemanticSearchService::class);
+            $service = app(FileSemanticSearchService::class);
             $results = $service->searchFiles($query);
 
             return response()->json(['success' => true, 'data' => $results]);
@@ -916,7 +923,7 @@ class FileCatalogController extends Controller
     public function generateDescription(Request $request, int $fileRegistryId): JsonResponse
     {
         try {
-            $service = app(\App\Services\FileSemanticSearchService::class);
+            $service = app(FileSemanticSearchService::class);
             $result = $service->generateDescription($fileRegistryId);
 
             return response()->json(['success' => true, 'data' => $result]);
@@ -960,6 +967,16 @@ class FileCatalogController extends Controller
             $fullPath = $nextcloudPath ? ($nextcloudPath.'/'.ltrim($file->current_path, '/')) : null;
 
             if (! $fullPath || ! file_exists($fullPath)) {
+                $refresh = $this->fileRegistry->refreshFileRegistration($uuid);
+                if (($refresh['success'] ?? false) === true && ! empty($refresh['path'])) {
+                    $file->current_path = $refresh['path'];
+                    $fullPath = $nextcloudPath ? ($nextcloudPath.'/'.ltrim($file->current_path, '/')) : null;
+                }
+            }
+
+            if (! $fullPath || ! file_exists($fullPath)) {
+                $this->fileRegistry->markOrphaned($uuid);
+
                 return response()->json(['success' => false, 'error' => 'File not found on disk'], 404);
             }
 

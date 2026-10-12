@@ -92,7 +92,7 @@ const formatDate = (dateStr) => {
   align-items: center;
   gap: 1rem;
   padding: 1rem;
-  background: var(--ops-plum);
+  background: var(--color-accent);
   border-radius: 0 16px 16px 0;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -105,11 +105,11 @@ const formatDate = (dateStr) => {
 
 .review-item.selected {
   background: var(--ops-magenta);
-  box-shadow: 0 0 0 2px var(--ops-orange);
+  box-shadow: 0 0 0 2px var(--ops-warning);
 }
 
 .review-item.expiring {
-  border-left: 4px solid var(--ops-sunset);
+  border-left: 4px solid var(--ops-danger);
 }
 
 .item-checkbox { flex-shrink: 0; }
@@ -143,16 +143,16 @@ const formatDate = (dateStr) => {
   border-radius: 4px;
 }
 
-.priority-high { background: var(--ops-sunset); color: var(--ops-white); }
-.priority-medium { background: var(--ops-gold); color: var(--ops-black); }
-.priority-low { background: var(--ops-plum-light, #5c4a72); color: var(--ops-peach); }
+.priority-high { background: var(--ops-danger); color: var(--ops-white); }
+.priority-medium { background: var(--ops-warning); color: white; }
+.priority-low { background: var(--color-bg-hover); color: var(--color-text-primary); }
 
 .item-expiring {
   font-size: 0.625rem;
   font-weight: 600;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
-  background: var(--ops-sunset);
+  background: var(--ops-danger);
   color: var(--ops-white);
   animation: pulse 2s infinite;
 }
@@ -165,7 +165,7 @@ const formatDate = (dateStr) => {
 .item-title {
   font-size: 0.9375rem;
   font-weight: 500;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -173,7 +173,7 @@ const formatDate = (dateStr) => {
 
 .item-summary {
   font-size: 0.8125rem;
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
   margin-top: 0.25rem;
   white-space: pre-line;
 }
@@ -201,7 +201,7 @@ const formatDate = (dateStr) => {
   transition: all 0.15s ease;
 }
 
-.action-btn.approve { background: var(--ops-green); color: var(--ops-black); }
-.action-btn.reject { background: var(--ops-sunset); color: var(--ops-white); }
+.action-btn.approve { background: var(--ops-success); color: white; }
+.action-btn.reject { background: var(--ops-danger); color: var(--ops-white); }
 .action-btn:hover { filter: brightness(1.2); }
 </style>

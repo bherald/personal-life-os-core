@@ -5,7 +5,12 @@
       { 'selected': selected, 'horizontal': schema?.card?.layout === 'horizontal', 'review-packet': isReviewPacket }
     ]"
     :style="cardStyle"
+    :role="requiresDetailDecision ? 'button' : null"
+    :tabindex="requiresDetailDecision ? 0 : null"
+    :aria-label="requiresDetailDecision ? detailDecisionTitle : null"
     @click="$emit('select', item)"
+    @keydown.enter.prevent="requiresDetailDecision && $emit('select', item)"
+    @keydown.space.prevent="requiresDetailDecision && $emit('select', item)"
   >
     <!-- Checkbox for batch selection -->
     <div v-if="canBatchSelect" class="card-checkbox" @click.stop>
@@ -14,15 +19,17 @@
         :checked="selected"
         @change="$emit('toggle-select', item)"
         class="form-checkbox"
+        :aria-label="`Select ${readableTitle || readableKind || 'review item'} for batch action`"
       />
     </div>
 
     <!-- Image (for horizontal layout) -->
-    <div v-if="schema?.card?.image && schema.card.layout === 'horizontal'" class="card-image">
+    <div v-if="schema?.card?.image && schema.card.layout === 'horizontal' && !isFaceReview" class="card-image">
       <img
         v-if="getImageUrl(schema.card.image.source) && !imageError"
         :src="getImageUrl(schema.card.image.source)"
         :class="schema.card.image.class"
+        :alt="readableTitle ? `Evidence for ${readableTitle}` : 'Review evidence'"
         @error="imageError = true"
       />
       <div v-else class="image-placeholder">
@@ -45,6 +52,7 @@
         <div v-if="readableTitle" class="readable-title">{{ readableTitle }}</div>
         <div v-if="readableSummary" class="readable-body">{{ readableSummary }}</div>
       </div>
+      <FaceReviewEvidence v-if="isFaceReview" :item="item" compact />
       <div v-if="intakeGeneratedBadge" class="intake-badge">
         Intake Generated
       </div>
@@ -58,7 +66,7 @@
         </div>
       </div>
 
-      <div v-if="packetContextItems.length" class="packet-context" aria-label="Review packet context">
+      <div v-if="packetContextItems.length && !isFacePhotoDiagnostic" class="packet-context" aria-label="Review packet context">
         <span
           v-for="entry in packetContextItems"
           :key="entry.key"
@@ -71,7 +79,7 @@
         </span>
       </div>
       <div
-        v-if="packetReadinessLine"
+        v-if="packetReadinessLine && !isFacePhotoDiagnostic"
         class="packet-readiness-line"
         :class="`is-${packetReadinessLine.state}`"
         :title="packetReadinessLine.title"
@@ -79,14 +87,14 @@
         {{ packetReadinessLine.label }}
       </div>
       <div
-        v-if="packetTrailLine"
+        v-if="packetTrailLine && !isFacePhotoDiagnostic"
         class="packet-trail-line"
         :title="packetTrailLine.title"
       >
         {{ packetTrailLine.label }}
       </div>
       <div
-        v-if="packetOutcomeLine"
+        v-if="packetOutcomeLine && !isFacePhotoDiagnostic"
         class="packet-outcome-line"
         :class="`is-${packetOutcomeLine.state}`"
         :title="packetOutcomeLine.title"
@@ -95,28 +103,28 @@
       </div>
 
       <!-- Header Row -->
-      <div v-if="schema?.card?.header" class="card-header">
+      <div v-if="schema?.card?.header && !isFacePhotoDiagnostic && !isGenealogyFinding && !isPrivacyReview" class="card-header">
         <template v-for="(field, idx) in schema.card.header" :key="idx">
           <DynamicField :field="field" :item="item" />
         </template>
       </div>
 
       <!-- Body -->
-      <div v-if="schema?.card?.body" class="card-body">
+      <div v-if="schema?.card?.body && !isFacePhotoDiagnostic && !isGenealogyFinding && !isPrivacyReview" class="card-body">
         <template v-for="(field, idx) in schema.card.body" :key="idx">
           <DynamicField :field="field" :item="item" />
         </template>
       </div>
 
       <!-- Footer -->
-      <div v-if="schema?.card?.footer" class="card-footer">
+      <div v-if="schema?.card?.footer && !isFacePhotoDiagnostic && !isGenealogyFinding && !isPrivacyReview" class="card-footer">
         <template v-for="(field, idx) in schema.card.footer" :key="idx">
           <DynamicField :field="field" :item="item" />
         </template>
       </div>
 
       <div
-        v-if="approvalDisabled && approvalDisabledTitle"
+        v-if="approvalDisabled && approvalDisabledTitle && !isFacePhotoDiagnostic && !isGenealogyFinding"
         class="text-[11px] text-ops-orange bg-ops-orange/10 border border-ops-orange/30 rounded px-2 py-1 mb-2"
       >
         {{ approvalDisabledTitle }}
@@ -147,6 +155,7 @@
               class="capture-line-select"
               :value="captureLineValue(index, 'action')"
               @change="setCaptureLineDecision(index, 'action', $event.target.value)"
+              :aria-label="`Decision for media candidate ${index + 1}`"
             >
               <option value="">Decision</option>
               <option value="attach" :disabled="planNeedsIdentityReview(plan)">Attach to tree</option>
@@ -158,6 +167,7 @@
               class="capture-line-select"
               :value="captureLineValue(index, 'reason_code')"
               @change="setCaptureLineDecision(index, 'reason_code', $event.target.value)"
+              :aria-label="`Reason for media candidate ${index + 1}`"
             >
               <option value="">Reason</option>
               <option value="source_verified">Source verified</option>
@@ -177,16 +187,11 @@
       </div>
 
       <!-- Actions Row -->
-      <div v-if="isReviewPacket" class="card-actions card-actions-inspection">
-        <button
-          @click.stop="$emit('select', item)"
-          class="btn-custom btn-open-packet"
-          :disabled="inFlight"
-          title="Open packet detail to review source, claim, person, and preview context"
-        >
-          Open packet
-        </button>
-      </div>
+      <template v-if="requiresDetailDecision">
+        <div v-if="!isFaceReview" class="card-open-hint" aria-hidden="true">
+          {{ detailDecisionLabel }}
+        </div>
+      </template>
       <div v-else class="card-actions">
         <button
           @click.stop="$emit('approve', approvalEmitItem)"
@@ -239,6 +244,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import DynamicField from './DynamicField.vue'
+import FaceReviewEvidence from './FaceReviewEvidence.vue'
 import { resolveSurfaceThemeStyle } from '@/utils/reviewSchemaStyles'
 
 const props = defineProps({
@@ -263,21 +269,122 @@ const isReviewPacket = computed(() => {
     || props.item?.source === 'genealogy_review_packet'
 })
 
+const isFacePhotoDiagnostic = computed(() => isReviewPacket.value && (
+  props.item?.finding_type === 'face_person_source_repair_plan'
+    || props.item?.details?.finding_type === 'face_person_source_repair_plan'
+))
+
+const facePhotoDiagnosticReady = computed(() => (
+  props.item?.review_focus?.candidate_reviewability?.ready === true
+))
+
+const isAiModelUpdate = computed(() => {
+  return props.item?.review_type === 'ai_model_update'
+    || props.item?.source === 'ai_model_update'
+})
+
+const isPrivacyReview = computed(() => {
+  return props.item?.review_type === 'privacy' || props.item?.source === 'privacy'
+})
+
+const isScanDateReview = computed(() => {
+  return props.item?.review_type === 'scan_date_estimate' || props.item?.source === 'scan_date_estimate'
+})
+
+const isLegacyScanMetadata = computed(() => {
+  return props.item?.review_type === 'scan_date_legacy_metadata'
+    || props.item?.source === 'scan_date_legacy_metadata'
+})
+
+const isSkillAuditReview = computed(() => {
+  const type = props.item?.review_type || props.item?.source
+  const findingType = props.item?.finding_type || props.item?.details?.finding_type
+  return type === 'skill_optimization'
+    && (findingType === 'skill_audit' || props.item?.details?.schema === 'agent_skill_audit_review_queue.v2')
+})
+
+const isFaceReview = computed(() => props.item?.review_type === 'face' || props.item?.source === 'face')
+
+const isGenealogyFinding = computed(() => (
+  props.item?.review_type === 'genealogy_finding'
+    || props.item?.source === 'genealogy_finding'
+))
+
+const requiresDetailDecision = computed(() => (
+  props.item?.ui_schema?.inspection_only === true
+    || isReviewPacket.value
+    || isAiModelUpdate.value
+    || isPrivacyReview.value
+    || isScanDateReview.value
+    || isLegacyScanMetadata.value
+    || isSkillAuditReview.value
+    || isFaceReview.value
+    || isGenealogyFinding.value
+))
+
+const detailDecisionLabel = computed(() => {
+  if (props.item?.ui_schema?.inspection_only === true) return 'Inspect source evidence'
+  if (isFacePhotoDiagnostic.value) return facePhotoDiagnosticReady.value ? 'View photo comparison' : 'Audit details (optional)'
+  if (isAiModelUpdate.value) return 'Review portfolio actions'
+  if (isPrivacyReview.value) return 'Review privacy request'
+  if (isScanDateReview.value) return 'Review photo date'
+  if (isLegacyScanMetadata.value) return 'Inspect metadata'
+  if (isSkillAuditReview.value) return 'Review skill audit'
+  if (isGenealogyFinding.value) return 'Review FT4 change'
+  return 'Open packet to decide'
+})
+
+const detailDecisionTitle = computed(() => {
+  if (props.item?.ui_schema?.inspection_only === true) return 'Read-only inspection; no change action is available'
+  if (isFacePhotoDiagnostic.value) {
+    return facePhotoDiagnosticReady.value
+      ? 'View the photo comparison; identity decisions remain in Picture Match Approval'
+      : 'Inspect why this maintenance diagnostic cannot be reviewed'
+  }
+  if (isAiModelUpdate.value) return 'Open the portfolio action list, sources, risks, validation plan, and approval boundary'
+  if (isPrivacyReview.value) return 'Open the broker target and field-category authorization before deciding'
+  if (isScanDateReview.value) return 'Open the actual photo, estimated year, evidence, and metadata-write decision'
+  if (isLegacyScanMetadata.value) return 'Open the actual photo and live read-only metadata comparison; no correction action is available'
+  if (isSkillAuditReview.value) return 'Open audit findings, evidence receipts, and the acknowledgement-only decision boundary'
+  if (isGenealogyFinding.value) return 'Open the person, on-file and proposed values, source evidence, and exact FT4 decision'
+  return 'Open packet detail to approve, reject, clarify, or defer with packet context'
+})
+
 const canBatchSelect = computed(() => {
-  return props.item?.batch_enabled === true && !isReviewPacket.value
+  return props.item?.batch_enabled === true && !requiresDetailDecision.value
 })
 
 const readableKind = computed(() => {
+  if (isFacePhotoDiagnostic.value) return 'Photo diagnostic'
+  if (isGenealogyFinding.value) return 'FT4 change'
+  if (isPrivacyReview.value) return 'Privacy request'
   return stringOrNull(props.item?.review_type)
     || stringOrNull(props.item?.source)
     || stringOrNull(props.item?.category)
 })
 
 const readableTitle = computed(() => {
+  if (isFacePhotoDiagnostic.value) {
+    return facePhotoDiagnosticReady.value ? 'Photo comparison available' : 'No decision needed'
+  }
+  if (isPrivacyReview.value && stringOrNull(props.item?.broker_name)) {
+    return `Remove from ${stringOrNull(props.item.broker_name)}`
+  }
   return stringOrNull(props.item?.title) || stringOrNull(props.item?.label)
 })
 
 const readableSummary = computed(() => {
+  if (isFacePhotoDiagnostic.value) {
+    return facePhotoDiagnosticReady.value
+      ? 'Use Picture Match Approval to approve or reject identity.'
+      : 'This old packet is missing the two-name comparison. PLOS maintenance must rebuild or retire it.'
+  }
+  if (isPrivacyReview.value) {
+    const subject = stringOrNull(props.item?.subject_name)
+    const method = stringOrNull(props.item?.removal_method)?.replaceAll('_', ' ')
+    return [subject, method ? `Later ${method} request` : null].filter(Boolean).join(' · ')
+      || 'Review a later broker removal authorization.'
+  }
   return compactReadableText(
     stringOrNull(props.item?.summary)
       || stringOrNull(props.item?.details_human)
@@ -458,6 +565,10 @@ const packetOutcomeLine = computed(() => {
 })
 
 const decisionObjectLine = computed(() => {
+  if (isFacePhotoDiagnostic.value) {
+    return null
+  }
+
   if (isReviewPacket.value) {
     return 'Decision object: packet. Open detail before marking reviewed, rejecting, clarifying, or deferring.'
   }
@@ -466,9 +577,7 @@ const decisionObjectLine = computed(() => {
     return 'Decision object: one media-capture approval row. This does not approve every source in the packet.'
   }
 
-  if (props.item?.review_type === 'genealogy_finding' || props.item?.source === 'genealogy_finding') {
-    return 'Decision object: advisory genealogy finding. Use Diagnostics unless it is explicitly approval-ready.'
-  }
+  if (isGenealogyFinding.value) return null
 
   return null
 })
@@ -878,20 +987,20 @@ const getImageUrl = (source) => {
   cursor: pointer;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
   gap: 1rem;
-  border-left: 8px solid var(--card-accent, var(--ops-lilac));
-  background: var(--ops-black);
-  color: var(--ops-peach);
+  border-left: 8px solid var(--card-accent, var(--color-accent));
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
 }
 
 .review-card:hover {
-  box-shadow: inset 4px 0 0 var(--card-accent, var(--ops-lilac));
-  border-left-color: var(--ops-orange);
+  box-shadow: inset 4px 0 0 var(--card-accent, var(--color-accent));
+  border-left-color: var(--ops-warning);
 }
 
 .review-card.selected {
   border-left-width: 12px;
-  border-left-color: var(--ops-orange);
-  box-shadow: 0 0 0 2px var(--ops-orange);
+  border-left-color: var(--ops-warning);
+  box-shadow: 0 0 0 2px var(--ops-warning);
 }
 
 .review-card.review-packet {
@@ -900,21 +1009,21 @@ const getImageUrl = (source) => {
 
 /* Body text on black — sky gives ~10.5:1 vs the muted-gray ~2.7:1 on plum */
 .review-card :deep(.text-ops-text-muted) {
-  color: var(--ops-sky) !important;
+  color: var(--color-accent) !important;
   opacity: 0.92;
 }
 
 .review-card :deep(.field-text) {
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
 }
 
 .review-card :deep(.field-label) {
-  color: var(--ops-gold);
+  color: var(--ops-warning);
   opacity: 0.85;
 }
 
 .review-card :deep(.field-timestamp) {
-  color: var(--ops-sky);
+  color: var(--color-accent);
   opacity: 0.85;
 }
 
@@ -931,7 +1040,7 @@ const getImageUrl = (source) => {
 .form-checkbox {
   width: 1.25rem;
   height: 1.25rem;
-  accent-color: var(--ops-orange);
+  accent-color: var(--color-accent);
 }
 
 .card-image {
@@ -940,7 +1049,7 @@ const getImageUrl = (source) => {
   height: 100px;
   overflow: hidden;
   border-radius: 8px;
-  background: var(--ops-black);
+  background: #111;
 }
 
 .card-image img {
@@ -955,7 +1064,7 @@ const getImageUrl = (source) => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--ops-plum);
+  background: var(--color-accent);
 }
 
 .card-content {
@@ -970,8 +1079,8 @@ const getImageUrl = (source) => {
   align-self: flex-start;
   padding: 0.2rem 0.5rem;
   border-radius: 9999px;
-  background: rgba(86, 196, 255, 0.18);
-  color: var(--ops-sky);
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-bg-primary));
+  color: var(--color-accent);
   font-size: 0.65rem;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -987,7 +1096,7 @@ const getImageUrl = (source) => {
 .intake-detail-line {
   font-size: 0.78rem;
   line-height: 1.35;
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
   white-space: pre-wrap;
 }
 
@@ -1005,10 +1114,10 @@ const getImageUrl = (source) => {
   gap: 0.25rem;
   max-width: 100%;
   padding: 0.18rem 0.45rem;
-  border: 1px solid rgba(255, 204, 102, 0.32);
+  border: 1px solid var(--ops-warning);
   border-radius: 4px;
-  background: rgba(255, 204, 102, 0.08);
-  color: var(--ops-peach);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  color: var(--color-text-primary);
   font-size: 0.68rem;
   line-height: 1.25;
 }
@@ -1024,8 +1133,8 @@ const getImageUrl = (source) => {
 .packet-context-chip.is-access,
 .packet-context-chip.is-media,
 .packet-context-chip.is-origin {
-  border-color: rgba(99, 179, 237, 0.32);
-  background: rgba(99, 179, 237, 0.08);
+  border-color: var(--color-border);
+  background: var(--color-bg-tertiary);
 }
 
 .packet-context-chip.is-claim {
@@ -1033,8 +1142,8 @@ const getImageUrl = (source) => {
 }
 
 .packet-context-chip.is-preview {
-  border-color: rgba(99, 179, 237, 0.32);
-  background: rgba(99, 179, 237, 0.08);
+  border-color: var(--color-border);
+  background: var(--color-bg-tertiary);
 }
 
 .packet-readiness-line {
@@ -1042,23 +1151,23 @@ const getImageUrl = (source) => {
   align-items: center;
   min-height: 1.5rem;
   padding: 0.25rem 0.5rem;
-  border-left: 3px solid rgba(99, 179, 237, 0.7);
+  border-left: 3px solid var(--color-border);
   border-radius: 4px;
-  background: rgba(99, 179, 237, 0.08);
-  color: var(--ops-peach);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
   font-size: 0.74rem;
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .packet-readiness-line.is-ready {
-  border-left-color: var(--ops-green);
-  background: rgba(113, 231, 158, 0.08);
+  border-left-color: var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
 }
 
 .packet-readiness-line.is-blocked {
-  border-left-color: var(--ops-gold);
-  background: rgba(255, 204, 102, 0.08);
+  border-left-color: var(--ops-warning);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
 }
 
 .packet-trail-line {
@@ -1066,10 +1175,10 @@ const getImageUrl = (source) => {
   align-items: center;
   min-height: 1.5rem;
   padding: 0.25rem 0.5rem;
-  border-left: 3px solid rgba(180, 148, 255, 0.7);
+  border-left: 3px solid var(--color-border);
   border-radius: 4px;
-  background: rgba(180, 148, 255, 0.08);
-  color: var(--ops-peach);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
   font-size: 0.74rem;
   line-height: 1.3;
   overflow-wrap: anywhere;
@@ -1080,29 +1189,29 @@ const getImageUrl = (source) => {
   align-items: center;
   min-height: 1.5rem;
   padding: 0.25rem 0.5rem;
-  border-left: 3px solid rgba(255, 204, 102, 0.7);
+  border-left: 3px solid var(--ops-warning);
   border-radius: 4px;
-  background: rgba(255, 204, 102, 0.08);
-  color: var(--ops-peach);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  color: var(--color-text-primary);
   font-size: 0.74rem;
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
 .packet-outcome-line.is-terminal {
-  border-left-color: var(--ops-green);
-  background: rgba(113, 231, 158, 0.08);
+  border-left-color: var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
 }
 
 .packet-outcome-line.is-follow_up,
 .packet-outcome-line.is-touched {
-  border-left-color: var(--ops-sky);
-  background: rgba(99, 179, 237, 0.08);
+  border-left-color: var(--color-accent);
+  background: var(--color-bg-tertiary);
 }
 
 .packet-context-label {
   flex: 0 0 auto;
-  color: var(--ops-gold);
+  color: var(--ops-warning);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0;
@@ -1141,17 +1250,17 @@ const getImageUrl = (source) => {
   display: grid;
   gap: 0.55rem;
   padding: 0.7rem;
-  border: 1px solid rgba(255, 204, 102, 0.26);
+  border: 1px solid var(--ops-warning);
   border-radius: 0 12px 12px 0;
-  background: rgba(255, 204, 102, 0.06);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
 }
 
 .capture-line-header {
-  color: var(--ops-gold);
+  color: var(--ops-warning);
   font-size: 0.72rem;
   font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .capture-line {
@@ -1160,17 +1269,17 @@ const getImageUrl = (source) => {
   gap: 0.75rem;
   align-items: start;
   padding: 0.55rem;
-  border-left: 3px solid var(--ops-sky);
-  background: rgba(99, 179, 237, 0.07);
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-bg-tertiary);
 }
 
 .capture-line.needs-identity {
-  border-left-color: var(--ops-orange);
-  background: rgba(255, 153, 0, 0.08);
+  border-left-color: var(--ops-warning);
+  background: color-mix(in srgb, var(--ops-warning) 10%, var(--color-bg-primary));
 }
 
 .capture-line-title {
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-size: 0.82rem;
   font-weight: 800;
   line-height: 1.3;
@@ -1180,14 +1289,14 @@ const getImageUrl = (source) => {
 .capture-line-meta,
 .capture-line-warning,
 .capture-approve-hint {
-  color: var(--ops-sky);
+  color: var(--color-accent);
   font-size: 0.72rem;
   line-height: 1.35;
 }
 
 .capture-line-warning,
 .capture-approve-hint {
-  color: var(--ops-gold);
+  color: var(--ops-warning);
 }
 
 .capture-line-controls {
@@ -1198,10 +1307,10 @@ const getImageUrl = (source) => {
 .capture-line-select {
   width: 100%;
   min-height: 2rem;
-  border: 1px solid rgba(255, 204, 102, 0.28);
+  border: 1px solid var(--ops-warning);
   border-radius: 0 8px 8px 0;
-  background: var(--ops-black);
-  color: var(--ops-peach);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
   font-size: 0.72rem;
   padding: 0.25rem 0.45rem;
 }
@@ -1217,7 +1326,15 @@ const getImageUrl = (source) => {
   gap: 0.5rem;
   margin-top: 0.75rem;
   padding-top: 0.75rem;
-  border-top: 1px solid var(--ops-black);
+  border-top: 1px solid var(--color-border);
+}
+.card-open-hint {
+  margin-top: 0.65rem;
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.55rem;
+  color: var(--color-accent);
+  font-size: 0.68rem;
+  font-weight: 800;
 }
 
 .decision-object-line {
@@ -1225,10 +1342,10 @@ const getImageUrl = (source) => {
   width: fit-content;
   max-width: 100%;
   padding: 0.28rem 0.55rem;
-  border: 1px solid rgba(99, 179, 237, 0.28);
+  border: 1px solid var(--color-border);
   border-radius: 0 8px 8px 0;
-  background: rgba(99, 179, 237, 0.09);
-  color: var(--ops-sky);
+  background: var(--color-bg-tertiary);
+  color: var(--color-accent);
   font-size: 0.72rem;
   font-weight: 700;
   line-height: 1.3;
@@ -1236,8 +1353,8 @@ const getImageUrl = (source) => {
 
 .btn-approve {
   padding: 0.375rem 0.75rem;
-  background: var(--ops-green);
-  color: var(--ops-black);
+  background: var(--ops-success);
+  color: white;
   border-radius: 0 8px 8px 0;
   font-size: 0.75rem;
   font-weight: 600;
@@ -1251,8 +1368,8 @@ const getImageUrl = (source) => {
 
 .btn-reject {
   padding: 0.375rem 0.75rem;
-  background: var(--ops-sunset);
-  color: var(--ops-black);
+  background: var(--ops-danger);
+  color: white;
   border-radius: 0 8px 8px 0;
   font-size: 0.75rem;
   font-weight: 600;
@@ -1273,8 +1390,8 @@ const getImageUrl = (source) => {
 
 .btn-custom {
   padding: 0.375rem 0.75rem;
-  background: var(--ops-sky);
-  color: var(--ops-black);
+  background: var(--color-accent);
+  color: white;
   border-radius: 0 8px 8px 0;
   font-size: 0.75rem;
   font-weight: 600;
@@ -1287,14 +1404,14 @@ const getImageUrl = (source) => {
 }
 
 .btn-custom.secondary {
-  background: var(--ops-plum);
-  color: var(--ops-peach);
+  background: var(--color-accent);
+  color: white;
 }
 
 .btn-remediate {
   padding: 0.375rem 0.75rem;
-  background: var(--ops-gold, #fc6);
-  color: var(--ops-black);
+  background: var(--ops-warning);
+  color: white;
   border-radius: 0 8px 8px 0;
   font-size: 0.75rem;
   font-weight: 600;
@@ -1317,13 +1434,13 @@ const getImageUrl = (source) => {
 }
 
 .risk-badge.read {
-  background: var(--ops-green, #8f8);
-  color: var(--ops-black);
+  background: var(--ops-success);
+  color: white;
 }
 
 .risk-badge.write {
-  background: var(--ops-orange);
-  color: var(--ops-black);
+  background: var(--ops-warning);
+  color: white;
 }
 
 .tree-badge {
@@ -1331,7 +1448,7 @@ const getImageUrl = (source) => {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--ops-sky, #9cf);
+  color: var(--color-accent);
   opacity: 0.8;
   margin-bottom: 0.25rem;
 }
@@ -1340,9 +1457,9 @@ const getImageUrl = (source) => {
   display: grid;
   gap: 0.32rem;
   padding: 0.55rem 0.65rem;
-  border: 1px solid rgba(255, 204, 102, 0.22);
+  border: 1px solid var(--ops-warning);
   border-radius: 0 12px 12px 0;
-  background: linear-gradient(90deg, rgba(255, 153, 0, 0.13), rgba(99, 179, 237, 0.06));
+  background: var(--color-bg-hover);
 }
 
 .readable-meta {
@@ -1359,8 +1476,8 @@ const getImageUrl = (source) => {
   width: fit-content;
   padding: 0.1rem 0.4rem;
   border-radius: 999px;
-  background: var(--card-accent, var(--ops-orange));
-  color: var(--ops-black);
+  background: var(--card-accent, var(--ops-warning));
+  color: var(--color-text-primary);
   font-size: 0.62rem;
   font-weight: 800;
   line-height: 1.2;
@@ -1368,11 +1485,11 @@ const getImageUrl = (source) => {
 }
 
 .readable-confidence {
-  background: var(--ops-green);
+  background: var(--ops-success);
 }
 
 .readable-title {
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-size: 0.92rem;
   font-weight: 800;
   line-height: 1.25;
@@ -1380,7 +1497,7 @@ const getImageUrl = (source) => {
 }
 
 .readable-body {
-  color: var(--ops-sky);
+  color: var(--color-accent);
   font-size: 0.8rem;
   line-height: 1.38;
   overflow-wrap: anywhere;

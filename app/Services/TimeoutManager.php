@@ -50,14 +50,14 @@ class TimeoutManager
 
     // Map from operation names → config/timeouts.php keys
     private const TIMEOUT_CONFIG_MAP = [
-        'http_request'      => 'http',
-        'rss_feed'          => 'rss',
-        'api_call'          => 'api',
-        'ai_processing'     => 'ai',
-        'node_execution'    => 'node',
+        'http_request' => 'http',
+        'rss_feed' => 'rss',
+        'api_call' => 'api',
+        'ai_processing' => 'ai',
+        'node_execution' => 'node',
         'workflow_execution' => 'workflow',
-        'database_query'    => 'db',
-        'file_upload'       => 'file',
+        'database_query' => 'db',
+        'file_upload' => 'file',
     ];
 
     /** @return array<string,int> Full timeout map, config-overridable */
@@ -67,6 +67,7 @@ class TimeoutManager
         foreach (self::TIMEOUT_CONFIG_MAP as $op => $key) {
             $map[$op] = (int) config("timeouts.{$key}", $map[$op]);
         }
+
         return $map;
     }
 
@@ -75,15 +76,18 @@ class TimeoutManager
 
     // Adaptive timeout settings
     private const MIN_SAMPLES = 10;         // Minimum executions before adaptive
+
     private const PERCENTILE = 95;          // Use P95 for timeout calculation
+
     private const BUFFER_MULTIPLIER = 1.5;  // Add 50% buffer to P95
+
     private const MAX_MULTIPLIER = 3.0;     // Max 3x default timeout
 
     /**
      * Get timeout for operation (adaptive or default)
      *
-     * @param string $operation Operation name
-     * @param int|null $override Manual override timeout (seconds)
+     * @param  string  $operation  Operation name
+     * @param  int|null  $override  Manual override timeout (seconds)
      * @return int Timeout in seconds
      */
     public function getTimeout(string $operation, ?int $override = null): int
@@ -107,16 +111,15 @@ class TimeoutManager
     /**
      * Record execution for adaptive timeout learning
      *
-     * @param string $operation Operation name
-     * @param float $durationSeconds Duration in seconds
-     * @param bool $success Whether operation succeeded
-     * @return void
+     * @param  string  $operation  Operation name
+     * @param  float  $durationSeconds  Duration in seconds
+     * @param  bool  $success  Whether operation succeeded
      */
     public function recordExecution(string $operation, float $durationSeconds, bool $success): void
     {
-        $stats = Cache::get(self::STATS_KEY, []);
+        $stats = $this->cacheGet([]);
 
-        if (!isset($stats[$operation])) {
+        if (! isset($stats[$operation])) {
             $stats[$operation] = [
                 'executions' => [],
                 'failures' => 0,
@@ -138,16 +141,16 @@ class TimeoutManager
         }
 
         // Store with 24-hour expiry
-        Cache::put(self::STATS_KEY, $stats, 86400);
+        $this->cachePut($stats);
 
         // Log if execution time is concerning (> 80% of timeout)
         $currentTimeout = $this->getTimeout($operation);
         if ($durationSeconds > ($currentTimeout * 0.8)) {
-            Log::warning("TimeoutManager: Operation approaching timeout", [
+            Log::warning('TimeoutManager: Operation approaching timeout', [
                 'operation' => $operation,
                 'duration' => round($durationSeconds, 2),
                 'timeout' => $currentTimeout,
-                'utilization' => round(($durationSeconds / $currentTimeout) * 100, 1) . '%',
+                'utilization' => round(($durationSeconds / $currentTimeout) * 100, 1).'%',
             ]);
         }
     }
@@ -155,15 +158,15 @@ class TimeoutManager
     /**
      * Calculate adaptive timeout based on historical P95
      *
-     * @param string $operation Operation name
+     * @param  string  $operation  Operation name
      * @return int|null Adaptive timeout in seconds, or null if insufficient data
      */
     private function getAdaptiveTimeout(string $operation): ?int
     {
-        $stats = Cache::get(self::STATS_KEY, []);
+        $stats = $this->cacheGet([]);
 
         // Not enough data for adaptive timeout
-        if (!isset($stats[$operation]) || count($stats[$operation]['executions']) < self::MIN_SAMPLES) {
+        if (! isset($stats[$operation]) || count($stats[$operation]['executions']) < self::MIN_SAMPLES) {
             return null;
         }
 
@@ -171,22 +174,22 @@ class TimeoutManager
         sort($executions);
 
         // Calculate P95 (95th percentile)
-        $p95Index = (int)(count($executions) * (self::PERCENTILE / 100));
+        $p95Index = (int) (count($executions) * (self::PERCENTILE / 100));
         $p95 = $executions[$p95Index];
 
         // Add buffer for safety (50% more than P95)
-        $adaptiveTimeout = (int)ceil($p95 * self::BUFFER_MULTIPLIER);
+        $adaptiveTimeout = (int) ceil($p95 * self::BUFFER_MULTIPLIER);
 
         // Clamp to reasonable bounds
         $defaultTimeout = $this->timeouts()[$operation] ?? 30;
         $minTimeout = $defaultTimeout;
-        $maxTimeout = (int)($defaultTimeout * self::MAX_MULTIPLIER);
+        $maxTimeout = (int) ($defaultTimeout * self::MAX_MULTIPLIER);
 
         $clamped = max($minTimeout, min($adaptiveTimeout, $maxTimeout));
 
         // Log if adaptive timeout differs significantly from default
         if (abs($clamped - $defaultTimeout) > ($defaultTimeout * 0.2)) {
-            Log::info("TimeoutManager: Using adaptive timeout", [
+            Log::info('TimeoutManager: Using adaptive timeout', [
                 'operation' => $operation,
                 'default_timeout' => $defaultTimeout,
                 'adaptive_timeout' => $clamped,
@@ -201,12 +204,12 @@ class TimeoutManager
     /**
      * Get performance statistics for operation
      *
-     * @param string|null $operation Specific operation, or null for all
+     * @param  string|null  $operation  Specific operation, or null for all
      * @return array Statistics
      */
     public function getStatistics(?string $operation = null): array
     {
-        $stats = Cache::get(self::STATS_KEY, []);
+        $stats = $this->cacheGet([]);
 
         if ($operation !== null) {
             return $this->calculateStats($operation, $stats[$operation] ?? null);
@@ -224,8 +227,8 @@ class TimeoutManager
     /**
      * Calculate detailed statistics for an operation
      *
-     * @param string $operation Operation name
-     * @param array|null $data Raw statistics data
+     * @param  string  $operation  Operation name
+     * @param  array|null  $data  Raw statistics data
      * @return array Calculated statistics
      */
     private function calculateStats(string $operation, ?array $data): array
@@ -251,9 +254,9 @@ class TimeoutManager
             'avg' => round(array_sum($executions) / $count, 2),
             'min' => round(min($executions), 2),
             'max' => round(max($executions), 2),
-            'p50' => round($executions[(int)($count * 0.50)], 2),
-            'p95' => round($executions[(int)($count * 0.95)], 2),
-            'p99' => round($executions[(int)($count * 0.99)], 2),
+            'p50' => round($executions[(int) ($count * 0.50)], 2),
+            'p95' => round($executions[(int) ($count * 0.95)], 2),
+            'p99' => round($executions[(int) ($count * 0.99)], 2),
             'success_count' => $data['successes'] ?? 0,
             'failure_count' => $data['failures'] ?? 0,
             'success_rate' => $data['successes'] + $data['failures'] > 0
@@ -268,22 +271,62 @@ class TimeoutManager
     /**
      * Reset statistics for operation (or all operations)
      *
-     * @param string|null $operation Operation to reset, or null for all
-     * @return void
+     * @param  string|null  $operation  Operation to reset, or null for all
      */
     public function resetStatistics(?string $operation = null): void
     {
         if ($operation === null) {
             // Reset all
-            Cache::forget(self::STATS_KEY);
-            Log::info("TimeoutManager: All statistics reset");
+            $this->cacheForget();
+            Log::info('TimeoutManager: All statistics reset');
         } else {
             // Reset specific operation
-            $stats = Cache::get(self::STATS_KEY, []);
+            $stats = $this->cacheGet([]);
             unset($stats[$operation]);
-            Cache::put(self::STATS_KEY, $stats, 86400);
-            Log::info("TimeoutManager: Statistics reset", ['operation' => $operation]);
+            $this->cachePut($stats);
+            Log::info('TimeoutManager: Statistics reset', ['operation' => $operation]);
         }
+    }
+
+    /** @return array<string,mixed> */
+    private function cacheGet(array $default): array
+    {
+        try {
+            $value = Cache::get(self::STATS_KEY, $default);
+
+            return is_array($value) ? $value : $default;
+        } catch (\Throwable $e) {
+            $this->logCacheFailure('get', $e);
+
+            return $default;
+        }
+    }
+
+    /** @param array<string,mixed> $stats */
+    private function cachePut(array $stats): void
+    {
+        try {
+            Cache::put(self::STATS_KEY, $stats, 86400);
+        } catch (\Throwable $e) {
+            $this->logCacheFailure('put', $e);
+        }
+    }
+
+    private function cacheForget(): void
+    {
+        try {
+            Cache::forget(self::STATS_KEY);
+        } catch (\Throwable $e) {
+            $this->logCacheFailure('forget', $e);
+        }
+    }
+
+    private function logCacheFailure(string $operation, \Throwable $error): void
+    {
+        Log::warning('TimeoutManager: cache unavailable; adaptive telemetry skipped', [
+            'operation' => $operation,
+            'exception_type' => $error::class,
+        ]);
     }
 
     /**
@@ -342,8 +385,8 @@ class TimeoutManager
     /**
      * Get recommended timeout for new operation type
      *
-     * @param string $parentOperation Parent operation in hierarchy
-     * @param float $estimatedDuration Estimated duration in seconds
+     * @param  string  $parentOperation  Parent operation in hierarchy
+     * @param  float  $estimatedDuration  Estimated duration in seconds
      * @return int Recommended timeout in seconds
      */
     public function recommendTimeout(string $parentOperation, float $estimatedDuration): int
@@ -351,7 +394,7 @@ class TimeoutManager
         $parentTimeout = $this->timeouts()[$parentOperation] ?? 30;
 
         // Recommendation: 2x estimated duration, but less than parent
-        $recommended = (int)ceil($estimatedDuration * 2);
+        $recommended = (int) ceil($estimatedDuration * 2);
 
         // Ensure it's less than parent timeout
         return min($recommended, $parentTimeout - 5);

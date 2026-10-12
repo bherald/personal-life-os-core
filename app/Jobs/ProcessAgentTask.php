@@ -2,6 +2,8 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Services\AgentHandoffService;
 use App\Services\AgentLoopService;
 use App\Services\DistributedAgentService;
 use App\Services\SystemConfigService;
@@ -46,10 +48,15 @@ class ProcessAgentTask implements ShouldQueue
     /** @var array<string,mixed>|null */
     private ?array $runtimePolicy = null;
 
+    private ?int $assignmentGeneration = null;
+
     public function __construct(
         private string $taskId,
-        private string $agentId
+        private string $agentId,
+        private int $attempt = 0,
+        ?int $assignmentGeneration = null,
     ) {
+        $this->assignmentGeneration = $assignmentGeneration;
         $this->applyRuntimePolicy();
 
         $this->onQueue('long-running');
@@ -67,6 +74,11 @@ class ProcessAgentTask implements ShouldQueue
 
     public function handle(): void
     {
+        if ($this->assignmentGeneration === null || $this->assignmentGeneration < 1) {
+            Log::warning('ProcessAgentTask: Legacy unbound assignment rejected', ['task_id' => $this->taskId]);
+
+            return;
+        }
         $distributedService = app(DistributedAgentService::class);
         $agentLoop = app(AgentLoopService::class);
 
@@ -88,13 +100,23 @@ class ProcessAgentTask implements ShouldQueue
             return;
         }
 
-        // Mark task as running
-        $distributedService->startTask($this->taskId, $this->agentId);
+        $payload = $task['payload'] ?? [];
+
+        // Mark task as running before agent execution so the handoff remains
+        // nonterminal until the child produces an authoritative outcome.
+        if (! $distributedService->startTask($this->taskId, $this->agentId, $this->attempt, $this->assignmentGeneration)) {
+            Log::warning('ProcessAgentTask: Task could not transition to running', [
+                'task_id' => $this->taskId,
+                'status' => $task['status'],
+            ]);
+
+            return;
+        }
+        $this->syncHandoff($payload, DistributedAgentService::TASK_RUNNING);
 
         $startTime = microtime(true);
 
         try {
-            $payload = $task['payload'] ?? [];
             $taskDescription = $payload['task'] ?? $payload['description'] ?? $task['task_type'];
             $options = [
                 'session_id' => $payload['session_id'] ?? null,
@@ -103,6 +125,12 @@ class ProcessAgentTask implements ShouldQueue
                 'tree_id' => $payload['tree_id'] ?? null,
                 'notify' => $payload['notify'] ?? false,
                 'depth' => $payload['depth'] ?? 0,
+                'delegation_depth' => $payload['delegation_depth'] ?? $payload['depth'] ?? 0,
+                'handoff_id' => $payload['handoff_id'] ?? null,
+                'parent_session_id' => $payload['parent_session_id'] ?? null,
+                'ds_profile' => $payload['ds_profile'] ?? null,
+                'sidecar' => $payload['sidecar'] ?? false,
+                'distributed_task_id' => $this->taskId,
             ];
 
             // Determine which agent skill to use
@@ -111,35 +139,92 @@ class ProcessAgentTask implements ShouldQueue
             // Execute the agent loop
             $result = $agentLoop->execute($skillName, $taskDescription, $options);
 
-            $durationMs = round((microtime(true) - $startTime) * 1000);
+            $durationMs = (int) round((microtime(true) - $startTime) * 1000);
 
             if ($result['success']) {
-                $distributedService->completeTask($this->taskId, $result, $durationMs);
-
-                Log::info('ProcessAgentTask: Task completed', [
-                    'task_id' => $this->taskId,
-                    'agent_id' => $this->agentId,
-                    'duration_ms' => $durationMs,
-                    'tokens' => $result['tokens_used'] ?? 0,
-                ]);
+                $completed = $distributedService->completeTask($this->taskId, $result, $durationMs, $this->agentId, $this->attempt, $this->assignmentGeneration);
+                if ($completed) {
+                    $this->syncHandoff($payload, DistributedAgentService::TASK_COMPLETED, $durationMs);
+                    Log::info('ProcessAgentTask: Task completed', [
+                        'task_id' => $this->taskId,
+                        'agent_id' => $this->agentId,
+                        'duration_ms' => $durationMs,
+                        'tokens' => $result['tokens_used'] ?? 0,
+                    ]);
+                } else {
+                    Log::warning('ProcessAgentTask: Result rejected after task ownership changed', [
+                        'task_id' => $this->taskId,
+                        'agent_id' => $this->agentId,
+                    ]);
+                }
             } else {
-                $distributedService->failTask(
+                // These outer receipt flags are built by AgentLoop, never model error text.
+                if (($result['execution_guard_held'] ?? false) === true
+                    || ($result['inference_admission_held'] ?? false) === true) {
+                    throw new InferenceAdmissionException($result['error'] ?? 'Agent execution guard held.');
+                }
+                $changed = $distributedService->failTask(
                     $this->taskId,
                     $result['error'] ?? 'Agent execution returned failure',
-                    true
+                    true,
+                    $this->agentId,
+                    $this->attempt,
+                    $this->assignmentGeneration,
                 );
+                if ($changed) {
+                    $retrying = (int) $task['retry_count'] < (int) $task['max_retries'];
+                    $this->syncHandoff(
+                        $payload,
+                        $retrying ? DistributedAgentService::TASK_PENDING : DistributedAgentService::TASK_FAILED,
+                        $durationMs,
+                        $result['error'] ?? 'Agent execution returned failure',
+                        $this->assignmentGeneration + (int) $retrying
+                    );
+                }
             }
 
         } catch (Throwable $e) {
             $durationMs = round((microtime(true) - $startTime) * 1000);
+            $admissionStop = InferenceAdmissionException::isAdmissionFailure($e);
 
-            $distributedService->failTask($this->taskId, $e->getMessage(), true);
+            try {
+                $changed = $distributedService->failTask($this->taskId, $e, ! $admissionStop, $this->agentId, $this->attempt, $this->assignmentGeneration);
+                if ($changed) {
+                    $retrying = ! $admissionStop && (int) $task['retry_count'] < (int) $task['max_retries'];
+                    $this->syncHandoff(
+                        $payload,
+                        $retrying ? DistributedAgentService::TASK_PENDING : DistributedAgentService::TASK_FAILED,
+                        (int) $durationMs,
+                        $e->getMessage(),
+                        $this->assignmentGeneration + (int) $retrying
+                    );
+                }
 
-            Log::error('ProcessAgentTask: Execution failed', [
-                'task_id' => $this->taskId,
-                'error' => $e->getMessage(),
-                'duration_ms' => $durationMs,
-            ]);
+                Log::error('ProcessAgentTask: Execution failed', [
+                    'task_id' => $this->taskId,
+                    'error' => $e->getMessage(),
+                    'duration_ms' => $durationMs,
+                ]);
+            } catch (Throwable $bookkeepingError) {
+                if (! $admissionStop) {
+                    throw $bookkeepingError;
+                }
+                // Failed persistence/logging does not convert the original stop into queue retry.
+                try {
+                    Log::warning('ProcessAgentTask: Typed stop bookkeeping held', [
+                        'task_id' => $this->taskId,
+                        'error_class' => $bookkeepingError::class,
+                    ]);
+                } catch (Throwable) {
+                    // The original failure remains authoritative even if logging is unavailable.
+                }
+            }
+
+            if ($admissionStop) {
+                $this->fail($e);
+
+                return;
+            }
 
             throw $e; // Let Laravel retry if configured
         }
@@ -154,11 +239,24 @@ class ProcessAgentTask implements ShouldQueue
         ]);
 
         try {
-            app(DistributedAgentService::class)->failTask(
+            $distributedService = app(DistributedAgentService::class);
+            $task = $distributedService->getTask($this->taskId);
+            $changed = $distributedService->failTask(
                 $this->taskId,
                 'Job failed: '.($exception?->getMessage() ?? 'Unknown error'),
-                false
+                false,
+                $this->agentId,
+                $this->attempt,
+                $this->assignmentGeneration,
             );
+            if ($changed && $task) {
+                $this->syncHandoff(
+                    $task['payload'] ?? [],
+                    DistributedAgentService::TASK_FAILED,
+                    0,
+                    'Job failed: '.($exception?->getMessage() ?? 'Unknown error')
+                );
+            }
         } catch (Throwable $e) {
             // Don't let failure handling failure mask original error
         }
@@ -171,6 +269,38 @@ class ProcessAgentTask implements ShouldQueue
             'task:'.substr($this->taskId, 0, 8),
             'agent:'.$this->agentId,
         ];
+    }
+
+    /** @param array<string,mixed> $payload */
+    private function syncHandoff(
+        array $payload,
+        string $taskStatus,
+        int $durationMs = 0,
+        ?string $error = null,
+        ?int $assignmentGeneration = null
+    ): void {
+        $handoffId = $payload['handoff_id'] ?? null;
+        if (! is_string($handoffId) || $handoffId === '') {
+            return;
+        }
+
+        try {
+            app(AgentHandoffService::class)->syncDistributedTaskState(
+                $handoffId,
+                $this->taskId,
+                $taskStatus,
+                $durationMs,
+                $error,
+                $assignmentGeneration ?? $this->assignmentGeneration
+            );
+        } catch (Throwable $e) {
+            Log::error('ProcessAgentTask: Handoff lifecycle sync failed', [
+                'handoff_id' => $handoffId,
+                'task_id' => $this->taskId,
+                'task_status' => $taskStatus,
+                'error_class' => $e::class,
+            ]);
+        }
     }
 
     private function applyRuntimePolicy(): void

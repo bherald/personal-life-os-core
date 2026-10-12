@@ -14,6 +14,8 @@ class ChatAttachmentService
 
     private const MAX_EXTRACTED_CHARS = 12000;
 
+    private const DOCUMENT_EXTENSIONS = ['doc', 'docx', 'odt', 'rtf', 'xls', 'xlsx', 'ppt', 'pptx'];
+
     /**
      * @param  array<int,UploadedFile>  $files
      * @return array<int,object>
@@ -27,18 +29,27 @@ class ChatAttachmentService
                 continue;
             }
 
+            if ((int) $file->getSize() <= 0) {
+                Log::warning('ChatAttachmentService: skipped empty upload', [
+                    'conversation_id' => $conversationId,
+                    'failure_reason' => 'empty_upload',
+                ]);
+
+                continue;
+            }
+
             $originalName = $file->getClientOriginalName();
             $extension = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: 'bin');
-            $mimeType = $file->getClientMimeType() ?: $file->getMimeType() ?: 'application/octet-stream';
-            $mediaType = $this->classifyMediaType($mimeType, $extension);
+            $mimeType = $file->getMimeType() ?: 'application/octet-stream';
+            $mediaType = $this->classifyUploadedMediaType($mimeType, $extension);
             $capability = $this->capabilityFor($mediaType, $direction);
             $uuid = (string) Str::uuid();
             $storagePath = sprintf('chat-attachments/%d/%s.%s', $conversationId, $uuid, $extension);
             $content = file_get_contents($file->getRealPath());
-            if (! is_string($content)) {
+            if (! is_string($content) || $content === '') {
                 Log::warning('ChatAttachmentService: skipped unreadable upload', [
                     'conversation_id' => $conversationId,
-                    'name' => $originalName,
+                    'failure_reason' => is_string($content) ? 'empty_upload' : 'unreadable_upload',
                 ]);
 
                 continue;
@@ -192,7 +203,7 @@ class ChatAttachmentService
 
     /**
      * @param  array<int,object>  $attachments
-     * @return array{prompt_suffix:string,ollama_images:array<int,string>,metadata:array<string,mixed>,payloads:array<int,array<string,mixed>>}
+     * @return array{prompt_suffix:string,ollama_images:array<int,string>,transcriptions:array<int,array{name:string,text:string,media_type:string}>,metadata:array<string,mixed>,payloads:array<int,array<string,mixed>>}
      */
     public function prepareForPrompt(array $attachments, object $conversation, AIService $aiService, array $privacyConfig = []): array
     {
@@ -200,6 +211,7 @@ class ChatAttachmentService
             return [
                 'prompt_suffix' => '',
                 'ollama_images' => [],
+                'transcriptions' => [],
                 'metadata' => [
                     'attachments' => [],
                     'model_capabilities' => $this->resolveModelCapabilities(
@@ -217,6 +229,7 @@ class ChatAttachmentService
         $contextBlocks = [];
         $metadata = [];
         $payloads = [];
+        $transcriptions = [];
 
         foreach ($attachments as $attachment) {
             $payload = $this->toPayload($attachment);
@@ -252,6 +265,13 @@ class ChatAttachmentService
                     $block['mode'] = $extract['method'];
                     $block['text_chars'] = strlen($extract['text']);
                     $contextBlocks[] = $this->formatAttachmentContext($attachment, $extract['text'], $extract['method']);
+                    if ($extract['method'] === 'whisper' && $extract['transcript'] !== '') {
+                        $transcriptions[] = [
+                            'name' => (string) ($attachment->original_name ?? 'attachment'),
+                            'text' => $extract['transcript'],
+                            'media_type' => $mediaType,
+                        ];
+                    }
 
                     DB::update(
                         'UPDATE chat_message_attachments SET extracted_text = ?, processing_status = ?, metadata = ?, updated_at = ? WHERE id = ?',
@@ -272,12 +292,19 @@ class ChatAttachmentService
                         [
                             'stored_unextracted',
                             json_encode(array_merge($payload['metadata'] ?? [], [
-                                'extraction_error' => $extract['error'] ?? 'No text could be extracted.',
+                                'extraction_error' => $extract['safe_error'] ?? $extract['error'] ?? 'No text could be extracted.',
+                                ...((in_array($mediaType, ['audio', 'video'], true) && ! empty($extract['failure_code']))
+                                    ? ['transcription_failure_code' => $extract['failure_code']]
+                                    : []),
                             ]), JSON_UNESCAPED_SLASHES),
                             now(),
                             (int) $attachment->id,
                         ]
                     );
+
+                    if (in_array($mediaType, ['audio', 'video'], true)) {
+                        $block['transcription_failure_code'] = $extract['failure_code'] ?? 'unknown_failure';
+                    }
                 }
             }
 
@@ -294,6 +321,7 @@ class ChatAttachmentService
         return [
             'prompt_suffix' => $suffix,
             'ollama_images' => $directOllamaImages,
+            'transcriptions' => $transcriptions,
             'metadata' => [
                 'attachments' => $metadata,
                 'model_capabilities' => $capabilities,
@@ -376,7 +404,7 @@ class ChatAttachmentService
             return 'text';
         }
 
-        if (in_array($extension, ['doc', 'docx', 'odt', 'rtf', 'xls', 'xlsx', 'ppt', 'pptx'], true)) {
+        if (in_array($extension, self::DOCUMENT_EXTENSIONS, true)) {
             return 'document';
         }
 
@@ -398,10 +426,18 @@ class ChatAttachmentService
     public function capabilityForUpload(UploadedFile $file): string
     {
         $extension = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: '');
-        $mimeType = $file->getClientMimeType() ?: $file->getMimeType() ?: 'application/octet-stream';
-        $mediaType = $this->classifyMediaType($mimeType, $extension);
+        $mimeType = $file->getMimeType() ?: 'application/octet-stream';
+        $mediaType = $this->classifyUploadedMediaType($mimeType, $extension);
 
         return $this->capabilityFor($mediaType, 'input');
+    }
+
+    private function classifyUploadedMediaType(string $mimeType, string $extension): string
+    {
+        // Office containers can need their extension; media decoder routing must use detected content.
+        $documentExtension = in_array($extension, self::DOCUMENT_EXTENSIONS, true) ? $extension : null;
+
+        return $this->classifyMediaType($mimeType, $documentExtension);
     }
 
     /**
@@ -441,12 +477,12 @@ class ChatAttachmentService
     }
 
     /**
-     * @return array{text:string,method:string,attempts?:array<string,mixed>,error?:string}
+     * @return array{text:string,method:string,transcript:string,attempts?:array<string,mixed>,error?:string,safe_error?:string,failure_code?:string|null}
      */
     private function extractAttachmentText(object $attachment, string $path, AIService $aiService, array $privacyConfig, bool $localOnly): array
     {
         if (! is_file($path)) {
-            return ['text' => '', 'method' => 'missing_file', 'error' => 'Stored file missing.'];
+            return ['text' => '', 'method' => 'missing_file', 'transcript' => '', 'error' => 'Stored file missing.', 'failure_code' => 'runtime_or_input_unavailable'];
         }
 
         try {
@@ -458,7 +494,6 @@ class ChatAttachmentService
                 'use_ocr' => true,
                 'use_whisper' => true,
                 'disable_external_fallback' => $localOnly,
-                'disable_claude_fallback' => $localOnly,
             ] + $privacyConfig);
 
             $text = trim((string) ($result['text'] ?? ''));
@@ -466,17 +501,56 @@ class ChatAttachmentService
             return [
                 'text' => Str::limit($text, self::MAX_EXTRACTED_CHARS, "\n[attachment text truncated]"),
                 'method' => (string) ($result['method'] ?? 'extract_content'),
+                'transcript' => Str::limit(
+                    trim((string) ($result['metadata']['transcript'] ?? '')),
+                    self::MAX_EXTRACTED_CHARS,
+                    "\n[transcript truncated]"
+                ),
                 'attempts' => $result['attempts'] ?? [],
                 'error' => $result['error'] ?? null,
+                'failure_code' => in_array((string) ($attachment->media_type ?? ''), ['audio', 'video'], true)
+                    && empty($result['success'])
+                    ? $this->safeTranscriptionFailureCode($result['failure_code'] ?? null)
+                    : null,
+                'safe_error' => in_array((string) ($attachment->media_type ?? ''), ['audio', 'video'], true)
+                    && empty($result['success'])
+                    ? 'Transcription could not be completed.'
+                    : ($result['error'] ?? null),
             ];
         } catch (\Throwable $e) {
             Log::warning('ChatAttachmentService: extraction failed', [
                 'attachment_id' => (int) ($attachment->id ?? 0),
-                'error' => $e->getMessage(),
+                'error_type' => $e::class,
+                'error_sha256' => hash('sha256', $e->getMessage()),
             ]);
 
-            return ['text' => '', 'method' => 'error', 'error' => $e->getMessage()];
+            $isAudio = in_array((string) ($attachment->media_type ?? ''), ['audio', 'video'], true);
+
+            return [
+                'text' => '', 'method' => 'error', 'transcript' => '',
+                'error' => $isAudio ? 'Transcription could not be completed.' : $e->getMessage(),
+                'failure_code' => $isAudio ? 'unknown_failure' : null,
+            ];
         }
+    }
+
+    private function safeTranscriptionFailureCode(mixed $code): ?string
+    {
+        $allowed = [
+            'runtime_or_input_unavailable',
+            'gpu_unavailable',
+            'output_directory_unavailable',
+            'process_failed',
+            'empty_transcript',
+            'transcription_timeout',
+            'runtime_exception',
+            'whisper_working_directory_unavailable',
+            'whisper_input_unavailable',
+            'audio_extraction_failed',
+            'unknown_failure',
+        ];
+
+        return is_string($code) && in_array($code, $allowed, true) ? $code : 'unknown_failure';
     }
 
     private function formatAttachmentContext(object $attachment, string $text, string $method): string

@@ -1,9 +1,9 @@
 # GenealogyView Component Refactoring Roadmap
 
 ## Overview
-This document outlines the incremental refactoring plan for splitting the monolithic `GenealogyView.vue` (10,967 lines) into smaller, maintainable components.
+This document outlines the incremental refactoring plan for splitting the monolithic `GenealogyView.vue` (18,938 lines as of 2026-07-10) into smaller, maintainable components.
 
-**Status**: Phase 1 Complete - Infrastructure Created
+**Status**: Phase 1 complete - Phase 2 active; `RecentTab.vue` and `SurnamesTab.vue` extracted
 
 ## Current Structure
 
@@ -14,11 +14,13 @@ resources/js/src/
 │   └── useGenealogyTree.js   (NEW - tree rendering logic)
 ├── components/
 │   └── genealogy/
-│       ├── tabs/             (empty - for future extraction)
+│       ├── tabs/
+│       │   ├── RecentTab.vue
+│       │   └── SurnamesTab.vue
 │       ├── modals/           (empty - for future extraction)
 │       └── shared/           (empty - for shared components)
 └── views/
-    └── GenealogyView.vue     (10,967 lines - to be refactored)
+    └── GenealogyView.vue     (18,938 lines - extraction in progress)
 ```
 
 ## Refactoring Phases
@@ -28,20 +30,25 @@ resources/js/src/
 - [x] Create `useGenealogyTree.js` composable for tree visualization
 - [x] Document refactoring plan
 
-### Phase 2: Tab Extraction (PLANNED)
+### Phase 2: Tab Extraction (ACTIVE)
 Extract each tab panel into a separate component:
+
+The view has grown by more than 8,000 lines since this roadmap was created. New
+Genealogy UI work should extract the touched tab or modal when that can be done
+without widening the behavioral change; do not add another large workflow block
+to the root view.
 
 | Component | Lines | Complexity | Dependencies |
 |-----------|-------|------------|--------------|
 | TreeTab.vue | ~110 | High | d3, topola, useGenealogyTree |
 | SearchTab.vue | ~45 | Low | API calls |
-| SurnamesTab.vue | ~35 | Low | State only |
+| SurnamesTab.vue | extracted | Low | Props and selection events only |
 | SourcesTab.vue | ~220 | Medium | CRUD, citations |
 | RepositoriesTab.vue | ~105 | Medium | CRUD |
 | ReportsTab.vue | ~120 | Medium | Multiple reports |
 | MediaTab.vue | ~185 | High | Face tagging, uploads |
 | ToolsTab.vue | ~590 | Very High | Multiple tool sections |
-| RecentTab.vue | ~20 | Low | State only |
+| RecentTab.vue | extracted | Low | `items` prop only |
 
 ### Phase 3: Modal Extraction (PLANNED)
 30+ modals to be extracted to `/components/genealogy/modals/`:
@@ -96,7 +103,7 @@ Consider Pinia store for genealogy state if needed after component extraction.
 
 ## Priority Order for Extraction
 
-1. **Low-hanging fruit first**: SearchTab, SurnamesTab, RecentTab
+1. **Low-hanging fruit first**: SearchTab; RecentTab and SurnamesTab complete
 2. **Independent modals**: ConfirmDialog, simple CRUD modals
 3. **Complex tabs with modals**: Sources + SourceModal, Repositories + RepositoryModal
 4. **High-complexity**: MediaTab + MediaDetailModal + FaceTaggingModal

@@ -8,6 +8,13 @@ const dotenvMode = process.env.PLOS_MCP_DOTENV_MODE ?? 'default';
 if (dotenvMode !== 'skip') {
   config({ path: resolve(__dirname, '..', '.env') });
   config({ path: resolve(__dirname, '..', '..', '..', '.env') });
+
+  const privateEnvPath = process.env.PLOS_MCP_ENV_FILE
+    ?? (process.env.HOME ? resolve(process.env.HOME, '.config', 'plos', 'mcp-plos.env') : '');
+
+  if (privateEnvPath !== '') {
+    config({ path: privateEnvPath, override: true });
+  }
 }
 
 function env(key: string, fallback?: string): string {
@@ -33,18 +40,18 @@ export const CONFIG = {
     strictHostKeyChecking: env('SSH_STRICT_HOST_KEY_CHECKING', 'accept-new'),
   },
   mysql: {
-    host: env('MYSQL_HOST', '127.0.0.1'),
-    port: parseInt(env('MYSQL_PORT', '3306')),
-    user: env('MYSQL_USER', 'plos'),
-    password: env('MYSQL_PASSWORD', ''),
-    database: env('MYSQL_DATABASE', 'plos'),
+    host: envAny(['MYSQL_HOST', 'DB_HOST'], '127.0.0.1'),
+    port: parseInt(envAny(['MYSQL_PORT', 'DB_PORT'], '3306')),
+    user: envAny(['MYSQL_USER', 'DB_USERNAME'], 'plos'),
+    password: envAny(['MYSQL_PASSWORD', 'DB_PASSWORD'], ''),
+    database: envAny(['MYSQL_DATABASE', 'DB_DATABASE'], 'plos'),
   },
   pgsql: {
-    host: env('PGSQL_HOST', '127.0.0.1'),
-    port: parseInt(env('PGSQL_PORT', '5432')),
-    user: env('PGSQL_USER', 'plos_rag'),
-    password: env('PGSQL_PASSWORD', ''),
-    database: env('PGSQL_DATABASE', 'plos_rag'),
+    host: envAny(['PGSQL_HOST', 'RAG_DB_HOST'], '127.0.0.1'),
+    port: parseInt(envAny(['PGSQL_PORT', 'RAG_DB_PORT'], '5432')),
+    user: envAny(['PGSQL_USER', 'RAG_DB_USERNAME'], 'plos_rag'),
+    password: envAny(['PGSQL_PASSWORD', 'RAG_DB_PASSWORD'], ''),
+    database: envAny(['PGSQL_DATABASE', 'RAG_DB_DATABASE'], 'plos_rag'),
   },
   ollama: {
     host: env('OLLAMA_HOST', 'http://127.0.0.1:11434'),
@@ -63,6 +70,8 @@ export const CONFIG = {
   },
   // Global tool-level timeout — prevents any single tool from blocking MCP forever
   toolTimeoutMs: 90_000,
+  // Token-gated elapsed-time heartbeat. No percentage or payload content is emitted.
+  toolProgressHeartbeatMs: 15_000,
 } as const;
 
 export function shellQuote(value: string): string {

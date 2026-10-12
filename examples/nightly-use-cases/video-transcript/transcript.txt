@@ -1,0 +1,13 @@
+ORIGINAL FICTIONAL VIDEO TRANSCRIPT — not a real recording or copied transcript.
+Title: Keep the description with the demonstration picture
+Fictional locator: https://video.example.test/watch/photo-context-demo
+Speaker: Fictional Demonstrator
+
+[00:00] I have a demonstration picture and a caption stored in a separate note. If I pass on only the picture, the next person may not receive the caption.
+[00:18] In this example I keep an untouched original, then add selected descriptive metadata to a disposable copy. The example label is fictional. It does not identify a real person.
+[00:36] I can add a region that points to the part of the image the label describes. Before writing, I want a preview of the fields that will change and a check that the existing credit stays intact.
+[00:54] At this point I might say every exported copy will carry those fields. That statement is too broad; I have not checked every export route.
+[01:10] For this invented walkthrough, the JPEG copy is the only format described as having a metadata read-back. This transcript contains no actual read-back receipt or executed test.
+[01:27] A sharing export could remove metadata, and a separate sidecar needs to remain paired with its image. Other formats and applications remain untested in this story.
+[01:44] So the useful follow-up is to inspect the output fields after each chosen export and retain the original and correction notes. The label and caption should remain approved context rather than an automatic identification.
+[02:02] End of the fictional walkthrough. No real image, file, service, person or measurement is supplied by this transcript.

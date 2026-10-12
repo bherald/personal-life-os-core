@@ -3,8 +3,6 @@
 namespace App\Services\Genealogy;
 
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Place Authority Service
@@ -52,11 +50,11 @@ class PlaceAuthorityService
     /**
      * Find or create a place in the authority database
      *
-     * @param string $placeString Original place string (e.g., "Philadelphia, PA, USA")
-     * @param array $options Additional options:
-     *   - latitude: float
-     *   - longitude: float
-     *   - create_hierarchy: bool (default true) - Auto-create parent places
+     * @param  string  $placeString  Original place string (e.g., "Philadelphia, PA, USA")
+     * @param  array  $options  Additional options:
+     *                          - latitude: float
+     *                          - longitude: float
+     *                          - create_hierarchy: bool (default true) - Auto-create parent places
      * @return int|null Place ID or null if parsing fails
      */
     public function findOrCreatePlace(string $placeString, array $options = []): ?int
@@ -69,18 +67,18 @@ class PlaceAuthorityService
         $normalized = $this->normalizePlaceName($placeString);
 
         // Try exact match first
-        $existing = DB::selectOne("
+        $existing = DB::selectOne('
             SELECT id FROM genealogy_places WHERE normalized_name = ?
-        ", [$normalized]);
+        ', [$normalized]);
 
         if ($existing) {
             return $existing->id;
         }
 
         // Try alias match
-        $aliasMatch = DB::selectOne("
+        $aliasMatch = DB::selectOne('
             SELECT place_id FROM genealogy_place_aliases WHERE normalized_alias = ?
-        ", [$normalized]);
+        ', [$normalized]);
 
         if ($aliasMatch) {
             return $aliasMatch->place_id;
@@ -101,16 +99,16 @@ class PlaceAuthorityService
     /**
      * Get place with full hierarchy path
      *
-     * @param int $placeId Place ID
+     * @param  int  $placeId  Place ID
      * @return array|null Place data with ancestors
      */
     public function getPlaceWithHierarchy(int $placeId): ?array
     {
-        $place = DB::selectOne("
+        $place = DB::selectOne('
             SELECT * FROM genealogy_places WHERE id = ?
-        ", [$placeId]);
+        ', [$placeId]);
 
-        if (!$place) {
+        if (! $place) {
             return null;
         }
 
@@ -121,11 +119,13 @@ class PlaceAuthorityService
         $maxDepth = 10; // Prevent infinite loops
 
         while ($currentId && $depth < $maxDepth) {
-            $ancestor = DB::selectOne("
+            $ancestor = DB::selectOne('
                 SELECT * FROM genealogy_places WHERE id = ?
-            ", [$currentId]);
+            ', [$currentId]);
 
-            if (!$ancestor) break;
+            if (! $ancestor) {
+                break;
+            }
 
             $ancestors[] = $ancestor;
             $currentId = $ancestor->parent_id;
@@ -133,9 +133,9 @@ class PlaceAuthorityService
         }
 
         // Get aliases
-        $aliases = DB::select("
+        $aliases = DB::select('
             SELECT alias, alias_type FROM genealogy_place_aliases WHERE place_id = ?
-        ", [$placeId]);
+        ', [$placeId]);
 
         return [
             'place' => $place,
@@ -148,10 +148,11 @@ class PlaceAuthorityService
     /**
      * Search places by name
      *
-     * @param string $query Search query
-     * @param array $options Search options:
-     *   - place_type: string - Filter by type
-     *   - limit: int (default 20)
+     * @param  string  $query  Search query
+     * @param  array  $options  Search options:
+     *                          - place_type: string - Filter by type
+     *                          - country: string - Country name or alias registered in the authority
+     *                          - limit: int (default 20)
      * @return array Matching places
      */
     public function searchPlaces(string $query, array $options = []): array
@@ -161,31 +162,46 @@ class PlaceAuthorityService
             return [];
         }
 
-        $limit = min($options['limit'] ?? 20, 100);
+        $limit = max(1, min((int) ($options['limit'] ?? 20), 100));
         $normalized = $this->normalizePlaceName($query);
 
         $params = [];
 
-        $sql = "
+        $sql = '
             SELECT DISTINCT p.*,
                    (SELECT COUNT(*) FROM genealogy_events WHERE place_id = p.id) +
                    (SELECT COUNT(*) FROM genealogy_family_events WHERE place_id = p.id) as usage_count
             FROM genealogy_places p
             LEFT JOIN genealogy_place_aliases a ON a.place_id = p.id
-            WHERE p.normalized_name LIKE ?
+            WHERE (p.normalized_name LIKE ?
                OR a.normalized_alias LIKE ?
-               OR MATCH(p.name, p.short_name) AGAINST(? IN NATURAL LANGUAGE MODE)
-        ";
+               OR MATCH(p.name, p.short_name) AGAINST(? IN NATURAL LANGUAGE MODE))
+        ';
         $params[] = "%{$normalized}%";
         $params[] = "%{$normalized}%";
         $params[] = $query;
 
-        if (!empty($options['place_type'])) {
-            $sql .= " AND p.place_type = ?";
+        if (isset($options['country']) && trim((string) $options['country']) !== '') {
+            $country = $this->normalizePlaceName($this->expandAbbreviation(trim((string) $options['country']), 'country'));
+            // Country membership comes from the existing parent/alias tables.
+            // UNION DISTINCT also terminates if legacy hierarchy data cycles.
+            $sql = "WITH RECURSIVE country_places (id) AS (
+                SELECT c.id FROM genealogy_places c
+                LEFT JOIN genealogy_place_aliases ca ON ca.place_id = c.id
+                WHERE c.place_type = 'country' AND (c.normalized_name = ? OR ca.normalized_alias = ?)
+                UNION DISTINCT
+                SELECT child.id FROM genealogy_places child
+                INNER JOIN country_places parent ON child.parent_id = parent.id
+            ) ".$sql.' AND p.id IN (SELECT id FROM country_places)';
+            array_unshift($params, $country, $country);
+        }
+
+        if (! empty($options['place_type'])) {
+            $sql .= ' AND p.place_type = ?';
             $params[] = $options['place_type'];
         }
 
-        $sql .= " ORDER BY usage_count DESC, p.name ASC LIMIT ?";
+        $sql .= ' ORDER BY usage_count DESC, p.name ASC LIMIT ?';
         $params[] = $limit;
 
         return DB::select($sql, $params);
@@ -194,9 +210,9 @@ class PlaceAuthorityService
     /**
      * Add an alias for a place
      *
-     * @param int $placeId Place ID
-     * @param string $alias Alias name
-     * @param string $aliasType Type: spelling, historical, abbreviation, translation, common
+     * @param  int  $placeId  Place ID
+     * @param  string  $alias  Alias name
+     * @param  string  $aliasType  Type: spelling, historical, abbreviation, translation, common
      * @return bool Success
      */
     public function addAlias(int $placeId, string $alias, string $aliasType = 'spelling'): bool
@@ -209,19 +225,19 @@ class PlaceAuthorityService
         $normalized = $this->normalizePlaceName($alias);
 
         // Check if alias already exists for this place
-        $existing = DB::selectOne("
+        $existing = DB::selectOne('
             SELECT id FROM genealogy_place_aliases
             WHERE place_id = ? AND normalized_alias = ?
-        ", [$placeId, $normalized]);
+        ', [$placeId, $normalized]);
 
         if ($existing) {
             return true; // Already exists
         }
 
-        DB::insert("
+        DB::insert('
             INSERT INTO genealogy_place_aliases (place_id, alias, normalized_alias, alias_type)
             VALUES (?, ?, ?, ?)
-        ", [$placeId, $alias, $normalized, $aliasType]);
+        ', [$placeId, $alias, $normalized, $aliasType]);
 
         return true;
     }
@@ -229,9 +245,9 @@ class PlaceAuthorityService
     /**
      * Link an event to a place
      *
-     * @param int $eventId Event ID
-     * @param int $placeId Place ID
-     * @param bool $isFamily True for family events, false for person events
+     * @param  int  $eventId  Event ID
+     * @param  int  $placeId  Place ID
+     * @param  bool  $isFamily  True for family events, false for person events
      * @return bool Success
      */
     public function linkEventToPlace(int $eventId, int $placeId, bool $isFamily = false): bool
@@ -246,7 +262,7 @@ class PlaceAuthorityService
     /**
      * Backfill place_id for existing events
      *
-     * @param int $limit Max events to process
+     * @param  int  $limit  Max events to process
      * @return array Results summary
      */
     public function backfillEventPlaces(int $limit = 1000): array
@@ -314,27 +330,27 @@ class PlaceAuthorityService
      */
     public function getStatistics(): array
     {
-        $totalPlaces = DB::selectOne("SELECT COUNT(*) as cnt FROM genealogy_places")->cnt;
-        $linkedPersonEvents = DB::selectOne("SELECT COUNT(*) as cnt FROM genealogy_events WHERE place_id IS NOT NULL")->cnt;
-        $unlinkedPersonEvents = DB::selectOne("SELECT COUNT(*) as cnt FROM genealogy_events WHERE place_id IS NULL AND event_place IS NOT NULL")->cnt;
-        $linkedFamilyEvents = DB::selectOne("SELECT COUNT(*) as cnt FROM genealogy_family_events WHERE place_id IS NOT NULL")->cnt;
-        $unlinkedFamilyEvents = DB::selectOne("SELECT COUNT(*) as cnt FROM genealogy_family_events WHERE place_id IS NULL AND event_place IS NOT NULL")->cnt;
+        $totalPlaces = DB::selectOne('SELECT COUNT(*) as cnt FROM genealogy_places')->cnt;
+        $linkedPersonEvents = DB::selectOne('SELECT COUNT(*) as cnt FROM genealogy_events WHERE place_id IS NOT NULL')->cnt;
+        $unlinkedPersonEvents = DB::selectOne('SELECT COUNT(*) as cnt FROM genealogy_events WHERE place_id IS NULL AND event_place IS NOT NULL')->cnt;
+        $linkedFamilyEvents = DB::selectOne('SELECT COUNT(*) as cnt FROM genealogy_family_events WHERE place_id IS NOT NULL')->cnt;
+        $unlinkedFamilyEvents = DB::selectOne('SELECT COUNT(*) as cnt FROM genealogy_family_events WHERE place_id IS NULL AND event_place IS NOT NULL')->cnt;
 
-        $byType = DB::select("
+        $byType = DB::select('
             SELECT place_type, COUNT(*) as cnt
             FROM genealogy_places
             GROUP BY place_type
             ORDER BY cnt DESC
-        ");
+        ');
 
-        $topPlaces = DB::select("
+        $topPlaces = DB::select('
             SELECT p.id, p.name, p.place_type,
                    (SELECT COUNT(*) FROM genealogy_events WHERE place_id = p.id) +
                    (SELECT COUNT(*) FROM genealogy_family_events WHERE place_id = p.id) as usage_count
             FROM genealogy_places p
             ORDER BY usage_count DESC
             LIMIT 20
-        ");
+        ');
 
         return [
             'total_places' => $totalPlaces,
@@ -370,7 +386,7 @@ class PlaceAuthorityService
     /**
      * Parse a place string into hierarchy components
      *
-     * @param string $placeString E.g., "Philadelphia, Philadelphia County, Pennsylvania, USA"
+     * @param  string  $placeString  E.g., "Philadelphia, Philadelphia County, Pennsylvania, USA"
      * @return array Parsed components with types
      */
     public function parsePlaceHierarchy(string $placeString): array
@@ -489,18 +505,19 @@ class PlaceAuthorityService
 
         foreach ($hierarchyReversed as $index => $level) {
             // Check if this level already exists with the same parent
-            $existing = DB::selectOne("
+            $existing = DB::selectOne('
                 SELECT id FROM genealogy_places
                 WHERE normalized_name = ?
                   AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))
-            ", [$level['normalized_name'], $parentId, $parentId]);
+            ', [$level['normalized_name'], $parentId, $parentId]);
 
             if ($existing) {
                 $parentId = $existing->id;
+
                 continue;
             }
 
-            if (!$createParents && $index < count($hierarchyReversed) - 1) {
+            if (! $createParents && $index < count($hierarchyReversed) - 1) {
                 // Only create the final (most specific) level
                 continue;
             }
@@ -509,10 +526,10 @@ class PlaceAuthorityService
             $lat = ($index === count($hierarchyReversed) - 1) ? ($options['latitude'] ?? null) : null;
             $lng = ($index === count($hierarchyReversed) - 1) ? ($options['longitude'] ?? null) : null;
 
-            DB::insert("
+            DB::insert('
                 INSERT INTO genealogy_places (name, normalized_name, short_name, parent_id, place_type, latitude, longitude)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
-            ", [
+            ', [
                 $level['name'],
                 $level['normalized_name'],
                 $level['short_name'],
@@ -550,49 +567,49 @@ class PlaceAuthorityService
     /**
      * Update place coordinates
      *
-     * @param int $placeId Place ID
-     * @param float $latitude Latitude
-     * @param float $longitude Longitude
+     * @param  int  $placeId  Place ID
+     * @param  float  $latitude  Latitude
+     * @param  float  $longitude  Longitude
      * @return bool Success
      */
     public function updateCoordinates(int $placeId, float $latitude, float $longitude): bool
     {
-        return DB::update("
+        return DB::update('
             UPDATE genealogy_places
             SET latitude = ?, longitude = ?, updated_at = NOW()
             WHERE id = ?
-        ", [$latitude, $longitude, $placeId]) > 0;
+        ', [$latitude, $longitude, $placeId]) > 0;
     }
 
     /**
      * Set historical boundaries for a place
      *
-     * @param int $placeId Place ID
-     * @param array $boundaries Array of {start_year, end_year, boundary_geojson}
+     * @param  int  $placeId  Place ID
+     * @param  array  $boundaries  Array of {start_year, end_year, boundary_geojson}
      * @return bool Success
      */
     public function setHistoricalBoundaries(int $placeId, array $boundaries): bool
     {
-        return DB::update("
+        return DB::update('
             UPDATE genealogy_places
             SET historical_boundaries = ?, updated_at = NOW()
             WHERE id = ?
-        ", [json_encode($boundaries), $placeId]) > 0;
+        ', [json_encode($boundaries), $placeId]) > 0;
     }
 
     /**
      * Set external IDs for a place
      *
-     * @param int $placeId Place ID
-     * @param array $externalIds Array of {service: id} pairs
+     * @param  int  $placeId  Place ID
+     * @param  array  $externalIds  Array of {service: id} pairs
      * @return bool Success
      */
     public function setExternalIds(int $placeId, array $externalIds): bool
     {
-        return DB::update("
+        return DB::update('
             UPDATE genealogy_places
             SET external_ids = ?, updated_at = NOW()
             WHERE id = ?
-        ", [json_encode($externalIds), $placeId]) > 0;
+        ', [json_encode($externalIds), $placeId]) > 0;
     }
 }

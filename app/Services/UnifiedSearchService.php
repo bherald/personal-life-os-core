@@ -95,6 +95,7 @@ class UnifiedSearchService
         $notebook = $options['notebook'] ?? null;
         $mediaSubtype = $options['media_subtype'] ?? null;
         $isBrowseMode = ($query === '*');
+        $strictFilePhrase = $this->isStrictFilePhraseQuery($query);
 
         Log::info('UnifiedSearch: Starting search', [
             'query' => substr($query, 0, 100),
@@ -151,6 +152,7 @@ class UnifiedSearchService
                     'person_name' => $personName,
                     'folder' => $folder,
                     'browse_mode' => $isBrowseMode,
+                    'strict_phrase' => $strictFilePhrase,
                     'offset' => $offset,
                 ]);
                 foreach ($mediaResults as $rank => $result) {
@@ -161,7 +163,7 @@ class UnifiedSearchService
                 $counts['media'] = count($mediaResults);
 
                 // Semantic RAG search for files (skip in browse mode)
-                if (! $isBrowseMode) {
+                if (! $isBrowseMode && ! $strictFilePhrase) {
                     $semanticResults = $this->searchMediaSemantic($query, $limit);
                     foreach ($semanticResults as $rank => $result) {
                         $result['_source'] = 'media_semantic';
@@ -247,6 +249,9 @@ class UnifiedSearchService
         $results = [];
         $params = [];
         $browseMode = ! empty($filters['browse_mode']);
+        $queryInfo = $this->normalizeFileSearchQuery($query);
+        $searchText = $queryInfo['text'];
+        $strictPhrase = ! empty($filters['strict_phrase']) || $queryInfo['strict_phrase'];
         $offset = (int) ($filters['offset'] ?? 0);
 
         // Check if date_taken columns exist (they may not in all environments)
@@ -275,13 +280,13 @@ class UnifiedSearchService
 
         $selectCols .= ",
                 fr.ai_description,
-                (SELECT COUNT(*) FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id) as face_count,
+                (SELECT COUNT(*) FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.source_current = 1 AND frf.superseded_at IS NULL) as face_count,
                 (SELECT GROUP_CONCAT(DISTINCT frf.person_name SEPARATOR ', ')
                  FROM file_registry_faces frf
-                 WHERE frf.file_registry_id = fr.id AND frf.person_name IS NOT NULL) as people";
+                 WHERE frf.file_registry_id = fr.id AND frf.source_current = 1 AND frf.superseded_at IS NULL AND frf.person_name IS NOT NULL) as people";
 
         // Build base query with search
-        $sql = "SELECT {$selectCols} FROM file_registry fr WHERE fr.status = 'active'";
+        $sql = "SELECT {$selectCols} FROM file_registry fr WHERE fr.status = 'active' AND ".$this->fileRegistryAvailablePredicate('fr');
 
         // Type filter
         if (! empty($filters['type'])) {
@@ -312,13 +317,18 @@ class UnifiedSearchService
         }
 
         // Text search - skip in browse mode (return all items)
-        if (! $browseMode) {
-            $searchTerms = '%'.$query.'%';
+        if (! $browseMode && $searchText !== '') {
+            $searchTerms = '%'.$searchText.'%';
             // Note: current_path excluded from text search — matching folder names
             // (e.g. a person name in a path) produces massive false positives.
             // Folder filtering is handled via the folder browser sidebar.
             $searchConditions = 'fr.filename LIKE ? OR fr.title LIKE ? OR fr.tags LIKE ?';
             $params = [$searchTerms, $searchTerms, $searchTerms];
+
+            if ($strictPhrase) {
+                $searchConditions .= ' OR fr.current_path LIKE ?';
+                $params[] = $searchTerms;
+            }
 
             if ($hasDateTaken) {
                 $searchConditions .= ' OR fr.date_taken_reasoning LIKE ?';
@@ -327,10 +337,10 @@ class UnifiedSearchService
 
             // FULLTEXT search on AI descriptions and OCR-extracted text
             $searchConditions .= ' OR MATCH(fr.ai_description, fr.ai_detected_text) AGAINST(? IN BOOLEAN MODE)';
-            $params[] = $query; // raw query, not LIKE-wrapped — BOOLEAN MODE handles tokenization
+            $params[] = $this->booleanFileSearchQuery($searchText, $strictPhrase);
 
             // Also search person names from face tags
-            $searchConditions .= ' OR EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.person_name LIKE ?)';
+            $searchConditions .= ' OR EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.source_current = 1 AND frf.superseded_at IS NULL AND frf.person_name LIKE ?)';
             $params[] = $searchTerms;
 
             // Also search genealogy person links (person name → person_media → media → file_registry)
@@ -348,19 +358,21 @@ class UnifiedSearchService
 
             // Fuzzy filename fallback: pre-fetch filenames from genealogy person links
             // for files copied to family tree folder with different paths
-            $personFilenames = DB::select("
-                SELECT DISTINCT SUBSTRING_INDEX(gm.nextcloud_path, '/', -1) as filename
-                FROM genealogy_person_media gpm
-                JOIN genealogy_media gm ON gpm.media_id = gm.id
-                JOIN genealogy_persons gp ON gpm.person_id = gp.id
-                WHERE CONCAT(gp.given_name, ' ', gp.surname) LIKE ? OR gp.given_name LIKE ? OR gp.surname LIKE ?
-            ", [$searchTerms, $searchTerms, $searchTerms]);
+            if (! $strictPhrase) {
+                $personFilenames = DB::select("
+                    SELECT DISTINCT SUBSTRING_INDEX(gm.nextcloud_path, '/', -1) as filename
+                    FROM genealogy_person_media gpm
+                    JOIN genealogy_media gm ON gpm.media_id = gm.id
+                    JOIN genealogy_persons gp ON gpm.person_id = gp.id
+                    WHERE CONCAT(gp.given_name, ' ', gp.surname) LIKE ? OR gp.given_name LIKE ? OR gp.surname LIKE ?
+                ", [$searchTerms, $searchTerms, $searchTerms]);
 
-            if (! empty($personFilenames)) {
-                $filenames = array_column(array_map(fn ($r) => (array) $r, $personFilenames), 'filename');
-                $placeholders = implode(',', array_fill(0, count($filenames), '?'));
-                $searchConditions .= " OR fr.filename IN ({$placeholders})";
-                $params = array_merge($params, $filenames);
+                if (! empty($personFilenames)) {
+                    $filenames = array_column(array_map(fn ($r) => (array) $r, $personFilenames), 'filename');
+                    $placeholders = implode(',', array_fill(0, count($filenames), '?'));
+                    $searchConditions .= " OR fr.filename IN ({$placeholders})";
+                    $params = array_merge($params, $filenames);
+                }
             }
 
             $sql .= " AND ({$searchConditions})";
@@ -379,10 +391,10 @@ class UnifiedSearchService
 
         // Person filter (by ID or name)
         if (! empty($filters['person_id'])) {
-            $sql .= ' AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.genealogy_person_id = ?)';
+            $sql .= ' AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.source_current = 1 AND frf.superseded_at IS NULL AND frf.genealogy_person_id = ?)';
             $params[] = $filters['person_id'];
         } elseif (! empty($filters['person_name'])) {
-            $sql .= ' AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.person_name = ?)';
+            $sql .= ' AND EXISTS (SELECT 1 FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.source_current = 1 AND frf.superseded_at IS NULL AND frf.person_name = ?)';
             $params[] = $filters['person_name'];
         }
 
@@ -463,13 +475,14 @@ class UnifiedSearchService
                            fr.mime_type, fr.file_size, fr.nextcloud_modified_at, fr.title,
                            fr.tags, fr.ai_description, fr.date_taken, fr.date_taken_source,
                            fr.date_taken_confidence, fr.date_taken_reasoning,
-                           (SELECT COUNT(*) FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id) as face_count,
+                           (SELECT COUNT(*) FROM file_registry_faces frf WHERE frf.file_registry_id = fr.id AND frf.source_current = 1 AND frf.superseded_at IS NULL) as face_count,
                            (SELECT GROUP_CONCAT(DISTINCT frf.person_name SEPARATOR ', ')
                             FROM file_registry_faces frf
-                            WHERE frf.file_registry_id = fr.id AND frf.person_name IS NOT NULL) as people
+                            WHERE frf.file_registry_id = fr.id AND frf.source_current = 1 AND frf.superseded_at IS NULL AND frf.person_name IS NOT NULL) as people
                     FROM file_registry fr
                     WHERE fr.asset_uuid = ? AND fr.status = 'active'
-                ", [$ragFile['asset_uuid']]);
+                    AND ".$this->fileRegistryAvailablePredicate('fr').'
+                ', [$ragFile['asset_uuid']]);
 
                 if (! $file) {
                     continue;
@@ -512,6 +525,81 @@ class UnifiedSearchService
 
             return []; // Graceful degradation — keyword search still works
         }
+    }
+
+    private function fileRegistryAvailablePredicate(string $alias = 'file_registry'): string
+    {
+        return "COALESCE({$alias}.verification_failures, 0) = 0
+            AND (
+                {$alias}.thumbnail_error IS NULL
+                OR (
+                    LOWER({$alias}.thumbnail_error) NOT LIKE '%404%'
+                    AND LOWER({$alias}.thumbnail_error) NOT LIKE '%not found%'
+                    AND LOWER({$alias}.thumbnail_error) NOT LIKE '%no such file%'
+                    AND LOWER({$alias}.thumbnail_error) NOT LIKE '%failed to download source file%'
+                )
+            )";
+    }
+
+    private function isStrictFilePhraseQuery(string $query): bool
+    {
+        $trimmed = trim($query);
+
+        if ($trimmed === '' || $trimmed === '*') {
+            return false;
+        }
+
+        return str_starts_with($trimmed, '*')
+            || (strlen($trimmed) >= 2 && $trimmed[0] === '"' && $trimmed[strlen($trimmed) - 1] === '"')
+            || (strlen($trimmed) >= 2 && $trimmed[0] === "'" && $trimmed[strlen($trimmed) - 1] === "'");
+    }
+
+    /**
+     * A leading asterisk followed by text means "strict phrase" for file search.
+     * Plain "*" is still browse mode. This keeps `*Jordan T` from becoming a
+     * broad boolean/semantic query while preserving current browse behavior.
+     *
+     * @return array{text:string, strict_phrase:bool}
+     */
+    private function normalizeFileSearchQuery(string $query): array
+    {
+        $text = trim($query);
+        $strictPhrase = false;
+
+        if ($text !== '*' && str_starts_with($text, '*')) {
+            $strictPhrase = true;
+            $text = ltrim(substr($text, 1));
+        }
+
+        if (strlen($text) >= 2) {
+            $first = $text[0];
+            $last = $text[strlen($text) - 1];
+            if (($first === '"' && $last === '"') || ($first === "'" && $last === "'")) {
+                $strictPhrase = true;
+                $text = substr($text, 1, -1);
+            }
+        }
+
+        return [
+            'text' => trim((string) preg_replace('/\s+/', ' ', $text)),
+            'strict_phrase' => $strictPhrase,
+        ];
+    }
+
+    private function booleanFileSearchQuery(string $text, bool $strictPhrase): string
+    {
+        $normalized = trim($text);
+        if ($normalized === '') {
+            return '';
+        }
+
+        if (! $strictPhrase) {
+            return $normalized;
+        }
+
+        $escaped = str_replace('"', '\"', $normalized);
+
+        return '"'.$escaped.'"';
     }
 
     /**
@@ -949,9 +1037,10 @@ SQL;
                 SELECT DISTINCT filename
                 FROM file_registry
                 WHERE status = 'active'
+                AND ".$this->fileRegistryAvailablePredicate().'
                 AND filename LIKE ?
                 LIMIT ?
-            ", [$prefix.'%', $limit]);
+            ', [$prefix.'%', $limit]);
 
             foreach ($mediaFiles as $file) {
                 $suggestions[] = [
@@ -966,10 +1055,11 @@ SQL;
                     SUBSTRING_INDEX(current_path, '/', 3) as folder
                 FROM file_registry
                 WHERE status = 'active'
+                AND ".$this->fileRegistryAvailablePredicate().'
                 AND current_path LIKE ?
                 GROUP BY folder
                 LIMIT ?
-            ", ['%'.$prefix.'%', $limit]);
+            ', ['%'.$prefix.'%', $limit]);
 
             foreach ($folders as $folder) {
                 $suggestions[] = [
@@ -982,7 +1072,7 @@ SQL;
             $people = DB::select('
                 SELECT DISTINCT person_name
                 FROM file_registry_faces
-                WHERE person_name IS NOT NULL
+                WHERE source_current = 1 AND superseded_at IS NULL AND person_name IS NOT NULL
                 AND person_name LIKE ?
                 LIMIT ?
             ', [$prefix.'%', $limit]);
@@ -1023,7 +1113,8 @@ SQL;
 
         $hasDateTaken = $this->hasColumn('file_registry', 'date_taken');
         $isBrowseMode = ($query === '*');
-        $searchTerm = '%'.$query.'%';
+        $queryInfo = $this->normalizeFileSearchQuery($query);
+        $searchTerm = '%'.$queryInfo['text'].'%';
 
         // Get type counts
         try {
@@ -1047,6 +1138,7 @@ SQL;
                     COUNT(*) as count
                 FROM file_registry
                 WHERE status = 'active'
+                AND ".$this->fileRegistryAvailablePredicate()."
                 {$searchFilter}
                 GROUP BY type
             ", $searchParams);
@@ -1067,6 +1159,7 @@ SQL;
                     COUNT(*) as count
                 FROM file_registry
                 WHERE status = 'active'
+                AND ".$this->fileRegistryAvailablePredicate()."
                 {$searchFilter}
                 AND {$dateCol} IS NOT NULL
                 GROUP BY year
@@ -1089,6 +1182,8 @@ SQL;
                 FROM file_registry_faces frf
                 JOIN file_registry fr ON fr.id = frf.file_registry_id
                 WHERE fr.status = 'active'
+                AND frf.source_current = 1 AND frf.superseded_at IS NULL
+                AND ".$this->fileRegistryAvailablePredicate('fr')."
                 AND frf.person_name IS NOT NULL
                 {$searchFilter}
                 GROUP BY frf.person_name
@@ -1146,9 +1241,10 @@ SQL;
                        nextcloud_modified_at, thumbnail_sizes, title
                 FROM file_registry
                 WHERE status = 'active'
+                AND ".$this->fileRegistryAvailablePredicate().'
                 ORDER BY nextcloud_modified_at DESC
                 LIMIT 10
-            ");
+            ');
 
             $data['recent_files'] = array_map(function ($f) {
                 return [
@@ -1208,8 +1304,10 @@ SQL;
         // Quick stats
         try {
             $data['stats']['total_files'] = (int) (DB::selectOne("
-                SELECT COUNT(*) as cnt FROM file_registry WHERE status = 'active'
-            ")->cnt ?? 0);
+                SELECT COUNT(*) as cnt FROM file_registry
+                WHERE status = 'active'
+                AND ".$this->fileRegistryAvailablePredicate().'
+            ')->cnt ?? 0);
         } catch (\Exception $e) {
             Log::debug('UnifiedSearchService: landing stats total_files query failed', ['error' => $e->getMessage()]);
         }
@@ -1243,7 +1341,8 @@ SQL;
                 SELECT *
                 FROM file_registry
                 WHERE id = ? AND status = 'active'
-            ", [$fileRegistryId]);
+                AND ".$this->fileRegistryAvailablePredicate().'
+            ', [$fileRegistryId]);
 
             if (! $file) {
                 return false;
@@ -1263,7 +1362,7 @@ SQL;
             $faces = DB::select('
                 SELECT person_name
                 FROM file_registry_faces
-                WHERE file_registry_id = ? AND person_name IS NOT NULL
+                WHERE file_registry_id = ? AND source_current = 1 AND superseded_at IS NULL AND person_name IS NOT NULL
             ', [$fileRegistryId]);
 
             if (! empty($faces)) {

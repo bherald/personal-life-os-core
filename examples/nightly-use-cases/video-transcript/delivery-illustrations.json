@@ -1,0 +1,61 @@
+{
+  "schema": "plos.public_delivery_examples.v1",
+  "illustrative_only": true,
+  "actual_connector_calls": 0,
+  "case": "video-transcript",
+  "review_body_sha256": "df8e71695816983fefccb212e4150d10264b33c3691c6bbbda71445553e5fba7",
+  "examples": [
+    {
+      "scenario": "Joplin queued",
+      "joplin": {
+        "state": "queued",
+        "body_readback_verified": false,
+        "device_sync": "not_verified"
+      },
+      "pushover": {
+        "state": "not_requested"
+      },
+      "final_report": "Pending note delivery; summary prepared, run not complete."
+    },
+    {
+      "scenario": "Hypothetical exact server readback, phone unverified",
+      "joplin": {
+        "state": "hypothetical_verified_server_write",
+        "intended_body_sha256": "df8e71695816983fefccb212e4150d10264b33c3691c6bbbda71445553e5fba7",
+        "simulated_readback_body_sha256": "df8e71695816983fefccb212e4150d10264b33c3691c6bbbda71445553e5fba7",
+        "device_sync": "not_verified"
+      },
+      "pushover": {
+        "state": "hypothetical_provider_accepted",
+        "operator_saw_message": "not_verified",
+        "counts": {
+          "synthetic_sources": 1,
+          "pending_review": 1
+        }
+      },
+      "final_report": "Illustration only: requested server delivery verified; phone sync and human reading remain unverified."
+    },
+    {
+      "scenario": "Notification suppressed or failed",
+      "joplin": {
+        "state": "not_requested"
+      },
+      "pushover": {
+        "state": "hypothetical_suppressed_or_failed",
+        "payload_kind": "counts_only"
+      },
+      "final_report": "Requested notification not delivered; preparation cannot be reported as completed delivery."
+    },
+    {
+      "scenario": "Unknown physical write outcome",
+      "joplin": {
+        "state": "hypothetical_unknown",
+        "automatic_replay_allowed": false
+      },
+      "pushover": {
+        "state": "not_requested"
+      },
+      "final_report": "Inspect the original durable identity; outcome unknown, no automatic retry."
+    }
+  ]
+}

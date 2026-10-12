@@ -137,7 +137,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
                    AVG(tokens_used) as avg_tokens,
                    AVG(tool_calls_count) as avg_tool_calls
             FROM agent_benchmarks
-            WHERE agent_id = ? AND accuracy_score IS NOT NULL
+            WHERE agent_id = ? AND accuracy_score IS NOT NULL AND promotion_eligible = 1
             GROUP BY workflow_mode
         ', [$agentId]);
 
@@ -146,7 +146,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
                    accuracy_score, completeness_score, relevance_score,
                    duration_ms, tokens_used
             FROM agent_benchmarks
-            WHERE agent_id = ? AND accuracy_score IS NOT NULL
+            WHERE agent_id = ? AND accuracy_score IS NOT NULL AND promotion_eligible = 1
             ORDER BY (accuracy_score + completeness_score + relevance_score) DESC
             LIMIT 10
         ', [$agentId]);
@@ -340,7 +340,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
                    AVG(duration_ms) as avg_duration,
                    COUNT(*) as sample_count
             FROM agent_benchmarks
-            WHERE agent_id = ? AND accuracy_score IS NOT NULL
+            WHERE agent_id = ? AND accuracy_score IS NOT NULL AND promotion_eligible = 1
             GROUP BY task_key, workflow_mode
         ', [$agentId]);
 
@@ -454,6 +454,11 @@ class SkillOptimizationService implements ReviewApprovalHandler
         }
 
         $config = $skill['frontmatter'] ?? [];
+        $baseSkillContentHash = $skill['content_hash'] ?? null;
+        if (! is_string($baseSkillContentHash) || ! $this->isSha256($baseSkillContentHash)) {
+            return ['success' => false, 'error' => "Skill revision could not be read: {$agentId}"];
+        }
+
         $amendments = [];
 
         // 1. Tool removal: unused tools
@@ -541,6 +546,12 @@ class SkillOptimizationService implements ReviewApprovalHandler
             ];
         }
 
+        $amendments = array_map(function (array $amendment) use ($baseSkillContentHash): array {
+            $amendment['base_skill_content_hash'] = $baseSkillContentHash;
+
+            return $amendment;
+        }, $amendments);
+
         return [
             'success' => true,
             'agent_id' => $agentId,
@@ -603,6 +614,15 @@ class SkillOptimizationService implements ReviewApprovalHandler
      */
     public function submitAmendmentForReview(string $agentId, array $amendment): array
     {
+        $baseSkillContentHash = $amendment['base_skill_content_hash'] ?? null;
+        if (! is_string($baseSkillContentHash) || ! $this->isSha256($baseSkillContentHash)) {
+            return [
+                'success' => false,
+                'skipped' => true,
+                'reason' => 'missing_base_skill_content_hash',
+            ];
+        }
+
         $lifecycle = $this->getCandidateLifecycle()->prepareForReview($agentId, $amendment);
         if (($lifecycle['state'] ?? null) === SkillCandidateLifecycleService::STATE_REJECTED) {
             Log::warning('SkillOptimization: Amendment blocked by candidate lifecycle scan', [
@@ -656,6 +676,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
             'current_value' => $amendment['current_value'],
             'proposed_value' => $amendment['proposed_value'],
             'metrics' => $amendment['metrics'] ?? [],
+            'base_skill_content_hash' => $baseSkillContentHash,
             'candidate_lifecycle' => $lifecycle,
         ];
         $now = now()->toDateTimeString();
@@ -744,14 +765,48 @@ class SkillOptimizationService implements ReviewApprovalHandler
     /**
      * ReviewApprovalHandler: Apply SKILL.md changes on approval.
      */
-    public function onApprove(int $itemId, array $details): array
+    public function onApprove(int $itemId, array $details = [], array $decisionMeta = []): array
     {
+        $review = $this->resolveReview($itemId, $details);
+        if (! $review['success']) {
+            return $review;
+        }
+
+        $details = $review['details'];
+        $reviewerNotes = $review['reviewer_notes'];
+        if ($this->isSkillAuditReview($details)) {
+            if (($decisionMeta['decision_scope'] ?? null) !== 'acknowledge_skill_audit_report') {
+                return [
+                    'success' => false,
+                    'error' => 'Open the skill audit detail and acknowledge the no-write decision boundary before marking it reviewed.',
+                    'reason' => 'skill_audit_acknowledgement_required',
+                ];
+            }
+
+            $this->finalizeReview($itemId, 'approved', $reviewerNotes);
+
+            return [
+                'success' => true,
+                'message' => 'Skill audit report acknowledged; no skill changes were applied.',
+                'decision_effect' => 'review_acknowledged_no_skill_write',
+                'canonical_skill_write' => false,
+                'skill_enablement_changed' => false,
+                'sidecar_enforcement_changed' => false,
+                'dependency_change' => false,
+            ];
+        }
+
         $agentId = $details['agent_id'] ?? null;
         $type = $details['amendment_type'] ?? null;
         $proposedValue = $details['proposed_value'] ?? null;
 
         if (! $agentId || ! $type) {
             return ['success' => false, 'error' => 'Missing agent_id or amendment_type in details'];
+        }
+
+        $expectedHash = $details['base_skill_content_hash'] ?? null;
+        if (! is_string($expectedHash) || ! $this->isSha256($expectedHash)) {
+            return $this->supersedeReview($itemId, 'missing_base_skill_content_hash');
         }
 
         $lifecycle = $this->getCandidateLifecycle()->prepareForReview($agentId, [
@@ -763,13 +818,18 @@ class SkillOptimizationService implements ReviewApprovalHandler
         ], 'skill_optimization_approval');
         if (($lifecycle['state'] ?? null) === SkillCandidateLifecycleService::STATE_REJECTED) {
             $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_REJECTED, 'approval scan blocked candidate');
+            $this->finalizeReview($itemId, 'rejected', 'Approval scan blocked candidate');
 
             return ['success' => false, 'error' => 'Candidate blocked by lifecycle scan', 'candidate_lifecycle' => $lifecycle];
         }
 
-        $skill = $this->getSkillLoader()->loadSkill($agentId);
+        $skill = $this->getSkillLoader()->loadSkillSnapshot($agentId);
         if (! $skill) {
-            return ['success' => false, 'error' => "Skill not found: {$agentId}"];
+            return $this->supersedeReview($itemId, 'skill_not_found');
+        }
+
+        if (! hash_equals($expectedHash, $skill['content_hash'])) {
+            return $this->supersedeReview($itemId, 'skill_revision_changed');
         }
 
         $config = $skill['frontmatter'] ?? [];
@@ -818,6 +878,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
                     'agent_id' => $agentId,
                 ]);
                 $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_APPROVED, 'phase rebalance approved for manual edit');
+                $this->finalizeReview($itemId, 'approved', $reviewerNotes);
 
                 return ['success' => true, 'message' => 'Phase rebalance approved. Manual SKILL.md edit required.'];
 
@@ -826,22 +887,42 @@ class SkillOptimizationService implements ReviewApprovalHandler
         }
 
         if (! $modified) {
-            return ['success' => false, 'error' => 'No changes to apply'];
+            return $this->supersedeReview($itemId, 'candidate_no_longer_applicable');
         }
 
         // Rebuild SKILL.md content
         $newContent = $this->buildSkillContent($config, $body);
-
-        // Write to disk
         $skillFile = SkillLoaderService::configuredSkillsBasePath().'/'.$agentId.'/SKILL.md';
-        $written = file_put_contents($skillFile, $newContent);
-
-        if ($written === false) {
+        $writeResult = $this->installSkillRevision(
+            $agentId,
+            $skillFile,
+            $expectedHash,
+            $skill['frontmatter'] ?? [],
+            $body,
+            $config,
+            $newContent
+        );
+        if ($writeResult === 'revision_changed') {
+            return $this->supersedeReview($itemId, 'skill_revision_changed');
+        }
+        if ($writeResult === 'base_snapshot_failed') {
+            return ['success' => false, 'error' => 'Failed to snapshot current SKILL.md before write'];
+        }
+        if ($writeResult === 'new_snapshot_failed_restored') {
+            return [
+                'success' => false,
+                'error' => 'Failed to snapshot new SKILL.md; original revision restored',
+            ];
+        }
+        if ($writeResult === 'new_snapshot_failed_restore_incomplete') {
+            return [
+                'success' => false,
+                'error' => 'Failed to snapshot new SKILL.md; verify the skill file and version registry before retrying',
+            ];
+        }
+        if ($writeResult !== 'written') {
             return ['success' => false, 'error' => 'Failed to write SKILL.md'];
         }
-
-        // Track version (will be picked up by SkillLoaderService on next load)
-        $this->getSkillVersion()->trackVersion($agentId, $config, $body, $newContent);
 
         Log::info('SkillOptimization: Amendment applied', [
             'agent_id' => $agentId,
@@ -850,6 +931,7 @@ class SkillOptimizationService implements ReviewApprovalHandler
         ]);
 
         $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_INSTALLED, 'approved candidate installed to SKILL.md');
+        $this->finalizeReview($itemId, 'approved', $reviewerNotes);
 
         return ['success' => true, 'message' => "Applied {$type} change to {$agentId}"];
     }
@@ -857,8 +939,28 @@ class SkillOptimizationService implements ReviewApprovalHandler
     /**
      * Handle rejection — log for learning.
      */
-    public function onReject(int $itemId, array $details): array
+    public function onReject(int $itemId, array $details = []): array
     {
+        $review = $this->resolveReview($itemId, $details);
+        if (! $review['success']) {
+            return $review;
+        }
+
+        $details = $review['details'];
+        if ($this->isSkillAuditReview($details)) {
+            $this->finalizeReview($itemId, 'rejected', $review['reviewer_notes']);
+
+            return [
+                'success' => true,
+                'message' => 'Skill audit report dismissed; no skill changes were applied.',
+                'decision_effect' => 'review_dismissed_no_skill_write',
+                'canonical_skill_write' => false,
+                'skill_enablement_changed' => false,
+                'sidecar_enforcement_changed' => false,
+                'dependency_change' => false,
+            ];
+        }
+
         $agentId = $details['agent_id'] ?? 'unknown';
         $type = $details['amendment_type'] ?? 'unknown';
 
@@ -868,8 +970,182 @@ class SkillOptimizationService implements ReviewApprovalHandler
             'item_id' => $itemId,
         ]);
         $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_REJECTED, 'operator rejected skill candidate');
+        $this->finalizeReview($itemId, 'rejected', $review['reviewer_notes']);
 
         return ['success' => true, 'message' => "Rejection logged for {$agentId} ({$type})"];
+    }
+
+    /**
+     * @return array{success: bool, details?: array<string, mixed>, reviewer_notes?: ?string, error?: string}
+     */
+    private function resolveReview(int $itemId, array $handlerDetails): array
+    {
+        $row = DB::table('agent_review_queue')
+            ->select(['details'])
+            ->where('id', $itemId)
+            ->where('review_type', 'skill_optimization')
+            ->first();
+
+        if ($row === null) {
+            return ['success' => false, 'error' => 'Skill optimization review not found'];
+        }
+
+        $details = json_decode((string) ($row->details ?? '{}'), true);
+        if (! is_array($details)) {
+            return ['success' => false, 'error' => 'Skill optimization review details are invalid'];
+        }
+
+        return [
+            'success' => true,
+            'details' => $details,
+            'reviewer_notes' => isset($handlerDetails['notes']) && is_string($handlerDetails['notes'])
+                ? $handlerDetails['notes']
+                : null,
+        ];
+    }
+
+    private function supersedeReview(int $itemId, string $reason): array
+    {
+        $this->getCandidateLifecycle()->updateReviewLifecycleState($itemId, SkillCandidateLifecycleService::STATE_SUPERSEDED, $reason);
+        $this->finalizeReview($itemId, 'expired', "Superseded: {$reason}");
+
+        return [
+            'success' => false,
+            'error' => $reason === 'missing_base_skill_content_hash'
+                ? 'Proposal has no verified base skill revision; generate a fresh proposal for review.'
+                : 'Skill state changed since this proposal was created; generate a fresh proposal for review.',
+            'reason' => $reason,
+        ];
+    }
+
+    private function finalizeReview(int $itemId, string $status, ?string $reviewerNotes): void
+    {
+        DB::table('agent_review_queue')
+            ->where('id', $itemId)
+            ->update([
+                'status' => $status,
+                'reviewed_at' => now()->toDateTimeString(),
+                'reviewer_notes' => $reviewerNotes,
+                'updated_at' => now()->toDateTimeString(),
+            ]);
+    }
+
+    /** @param array<string,mixed> $details */
+    private function isSkillAuditReview(array $details): bool
+    {
+        return ($details['finding_type'] ?? null) === AgentSkillAuditService::FINDING_TYPE
+            || ($details['schema'] ?? null) === 'agent_skill_audit_review_queue.v2';
+    }
+
+    private function isSha256(string $value): bool
+    {
+        return strlen($value) === 64 && ctype_xdigit($value);
+    }
+
+    /**
+     * Compare, snapshot, write, and record the new version while holding one file lock.
+     *
+     * @param  array<string, mixed>  $currentConfig
+     * @param  array<string, mixed>  $newConfig
+     */
+    private function installSkillRevision(
+        string $agentId,
+        string $skillFile,
+        string $expectedHash,
+        array $currentConfig,
+        string $body,
+        array $newConfig,
+        string $newContent
+    ): string {
+        $handle = @fopen($skillFile, 'c+');
+        if ($handle === false) {
+            return 'write_failed';
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                return 'write_failed';
+            }
+
+            rewind($handle);
+            $lockedContent = stream_get_contents($handle);
+            if ($lockedContent === false || ! hash_equals($expectedHash, hash('sha256', $lockedContent))) {
+                return 'revision_changed';
+            }
+
+            try {
+                $this->getSkillVersion()->trackVersion($agentId, $currentConfig, $body, $lockedContent);
+            } catch (\Throwable $e) {
+                Log::error('SkillOptimization: Refusing write because base version snapshot failed', [
+                    'agent_id' => $agentId,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return 'base_snapshot_failed';
+            }
+
+            rewind($handle);
+            if (! ftruncate($handle, 0) || ! $this->writeAll($handle, $newContent) || ! fflush($handle)) {
+                rewind($handle);
+                ftruncate($handle, 0);
+                $this->writeAll($handle, $lockedContent);
+                fflush($handle);
+
+                return 'write_failed';
+            }
+
+            try {
+                $this->getSkillVersion()->trackVersion($agentId, $newConfig, $body, $newContent);
+            } catch (\Throwable $e) {
+                rewind($handle);
+                $restored = ftruncate($handle, 0)
+                    && $this->writeAll($handle, $lockedContent)
+                    && fflush($handle);
+                $reactivated = false;
+                if ($restored) {
+                    try {
+                        $this->getSkillVersion()->trackVersion($agentId, $currentConfig, $body, $lockedContent);
+                        $reactivated = true;
+                    } catch (\Throwable $restoreException) {
+                        Log::critical('SkillOptimization: Original version registry reactivation failed', [
+                            'agent_id' => $agentId,
+                            'error' => $restoreException->getMessage(),
+                        ]);
+                    }
+                }
+                Log::error('SkillOptimization: New version snapshot failed after write', [
+                    'agent_id' => $agentId,
+                    'restored' => $restored,
+                    'reactivated' => $reactivated,
+                    'error' => $e->getMessage(),
+                ]);
+
+                return $restored && $reactivated
+                    ? 'new_snapshot_failed_restored'
+                    : 'new_snapshot_failed_restore_incomplete';
+            }
+
+            return 'written';
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    /** @param resource $handle */
+    private function writeAll($handle, string $content): bool
+    {
+        $offset = 0;
+        $length = strlen($content);
+        while ($offset < $length) {
+            $written = fwrite($handle, substr($content, $offset));
+            if ($written === false || $written === 0) {
+                return false;
+            }
+            $offset += $written;
+        }
+
+        return true;
     }
 
     /**

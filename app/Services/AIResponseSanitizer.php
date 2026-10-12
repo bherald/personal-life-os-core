@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Log;
 /**
  * AIResponseSanitizer - Post-process AI responses to enforce INTJ communication style
  *
- * Since different LLMs (Llama 3.1, Mistral, Claude, etc.) have varying instruction-following
+ * Since different LLMs (Llama 3.1, Mistral, etc.) have varying instruction-following
  * capabilities, this service strips forbidden patterns from responses AFTER generation.
  *
  * This is a fallback mechanism - prompts should still include FORBIDDEN rules,
@@ -112,16 +112,13 @@ class AIResponseSanitizer
         'mistral' => [
             // Mistral-specific patterns can be added here
         ],
-        'claude' => [
-            // Claude typically follows instructions well, minimal patterns needed
-        ],
     ];
 
     /**
      * Sanitize AI response by removing forbidden patterns
      *
-     * @param string $response The raw AI response
-     * @param string|null $model Optional model identifier for model-specific rules
+     * @param  string  $response  The raw AI response
+     * @param  string|null  $model  Optional model identifier for model-specific rules
      * @return string Sanitized response
      */
     public function sanitize(string $response, ?string $model = null): string
@@ -183,10 +180,6 @@ class AIResponseSanitizer
             return 'mistral';
         }
 
-        if (str_contains($lower, 'claude')) {
-            return 'claude';
-        }
-
         // Default to llama patterns since that's our primary local model
         return 'llama';
     }
@@ -221,7 +214,7 @@ class AIResponseSanitizer
     /**
      * Add a custom forbidden pattern
      *
-     * @param string $pattern Regex pattern (should include delimiters and flags)
+     * @param  string  $pattern  Regex pattern (should include delimiters and flags)
      */
     public function addForbiddenPattern(string $pattern): void
     {
@@ -231,12 +224,12 @@ class AIResponseSanitizer
     /**
      * Add model-specific patterns
      *
-     * @param string $modelFamily Model family key (llama, mistral, claude, etc.)
-     * @param array $patterns Array of regex patterns
+     * @param  string  $modelFamily  Model family key (llama, mistral, etc.)
+     * @param  array  $patterns  Array of regex patterns
      */
     public function addModelPatterns(string $modelFamily, array $patterns): void
     {
-        if (!isset($this->modelPatterns[$modelFamily])) {
+        if (! isset($this->modelPatterns[$modelFamily])) {
             $this->modelPatterns[$modelFamily] = [];
         }
 
@@ -249,7 +242,7 @@ class AIResponseSanitizer
     /**
      * Check if a response contains forbidden patterns (for testing/debugging)
      *
-     * @param string $response The response to check
+     * @param  string  $response  The response to check
      * @return array List of matched forbidden patterns
      */
     public function detectViolations(string $response): array

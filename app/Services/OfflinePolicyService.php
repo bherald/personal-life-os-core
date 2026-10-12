@@ -3,6 +3,9 @@
 namespace App\Services;
 
 use App\DTOs\PolicyDecision;
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
+use App\Support\RuntimeBoolean;
+use Closure;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -32,6 +35,9 @@ class OfflinePolicyService
 {
     public function __construct(
         private ?OfflineAuditService $audit = null,
+        private ?SystemConfigService $systemConfig = null,
+        private ?Closure $mcpServers = null,
+        private ?string $workspaceRoot = null,
     ) {}
 
     private function auditOperation(PolicyDecision $decision, string $operation, array $context): void
@@ -58,19 +64,14 @@ class OfflinePolicyService
         }
     }
 
-    /**
-     * Read the active profile name from system_configs. Returns 'default' when
-     * no row exists or the value is empty. SystemConfigService exceptions fail
-     * closed to offline_review.
-     */
+    /** Read the active profile name from system_configs. Unavailable settings fail closed. */
     public function activeProfile(): string
     {
         $default = (string) config('offline_policy.active_profile_default', 'default');
 
         try {
-            $svc = app(SystemConfigService::class);
             $key = (string) config('offline_policy.active_profile_config_key', 'routing.active_profile');
-            $value = $svc->get($key, $default);
+            $value = CliWorkflowExecutionScope::current()['settings']['policy_profile'] ?? $this->policySetting($key);
 
             if (! is_string($value) || trim($value) === '') {
                 return $default;
@@ -96,9 +97,8 @@ class OfflinePolicyService
     public function isOfflineModeActive(): bool
     {
         try {
-            $svc = app(SystemConfigService::class);
             $key = (string) config('offline_policy.offline_mode_config_key', 'routing.offline_mode');
-            $value = $svc->get($key, 'disabled');
+            $value = CliWorkflowExecutionScope::current()['settings']['offline_mode'] ?? $this->policySetting($key);
 
             if (! is_string($value)) {
                 return true;
@@ -112,6 +112,33 @@ class OfflinePolicyService
 
             return true;
         }
+    }
+
+    /** Tool internet permission is independent of the existing cloud-provider kill switch. */
+    public function isInternetAccessEnabled(): bool
+    {
+        try {
+            $value = CliWorkflowExecutionScope::current()['settings']['internet_access']
+                ?? $this->policySetting('routing.internet_access');
+
+            return $value === 'enabled';
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    /** SystemConfigService returns its default when the row or both stores are unavailable. */
+    private function policySetting(string $key): mixed
+    {
+        $missing = new \stdClass;
+        $svc = $this->systemConfig ?? app(SystemConfigService::class);
+        $value = $svc->get($key, $missing);
+
+        if ($value === $missing) {
+            throw new \RuntimeException("Required offline policy setting is unavailable: {$key}");
+        }
+
+        return $value;
     }
 
     /**
@@ -178,14 +205,21 @@ class OfflinePolicyService
     {
         $write = $mode === 'write';
 
-        $repoRoot = rtrim(base_path(), '/');
-        $additionalDirs = array_values(array_filter(array_map(
+        $repoRoot = $this->workspaceRoot === null ? rtrim(base_path(), '/') : realpath($this->workspaceRoot);
+        if ($this->workspaceRoot !== null && ($this->workspaceRoot === '' || $repoRoot === false || $repoRoot === '/' || ! is_dir($repoRoot))) {
+            throw new \RuntimeException('An existing scoped workspace is required for CLI file policy.');
+        }
+        $additionalDirs = $this->workspaceRoot !== null ? [] : array_values(array_filter(array_map(
             static fn ($d) => $d === null || $d === '' ? null : rtrim((string) $d, '/'),
             array_merge(
                 [storage_path()],
                 (array) config('offline_policy.additional_dirs', []),
             )
         )));
+        if (PHP_OS_FAMILY === 'Windows') {
+            $repoRoot = str_replace('\\', '/', $repoRoot);
+            $additionalDirs = array_map(static fn ($dir) => str_replace('\\', '/', $dir), $additionalDirs);
+        }
 
         // R1: normalize relative paths against repo root and collapse `..`
         // segments. `classifyPath('../../tmp/poc.txt')` now resolves to an
@@ -198,6 +232,11 @@ class OfflinePolicyService
         // from the lexically normalized path, the physical target wins for
         // classification. Unresolvable paths fall back to the lexical form.
         $normalized = $this->resolvePhysicalPath($normalized);
+        if (PHP_OS_FAMILY === 'Windows') {
+            $normalized = strtolower(str_replace('\\', '/', $normalized));
+            $repoRoot = strtolower($repoRoot);
+            $additionalDirs = array_map(strtolower(...), $additionalDirs);
+        }
 
         // Protected-path regex runs against BOTH the original input (to
         // catch payloads like `credentials.json` that a caller might pass
@@ -236,6 +275,32 @@ class OfflinePolicyService
      */
     private function normalizePathAgainstRepo(string $path, string $repoRoot): string
     {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $path = str_replace('\\', '/', $path);
+            $absolute = preg_match('~^[A-Za-z]:/~', $path) ? $path : $repoRoot.'/'.$path;
+            if (str_starts_with($path, '/') || str_contains($path, "\0")
+                || ! preg_match('~^[A-Za-z]:/~', $absolute) || str_contains(substr($absolute, 2), ':')) {
+                throw new \RuntimeException('Windows file policy requires an unambiguous local path.');
+            }
+            $parts = [];
+            foreach (explode('/', substr($absolute, 3)) as $segment) {
+                if ($segment === '' || $segment === '.') {
+                    continue;
+                }
+                if ($segment === '..') {
+                    array_pop($parts);
+
+                    continue;
+                }
+                if (preg_match('/[. ]$/D', $segment)
+                    || preg_match('/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i', $segment)) {
+                    throw new \RuntimeException('Windows file policy refuses device and filename aliases.');
+                }
+                $parts[] = $segment;
+            }
+
+            return substr($absolute, 0, 3).implode('/', $parts);
+        }
         if ($path === '') {
             return $repoRoot;
         }
@@ -344,19 +409,7 @@ class OfflinePolicyService
 
     private function truthy(mixed $value): bool
     {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_int($value)) {
-            return $value === 1;
-        }
-
-        if (is_string($value)) {
-            return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
-        }
-
-        return (bool) $value;
+        return RuntimeBoolean::isTrue($value);
     }
 
     /**
@@ -372,7 +425,7 @@ class OfflinePolicyService
         $profileDef = $this->profileDef($profile);
         if ($profileDef === null) {
             $decision = PolicyDecision::deny("Unknown profile '{$profile}'", $profile);
-            $this->auditOperation($decision, "path:{$mode}", ['path' => $path]);
+            $this->auditOperation($decision, $operation, $context);
 
             return $decision;
         }
@@ -395,6 +448,10 @@ class OfflinePolicyService
             $class = $this->classifyToolOperation($operation, $context);
         } else {
             $class = $this->classifyOperation($operation);
+        }
+        if (! $this->isInternetAccessEnabled() && ($class === 'external-network'
+            || (isset($context['remote_domain']) && $this->classifyRemoteDomain($context['remote_domain']) !== 'plos_lan'))) {
+            return PolicyDecision::deny('Internet tool access is disabled by routing.internet_access.', $profile, toolClass: $class);
         }
         $allowedClasses = (array) ($profileDef['allowed_tool_classes'] ?? []);
 
@@ -540,6 +597,9 @@ class OfflinePolicyService
         }
 
         $toolClass = $this->classifyMcpTool($serverName, $toolName);
+        if ($toolClass === 'external-network' && ! $this->isInternetAccessEnabled()) {
+            return PolicyDecision::deny('Internet MCP tool access is disabled by routing.internet_access.', $profile, toolClass: $toolClass);
+        }
         $profileDef = $this->profileDef($profile);
         if ($profileDef === null) {
             $decision = PolicyDecision::deny("Unknown profile '{$profile}'", $profile);
@@ -670,7 +730,7 @@ class OfflinePolicyService
             return $decision;
         }
 
-        $server = (array) config("mcp.servers.{$serverName}", []);
+        $server = $this->mcpServers === null ? (array) config("mcp.servers.{$serverName}", []) : (($this->mcpServers)()[$serverName] ?? []);
         if ($server === []) {
             $decision = PolicyDecision::deny("MCP server '{$serverName}' not found", $profile);
             if ($audit) {
@@ -701,6 +761,9 @@ class OfflinePolicyService
             return $decision;
         }
 
+        if ($trustBoundary === 'internet' && ! $this->isInternetAccessEnabled()) {
+            return PolicyDecision::deny('Internet MCP server access is disabled by routing.internet_access.', $profile, mcpTrustBoundary: $trustBoundary);
+        }
         $allowedTrust = (array) ($profileDef['allowed_mcp_trust'] ?? []);
         if (! in_array($trustBoundary, $allowedTrust, true)) {
             $decision = PolicyDecision::deny(
@@ -716,10 +779,16 @@ class OfflinePolicyService
 
         $offlineAllowed = (array) ($server['offline_profiles_allowed'] ?? []);
         $hybridAllowed = (array) ($server['hybrid_profiles_allowed'] ?? []);
+        $profileMatches = [$profile];
+        $inheritsMcpProfile = $profileDef['inherits_mcp_profile'] ?? null;
+        if (is_string($inheritsMcpProfile) && $inheritsMcpProfile !== '') {
+            $profileMatches[] = $inheritsMcpProfile;
+        }
+        $profileMatches = array_values(array_unique($profileMatches));
 
         $offlineProfileMatches = $profile === 'offline_genealogy_assist'
             ? ['offline_genealogy_assist', 'offline_review']
-            : [$profile];
+            : $profileMatches;
 
         if (in_array($profile, ['offline_review', 'offline_dev_assist', 'offline_genealogy_assist'], true)
             && count(array_intersect($offlineProfileMatches, $offlineAllowed)) === 0
@@ -735,8 +804,10 @@ class OfflinePolicyService
             return $decision;
         }
 
-        if (in_array($profile, ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'], true)
-            && ! in_array($profile, $hybridAllowed, true)
+        $hybridProfiles = ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'];
+        $usesHybridAdmission = count(array_intersect($profileMatches, $hybridProfiles)) > 0;
+        if ($usesHybridAdmission
+            && count(array_intersect($profileMatches, $hybridAllowed)) === 0
         ) {
             $decision = PolicyDecision::deny(
                 "MCP server '{$serverName}' not in hybrid_profiles_allowed for profile '{$profile}'",
@@ -902,18 +973,21 @@ class OfflinePolicyService
      *
      * @param  object|array  $instance
      */
-    public function evaluateProvider($instance, ?string $profile = null): PolicyDecision
+    public function evaluateProvider($instance, ?string $profile = null, array $context = []): PolicyDecision
     {
         $profile = $profile ?? $this->activeProfile();
         $profileDef = $this->profileDef($profile);
         if ($profileDef === null) {
             $decision = PolicyDecision::deny("Unknown profile '{$profile}'", $profile);
-            $this->auditOperation($decision, 'provider:unknown', []);
+            $this->auditOperation($decision, 'provider:unknown', $context);
 
             return $decision;
         }
 
         $class = $this->classifyProvider($instance);
+        if ($class !== 'local_llm' && $this->isOfflineModeActive()) {
+            return PolicyDecision::deny('Cloud inference is disabled by routing.offline_mode.', $profile, providerClass: $class);
+        }
         $allowed = (array) ($profileDef['allowed_provider_classes'] ?? []);
         $instanceId = (string) ($this->readField($instance, 'instance_id') ?? 'unknown');
 
@@ -922,7 +996,7 @@ class OfflinePolicyService
                 "Provider class '{$class}' (instance '{$instanceId}') not allowed under profile '{$profile}'",
                 $profile, providerClass: $class,
             );
-            $this->auditOperation($decision, "provider:{$instanceId}", []);
+            $this->auditOperation($decision, "provider:{$instanceId}", $context);
 
             return $decision;
         }
@@ -931,7 +1005,7 @@ class OfflinePolicyService
             "Provider class '{$class}' allowed under profile '{$profile}'",
             $profile, providerClass: $class,
         );
-        $this->auditOperation($decision, "provider:{$instanceId}", []);
+        $this->auditOperation($decision, "provider:{$instanceId}", $context);
 
         return $decision;
     }
@@ -951,6 +1025,9 @@ class OfflinePolicyService
         }
 
         $class = $this->classifyRemoteDomain($host);
+        if ($class !== 'plos_lan' && ! $this->isInternetAccessEnabled()) {
+            return PolicyDecision::deny('Internet access is disabled by routing.internet_access.', $profile, remoteDomainClass: $class);
+        }
         $allowed = (array) ($profileDef['allowed_remote_domain_classes'] ?? []);
 
         if (! in_array($class, $allowed, true)) {

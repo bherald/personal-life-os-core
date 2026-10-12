@@ -3,26 +3,43 @@
 namespace App\Console\Commands;
 
 use App\Services\Ops\LlmProviderModelSyncReviewService;
+use App\Services\SystemConfigService;
 use Illuminate\Console\Command;
 
 class LlmProviderModelSyncReviewCommand extends Command
 {
+    private const POLICY_SOURCE = 'system_configs.ops.llm_portfolio_review_policy';
+
     protected $signature = 'llm:sync-providers
         {--json : Emit machine-readable JSON}
         {--compact : Omit full model lists and keep counts/samples}
         {--include-inactive : Include disabled provider rows}
         {--no-live : Skip network model-list probes and review DB metadata only}
         {--strict : Exit non-zero when review-needed issues are present}
-        {--connect-timeout=5 : Live probe connect timeout in seconds}
-        {--timeout=15 : Live probe total timeout in seconds}';
+        {--connect-timeout= : Override the table-owned live probe connect timeout in seconds}
+        {--timeout= : Override the table-owned live probe total timeout in seconds}';
 
     protected $description = 'Read-only LLM provider model inventory diff and role/capability review';
 
-    public function handle(LlmProviderModelSyncReviewService $review): int
-    {
-        $connectTimeout = $this->positiveIntOption('connect-timeout');
-        $timeout = $this->positiveIntOption('timeout');
+    public function handle(
+        LlmProviderModelSyncReviewService $review,
+        SystemConfigService $config
+    ): int {
+        $policy = $config->get('ops.llm_portfolio_review_policy');
+        $connectTimeout = $this->positiveIntOption(
+            'connect-timeout',
+            data_get($policy, 'inventory.connect_timeout_seconds')
+        );
+        $timeout = $this->positiveIntOption(
+            'timeout',
+            data_get($policy, 'inventory.timeout_seconds')
+        );
         if ($connectTimeout === null || $timeout === null) {
+            return 2;
+        }
+        if ($connectTimeout > $timeout) {
+            $this->error('Live probe connect timeout cannot exceed the total timeout.');
+
             return 2;
         }
 
@@ -33,6 +50,13 @@ class LlmProviderModelSyncReviewCommand extends Command
             timeout: $timeout,
             compact: (bool) $this->option('compact')
         );
+        $payload['mode'] = array_merge((array) ($payload['mode'] ?? []), [
+            'probe_policy_source' => self::POLICY_SOURCE,
+            'connect_timeout_seconds' => $connectTimeout,
+            'timeout_seconds' => $timeout,
+            'connect_timeout_overridden' => $this->hasOptionValue('connect-timeout'),
+            'timeout_overridden' => $this->hasOptionValue('timeout'),
+        ]);
 
         if ($this->option('json')) {
             $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -81,19 +105,31 @@ class LlmProviderModelSyncReviewCommand extends Command
         }
     }
 
-    private function positiveIntOption(string $name): ?int
+    private function positiveIntOption(string $name, mixed $policyValue): ?int
     {
-        $value = filter_var($this->option($name), FILTER_VALIDATE_INT, [
+        $hasOverride = $this->hasOptionValue($name);
+        $rawValue = $hasOverride ? $this->option($name) : $policyValue;
+        $value = filter_var($rawValue, FILTER_VALIDATE_INT, [
             'options' => ['min_range' => 1],
         ]);
 
         if ($value === false) {
-            $this->error("Invalid --{$name}. Use a positive integer.");
+            $source = $hasOverride
+                ? "--{$name}"
+                : self::POLICY_SOURCE." {$name}";
+            $this->error("Invalid {$source}. Use a positive integer.");
 
             return null;
         }
 
         return $value;
+    }
+
+    private function hasOptionValue(string $name): bool
+    {
+        $value = $this->option($name);
+
+        return $value !== null && $value !== '';
     }
 
     private function exitCodeForPayload(array $payload): int

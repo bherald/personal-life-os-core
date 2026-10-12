@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Cron\CronExpression;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -16,48 +17,10 @@ use Illuminate\Support\Facades\Process;
  */
 class AIOperationsService
 {
-    public function isClaudeCliEnabled(): bool
-    {
-        try {
-            $row = DB::selectOne(
-                'SELECT is_active FROM llm_instances WHERE instance_id = ? LIMIT 1',
-                ['claude_cli']
-            );
-
-            return (bool) ($row->is_active ?? false);
-        } catch (\Throwable $e) {
-            Log::debug('AIOperationsService: Claude CLI enabled check failed', [
-                'error' => $e->getMessage(),
-            ]);
-
-            return false;
-        }
-    }
-
-    private function buildClaudeCliEnv(): ?array
-    {
-        $token = config('services.anthropic.cli_oauth_token');
-        if (! $token) {
-            return null;
-        }
-
-        $env = $_ENV;
-        foreach (['HOME', 'PATH', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'TERM', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'PWD'] as $key) {
-            $value = getenv($key);
-            if ($value !== false && $value !== null && $value !== '') {
-                $env[$key] = $value;
-            }
-        }
-
-        $env['CLAUDE_CODE_OAUTH_TOKEN'] = $token;
-
-        return $env;
-    }
-
     /** @see config/file_types.php */
 
     /**
-     * Get comprehensive pipeline status with backlog counts and rates
+     * Get comprehensive pipeline status with backlog counts and rates.
      */
     public function getPipelineStatus(): array
     {
@@ -101,6 +64,7 @@ class AIOperationsService
         $writebackDone = (int) DB::selectOne('SELECT COUNT(*) as c FROM file_registry WHERE exif_written = 1')->c;
         $writebackEligible = (int) DB::selectOne(
             "SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND date_taken IS NOT NULL
+             AND (COALESCE(date_taken_precision, 'exact') = 'exact' OR (date_taken_precision = 'year' AND date_taken_source = 'user_manual'))
              AND date_taken_source NOT LIKE 'exif_%' AND date_taken_confidence >= 0.3"
         )->c;
 
@@ -172,23 +136,6 @@ class AIOperationsService
             FROM llm_instances WHERE is_active = 1
         ');
 
-        // Claude CLI slot usage is governed by AIService's table-owned policy.
-        try {
-            $claudeSlotUsage = app(AIService::class)->getClaudeSlotUsage();
-        } catch (\Throwable $e) {
-            Log::debug('AIOperationsService: Claude slot usage unavailable', [
-                'error' => $e->getMessage(),
-            ]);
-            $claudeSlots = Cache::get('claude_cli_slots', []);
-            $activeSlots = count(array_filter($claudeSlots, fn ($s) => ! empty($s)));
-            $claudeSlotUsage = [
-                'active' => $activeSlots,
-                'max' => $activeSlots,
-                'available' => 0,
-                'policy_source' => 'unavailable',
-            ];
-        }
-
         // GPU lock status
         $ollamaBusy = Cache::has('ollama_busy_lock');
         $whisperBusy = Cache::has('whisper_gpu_lock');
@@ -216,12 +163,6 @@ class AIOperationsService
 
         return [
             'instances' => array_map(fn ($i) => (array) $i, $instances),
-            'claude_slots' => [
-                'active' => (int) ($claudeSlotUsage['active'] ?? 0),
-                'max' => (int) ($claudeSlotUsage['max'] ?? 0),
-                'available' => (int) ($claudeSlotUsage['available'] ?? 0),
-                'policy_source' => $claudeSlotUsage['policy_source'] ?? null,
-            ],
             'gpu' => [
                 'ollama_busy' => $ollamaBusy,
                 'whisper_busy' => $whisperBusy,
@@ -283,7 +224,7 @@ class AIOperationsService
             $cron = $changes['cron_expression'];
             // Validate cron expression
             try {
-                new \Cron\CronExpression($cron);
+                new CronExpression($cron);
                 $updates[] = 'cron_expression = ?';
                 $params[] = $cron;
             } catch (\Exception $e) {
@@ -307,7 +248,7 @@ class AIOperationsService
 
         // Recalculate next_run_at if cron changed
         if (isset($changes['cron_expression'])) {
-            $nextRun = (new \Cron\CronExpression($changes['cron_expression']))
+            $nextRun = (new CronExpression($changes['cron_expression']))
                 ->getNextRunDate(now()->toDateTimeImmutable())
                 ->format('Y-m-d H:i:s');
             DB::update('UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?', [$nextRun, $jobId]);
@@ -326,133 +267,7 @@ class AIOperationsService
     }
 
     /**
-     * Check Claude CLI authentication status. Alerts via Pushover if not logged in.
-     *
-     * Health-only exception to the Claude boundary: inference must stay inside
-     * AIService/AIRouter, while this probe may run `claude auth status`.
-     */
-    public function checkClaudeCliAuth(): array
-    {
-        if (! $this->isClaudeCliEnabled()) {
-            return [
-                'available' => false,
-                'logged_in' => false,
-                'auth_method' => 'disabled',
-                'disabled' => true,
-            ];
-        }
-
-        $claudePath = config('services.anthropic.cli_path', 'claude');
-        $process = null;
-        $pipes = [];
-
-        // Pass OAuth token from Laravel env to subprocess (systemd doesn't have .bashrc)
-        $env = $this->buildClaudeCliEnv();
-
-        try {
-            $descriptorspec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-            $process = proc_open(
-                [$claudePath, 'auth', 'status'],
-                $descriptorspec,
-                $pipes,
-                null,
-                $env
-            );
-
-            if (! is_resource($process)) {
-                return ['available' => false, 'error' => 'Failed to start Claude CLI'];
-            }
-
-            fclose($pipes[0]);
-            stream_set_blocking($pipes[1], false);
-            stream_set_blocking($pipes[2], false);
-            $timeoutSeconds = 10.0;
-            $deadline = microtime(true) + $timeoutSeconds;
-            $output = '';
-            while (microtime(true) < $deadline) {
-                $read = [$pipes[1], $pipes[2]];
-                $w = $e = [];
-                $remaining = max(0.0, $deadline - microtime(true));
-                $seconds = (int) floor($remaining);
-                $microseconds = (int) (($remaining - $seconds) * 1_000_000);
-                $changed = @stream_select($read, $w, $e, $seconds, $microseconds);
-                if ($changed === false) {
-                    break;
-                }
-
-                if ($changed > 0) {
-                    foreach ($read as $pipe) {
-                        $chunk = fread($pipe, 8192);
-                        if ($chunk !== false && $chunk !== '') {
-                            $output .= $chunk;
-                        }
-                    }
-                }
-                if (feof($pipes[1]) && feof($pipes[2])) {
-                    break;
-                }
-            }
-            $output .= stream_get_contents($pipes[1]) ?: '';
-            $output .= stream_get_contents($pipes[2]) ?: '';
-            fclose($pipes[1]);
-            fclose($pipes[2]);
-
-            $status = proc_get_status($process);
-            if ($status['running']) {
-                proc_terminate($process, 9);
-                proc_close($process);
-                $process = null;
-
-                return ['available' => false, 'error' => 'Claude CLI auth status timed out'];
-            }
-
-            proc_close($process);
-            $process = null;
-
-            // claude auth status may output text before/after JSON — extract the JSON object
-            $data = json_decode(trim($output), true);
-            if ($data === null && preg_match('/\{[^}]*"loggedIn"[^}]*\}/', $output, $jsonMatch)) {
-                $data = json_decode($jsonMatch[0], true);
-            }
-
-            $loggedIn = $data['loggedIn'] ?? false;
-            $authMethod = $data['authMethod'] ?? 'unknown';
-
-            if (! $loggedIn) {
-                // Log only — daily report and pre-screen cover alerting.
-                // Pushover removed: subprocess env issues cause false negatives,
-                // producing contradictory alerts (title says NOT LOGGED IN, body shows loggedIn:true).
-                Log::warning('AIOperations: Claude CLI auth check returned not-logged-in', [
-                    'output' => mb_substr($output, 0, 500),
-                    'parsed' => $data,
-                ]);
-            }
-
-            return [
-                'available' => true,
-                'logged_in' => $loggedIn,
-                'auth_method' => $authMethod,
-                'raw' => $data,
-            ];
-        } finally {
-            foreach ($pipes as $pipe) {
-                if (is_resource($pipe)) {
-                    fclose($pipe);
-                }
-            }
-
-            if (is_resource($process)) {
-                $status = proc_get_status($process);
-                if (($status['running'] ?? false) === true) {
-                    proc_terminate($process, 9);
-                }
-                proc_close($process);
-            }
-        }
-    }
-
-    /**
-     * Check GPU utilization via nvidia-smi
+     * Check GPU utilization.
      */
     public function getGPUStatus(): array
     {
@@ -657,7 +472,7 @@ class AIOperationsService
             // 2. Missed schedule detection
             if ($agent->last_run_at && $agent->cron_expression) {
                 try {
-                    $cron = new \Cron\CronExpression($agent->cron_expression);
+                    $cron = new CronExpression($agent->cron_expression);
                     $expectedInterval = $cron->getNextRunDate(
                         new \DateTimeImmutable($agent->last_run_at)
                     )->getTimestamp() - strtotime($agent->last_run_at);
@@ -777,7 +592,6 @@ class AIOperationsService
      *
      * Checks:
      * - Ollama instances: GET /api/tags to list available models
-     * - Claude CLI: runs `claude --version` (no model list endpoint, reports CLI version)
      * - External APIs (Groq, OpenRouter): hit model listing endpoints
      *
      * Returns per-provider diff: new models not in supported_models, and models in DB that
@@ -813,27 +627,6 @@ class AIOperationsService
                         } else {
                             $error = 'HTTP '.$response->status();
                         }
-                    } catch (\Throwable $e) {
-                        $error = $e->getMessage();
-                    }
-
-                } elseif ($provider->instance_type === 'claude_cli') {
-                    // Claude CLI: report CLI version, no model listing endpoint
-                    try {
-                        $claudePath = config('services.anthropic.cli_path', 'claude');
-                        $versionResult = \Illuminate\Support\Facades\Process::timeout(10)->run([$claudePath, '--version']);
-                        $version = trim($versionResult->output().' '.$versionResult->errorOutput());
-                        $available = ['(see CLI version)'];
-                        $results[$provider->instance_id] = [
-                            'name' => $provider->instance_name,
-                            'type' => $provider->instance_type,
-                            'cli_version' => trim($version),
-                            'db_models' => $dbModels,
-                            'note' => 'Claude CLI has no model list endpoint. Use DB models config to set roles.',
-                            'error' => null,
-                        ];
-
-                        continue;
                     } catch (\Throwable $e) {
                         $error = $e->getMessage();
                     }
@@ -989,14 +782,17 @@ class AIOperationsService
             $results = $poolManager->probeUnhealthyProviders();
 
             $recovered = array_filter($results, fn ($r) => $r === 'recovered');
-            $stillDown = array_filter($results, fn ($r) => $r !== 'recovered');
+            $skipped = array_filter($results, fn ($r) => str_starts_with($r, 'skipped_'));
+            $probed = array_diff_key($results, $skipped);
+            $stillDown = array_filter($probed, fn ($r) => $r !== 'recovered');
 
             return [
                 'success' => true,
-                'probed' => count($results),
+                'probed' => count($probed),
+                'skipped' => $skipped,
                 'recovered' => array_keys($recovered),
                 'still_unhealthy' => $stillDown,
-                'summary' => count($recovered).'/'.count($results).' providers recovered',
+                'summary' => count($recovered).'/'.count($probed).' providers recovered',
             ];
         } catch (\Throwable $e) {
             return [

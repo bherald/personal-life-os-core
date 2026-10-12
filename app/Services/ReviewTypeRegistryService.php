@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Services\Genealogy\GenealogyLocalReviewSummaryService;
 use App\Services\Genealogy\GenealogyReviewPacketFocusService;
 use App\Services\Genealogy\GenealogyReviewPacketOutcomeService;
+use App\Services\Review\ReviewMediaReferenceResolverService;
 use App\Services\Review\ReviewTargetReferenceService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -22,11 +24,13 @@ class ReviewTypeRegistryService
 {
     private ?array $typeCache = null;
 
-    private ?\App\Services\Genealogy\GenealogyLocalReviewSummaryService $genealogyReviewSummary = null;
+    private ?GenealogyLocalReviewSummaryService $genealogyReviewSummary = null;
 
     private ?GenealogyReviewPacketFocusService $genealogyReviewPacketFocus = null;
 
     private ?GenealogyReviewPacketOutcomeService $genealogyReviewPacketOutcome = null;
+
+    private ?ReviewMediaReferenceResolverService $reviewMediaReferenceResolver = null;
 
     private const CACHE_KEY = 'review_type_registry';
 
@@ -83,6 +87,18 @@ class ReviewTypeRegistryService
         return $types[$name] ?? null;
     }
 
+    public function isInspectionOnly(string $name): bool
+    {
+        $type = $this->getType($name);
+
+        return $type !== null && $this->inspectionOnly($type);
+    }
+
+    public function getDisabledTypeNames(): array
+    {
+        return DB::table('review_type_registry')->where('enabled', false)->pluck('name')->all();
+    }
+
     /**
      * Get types grouped by category for UI tabs
      */
@@ -107,41 +123,54 @@ class ReviewTypeRegistryService
      *
      * @return array<string, array{total: int, high_priority?: int}>
      */
-    public function getAllStats(): array
+    public function getAllStats(?float $minConfidence = null): array
     {
         $stats = [];
         $totalAll = 0;
+        $visibleTotalAll = 0;
 
         foreach ($this->getTypes() as $name => $type) {
             try {
                 $connection = $this->getConnection($type['source_connection']);
                 $result = $connection->selectOne($type['count_sql']);
+                $total = (int) ($result->total ?? 0);
+                $visibleTotal = $this->visibleTotalForType($name, $type, $total, $minConfidence);
 
                 $stats[$name] = [
-                    'total' => (int) ($result->total ?? 0),
+                    'total' => $total,
+                    'visible_total' => $visibleTotal,
+                    'hidden_by_confidence' => max(0, $total - $visibleTotal),
                     'high_priority' => (int) ($result->high_priority ?? 0),
                     'expiring_soon' => (int) ($result->expiring_soon ?? 0),
                     'label' => $type['label'],
                     'icon' => $type['icon'],
                     'color' => $type['color'],
                     'category' => $type['category'],
+                    'inspection_only' => $this->inspectionOnly($type),
                 ];
 
                 $totalAll += $stats[$name]['total'];
+                if (! $stats[$name]['inspection_only']) {
+                    $visibleTotalAll += $stats[$name]['visible_total'];
+                }
             } catch (\Throwable $e) {
                 Log::warning("ReviewTypeRegistry: Failed to get stats for {$name}", ['error' => $e->getMessage()]);
                 $stats[$name] = [
                     'total' => 0,
+                    'visible_total' => 0,
+                    'hidden_by_confidence' => 0,
                     'error' => $e->getMessage(),
                     'label' => $type['label'],
                     'icon' => $type['icon'],
                     'color' => $type['color'],
                     'category' => $type['category'],
+                    'inspection_only' => $this->inspectionOnly($type),
                 ];
             }
         }
 
         $stats['_total'] = $totalAll;
+        $stats['_visible_total'] = $visibleTotalAll;
 
         return $stats;
     }
@@ -155,8 +184,13 @@ class ReviewTypeRegistryService
      *                                     so operator-facing alerts don't get silenced alongside low-score
      *                                     research findings.
      */
-    public function fetchItems(string $typeName, int $limit = 25, int $offset = 0, ?float $minConfidence = null): array
-    {
+    public function fetchItems(
+        string $typeName,
+        int $limit = 25,
+        int $offset = 0,
+        ?float $minConfidence = null,
+        ?string $producerId = null
+    ): array {
         $type = $this->getType($typeName);
         if (! $type) {
             return ['items' => [], 'total' => 0, 'has_more' => false, 'error' => "Unknown type: {$typeName}"];
@@ -166,7 +200,11 @@ class ReviewTypeRegistryService
             $connection = $this->getConnection($type['source_connection']);
             $rows = $connection->select($type['fetch_sql']);
             $allItems = $this->mapItems($rows, $type);
-            $allItems = $this->applyConfidenceThreshold($allItems, $minConfidence);
+            $allItems = $this->applyConfidenceThreshold($allItems, $this->effectiveMinConfidence($type, $minConfidence));
+            $producerCounts = $this->producerCounts($allItems);
+            if ($producerId !== null) {
+                $allItems = $this->filterItemsByProducer($allItems, $producerId);
+            }
             $total = count($allItems);
             $items = array_slice($allItems, $offset, $limit);
 
@@ -175,6 +213,7 @@ class ReviewTypeRegistryService
                 'total' => $total,
                 'has_more' => ($offset + $limit) < $total,
                 'type' => $type,
+                'producer_counts' => $producerCounts,
             ];
         } catch (\Throwable $e) {
             Log::error("ReviewTypeRegistry: Fetch failed for {$typeName}", [
@@ -189,21 +228,42 @@ class ReviewTypeRegistryService
     /**
      * Fetch items for all types (for unified view) with pagination
      */
-    public function fetchAllItems(?string $category = null, int $limit = 25, int $offset = 0, ?float $minConfidence = null): array
-    {
+    public function fetchAllItems(
+        ?string $category = null,
+        int $limit = 25,
+        int $offset = 0,
+        ?float $minConfidence = null,
+        ?string $producerId = null,
+        bool $includeInspectionOnly = false
+    ): array {
         $allItems = [];
+        $totalByType = 0;
         $types = $this->getTypes();
 
         foreach ($types as $name => $type) {
             if ($category && $type['category'] !== $category) {
                 continue;
             }
+            if (! $includeInspectionOnly && $this->inspectionOnly($type)) {
+                continue;
+            }
 
-            // Fetch all from each type (SQL already has its own LIMIT)
-            $result = $this->fetchItems($name, 500, 0, $minConfidence);
+            // Fetch enough rows from each type to satisfy the requested
+            // cross-type page after the unified priority/date sort. Some
+            // registry SQL still has its own LIMIT as a safety rail, so the
+            // returned page can remain bounded while the reported total comes
+            // from each type's filtered total.
+            $typeLimit = min(5000, max(500, $offset + $limit + 100));
+            $result = $this->fetchItems($name, $typeLimit, 0, $minConfidence);
             if (! empty($result['items'])) {
                 $allItems = array_merge($allItems, $result['items']);
             }
+            $totalByType += (int) ($result['total'] ?? count($result['items'] ?? []));
+        }
+
+        $producerCounts = $this->producerCounts($allItems);
+        if ($producerId !== null) {
+            $allItems = $this->filterItemsByProducer($allItems, $producerId);
         }
 
         // Sort by priority (high first) then created_at (oldest first)
@@ -217,14 +277,51 @@ class ReviewTypeRegistryService
             return ($a['created_at'] ?? '') <=> ($b['created_at'] ?? ''); // Older first
         });
 
-        $total = count($allItems);
+        $total = $producerId === null ? $totalByType : count($allItems);
         $paged = array_slice($allItems, $offset, $limit);
 
         return [
             'items' => array_values($paged),
             'total' => $total,
             'has_more' => ($offset + $limit) < $total,
+            'producer_counts' => $producerCounts,
         ];
+    }
+
+    /**
+     * Return deterministic pending-item counts for producers represented in a queue.
+     * Items without an agent/model identity remain available through the unfiltered view.
+     *
+     * @param  array<int, array<string, mixed>>  $items
+     * @return array<string, int>
+     */
+    private function producerCounts(array $items): array
+    {
+        $counts = [];
+        foreach ($items as $item) {
+            $producerId = trim((string) ($item['agent_id'] ?? ''));
+            if ($producerId === '') {
+                continue;
+            }
+
+            $counts[$producerId] = ($counts[$producerId] ?? 0) + 1;
+        }
+
+        ksort($counts, SORT_NATURAL | SORT_FLAG_CASE);
+
+        return $counts;
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $items
+     * @return array<int, array<string, mixed>>
+     */
+    private function filterItemsByProducer(array $items, string $producerId): array
+    {
+        return array_values(array_filter(
+            $items,
+            static fn (array $item): bool => ($item['agent_id'] ?? null) === $producerId
+        ));
     }
 
     /**
@@ -238,6 +335,9 @@ class ReviewTypeRegistryService
         if (! $type) {
             return ['success' => false, 'error' => "Unknown type: {$typeName}"];
         }
+        if ($this->inspectionOnly($type)) {
+            return ['success' => false, 'error' => 'Inspection-only reviews cannot be changed.'];
+        }
 
         // Custom service handler takes precedence
         if ($type['service_class'] && $type['approve_method']) {
@@ -246,7 +346,8 @@ class ReviewTypeRegistryService
                 $type['approve_method'],
                 $id,
                 $notes,
-                $this->decisionMeta($reasonCode, $decisionMeta)
+                $this->decisionMeta($reasonCode, $decisionMeta),
+                $type,
             );
         }
 
@@ -277,6 +378,9 @@ class ReviewTypeRegistryService
         if (! $type) {
             return ['success' => false, 'error' => "Unknown type: {$typeName}"];
         }
+        if ($this->inspectionOnly($type)) {
+            return ['success' => false, 'error' => 'Inspection-only reviews cannot be changed.'];
+        }
 
         // Custom service handler
         if ($type['service_class'] && $type['reject_method']) {
@@ -285,7 +389,8 @@ class ReviewTypeRegistryService
                 $type['reject_method'],
                 $id,
                 $reason,
-                $this->decisionMeta($reasonCode, $decisionMeta)
+                $this->decisionMeta($reasonCode, $decisionMeta),
+                $type,
             );
         }
 
@@ -339,6 +444,9 @@ class ReviewTypeRegistryService
         if (! $type) {
             return ['success' => false, 'error' => "Unknown type: {$typeName}"];
         }
+        if ($this->inspectionOnly($type)) {
+            return ['success' => false, 'error' => 'Inspection-only reviews cannot be changed.'];
+        }
 
         // Use ignore_sql from registry (same pattern as approve/reject)
         if (! empty($type['ignore_sql'])) {
@@ -384,6 +492,9 @@ class ReviewTypeRegistryService
         if (! $type) {
             return ['success' => false, 'error' => "Unknown type: {$typeName}"];
         }
+        if ($this->inspectionOnly($type)) {
+            return ['success' => false, 'error' => 'Inspection-only reviews cannot be changed.'];
+        }
 
         if ($type['service_class']) {
             return $this->callServiceMethod(
@@ -391,7 +502,8 @@ class ReviewTypeRegistryService
                 $method,
                 $id,
                 $notes,
-                $this->decisionMeta($reasonCode, $decisionMeta)
+                $this->decisionMeta($reasonCode, $decisionMeta),
+                $type,
             );
         }
 
@@ -597,6 +709,22 @@ class ReviewTypeRegistryService
         return $this->mapItems($rows, $type);
     }
 
+    public function fetchDisplayItemBySourceId(string $typeName, string $sourceId): ?array
+    {
+        $type = $this->getType($typeName);
+        if (! $type) {
+            return null;
+        }
+        $sql = rtrim(trim($type['fetch_sql']), ';');
+        $sql = preg_replace('/\s+LIMIT\s+\d+(?:\s*,\s*\d+|\s+OFFSET\s+\d+)?\s*$/i', '', $sql);
+        $rows = $this->getConnection($type['source_connection'])->select(
+            "SELECT * FROM ({$sql}) AS review_display_source WHERE id = ?",
+            [$sourceId]
+        );
+
+        return $this->mapItems($rows, $type)[0] ?? null;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
@@ -623,6 +751,8 @@ class ReviewTypeRegistryService
             'requires_image' => (bool) $row->requires_image,
             'image_field' => $row->image_field,
             'batch_enabled' => (bool) $row->batch_enabled,
+            'actionability_state' => $row->actionability_state ?? null,
+            'actionability_min_confidence' => ($row->actionability_min_confidence ?? null) !== null ? (float) $row->actionability_min_confidence : null,
             'service_class' => $row->service_class,
             'approve_method' => $row->approve_method,
             'reject_method' => $row->reject_method,
@@ -636,6 +766,12 @@ class ReviewTypeRegistryService
         return $connectionName === 'pgsql_rag'
             ? DB::connection('pgsql_rag')
             : DB::connection();
+    }
+
+    /** @param array<string,mixed> $type */
+    private function inspectionOnly(array $type): bool
+    {
+        return ($type['ui_schema']['inspection_only'] ?? false) === true;
     }
 
     /**
@@ -661,10 +797,57 @@ class ReviewTypeRegistryService
         }));
     }
 
+    private function visibleTotalForType(string $typeName, array $type, int $rawTotal, ?float $minConfidence): int
+    {
+        $threshold = $this->effectiveMinConfidence($type, $minConfidence);
+        if ($threshold === null || $threshold <= 0.0 || $rawTotal === 0) {
+            return $rawTotal;
+        }
+
+        try {
+            $connection = $this->getConnection($type['source_connection']);
+            $rows = $connection->select($type['fetch_sql']);
+            $items = $this->mapItems($rows, $type);
+            if (count($items) < $rawTotal) {
+                return $rawTotal;
+            }
+
+            return count($this->applyConfidenceThreshold($items, $threshold));
+        } catch (\Throwable $e) {
+            Log::warning("ReviewTypeRegistry: Failed to get visible stats for {$typeName}", ['error' => $e->getMessage()]);
+
+            return $rawTotal;
+        }
+    }
+
+    private function effectiveMinConfidence(array $type, ?float $minConfidence): ?float
+    {
+        $typeThreshold = $type['actionability_min_confidence'] ?? null;
+        if ($typeThreshold !== null && $typeThreshold > 0.0) {
+            return (float) $typeThreshold;
+        }
+
+        return $minConfidence;
+    }
+
     private function mapItems(array $rows, array $type): array
     {
         $mapping = $type['field_mapping'];
         $items = [];
+
+        if ($type['name'] === 'genealogy_review_packet') {
+            $detailsList = [];
+            foreach ($rows as $row) {
+                $details = ((array) $row)['details'] ?? null;
+                if (is_string($details)) {
+                    $details = json_decode($details, true);
+                }
+                if (is_array($details)) {
+                    $detailsList[] = $details;
+                }
+            }
+            $this->reviewMediaReferenceResolver()->warmDetails($detailsList);
+        }
 
         foreach ($rows as $row) {
             $rowArray = (array) $row;
@@ -760,6 +943,8 @@ class ReviewTypeRegistryService
     {
         $details = $item['details'] ?? null;
         if (! is_array($details)) {
+            unset($item['details']);
+
             return $item;
         }
 
@@ -779,13 +964,43 @@ class ReviewTypeRegistryService
             $item['packet_status'] = (string) $details['packet_status'];
         }
 
+        $treeId = $this->positiveIntOrNull($row['tree_id'] ?? null)
+            ?? $this->positiveIntOrNull($details['tree_id'] ?? null)
+            ?? $this->positiveIntOrNull($details['filters']['tree_id'] ?? null)
+            ?? $this->positiveIntOrNull($details['metadata']['tree_id'] ?? null)
+            ?? $this->positiveIntOrNull($details['packet']['tree_id'] ?? null)
+            ?? $this->positiveIntOrNull($details['packet']['identity']['tree_id'] ?? null)
+            ?? $this->positiveIntOrNull($details['packet']['metadata']['filters']['tree_id'] ?? null);
+        if ($treeId !== null) {
+            $item['tree_id'] = $treeId;
+        }
+
+        foreach ([
+            $row['finding_type'] ?? null,
+            $details['finding_type'] ?? null,
+            $details['posture']['finding_type'] ?? null,
+            $details['packet']['metadata']['finding_type'] ?? null,
+            $details['packet']['metadata']['safety']['finding_type'] ?? null,
+        ] as $findingType) {
+            if (is_scalar($findingType) && trim((string) $findingType) !== '') {
+                $item['finding_type'] = trim((string) $findingType);
+                break;
+            }
+        }
+
+        $validation = is_array($details['validation'] ?? null) ? $details['validation'] : [];
+        $item['validation_error_count'] = is_array($validation['errors'] ?? null)
+            ? count($validation['errors'])
+            : 0;
+
         $claims = is_array($details['claims'] ?? null) ? $details['claims'] : [];
         $item['claim_count'] = count($claims);
 
         $sourceLocators = is_array($details['source_locators'] ?? null) ? $details['source_locators'] : [];
         $sources = is_array($details['sources'] ?? null) ? $details['sources'] : [];
         $item['source_count'] = count($sourceLocators !== [] ? $sourceLocators : $sources);
-        $item['review_focus'] = $this->genealogyReviewPacketFocus()->fromPersistedDetails($details);
+        $mediaRefs = $this->reviewMediaReferenceResolver()->resolveFromDetails($details);
+        $item['review_focus'] = $this->genealogyReviewPacketFocus()->fromPersistedDetails($details, $mediaRefs);
         $item['review_focus']['target_ref'] = $targetRef;
         $item['packet_outcome'] = $this->genealogyReviewPacketOutcome()->fromDetails(
             $details,
@@ -797,6 +1012,15 @@ class ReviewTypeRegistryService
         } elseif (isset($item['review_focus']['source_locator']) && is_scalar($item['review_focus']['source_locator'])) {
             $item['source_locator'] = (string) $item['review_focus']['source_locator'];
         }
+
+        if (! isset($item['finding_type'])) {
+            $focusFindingType = $item['review_focus']['remediation_origin']['finding_type'] ?? null;
+            if (is_scalar($focusFindingType) && trim((string) $focusFindingType) !== '') {
+                $item['finding_type'] = trim((string) $focusFindingType);
+            }
+        }
+
+        unset($item['details']);
 
         return $item;
     }
@@ -841,6 +1065,11 @@ class ReviewTypeRegistryService
     private function genealogyReviewPacketOutcome(): GenealogyReviewPacketOutcomeService
     {
         return $this->genealogyReviewPacketOutcome ??= new GenealogyReviewPacketOutcomeService;
+    }
+
+    private function reviewMediaReferenceResolver(): ReviewMediaReferenceResolverService
+    {
+        return $this->reviewMediaReferenceResolver ??= app(ReviewMediaReferenceResolverService::class);
     }
 
     private function decorateGenealogyFindingItem(array $item): array
@@ -957,10 +1186,10 @@ class ReviewTypeRegistryService
             || preg_match('/\braw\b.*\bjson\b/i', $line) === 1;
     }
 
-    private function genealogyReviewSummary(): \App\Services\Genealogy\GenealogyLocalReviewSummaryService
+    private function genealogyReviewSummary(): GenealogyLocalReviewSummaryService
     {
         if ($this->genealogyReviewSummary === null) {
-            $this->genealogyReviewSummary = app(\App\Services\Genealogy\GenealogyLocalReviewSummaryService::class);
+            $this->genealogyReviewSummary = app(GenealogyLocalReviewSummaryService::class);
         }
 
         return $this->genealogyReviewSummary;
@@ -1242,14 +1471,7 @@ class ReviewTypeRegistryService
 
         // For face matches, build face crop URL using queue ID
         if ($type['name'] === 'face') {
-            $mediaId = $row['media_id'] ?? null;
-            if ($mediaId) {
-                // Use face-match-crop endpoint which queries genealogy_face_match_queue
-                return "/api/media/face-match-crop/{$row['id']}";
-            }
-
-            // Fallback to thumbnail of full image
-            return '/api/media/thumbnail?'.http_build_query(['path' => $value, 'size' => 'medium']);
+            return isset($row['id']) ? "/api/media/face-match-crop/{$row['id']}" : null;
         }
 
         // Default: build thumbnail URL
@@ -1284,8 +1506,14 @@ class ReviewTypeRegistryService
     /**
      * @param  array<string, mixed>  $meta
      */
-    private function callServiceMethod(string $class, string $method, $id, ?string $notesOrReason, array $meta = []): array
-    {
+    private function callServiceMethod(
+        string $class,
+        string $method,
+        $id,
+        ?string $notesOrReason,
+        array $meta = [],
+        ?array $type = null,
+    ): array {
         try {
             $service = app($class);
 
@@ -1306,7 +1534,10 @@ class ReviewTypeRegistryService
             if ($paramCount > 0) {
                 $firstType = $params[0]->getType();
                 if ($firstType instanceof \ReflectionNamedType && $firstType->getName() === 'int') {
-                    $id = (int) $id;
+                    $id = $this->resolveServiceNumericId($id, $type);
+                    if ($id === null) {
+                        return ['success' => false, 'error' => 'Review item not found'];
+                    }
                 }
             }
 
@@ -1345,12 +1576,39 @@ class ReviewTypeRegistryService
             Log::error('ReviewTypeRegistry: Service call failed', [
                 'class' => $class,
                 'method' => $method,
-                'id' => $id,
+                'id_present' => $id !== null && trim((string) $id) !== '',
+                'id_is_numeric' => ctype_digit((string) $id),
                 'error' => $e->getMessage(),
             ]);
 
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    private function resolveServiceNumericId(mixed $id, ?array $type): ?int
+    {
+        $rawId = trim((string) $id);
+        if ($rawId !== '' && ctype_digit($rawId)) {
+            return (int) $rawId;
+        }
+        if ($rawId === '' || $type === null) {
+            return null;
+        }
+
+        $table = (string) ($type['source_table'] ?? '');
+        $column = $this->resolveIdColumn($type, $rawId);
+        if (preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $table) !== 1
+            || preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $column) !== 1) {
+            return null;
+        }
+
+        $row = $this->getConnection((string) ($type['source_connection'] ?? 'mysql'))
+            ->table($table)
+            ->where($column, $rawId)
+            ->first(['id']);
+        $numericId = $row?->id ?? null;
+
+        return is_numeric($numericId) && (int) $numericId > 0 ? (int) $numericId : null;
     }
 
     /**

@@ -13,7 +13,7 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
                             {--json : Output machine-readable JSON}
                             {--compact : Omit sample rows and raw source details from output}';
 
-    protected $description = 'Read-only audit of knowledge graph provenance links and stale source evidence';
+    protected $description = 'Read-only audit of knowledge graph provenance and bi-temporal integrity';
 
     public function handle(): int
     {
@@ -157,9 +157,54 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
             : '0 AS pending_fresh_documents,';
 
         return <<<SQL
+            WITH RECURSIVE supersession_paths AS (
+                SELECT id AS origin_id, superseded_by AS next_id, ARRAY[id] AS path
+                  FROM knowledge_graph
+                 WHERE superseded_by IS NOT NULL
+                UNION ALL
+                SELECT sp.origin_id, kg.superseded_by, sp.path || kg.id
+                  FROM supersession_paths sp
+                  JOIN knowledge_graph kg ON kg.id = sp.next_id
+                 WHERE sp.next_id IS NOT NULL
+                   AND NOT kg.id = ANY(sp.path)
+                   AND cardinality(sp.path) < 100
+            ),
+            supersession_cycles AS (
+                SELECT DISTINCT sp.origin_id
+                  FROM supersession_paths sp
+                  JOIN knowledge_graph kg ON kg.id = sp.next_id
+                 WHERE kg.id = ANY(sp.path)
+            )
             SELECT
                 (SELECT COUNT(*) FROM knowledge_graph) AS total_triples,
                 (SELECT COUNT(*) FROM knowledge_graph WHERE t_expired IS NULL) AS active_triples,
+                (SELECT COUNT(*)
+                   FROM knowledge_graph
+                  WHERE valid_from IS NOT NULL
+                    AND valid_until IS NOT NULL
+                    AND valid_until < valid_from) AS invalid_valid_time_ranges,
+                (SELECT COUNT(*)
+                   FROM knowledge_graph
+                  WHERE t_expired IS NOT NULL
+                    AND t_expired < created_at) AS transaction_time_inversions,
+                (SELECT COUNT(*)
+                   FROM knowledge_graph
+                  WHERE t_expired IS NULL
+                    AND superseded_by IS NOT NULL) AS active_superseded_triples,
+                (SELECT COUNT(*)
+                   FROM knowledge_graph
+                  WHERE temporal_confidence IS NOT NULL
+                    AND (temporal_confidence < 0 OR temporal_confidence > 1)) AS invalid_temporal_confidence,
+                (SELECT COUNT(*) FROM supersession_cycles) AS supersession_cycle_members,
+                (SELECT COUNT(*)
+                   FROM knowledge_graph kg
+                  WHERE kg.superseded_by IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM knowledge_graph_edge_history history
+                         WHERE history.triple_id = kg.id
+                           AND history.action = 'superseded'
+                    )) AS superseded_triples_without_history,
                 (SELECT COUNT(*) FROM knowledge_graph WHERE source_document_id IS NULL) AS triples_missing_source_document_id,
                 (SELECT COUNT(*)
                    FROM knowledge_graph kg
@@ -220,6 +265,12 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
     private function issues(array $counts): array
     {
         $issueMap = [
+            'invalid_valid_time_ranges' => 'Triples have valid_until earlier than valid_from.',
+            'transaction_time_inversions' => 'Triples expired before their transaction-time creation.',
+            'active_superseded_triples' => 'Active triples point at a superseding replacement.',
+            'invalid_temporal_confidence' => 'Triples have temporal confidence outside the inclusive 0..1 range.',
+            'supersession_cycle_members' => 'Triples participate in a supersession cycle.',
+            'superseded_triples_without_history' => 'Superseded triples have no matching superseded history event.',
             'triples_missing_source_document_id' => 'Triples have no source_document_id.',
             'triples_orphan_source_document' => 'Triples point at missing rag_documents rows.',
             'active_triples_missing_entity_links' => 'Active triples are missing subject or object entity links.',
@@ -281,6 +332,58 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
         $db = DB::connection('pgsql_rag');
 
         return [
+            'invalid_valid_time_ranges' => $db->select(
+                'SELECT id, valid_from, valid_until, temporal_type
+                   FROM knowledge_graph
+                  WHERE valid_from IS NOT NULL
+                    AND valid_until IS NOT NULL
+                    AND valid_until < valid_from
+                  ORDER BY created_at DESC
+                  LIMIT ?',
+                [$limit]
+            ),
+            'transaction_time_inversions' => $db->select(
+                'SELECT id, created_at, t_expired
+                   FROM knowledge_graph
+                  WHERE t_expired IS NOT NULL
+                    AND t_expired < created_at
+                  ORDER BY created_at DESC
+                  LIMIT ?',
+                [$limit]
+            ),
+            'active_superseded_triples' => $db->select(
+                'SELECT id, superseded_by, created_at
+                   FROM knowledge_graph
+                  WHERE t_expired IS NULL
+                    AND superseded_by IS NOT NULL
+                  ORDER BY created_at DESC
+                  LIMIT ?',
+                [$limit]
+            ),
+            'invalid_temporal_confidence' => $db->select(
+                'SELECT id, temporal_confidence, temporal_type, created_at
+                   FROM knowledge_graph
+                  WHERE temporal_confidence IS NOT NULL
+                    AND (temporal_confidence < 0 OR temporal_confidence > 1)
+                  ORDER BY created_at DESC
+                  LIMIT ?',
+                [$limit]
+            ),
+            'supersession_cycle_members' => $this->supersessionCycleSamples($limit),
+            'superseded_triples_without_history' => $db->select(
+                "SELECT kg.id, kg.superseded_by, kg.t_expired, kg.created_at
+                   FROM knowledge_graph kg
+                  WHERE kg.superseded_by IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1
+                          FROM knowledge_graph_edge_history history
+                         WHERE history.triple_id = kg.id
+                           AND history.action = 'superseded'
+                    )
+                  ORDER BY kg.created_at DESC
+                  LIMIT ?",
+                [$limit]
+            ),
             'triples_missing_source_document_id' => $db->select(
                 'SELECT id, subject, predicate, object, created_at
                    FROM knowledge_graph
@@ -312,6 +415,34 @@ class KnowledgeGraphProvenanceAuditCommand extends Command
                 [$limit]
             ),
         ];
+    }
+
+    /**
+     * @return array<int, object>
+     */
+    private function supersessionCycleSamples(int $limit): array
+    {
+        return DB::connection('pgsql_rag')->select(
+            'WITH RECURSIVE supersession_paths AS (
+                SELECT id AS origin_id, superseded_by AS next_id, ARRAY[id] AS path
+                  FROM knowledge_graph
+                 WHERE superseded_by IS NOT NULL
+                UNION ALL
+                SELECT sp.origin_id, kg.superseded_by, sp.path || kg.id
+                  FROM supersession_paths sp
+                  JOIN knowledge_graph kg ON kg.id = sp.next_id
+                 WHERE sp.next_id IS NOT NULL
+                   AND NOT kg.id = ANY(sp.path)
+                   AND cardinality(sp.path) < 100
+            )
+            SELECT DISTINCT sp.origin_id AS id, sp.next_id, cardinality(sp.path) AS path_length
+              FROM supersession_paths sp
+              JOIN knowledge_graph kg ON kg.id = sp.next_id
+             WHERE kg.id = ANY(sp.path)
+             ORDER BY sp.origin_id
+             LIMIT ?',
+            [$limit]
+        );
     }
 
     /**

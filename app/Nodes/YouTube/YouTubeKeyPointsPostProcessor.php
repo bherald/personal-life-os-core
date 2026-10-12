@@ -3,13 +3,17 @@
 namespace App\Nodes\YouTube;
 
 use App\DTOs\TrustEnvelope;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Nodes\BaseNode;
 use App\Services\AIService;
+use App\Services\JoplinFilesService;
 use App\Services\JoplinYouTubeOrganizer;
 use App\Services\SystemConfigService;
 use App\Services\TrustBoundaryFormatterService;
-use Illuminate\Support\Facades\Log;
+use App\Services\YouTubeJoplinDeliveryService;
 use Exception;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class YouTubeKeyPointsPostProcessor extends BaseNode
 {
@@ -55,7 +59,9 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             $organizer = app(JoplinYouTubeOrganizer::class);
             $aiService = app(AIService::class);
 
-            $result = $this->processPlaceholderNotes($organizer, $aiService, $limit, $dryRun);
+            $data = $input['data'] ?? $input;
+            $result = $this->processPlaceholderNotes($organizer, $aiService, $limit, $dryRun,
+                workflowVideos: is_array($data['videos'] ?? null) ? $data['videos'] : []);
 
             Log::info('YouTubeKeyPointsPostProcessor: Complete', $result);
 
@@ -74,11 +80,15 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             );
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('YouTubeKeyPointsPostProcessor: Failed', [
                 'error' => $e->getMessage(),
             ]);
 
-            return $this->standardOutput($input['data'] ?? $input, [], $e->getMessage());
+            return $this->standardOutput(array_merge($input['data'] ?? $input,
+                ['key_points_stats' => ['failed' => 1]]), [], $e->getMessage());
         }
     }
 
@@ -90,7 +100,8 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
         AIService $aiService,
         int $limit = 20,
         bool $dryRun = false,
-        ?object $output = null
+        ?object $output = null,
+        array $workflowVideos = []
     ): array {
         $limit = $limit > 0 ? $limit : $this->runtimePolicyInt('direct_process_default_limit');
         $fileBatchSize = $this->configuredPositiveInt('file_batch_size') ?? $this->runtimePolicyInt('file_batch_size');
@@ -104,16 +115,46 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             'updated' => 0,
             'failed' => 0,
             'notes' => [],
+            'ai_failures' => [],
+            'selected_note_ids' => [],
             'max_seconds' => $maxSeconds,
             'runtime_policy_source' => 'system_configs.'.self::RUNTIME_POLICY_CONFIG_KEY,
         ];
 
         $joplinPath = $organizer->getJoplinPath();
-        $watchLaterFolderId = $organizer->getWatchLaterFolderId();
+        $allSources = $this->resolveBooleanConfig('all_youtube_sources', false);
+        $watchLaterFolderId = $allSources ? '' : $organizer->getWatchLaterFolderId();
+        $reviewMirrorIds = $allSources ? DB::table('joplin_review_items')->pluck('note_id')->all() : [];
 
         // Fetch all Joplin files
         $files = $organizer->listDirectory($joplinPath);
         $allContents = $organizer->getFileContentsBatch($files, $fileBatchSize);
+        try {
+            $heldNotes = array_fill_keys(array_column(app(YouTubeJoplinDeliveryService::class)->heldSourceWrites(), 'note_id'), true);
+        } catch (\Throwable $failure) {
+            if (InferenceAdmissionException::isAdmissionFailure($failure)) {
+                throw $failure;
+            }
+            throw new InferenceAdmissionException('YouTube source write custody is unqualified; processing held', previous: $failure);
+        }
+        $preferredNotes = [];
+        foreach ($workflowVideos as $video) {
+            if (is_array($video) && is_string($video['joplin_note_id'] ?? null) && is_string($video['video_id'] ?? null)
+                && preg_match('/^[a-f0-9]{32}$/D', $video['joplin_note_id'])
+                && preg_match('/^[A-Za-z0-9_-]{11}$/D', $video['video_id'])) {
+                if (($video['delivery_repair']['status'] ?? null) === 'hold') {
+                    $heldNotes[$video['joplin_note_id']] = true;
+                } else {
+                    $preferredNotes[$video['joplin_note_id']] = $video['video_id'];
+                }
+            }
+        }
+        // Stable ordering keeps the existing backlog order after workflow targets.
+        $priority = array_flip(array_keys($preferredNotes));
+        if ($priority !== []) {
+            uksort($allContents, fn (string $a, string $b): int => ($priority[pathinfo($a, PATHINFO_FILENAME)] ?? count($priority))
+                <=> ($priority[pathinfo($b, PATHINFO_FILENAME)] ?? count($priority)));
+        }
 
         // Find the Watch Later folder and all its subfolders
         $watchLaterFolderIds = [$watchLaterFolderId];
@@ -131,13 +172,20 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             $note['filename'] = $filename;
             $stats['scanned']++;
 
-            if ($note['type'] != 1 || !in_array($note['parent_id'], $watchLaterFolderIds)) {
+            if (isset($heldNotes[$note['id']]) || $note['type'] != 1 || in_array($note['id'], $reviewMirrorIds, true)
+                || ($allSources ? app(JoplinFilesService::class)->youtubeVideoId($note) === null
+                    : ! in_array($note['parent_id'], $watchLaterFolderIds))) {
+                continue;
+            }
+            if (isset($preferredNotes[$note['id']])
+                && app(JoplinFilesService::class)->youtubeVideoId($note) !== $preferredNotes[$note['id']]) {
                 continue;
             }
 
             if (strpos($content, self::PLACEHOLDER) !== false) {
                 $placeholderNotes[] = $note;
                 $stats['found']++;
+                $stats['selected_note_ids'][] = $note['id'];
 
                 if (count($placeholderNotes) >= $limit) {
                     break;
@@ -156,11 +204,22 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             }
             $title = substr($note['title'], 0, $titlePreviewChars);
 
-            // Extract transcript from note body
-            $transcript = $this->extractTranscript($note['raw']);
-            if (empty($transcript)) {
-                $this->logMessage($output, "  Skip (no transcript): {$title}");
+            // Select only a unique, complete existing stored original. Edited or
+            // missing source evidence cannot authorize model dispatch.
+            $delivery = app(YouTubeJoplinDeliveryService::class);
+            $binding = $delivery->placeholderSource($note);
+            if ($binding === null) {
+                $this->logMessage($output, "  Skip (exact stored source unavailable): {$title}");
                 $stats['failed']++;
+
+                continue;
+            }
+            $transcript = $binding['content'];
+            $minChars = $this->configuredNonNegativeInt('transcript_min_chars')
+                ?? $this->runtimePolicyNonNegativeInt('transcript_min_chars');
+            if (strlen($transcript) <= $minChars) {
+                $stats['failed']++;
+
                 continue;
             }
 
@@ -168,40 +227,56 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             try {
                 $keyPoints = $this->generateKeyPoints($aiService, $transcript, $note['title']);
             } catch (Exception $e) {
-                $this->logMessage($output, "  <error>AI failed:</error> {$title} - {$e->getMessage()}");
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
+                $cause = InferenceAdmissionException::controllerFailureFrom($e);
+                $diagnostic = ['failure_kind' => $cause === [] ? 'exception' : 'controller_refusal', 'controller_failure' => $cause];
+                $stats['ai_failures'][] = $diagnostic;
+                Log::warning('YouTubeKeyPointsPostProcessor: Typed AI failure', $diagnostic);
+                $this->logMessage($output, '  AI generation failed; typed diagnostic retained.');
                 $stats['failed']++;
+
                 continue;
             }
 
             if (empty($keyPoints)) {
-                $this->logMessage($output, "  Skip (AI returned empty): {$title}");
+                $this->logMessage($output, "  Skip (required key-point output incomplete): {$title}");
                 $stats['failed']++;
+
                 continue;
             }
 
-            // Format key points as markdown bullets
-            $bullets = [];
-            foreach ($keyPoints as $point) {
-                $bullets[] = "- {$point}";
-            }
-            $formattedKeyPoints = implode("\n\n", $bullets);
-
-            $this->logMessage($output, "  OK (" . count($keyPoints) . " points): {$title}");
+            $this->logMessage($output, '  OK ('.count($keyPoints)." points): {$title}");
             $stats['notes'][] = ['title' => $note['title'], 'key_points_count' => count($keyPoints)];
 
             if ($dryRun) {
                 $stats['updated']++;
+
                 continue;
             }
 
-            // Replace placeholder in note content and write back
-            $updatedContent = str_replace(self::PLACEHOLDER, $formattedKeyPoints, $note['raw']);
-
-            // Update timestamp
-            $now = date('Y-m-d\TH:i:s.v\Z');
-            $updatedContent = preg_replace('/^updated_time:\s*.*$/m', "updated_time: {$now}", $updatedContent);
-
-            $success = $organizer->putFileContent($joplinPath . $note['filename'], $updatedContent);
+            try {
+                $repair = $delivery->retainMissingOriginal($binding['video_id'], $binding['note_id'], $binding['source_id'], true,
+                    $binding['wire_hash'], $binding['source_hash'], $keyPoints, replacePlaceholder: true);
+                if (($repair['reason_code'] ?? null) === 'source_write_outcome_unknown') {
+                    throw new InferenceAdmissionException('YouTube key-point write outcome is unknown; processing held');
+                }
+                $success = ($repair['status'] ?? null) === 'retained';
+            } catch (\Throwable $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
+                try {
+                    $held = $delivery->sourceWriteHeld($binding['note_id']);
+                } catch (\Throwable $proofFailure) {
+                    throw new InferenceAdmissionException('YouTube key-point write custody is unavailable; processing held', previous: $e);
+                }
+                if ($held) {
+                    throw new InferenceAdmissionException('YouTube key-point write outcome is unknown; processing held', previous: $e);
+                }
+                $success = false;
+            }
             if ($success) {
                 $stats['updated']++;
             } else {
@@ -218,8 +293,8 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
      */
     private function extractTranscript(string $noteContent): ?string
     {
-        // Match content between "## Full Transcript" section and the next "---" separator
-        if (preg_match('/## Full Transcript.*?\n\n(.*?)(?=\n---)/s', $noteContent, $matches)) {
+        // Internal separators belong to the source. Only the note's Metadata section ends it.
+        if (preg_match('/^## Full Transcript[^\r\n]*\R(.*?)(?=^---[\t ]*\R+## Metadata[\t ]*(?:\R|\z)|^## Metadata[\t ]*(?:\R|\z)|\z)/ms', $noteContent, $matches)) {
             $transcript = trim($matches[1]);
 
             // Strip the stats block (Word Count, Caption Type, Language lines)
@@ -240,7 +315,7 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
      */
     private function generateKeyPoints(AIService $aiService, string $transcript, string $title): array
     {
-        // Truncate very long transcripts to fit context window
+        // Keep the complete source; the selected runtime must admit its actual context.
         $wrappedTranscript = $this->trustBoundaryFormatter()->format(new TrustEnvelope(
             sourceType: 'transcript',
             contentType: 'text/plain',
@@ -248,6 +323,7 @@ class YouTubeKeyPointsPostProcessor extends BaseNode
             payload: $transcript,
             maxChars: $this->configuredPositiveInt('transcript_max_chars')
                 ?? $this->runtimePolicyInt('transcript_max_chars'),
+            preservePayload: true,
         ));
 
         $prompt = <<<PROMPT
@@ -279,19 +355,33 @@ PROMPT;
             'temperature' => $this->configuredFloat('ai_temperature') ?? $this->runtimePolicyFloat('ai_temperature'),
         ]);
 
-        if (!($result['success'] ?? false)) {
-            throw new Exception($result['error'] ?? 'AI processing failed');
+        if (! ($result['success'] ?? false)) {
+            throw new InferenceAdmissionException('AI processing failed', controllerFailure: is_array($result['controller_failure'] ?? null) ? $result['controller_failure'] : []);
         }
 
         $response = $result['response'] ?? '';
+        if (! is_string($response) || trim($response) === '') {
+            return [];
+        }
         $points = [];
 
-        // Parse bullet points from response
-        if (preg_match_all('/^-\s+(.+)$/m', $response, $matches)) {
-            $points = array_map('trim', $matches[1]);
+        // The task requires only one complete bullet per line. Never silently
+        // discard extra prose or a continuation from a budget-limited reply.
+        $lines = preg_split('/\R/u', trim($response));
+        if ($lines === false) {
+            return [];
+        }
+        foreach ($lines as $line) {
+            if (trim($line) === '') {
+                continue;
+            }
+            if (! preg_match('/^-[\t ]+(\S[^\r\n]*)$/D', $line, $match)) {
+                return [];
+            }
+            $points[] = trim($match[1]);
         }
 
-        return $points;
+        return app(YouTubeJoplinDeliveryService::class)->validGeneratedKeyPoints($points) ? $points : [];
     }
 
     private function logMessage(?object $output, string $message): void
@@ -299,7 +389,7 @@ PROMPT;
         if ($output) {
             $output->writeln($message);
         }
-        Log::info('[YouTubeKeyPointsPostProcessor] ' . strip_tags($message));
+        Log::info('[YouTubeKeyPointsPostProcessor] '.strip_tags($message));
     }
 
     private function configuredBool(string $key): ?bool

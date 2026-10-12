@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import api from '../utils/api';
+import { clearReviewDrafts, reviewStorage } from '../utils/reviewDesk';
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -32,6 +33,7 @@ export const useAuthStore = defineStore('auth', {
       } catch (error) {
         console.error('Logout error:', error);
       } finally {
+        clearReviewDrafts(reviewStorage());
         this.user = null;
         this.isAuthenticated = false;
         localStorage.removeItem('is_authenticated');

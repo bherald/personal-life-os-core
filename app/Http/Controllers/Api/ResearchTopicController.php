@@ -29,6 +29,10 @@ class ResearchTopicController extends Controller
         'biannually' => 'Twice a Year',
     ];
 
+    private const REFINE_MAX_QUESTIONS_PER_ROUND = 3;
+
+    private const REFINE_MAX_CLARIFICATION_ROUNDS = 2;
+
     public function __construct(RAGService $ragService)
     {
         $this->ragService = $ragService;
@@ -776,7 +780,8 @@ class ResearchTopicController extends Controller
      * AI-guided topic refinement — conversational flow
      *
      * Accepts a raw idea + conversation history, returns AI's next response.
-     * AI asks ONE question per turn. Human can say "save it" anytime to get the proposal.
+     * AI batches the currently independent decision questions. The human can
+     * say "save it" anytime to get the proposal.
      */
     public function refine(Request $request): JsonResponse
     {
@@ -805,11 +810,15 @@ class ResearchTopicController extends Controller
 
             $wantsSave = preg_match('/\b(save|done|enough|that\'?s? (?:it|all|enough|good)|finalize|generate|create it|just save|go ahead)\b/i', $lastUserMsg);
 
-            // Force save if conversation has gone on too long (4+ user messages beyond initial)
+            // The first user message in browser history is the raw idea. Each
+            // later user message answers one clarification frontier.
             $userMsgCount = count(array_filter($conversation, fn($m) => $m['role'] === 'user'));
-            if ($userMsgCount >= 5 && !$wantsSave) {
+            $clarificationRounds = max(0, $userMsgCount - 1);
+            if ($clarificationRounds >= self::REFINE_MAX_CLARIFICATION_ROUNDS && !$wantsSave) {
                 $wantsSave = true;
-                Log::info('ResearchTopicController: Auto-forcing proposal after ' . $userMsgCount . ' user messages');
+                Log::info('ResearchTopicController: Auto-forcing proposal after clarification frontier limit', [
+                    'clarification_rounds' => $clarificationRounds,
+                ]);
             }
 
             // Build prompt
@@ -847,6 +856,7 @@ class ResearchTopicController extends Controller
                 'message' => $displayMessage,
                 'proposal' => $proposal,
                 'provider' => $result['provider'] ?? null,
+                'refinement' => $this->refinementContract($proposal !== null, $clarificationRounds),
             ]);
 
         } catch (\Throwable $e) {
@@ -861,6 +871,8 @@ class ResearchTopicController extends Controller
     private function buildRefineSystemPrompt(bool $wantsSave, ?array $existingTopic): string
     {
         $editContext = $existingTopic ? "\nYou are EDITING an existing research topic. The current configuration is provided. Focus on improving and refining it." : '';
+        $maxQuestions = self::REFINE_MAX_QUESTIONS_PER_ROUND;
+        $maxRounds = self::REFINE_MAX_CLARIFICATION_ROUNDS;
 
         if ($wantsSave) {
             return <<<PROMPT
@@ -895,17 +907,17 @@ PROMPT;
         return <<<PROMPT
 You are a professional research assistant helping a human define a research topic.{$editContext}
 
-Your job is to understand what they want to research and help them scope it properly by asking ONE clarifying question at a time.
+Your job is to understand what they want to research and efficiently resolve the remaining operator decisions.
 
 RULES:
-1. Ask exactly ONE question per response — never batch multiple questions
-2. Each question should be specific and help narrow the research scope
-3. Briefly acknowledge what you understand so far before asking
-4. Focus questions on: specific aspects of interest, goals/decisions this research supports, time horizon, depth needed
-5. MAXIMUM 4 questions total. After asking 3-4 questions, you MUST offer to generate the brief. Do NOT keep asking questions beyond 4 rounds.
-6. If the human provides detailed context in their initial message, you may need only 1-2 questions before generating.
+1. Ask only operator decisions or preferences that are still unresolved. Never ask for a fact already present in the research idea, existing topic configuration, or conversation.
+2. Ask the current clarification frontier in one response: 1 to {$maxQuestions} concise numbered questions whose answers do not depend on each other.
+3. If a question depends on an unsettled answer, defer it to the next round instead of guessing or including it in the current batch.
+4. Briefly acknowledge what you understand so far before the numbered questions. Do not repeat an answered question.
+5. Focus on specific aspects of interest, the goal or decision this research supports, time horizon, and required depth.
+6. Use at most {$maxRounds} clarification rounds. If the idea is already specific enough, generate the proposal without manufacturing questions.
 7. If the human says "save", "done", "enough", "that's it", "generate", or similar — IMMEDIATELY generate the JSON proposal below. Do NOT ask another question.
-8. Keep responses concise — no filler, no repeating what you already acknowledged
+8. Keep responses concise — no filler and no repeated summary.
 
 CRITICAL: When generating a proposal, you MUST use exactly three backticks for the JSON code fence. The rag_category should be a short lowercase keyword describing the domain (e.g., health, legal, finance, genealogy, technology, legislative, insurance, education — any relevant category)
 
@@ -950,12 +962,30 @@ PROMPT;
         if ($wantsSave) {
             $prompt .= "\nThe human wants to finalize now. Generate the structured research brief JSON proposal based on everything discussed.";
         } elseif (empty($conversation)) {
-            $prompt .= "\nThis is the initial idea. Analyze it and ask your first clarifying question.";
+            $prompt .= "\nThis is the initial idea. Resolve facts from the supplied context, then ask the first frontier batch of independent operator decisions that are still needed.";
         } else {
-            $prompt .= "\nContinue the conversation. Ask your next clarifying question, or if you have enough context, offer to generate the brief.";
+            $prompt .= "\nContinue the conversation. Ask only the next frontier batch that is now unblocked, or generate the brief if the context is sufficient.";
         }
 
         return $prompt;
+    }
+
+    private function refinementContract(bool $proposalReady, int $clarificationRounds): array
+    {
+        return [
+            'schema' => 'plos.research_topic_refinement.v1',
+            'state' => $proposalReady ? 'proposal_ready' : 'clarification',
+            'mode' => 'dependency_aware_frontier_batch',
+            'max_questions_per_round' => self::REFINE_MAX_QUESTIONS_PER_ROUND,
+            'max_clarification_rounds' => self::REFINE_MAX_CLARIFICATION_ROUNDS,
+            'clarification_rounds_completed' => min(
+                self::REFINE_MAX_CLARIFICATION_ROUNDS,
+                max(0, $clarificationRounds)
+            ),
+            'operator_can_finalize_anytime' => true,
+            'asks_known_facts' => false,
+            'changes_model_route_or_tool_authority' => false,
+        ];
     }
 
     private function extractProposal(string $aiResponse): ?array

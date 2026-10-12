@@ -1,0 +1,54 @@
+{
+  "schema": "plos.portable_workflow.v2",
+  "dsl_version": "2.0",
+  "source": {
+    "product": "PLOS",
+    "format": "native-portable-workflow"
+  },
+  "workflow": {
+    "name": "Cedar Valley Ledger fictional digest retrieval stage",
+    "description": "PLOS v2.1 inactive synthetic retrieval stage only; no scheduler, corpus ingestion, model execution, Joplin or Pushover delivery is performed.",
+    "schedule": null,
+    "active": false,
+    "current_version": 1,
+    "error_handling": "stop",
+    "retry": null,
+    "defaults": [],
+    "nodes": [
+      {
+        "node_type": "RAGSearch",
+        "node_order": 0,
+        "timeout_seconds": 60,
+        "compensation_handler": null,
+        "compensation_config": null,
+        "configs": [
+          {
+            "key": "query",
+            "value": "Compare the fictional footbridge notices and retain uncertain timing and completion.",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "document_type",
+            "value": "public_demo_local",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "limit",
+            "value": "2",
+            "requires_runtime_value": false
+          }
+        ]
+      }
+    ]
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "workflow_sha256": "8c25cc480d945959b9503e424aa3783009be7baaf20f788dd5c40fbc9a05e5ea"
+  },
+  "warnings": [],
+  "posture": {
+    "secrets_included": false,
+    "imported_active": false,
+    "import_requires_execute_and_confirm": true
+  }
+}

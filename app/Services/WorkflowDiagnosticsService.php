@@ -28,8 +28,17 @@ use Illuminate\Support\Facades\Log;
  */
 class WorkflowDiagnosticsService
 {
+    private const RUNTIME_POLICY_CONFIG_KEY = 'workflow.diagnostics_runtime_policy';
+
+    private const DEFAULT_RUNTIME_POLICY = [
+        'degraded_success_rate_threshold' => 80.0,
+        'failing_success_rate_threshold' => 50.0,
+        'critical_success_rate_threshold' => 25.0,
+        'consecutive_failure_recommendation_threshold' => 5,
+    ];
+
     /**
-     * Health status thresholds
+     * Health status threshold fallbacks.
      */
     private const THRESHOLD_DEGRADED = 80.0;  // Success rate below 80%
     private const THRESHOLD_FAILING = 50.0;   // Success rate below 50%
@@ -41,6 +50,9 @@ class WorkflowDiagnosticsService
     private const PERIOD_SHORT = '24 hours';
     private const PERIOD_MEDIUM = '7 days';
     private const PERIOD_LONG = '30 days';
+
+    /** @var array<string,mixed>|null */
+    private ?array $runtimePolicy = null;
 
     /**
      * Analyze workflow performance and health using raw SQL
@@ -434,18 +446,18 @@ class WorkflowDiagnosticsService
 
         // Check for high failure rate
         $successRate = $this->calculateSuccessRate($workflowId);
-        if ($successRate < self::THRESHOLD_FAILING) {
+        if ($successRate < $this->failingSuccessRateThreshold()) {
             $recommendations[] = [
                 'issue' => 'Critical success rate',
                 'severity' => 'critical',
-                'recommendation' => 'Immediate investigation required - success rate below 50%',
+                'recommendation' => 'Immediate investigation required - success rate below configured failing threshold',
                 'occurrences' => null,
             ];
         }
 
         // Check for consecutive failures
         $consecutiveFailures = $this->getConsecutiveFailures($workflowId);
-        if ($consecutiveFailures >= 5) {
+        if ($consecutiveFailures >= $this->consecutiveFailureRecommendationThreshold()) {
             $recommendations[] = [
                 'issue' => 'Consecutive failures detected',
                 'severity' => 'critical',
@@ -494,11 +506,77 @@ class WorkflowDiagnosticsService
     private function determineHealthStatus(float $successRate): string
     {
         return match (true) {
-            $successRate >= self::THRESHOLD_DEGRADED => 'healthy',
-            $successRate >= self::THRESHOLD_FAILING => 'degraded',
-            $successRate >= self::THRESHOLD_CRITICAL => 'failing',
+            $successRate >= $this->degradedSuccessRateThreshold() => 'healthy',
+            $successRate >= $this->failingSuccessRateThreshold() => 'degraded',
+            $successRate >= $this->criticalSuccessRateThreshold() => 'failing',
             default => 'critical',
         };
+    }
+
+    private function degradedSuccessRateThreshold(): float
+    {
+        return $this->runtimePolicyFloat('degraded_success_rate_threshold', self::THRESHOLD_DEGRADED);
+    }
+
+    private function failingSuccessRateThreshold(): float
+    {
+        return $this->runtimePolicyFloat('failing_success_rate_threshold', self::THRESHOLD_FAILING);
+    }
+
+    private function criticalSuccessRateThreshold(): float
+    {
+        return $this->runtimePolicyFloat('critical_success_rate_threshold', self::THRESHOLD_CRITICAL);
+    }
+
+    private function consecutiveFailureRecommendationThreshold(): int
+    {
+        return $this->runtimePolicyInt('consecutive_failure_recommendation_threshold', 5);
+    }
+
+    private function runtimePolicyFloat(string $key, float $fallback): float
+    {
+        $value = $this->runtimePolicy()[$key] ?? null;
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $floatValue = (float) $value;
+
+        return $floatValue > 0.0 && $floatValue <= 100.0 ? $floatValue : $fallback;
+    }
+
+    private function runtimePolicyInt(string $key, int $fallback): int
+    {
+        $value = $this->runtimePolicy()[$key] ?? null;
+        if (! is_numeric($value)) {
+            return $fallback;
+        }
+
+        $intValue = (int) $value;
+
+        return $intValue > 0 ? $intValue : $fallback;
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    private function runtimePolicy(): array
+    {
+        if ($this->runtimePolicy !== null) {
+            return $this->runtimePolicy;
+        }
+
+        $configured = app(SystemConfigService::class)->get(self::RUNTIME_POLICY_CONFIG_KEY, self::DEFAULT_RUNTIME_POLICY);
+        if (is_string($configured)) {
+            $decoded = json_decode($configured, true);
+            $configured = is_array($decoded) ? $decoded : [];
+        }
+
+        if (! is_array($configured)) {
+            $configured = [];
+        }
+
+        return $this->runtimePolicy = array_replace(self::DEFAULT_RUNTIME_POLICY, $configured);
     }
 
     /**
@@ -630,7 +708,7 @@ class WorkflowDiagnosticsService
                 SELECT wr.id
                 FROM workflow_runs wr
                 JOIN workflows w ON w.id = wr.workflow_id
-                LEFT JOIN scheduled_jobs sj ON sj.command = w.name AND sj.job_type = 'workflow'
+                LEFT JOIN scheduled_jobs sj ON BINARY sj.command = BINARY w.name AND sj.job_type = 'workflow'
                 WHERE wr.status = 'running'
                 AND wr.started_at < DATE_SUB(NOW(), INTERVAL COALESCE(sj.timeout_minutes, 120) + 15 MINUTE)
             ");
@@ -667,7 +745,7 @@ class WorkflowDiagnosticsService
                 FROM workflows w
                 JOIN scheduled_jobs sj
                   ON sj.job_type = 'workflow'
-                 AND sj.command = w.name
+                 AND BINARY sj.command = BINARY w.name
                 WHERE w.active = 1
                   AND sj.enabled = 1
                   AND sj.cron_expression IS NOT NULL

@@ -50,6 +50,7 @@ class FaceTelemetryReportService
             'postgres_face_vectors' => $this->collectPostgresFaceVectors(),
             'face_jobs' => $this->collectFaceJobs($hours),
         ];
+        $payload['sections']['calibration_readiness'] = $this->calibrationReadiness();
         $payload['sections']['named_only_next_action'] = $this->collectNamedOnlyNextAction($payload['sections']);
         $payload['sections']['named_only_triage_buckets'] = $this->collectNamedOnlyTriageBuckets($hours);
 
@@ -226,7 +227,7 @@ class FaceTelemetryReportService
             $lines[] = '- No human action recommended from this observe-only sample.';
         }
 
-        return implode("\n", $lines)."\n";
+        return implode("\n", array_merge($lines, $this->storedProofLines($this->toCompactPayload($payload)['sections'])))."\n";
     }
 
     public function toCompactPayload(array $payload): array
@@ -240,6 +241,7 @@ class FaceTelemetryReportService
         $bridge = $this->summary($sections, 'bridge_alignment');
         $vectors = $this->summary($sections, 'postgres_face_vectors');
         $jobs = $this->summary($sections, 'face_jobs');
+        $calibration = $this->summary($sections, 'calibration_readiness');
         $breaches = array_values(array_filter(
             $payload['threshold_breaches'] ?? [],
             fn (mixed $breach): bool => is_array($breach)
@@ -265,6 +267,7 @@ class FaceTelemetryReportService
             'sections' => [
                 'mysql_face_registry' => [
                     'status' => $this->sectionStatus($sections, 'mysql_face_registry'),
+                    'stored_proof_coverage' => $registry['stored_proof_coverage'] ?? null,
                     'total_faces' => $this->intValue($registry['total_faces'] ?? 0),
                     'visible_faces' => $this->intValue($registry['visible_faces'] ?? 0),
                     'genealogy_linked_faces' => $this->intValue($registry['genealogy_linked_faces'] ?? 0),
@@ -361,6 +364,11 @@ class FaceTelemetryReportService
                 ],
                 'postgres_face_vectors' => [
                     'status' => $this->sectionStatus($sections, 'postgres_face_vectors'),
+                    'stored_proof_coverage' => $vectors['stored_proof_coverage'] ?? null,
+                    'embedding_models' => $vectors['embedding_models'] ?? [],
+                    'embedding_model_rows_limit' => $vectors['embedding_model_rows_limit'] ?? null,
+                    'embedding_models_truncated' => $vectors['embedding_models_truncated'] ?? null,
+                    'model_coverage_state' => $vectors['model_coverage_state'] ?? 'unavailable',
                     'total_embeddings' => $this->intValue($vectors['total_embeddings'] ?? 0),
                     'linked_registry_embeddings' => $this->intValue($vectors['linked_registry_embeddings'] ?? 0),
                     'clustered_embeddings' => $this->intValue($vectors['clustered_embeddings'] ?? 0),
@@ -368,6 +376,12 @@ class FaceTelemetryReportService
                     'confirmed_clusters' => $this->intValue($vectors['confirmed_clusters'] ?? 0),
                     'genealogy_linked_clusters' => $this->intValue($vectors['genealogy_linked_clusters'] ?? 0),
                     'unreviewed_clusters' => $this->intValue($vectors['unreviewed_clusters'] ?? 0),
+                ],
+                'calibration_readiness' => [
+                    'status' => $this->sectionStatus($sections, 'calibration_readiness'),
+                    'scope' => $calibration['scope'] ?? 'stored_database_claims',
+                    'validated_reference_cohort' => $calibration['validated_reference_cohort'] ?? 'not_established',
+                    'metrics' => $this->calibrationReadiness()['summary']['metrics'],
                 ],
                 'face_jobs' => [
                     'status' => $this->sectionStatus($sections, 'face_jobs'),
@@ -505,7 +519,7 @@ class FaceTelemetryReportService
             ),
         ];
 
-        return implode("\n", $lines)."\n";
+        return implode("\n", array_merge($lines, $this->storedProofLines($sections)))."\n";
     }
 
     public function toCompactText(array $payload): string
@@ -513,7 +527,7 @@ class FaceTelemetryReportService
         $compact = $this->toCompactPayload($payload);
         $sections = $compact['sections'];
 
-        return implode("\n", [
+        $lines = [
             sprintf(
                 'Face telemetry compact: %s mode=%s dry_run=%s window_hours=%s captured=%s',
                 $compact['status'],
@@ -647,15 +661,60 @@ class FaceTelemetryReportService
                 $sections['face_jobs']['weekly_report']['has_bridge_alignment'] ? 'yes' : 'no',
                 $sections['face_jobs']['weekly_report']['has_candidate_decisions'] ? 'yes' : 'no'
             ),
-        ])."\n";
+        ];
+
+        return implode("\n", array_merge($lines, $this->storedProofLines($sections)))."\n";
+    }
+
+    private function calibrationReadiness(): array
+    {
+        return ['status' => 'observe_warning', 'source' => 'inspection_not_performed', 'summary' => [
+            'scope' => 'stored_database_claims',
+            'validated_reference_cohort' => 'not_established',
+            'metrics' => array_fill_keys(['physical_source_freshness', 'cross_store_alignment', 'vector_numeric_validity',
+                'identity_false_merges', 'identity_false_splits', 'crop_quality', 'clustering_cost', 'clustering_latency'], 'not_measured'),
+        ]];
+    }
+
+    private function nullableCount(mixed $value): ?int
+    {
+        return $value === null ? null : (int) $value;
+    }
+
+    private function storedProofLines(array $sections): array
+    {
+        $mysql = $sections['mysql_face_registry']['stored_proof_coverage'] ?? [];
+        $postgres = $sections['postgres_face_vectors']['stored_proof_coverage'] ?? [];
+        $vectorSection = $sections['postgres_face_vectors'] ?? [];
+
+        return [
+            '',
+            'Stored proof coverage (database claims; physical bytes and cross-store correspondence not checked):',
+            'MySQL current visible active faces: '.($mysql['current_visible_active_faces'] ?? 'unknown').
+                '; SHA + normalized region: '.($mysql['current_stored_proof_faces'] ?? 'unknown'),
+            'PostgreSQL current vectors: '.($postgres['current_embeddings'] ?? 'unknown').
+                '; SHA + normalized region + model + registry pointer: '.($postgres['current_stored_proof_embeddings'] ?? 'unknown'),
+            'Model coverage: '.($vectorSection['model_coverage_state'] ?? 'unavailable').
+                '; truncated: '.(isset($vectorSection['embedding_models_truncated']) ? ($vectorSection['embedding_models_truncated'] ? 'yes' : 'no') : 'unknown'),
+            'Model counts: '.json_encode($vectorSection['embedding_models'] ?? [], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'Calibration: validated reference cohort not established. Historical names, confirmed clusters and legacy confidence scores are not validated ground truth.',
+            'Not measured: physical source freshness, cross-store alignment, vector numeric validity, false merges, false splits, crop quality, clustering cost and latency.',
+        ];
     }
 
     private function collectMysqlFaceRegistry(int $hours): array
     {
+        $current = "fr.status = 'active' AND frf.hidden = 0 AND frf.source_current = 1 AND frf.superseded_at IS NULL";
+        $hash = "REGEXP_LIKE(frf.source_sha256, '^[a-f0-9]{64}$', 'c')";
+        $region = "BINARY frf.face_region_convention = BINARY 'normalized_top_left' AND frf.region_x >= 0 AND frf.region_y >= 0 AND frf.region_w > 0 AND frf.region_h > 0 AND frf.region_x + frf.region_w <= 1 AND frf.region_y + frf.region_h <= 1";
         try {
             $row = DB::selectOne(
                 "SELECT
                     COUNT(*) AS total_faces,
+                    COUNT(CASE WHEN {$current} THEN 1 END) AS current_visible_active_faces,
+                    COUNT(CASE WHEN {$current} AND {$hash} THEN 1 END) AS current_source_hash_faces,
+                    COUNT(CASE WHEN {$current} AND {$region} THEN 1 END) AS current_normalized_region_faces,
+                    COUNT(CASE WHEN {$current} AND {$hash} AND {$region} THEN 1 END) AS current_stored_proof_faces,
                     SUM(CASE WHEN frf.hidden = 0 THEN 1 ELSE 0 END) AS visible_faces,
                     SUM(CASE WHEN frf.hidden = 1 THEN 1 ELSE 0 END) AS hidden_faces,
                     SUM(CASE WHEN frf.verified = 1 THEN 1 ELSE 0 END) AS verified_faces,
@@ -685,6 +744,14 @@ class FaceTelemetryReportService
                 'source' => 'mysql.file_registry_faces',
                 'summary' => [
                     'total_faces' => $totalFaces,
+                    'stored_proof_coverage' => [
+                        'scope' => 'stored_database_claims',
+                        'current_visible_active_faces' => $this->nullableCount($row->current_visible_active_faces ?? null),
+                        'current_source_hash_faces' => $this->nullableCount($row->current_source_hash_faces ?? null),
+                        'current_normalized_region_faces' => $this->nullableCount($row->current_normalized_region_faces ?? null),
+                        'current_stored_proof_faces' => $this->nullableCount($row->current_stored_proof_faces ?? null),
+                        'physical_source_freshness' => 'not_measured',
+                    ],
                     'visible_faces' => $this->intValue($row->visible_faces ?? 0),
                     'hidden_faces' => $this->intValue($row->hidden_faces ?? 0),
                     'verified_faces' => $this->intValue($row->verified_faces ?? 0),
@@ -994,30 +1061,56 @@ class FaceTelemetryReportService
                  ) candidate_decisions ON candidate_decisions.file_registry_face_id = {$faceAlias}.id";
     }
 
+    private function bridgeMatchesSql(): string
+    {
+        // DISTINCT keeps the source paths materialized before media lookup. UNION
+        // preserves one (face, media) match when both original OR branches match.
+        // The unindexed TEXT original path uses one media scan and a temporary
+        // lookup, rather than repeating the tree-wide OR scan for every face.
+        return "WITH linked AS (
+                    SELECT DISTINCT
+                        frf.id AS face_id,
+                        frf.file_registry_id,
+                        frf.genealogy_person_id AS person_id,
+                        gp.tree_id,
+                        COALESCE(NULLIF(fr.current_path, ''), fr.original_path) AS current_path,
+                        fr.original_path,
+                        frf.updated_at
+                    FROM file_registry_faces frf
+                    JOIN file_registry fr ON fr.id = frf.file_registry_id
+                    JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
+                    WHERE frf.hidden = 0
+                      AND fr.status = 'active'
+                      AND frf.genealogy_person_id IS NOT NULL
+                 ), matches AS (
+                    SELECT linked.face_id, gm.id AS media_id
+                    FROM linked
+                    JOIN genealogy_media gm
+                      ON gm.tree_id = linked.tree_id
+                     AND gm.nextcloud_path = linked.current_path
+                    UNION
+                    SELECT linked.face_id, gm.id AS media_id
+                    FROM linked
+                    JOIN genealogy_media gm USE INDEX ()
+                      ON gm.tree_id = linked.tree_id
+                     AND gm.original_path = linked.original_path
+                 ) ";
+    }
+
     private function collectBridgeAlignment(): array
     {
         try {
             $alignment = DB::selectOne(
-                "SELECT
-                    COUNT(DISTINCT frf.id) AS linked_faces,
-                    COUNT(DISTINCT CASE WHEN gm.id IS NULL THEN frf.id ELSE NULL END) AS missing_media_links,
-                    COUNT(DISTINCT CASE WHEN gm.id IS NOT NULL AND gpm.id IS NULL THEN frf.id ELSE NULL END) AS missing_person_media_links,
-                    COUNT(DISTINCT CASE WHEN gpm.id IS NOT NULL THEN frf.id ELSE NULL END) AS aligned_faces
-                 FROM file_registry_faces frf
-                 JOIN file_registry fr ON fr.id = frf.file_registry_id
-                 JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
-                 LEFT JOIN genealogy_media gm
-                   ON gm.tree_id = gp.tree_id
-                  AND (
-                    gm.nextcloud_path = COALESCE(NULLIF(fr.current_path, ''), fr.original_path)
-                    OR gm.original_path = fr.original_path
-                  )
+                $this->bridgeMatchesSql().'SELECT
+                    COUNT(DISTINCT linked.face_id) AS linked_faces,
+                    COUNT(DISTINCT CASE WHEN matches.media_id IS NULL THEN linked.face_id ELSE NULL END) AS missing_media_links,
+                    COUNT(DISTINCT CASE WHEN matches.media_id IS NOT NULL AND gpm.id IS NULL THEN linked.face_id ELSE NULL END) AS missing_person_media_links,
+                    COUNT(DISTINCT CASE WHEN gpm.id IS NOT NULL THEN linked.face_id ELSE NULL END) AS aligned_faces
+                 FROM linked
+                 LEFT JOIN matches ON matches.face_id = linked.face_id
                  LEFT JOIN genealogy_person_media gpm
-                   ON gpm.person_id = frf.genealogy_person_id
-                  AND gpm.media_id = gm.id
-                 WHERE frf.hidden = 0
-                   AND fr.status = 'active'
-                   AND frf.genealogy_person_id IS NOT NULL"
+                   ON gpm.person_id = linked.person_id
+                  AND gpm.media_id = matches.media_id'
             );
 
             $personMedia = DB::selectOne(
@@ -1047,39 +1140,27 @@ class FaceTelemetryReportService
                         'has_registry_path' => ((int) ($row->has_registry_path ?? 0)) === 1,
                     ],
                     DB::select(
-                        "SELECT
-                            frf.id AS face_id,
-                            frf.file_registry_id,
-                            frf.genealogy_person_id AS person_id,
-                            gp.tree_id,
-                            gm.id AS genealogy_media_id,
+                        $this->bridgeMatchesSql()."SELECT
+                            linked.face_id,
+                            linked.file_registry_id,
+                            linked.person_id,
+                            linked.tree_id,
+                            matches.media_id AS genealogy_media_id,
                             CASE
-                                WHEN gm.id IS NULL THEN 'missing_genealogy_media'
+                                WHEN matches.media_id IS NULL THEN 'missing_genealogy_media'
                                 WHEN gpm.id IS NULL THEN 'missing_person_media'
                                 ELSE 'aligned'
                             END AS gap_type,
                             CASE
-                                WHEN COALESCE(NULLIF(fr.current_path, ''), fr.original_path) IS NULL
-                                  OR COALESCE(NULLIF(fr.current_path, ''), fr.original_path) = ''
-                                THEN 0 ELSE 1
+                                WHEN linked.current_path IS NULL OR linked.current_path = '' THEN 0 ELSE 1
                             END AS has_registry_path
-                         FROM file_registry_faces frf
-                         JOIN file_registry fr ON fr.id = frf.file_registry_id
-                         JOIN genealogy_persons gp ON gp.id = frf.genealogy_person_id
-                         LEFT JOIN genealogy_media gm
-                           ON gm.tree_id = gp.tree_id
-                          AND (
-                            gm.nextcloud_path = COALESCE(NULLIF(fr.current_path, ''), fr.original_path)
-                            OR gm.original_path = fr.original_path
-                          )
+                         FROM linked
+                         LEFT JOIN matches ON matches.face_id = linked.face_id
                          LEFT JOIN genealogy_person_media gpm
-                           ON gpm.person_id = frf.genealogy_person_id
-                          AND gpm.media_id = gm.id
-                         WHERE frf.hidden = 0
-                           AND fr.status = 'active'
-                           AND frf.genealogy_person_id IS NOT NULL
-                           AND (gm.id IS NULL OR gpm.id IS NULL)
-                         ORDER BY frf.updated_at DESC, frf.id DESC
+                           ON gpm.person_id = linked.person_id
+                          AND gpm.media_id = matches.media_id
+                         WHERE matches.media_id IS NULL OR gpm.id IS NULL
+                         ORDER BY linked.updated_at DESC, linked.face_id DESC
                          LIMIT 5"
                     )
                 );
@@ -1105,15 +1186,25 @@ class FaceTelemetryReportService
 
     private function collectPostgresFaceVectors(): array
     {
+        $current = 'source_current = TRUE AND superseded_at IS NULL';
+        $hash = "source_sha256 ~ '^[a-f0-9]{64}$'";
+        $region = "face_region_convention = 'normalized_top_left' AND region_x >= 0 AND region_y >= 0 AND region_w > 0 AND region_h > 0 AND region_x + region_w <= 1 AND region_y + region_h <= 1";
+        $model = "NULLIF(BTRIM(embedding_model), '') IS NOT NULL";
+        $proof = "{$current} AND {$hash} AND {$region} AND {$model} AND file_registry_id > 0 AND file_registry_face_id > 0";
         try {
             $db = DB::connection('pgsql_rag');
 
             $embeddings = $db->selectOne(
-                'SELECT
+                "SELECT
                     COUNT(*) AS total_embeddings,
+                    COUNT(CASE WHEN {$current} THEN 1 END) AS current_embeddings,
+                    COUNT(CASE WHEN {$current} AND {$hash} THEN 1 END) AS current_source_hash_embeddings,
+                    COUNT(CASE WHEN {$current} AND {$region} THEN 1 END) AS current_normalized_region_embeddings,
+                    COUNT(CASE WHEN {$current} AND {$model} THEN 1 END) AS current_model_bound_embeddings,
+                    COUNT(CASE WHEN {$proof} THEN 1 END) AS current_stored_proof_embeddings,
                     COUNT(file_registry_face_id) AS linked_registry_embeddings,
                     SUM(CASE WHEN person_cluster_id IS NOT NULL THEN 1 ELSE 0 END) AS clustered_embeddings
-                 FROM face_embeddings'
+                 FROM face_embeddings"
             );
 
             $clusters = $db->selectOne(
@@ -1126,14 +1217,54 @@ class FaceTelemetryReportService
                  FROM person_clusters"
             );
 
+            $models = [];
+            $modelLimit = filter_var(config('file_registry.face_telemetry.max_embedding_model_rows'), FILTER_VALIDATE_INT);
+            $modelsTruncated = null;
+            $modelState = 'unavailable';
+            try {
+                if ($modelLimit === false || $modelLimit < 1 || $modelLimit === PHP_INT_MAX) {
+                    throw new \RuntimeException('Face telemetry model row policy unavailable');
+                }
+                $rows = $db->select("SELECT embedding_model, COUNT(*) AS total_embeddings,
+                    COUNT(CASE WHEN {$current} THEN 1 END) AS current_embeddings,
+                    COUNT(CASE WHEN {$proof} THEN 1 END) AS current_stored_proof_embeddings
+                    FROM face_embeddings GROUP BY embedding_model
+                    ORDER BY COUNT(*) DESC, embedding_model LIMIT ?", [$modelLimit + 1]);
+                $modelsTruncated = count($rows) > $modelLimit;
+                foreach (array_slice($rows, 0, $modelLimit) as $row) {
+                    $models[] = ['embedding_model' => $row->embedding_model,
+                        'total_embeddings' => $this->intValue($row->total_embeddings),
+                        'current_embeddings' => $this->intValue($row->current_embeddings),
+                        'current_stored_proof_embeddings' => $this->intValue($row->current_stored_proof_embeddings)];
+                }
+                $modelState = 'available';
+            } catch (Throwable) {
+                // Preserve successful historical/coverage counts if only model projection fails.
+            }
+
             $totalEmbeddings = $this->intValue($embeddings->total_embeddings ?? 0);
             $linkedRegistry = $this->intValue($embeddings->linked_registry_embeddings ?? 0);
 
             return [
-                'status' => $linkedRegistry < $totalEmbeddings ? 'observe_warning' : 'observe_ok',
+                'status' => $linkedRegistry < $totalEmbeddings || $modelState !== 'available' ? 'observe_warning' : 'observe_ok',
                 'source' => 'pgsql_rag.face_embeddings+person_clusters',
                 'summary' => [
                     'total_embeddings' => $totalEmbeddings,
+                    'stored_proof_coverage' => [
+                        'scope' => 'stored_database_claims',
+                        'current_embeddings' => $this->nullableCount($embeddings->current_embeddings ?? null),
+                        'current_source_hash_embeddings' => $this->nullableCount($embeddings->current_source_hash_embeddings ?? null),
+                        'current_normalized_region_embeddings' => $this->nullableCount($embeddings->current_normalized_region_embeddings ?? null),
+                        'current_model_bound_embeddings' => $this->nullableCount($embeddings->current_model_bound_embeddings ?? null),
+                        'current_stored_proof_embeddings' => $this->nullableCount($embeddings->current_stored_proof_embeddings ?? null),
+                        'physical_source_freshness' => 'not_measured',
+                        'cross_store_alignment' => 'not_measured',
+                        'vector_numeric_validity' => 'not_measured',
+                    ],
+                    'embedding_models' => $models,
+                    'embedding_model_rows_limit' => is_int($modelLimit) && $modelLimit > 0 && $modelLimit < PHP_INT_MAX ? $modelLimit : null,
+                    'embedding_models_truncated' => $modelsTruncated,
+                    'model_coverage_state' => $modelState,
                     'linked_registry_embeddings' => $linkedRegistry,
                     'clustered_embeddings' => $this->intValue($embeddings->clustered_embeddings ?? 0),
                     'total_clusters' => $this->intValue($clusters->total_clusters ?? 0),

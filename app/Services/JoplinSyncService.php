@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Jobs\JoplinAttachmentJob;
 use App\Support\JoplinPaths;
 use App\Support\PgVector;
+use App\Support\SensitiveTextTelemetry;
 use Carbon\Carbon;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -35,6 +36,8 @@ use Smalot\PdfParser\Parser as PdfParser;
  */
 class JoplinSyncService
 {
+    private const PRIVATE_TEXT_TELEMETRY_SCOPE = 'joplin-sync';
+
     private RAGService $ragService;
 
     private ?AIService $aiService = null;
@@ -57,17 +60,9 @@ class JoplinSyncService
 
     private array $unprocessableFormats = [];
 
-    private bool $enableAISummarization = true;
-
     private bool $enableOCR = true;
 
     private bool $enableVision = true;
-
-    /** @var int Maximum retry attempts for HTTP calls — matches RetryService::DEFAULT_MAX_ATTEMPTS (SC-2.4) */
-    private const MAX_RETRIES = 3;
-
-    /** @var int Default chunk size for batch processing */
-    private const DEFAULT_CHUNK_SIZE = 50;
 
     /** @var string Cache key for last sync timestamp */
     private const LAST_SYNC_CACHE_KEY = 'joplin_sync_last_run';
@@ -78,21 +73,12 @@ class JoplinSyncService
     /** @var string Cache key prefix for failure tracking */
     private const FAILURE_CACHE_PREFIX = 'joplin_sync_failure:';
 
-    /** @var int Maximum failures before quarantine */
-    private const MAX_FAILURES_BEFORE_QUARANTINE = 3;
-
-    /** @var int Quarantine duration in hours */
-    private const QUARANTINE_HOURS = 72;
-
-    private const HTTP_CONNECT_TIMEOUT = 5;
-
-    private const HTTP_TIMEOUT = 120;
-
     public function __construct(
         RAGService $ragService,
         ?AIService $aiService = null,
         ?ContentExtractionService $extractionService = null,
-        ?MediaUrlService $mediaUrlService = null
+        ?MediaUrlService $mediaUrlService = null,
+        private ?JoplinSyncRuntimePolicyService $runtimePolicy = null,
     ) {
         $this->ragService = $ragService;
         $this->aiService = $aiService;
@@ -105,23 +91,24 @@ class JoplinSyncService
 
         // Filesystem-first: direct reads ~1000x faster than WebDAV
         $this->localPath = JoplinPaths::localRoot();
+        $this->runtimePolicy ??= app(JoplinSyncRuntimePolicyService::class);
     }
 
     private function http(): PendingRequest
     {
-        return Http::connectTimeout(self::HTTP_CONNECT_TIMEOUT)
-            ->timeout(self::HTTP_TIMEOUT)
+        $policy = $this->policy()['webdav'];
+
+        return Http::connectTimeout($policy['connect_timeout_seconds'])
+            ->timeout($policy['request_timeout_seconds'])
             ->withBasicAuth($this->username, $this->password);
     }
 
-    /**
-     * Set AI summarization on/off
-     */
-    public function setAISummarization(bool $enabled): self
+    /** @return array<string,mixed> */
+    private function policy(): array
     {
-        $this->enableAISummarization = $enabled;
+        $this->runtimePolicy ??= app(JoplinSyncRuntimePolicyService::class);
 
-        return $this;
+        return $this->runtimePolicy->required();
     }
 
     /**
@@ -154,11 +141,17 @@ class JoplinSyncService
      * - Formatted statistics for CLI output
      *
      * @param  int|null  $limit  Maximum notes to process (null for all)
-     * @param  int  $chunkSize  Notes per chunk for batch processing
+     * @param  int|null  $chunkSize  Notes per chunk; null resolves table policy
      * @return array Sync statistics with CLI-friendly format
      */
-    public function syncAll(?int $limit = null, int $chunkSize = self::DEFAULT_CHUNK_SIZE): array
+    public function syncAll(?int $limit = null, ?int $chunkSize = null): array
     {
+        $policy = $this->policy();
+        $chunkSize ??= $policy['sync']['default_chunk_size'];
+        if ($chunkSize < 1) {
+            throw new \InvalidArgumentException('Joplin sync chunk size must be positive.');
+        }
+
         $startTime = Carbon::now();
         Log::info('Starting Joplin syncAll', ['limit' => $limit, 'chunk_size' => $chunkSize]);
 
@@ -171,7 +164,10 @@ class JoplinSyncService
 
             // Get existing notes from RAG (raw SQL — no Eloquent)
             $existingDocs = DB::connection('pgsql_rag')->select(
-                'SELECT id, source_id, title, updated_at, content_hash FROM rag_documents WHERE designation = ?',
+                'SELECT DISTINCT ON (source_id) id, source_id, title, updated_at, content_hash
+                 FROM rag_documents
+                 WHERE designation = ? AND source_id IS NOT NULL
+                 ORDER BY source_id, updated_at DESC NULLS LAST, id DESC',
                 ['joplin_note']
             );
 
@@ -214,6 +210,7 @@ class JoplinSyncService
                 'notes_indexed' => 0,
                 'notes_updated' => 0,
                 'notes_deleted' => 0,
+                'deletion_candidates' => 0,
                 'notes_skipped' => 0,
                 'attachments_processed' => 0,
                 'errors' => 0,
@@ -238,7 +235,11 @@ class JoplinSyncService
                     'changed_notes' => $changedCount,
                 ]);
 
-                Cache::put(self::LAST_SYNC_CACHE_KEY, $endTime->toIso8601String(), now()->addDays(7));
+                Cache::put(
+                    self::LAST_SYNC_CACHE_KEY,
+                    $endTime->toIso8601String(),
+                    now()->addDays($policy['sync']['last_sync_cache_days']),
+                );
 
                 return array_merge($stats, [
                     'deferred' => true,
@@ -328,16 +329,24 @@ class JoplinSyncService
                         }
 
                         Log::error('Error processing note in syncAll', [
-                            'note_id' => $noteData['id'] ?? 'unknown',
-                            'error' => $e->getMessage(),
+                            'exception_type' => $e::class,
+                            'note_receipt' => SensitiveTextTelemetry::content(
+                                (string) ($noteData['id'] ?? 'unknown'),
+                                self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                                'note_id',
+                            ),
+                            'error_receipt' => SensitiveTextTelemetry::content(
+                                $e->getMessage(),
+                                self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                                'error',
+                            ),
                         ]);
                         $stats['errors']++;
                         $this->appendErrorSample($stats, $noteData, $e);
                         // Track failure for quarantine
                         $this->recordSyncFailure(
-                            $noteData['id'] ?? 'unknown',
-                            $noteData['title'] ?? 'unknown',
-                            $e->getMessage()
+                            (string) ($noteData['id'] ?? 'unknown'),
+                            $e,
                         );
                     }
                 }
@@ -346,40 +355,20 @@ class JoplinSyncService
                 gc_collect_cycles();
             }
 
-            // Delete notes that no longer exist (only if processing all notes)
+            // A full scan may discover stale source identities, but deletion is
+            // dependency-aware and review-gated in joplin:rag-reconcile. Direct
+            // deletes here can violate foreign keys owned by derived RAG rows.
             if ($limit === null && empty($stats['deferred'])) {
-                // Filter out any null keys from $existing to prevent issues
                 $existingKeys = array_filter(array_keys($existing), fn ($key) => ! empty($key));
                 $toDelete = array_diff($existingKeys, $processedNoteIds);
+                $stats['deletion_candidates'] = count($toDelete);
 
-                foreach ($toDelete as $noteId) {
-                    $existingDoc = $existing[$noteId] ?? null;
-                    if ($existingDoc) {
-                        try {
-                            $sql = 'DELETE FROM rag_documents WHERE designation = ? AND source_id = ?';
-                            DB::connection('pgsql_rag')->delete($sql, ['joplin_note', $noteId]);
-
-                            $sql = 'DELETE FROM rag_documents WHERE designation = ? AND parent_id = ?';
-                            DB::connection('pgsql_rag')->delete($sql, ['joplin_attachment', $existingDoc->id]);
-
-                            $stats['notes_deleted']++;
-
-                            Log::info('Joplin syncAll: Deleted note no longer in Joplin', [
-                                'source_id' => $noteId,
-                                'rag_id' => $existingDoc->id,
-                            ]);
-                        } catch (\Exception $e) {
-                            Log::error('Joplin syncAll: Failed to delete removed note', [
-                                'source_id' => $noteId,
-                                'error' => $e->getMessage(),
-                            ]);
-                            $stats['errors']++;
-                        }
-                    }
+                if ($stats['deletion_candidates'] > 0) {
+                    Log::info('Joplin syncAll: stale RAG cleanup deferred to reconciliation', [
+                        'deletion_candidates' => $stats['deletion_candidates'],
+                        'reconcile_command' => 'joplin:rag-reconcile',
+                    ]);
                 }
-
-                // Cleanup any orphaned documents with null source_id
-                $this->cleanupOrphanedDocuments();
             }
 
             $endTime = Carbon::now();
@@ -400,7 +389,11 @@ class JoplinSyncService
             $this->updateHealthStatus('healthy', $healthDetails);
 
             // Cache last sync time
-            Cache::put(self::LAST_SYNC_CACHE_KEY, $endTime->toIso8601String(), now()->addDays(7));
+            Cache::put(
+                self::LAST_SYNC_CACHE_KEY,
+                $endTime->toIso8601String(),
+                now()->addDays($policy['sync']['last_sync_cache_days']),
+            );
 
             Log::info('Joplin syncAll completed', array_merge($stats, [
                 'duration_seconds' => $durationSeconds,
@@ -411,6 +404,7 @@ class JoplinSyncService
                 'total_files' => $totalFiles,
                 'notes_indexed' => $stats['notes_indexed'],
                 'notes_skipped' => $stats['notes_skipped'] + ($totalFiles - $notesToProcess),
+                'deletion_candidates' => $stats['deletion_candidates'],
                 'errors' => $stats['errors'],
                 'error_samples' => $stats['error_samples'],
                 'deferred' => (bool) ($stats['deferred'] ?? false),
@@ -423,14 +417,21 @@ class JoplinSyncService
             ];
 
         } catch (\Exception $e) {
+            $errorReceipt = SensitiveTextTelemetry::content(
+                $e->getMessage(),
+                self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                'error',
+            );
             $this->updateHealthStatus('error', [
-                'error' => $e->getMessage(),
+                'exception_type' => $e::class,
+                'error_receipt' => $errorReceipt,
                 'timestamp' => Carbon::now()->toIso8601String(),
             ]);
 
             Log::error('Joplin syncAll failed', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'exception_type' => $e::class,
+                'error_receipt' => $errorReceipt,
+                'stack_trace_logged' => false,
             ]);
             throw $e;
         }
@@ -474,10 +475,11 @@ class JoplinSyncService
     }
 
     /**
-     * Perform full sync: add new, update changed, delete removed
+     * Perform full sync: add new, update changed, and report stale cleanup candidates
      */
     public function sync(): array
     {
+        $this->policy();
         $startTime = microtime(true);
         Log::info('Starting Joplin sync');
 
@@ -487,7 +489,10 @@ class JoplinSyncService
 
             // Get existing notes from RAG (raw SQL — no Eloquent)
             $existingDocs = DB::connection('pgsql_rag')->select(
-                'SELECT id, source_id, title, updated_at, content_hash FROM rag_documents WHERE designation = ?',
+                'SELECT DISTINCT ON (source_id) id, source_id, title, updated_at, content_hash
+                 FROM rag_documents
+                 WHERE designation = ? AND source_id IS NOT NULL
+                 ORDER BY source_id, updated_at DESC NULLS LAST, id DESC',
                 ['joplin_note']
             );
 
@@ -501,6 +506,7 @@ class JoplinSyncService
                 'added' => 0,
                 'updated' => 0,
                 'deleted' => 0,
+                'deletion_candidates' => 0,
                 'attachments_processed' => 0,
                 'errors' => 0,
                 'error_samples' => [],
@@ -564,55 +570,39 @@ class JoplinSyncService
                     // notes; it re-enters RAG indexing and can stall routine syncs.
                 } catch (\Exception $e) {
                     Log::error('Error processing note', [
-                        'note_id' => $noteData['id'] ?? 'unknown',
-                        'error' => $e->getMessage(),
+                        'exception_type' => $e::class,
+                        'note_receipt' => SensitiveTextTelemetry::content(
+                            (string) ($noteData['id'] ?? 'unknown'),
+                            self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                            'note_id',
+                        ),
+                        'error_receipt' => SensitiveTextTelemetry::content(
+                            $e->getMessage(),
+                            self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                            'error',
+                        ),
                     ]);
                     $stats['errors']++;
                     $this->appendErrorSample($stats, $noteData, $e);
                     // Track failure for quarantine
                     $this->recordSyncFailure(
-                        $noteData['id'] ?? 'unknown',
-                        $noteData['title'] ?? 'unknown',
-                        $e->getMessage()
+                        (string) ($noteData['id'] ?? 'unknown'),
+                        $e,
                     );
                 }
             }
 
-            // Delete notes that no longer exist in Joplin
-            // Filter out any null keys from $existing to prevent issues
+            // Report stale identities for dependency-aware reconciliation.
             $existingKeys = array_filter(array_keys($existing), fn ($key) => ! empty($key));
             $toDelete = array_diff($existingKeys, $processedNoteIds);
+            $stats['deletion_candidates'] = count($toDelete);
 
-            foreach ($toDelete as $noteId) {
-                $existingDoc = $existing[$noteId] ?? null;
-                if ($existingDoc) {
-                    try {
-                        // Delete note using raw SQL
-                        $sql = 'DELETE FROM rag_documents WHERE designation = ? AND source_id = ?';
-                        DB::connection('pgsql_rag')->delete($sql, ['joplin_note', $noteId]);
-
-                        // Also delete associated attachments using raw SQL
-                        $sql = 'DELETE FROM rag_documents WHERE designation = ? AND parent_id = ?';
-                        DB::connection('pgsql_rag')->delete($sql, ['joplin_attachment', $existingDoc->id]);
-
-                        $stats['deleted']++;
-
-                        Log::info('Joplin sync: Deleted note no longer in Joplin', [
-                            'source_id' => $noteId,
-                            'rag_id' => $existingDoc->id,
-                        ]);
-                    } catch (\Exception $e) {
-                        Log::error('Joplin sync: Failed to delete removed note', [
-                            'source_id' => $noteId,
-                            'error' => $e->getMessage(),
-                        ]);
-                        $stats['errors']++;
-                    }
-                }
+            if ($stats['deletion_candidates'] > 0) {
+                Log::info('Joplin sync: stale RAG cleanup deferred to reconciliation', [
+                    'deletion_candidates' => $stats['deletion_candidates'],
+                    'reconcile_command' => 'joplin:rag-reconcile',
+                ]);
             }
-
-            // Cleanup any orphaned documents with null source_id
-            $this->cleanupOrphanedDocuments();
 
             $duration = round((microtime(true) - $startTime) * 1000);
 
@@ -631,8 +621,13 @@ class JoplinSyncService
             ]);
         } catch (\Exception $e) {
             Log::error('Joplin sync failed', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'exception_type' => $e::class,
+                'error_receipt' => SensitiveTextTelemetry::content(
+                    $e->getMessage(),
+                    self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                    'error',
+                ),
+                'stack_trace_logged' => false,
             ]);
             throw $e;
         }
@@ -693,7 +688,7 @@ class JoplinSyncService
         // Retry logic for directory listing
         $response = $this->httpWithRetry(function () use ($url) {
             return $this->http()
-                ->timeout(30)
+                ->timeout($this->policy()['webdav']['directory_listing_timeout_seconds'])
                 ->withHeaders(['Depth' => '1'])
                 ->send('PROPFIND', $url);
         }, 'fetchAllNotes PROPFIND');
@@ -759,8 +754,10 @@ class JoplinSyncService
      *
      * @throws \Exception if all retries fail
      */
-    private function httpWithRetry(callable $httpCall, string $operation, int $maxRetries = self::MAX_RETRIES)
+    private function httpWithRetry(callable $httpCall, string $operation, ?int $maxRetries = null)
     {
+        $webdavPolicy = $this->policy()['webdav'];
+        $maxRetries ??= $webdavPolicy['retry_attempts'];
         $lastException = null;
 
         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
@@ -780,14 +777,19 @@ class JoplinSyncService
 
                 // Check if it's a connection error worth retrying
                 if ($this->isRetryableError($e->getMessage())) {
-                    $delay = pow(2, $attempt - 1); // 1, 2, 4 seconds
+                    $delay = $webdavPolicy['retry_base_delay_seconds'] * (2 ** ($attempt - 1));
 
                     Log::warning('Joplin HTTP retry', [
                         'operation' => $operation,
                         'attempt' => $attempt,
                         'max_retries' => $maxRetries,
                         'delay_seconds' => $delay,
-                        'error' => $e->getMessage(),
+                        'exception_type' => $e::class,
+                        'error_receipt' => SensitiveTextTelemetry::content(
+                            $e->getMessage(),
+                            self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                            'error',
+                        ),
                     ]);
 
                     if ($attempt < $maxRetries) {
@@ -804,7 +806,12 @@ class JoplinSyncService
 
         Log::error("Joplin HTTP request failed after {$maxRetries} attempts", [
             'operation' => $operation,
-            'error' => $lastException?->getMessage(),
+            'exception_type' => $lastException !== null ? $lastException::class : null,
+            'error_receipt' => SensitiveTextTelemetry::content(
+                $lastException?->getMessage() ?? 'unknown error',
+                self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                'error',
+            ),
         ]);
 
         throw $lastException ?? new \Exception("HTTP request failed: {$operation}");
@@ -850,15 +857,24 @@ class JoplinSyncService
         try {
             $response = $this->httpWithRetry(function () use ($href) {
                 return $this->http()
-                    ->timeout(15)
+                    ->timeout($this->policy()['webdav']['note_fetch_timeout_seconds'])
                     ->get($this->nextcloudUrl.$href);
             }, 'fetchNoteContent');
 
             return $response->successful() ? $response->body() : '';
         } catch (\Exception $e) {
             Log::warning('Failed to fetch note content', [
-                'href' => $href,
-                'error' => $e->getMessage(),
+                'exception_type' => $e::class,
+                'note_receipt' => SensitiveTextTelemetry::content(
+                    $href,
+                    self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                    'note_href',
+                ),
+                'error_receipt' => SensitiveTextTelemetry::content(
+                    $e->getMessage(),
+                    self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                    'error',
+                ),
             ]);
 
             return '';
@@ -987,6 +1003,10 @@ class JoplinSyncService
                 // Joplin already gates writes by stable content_hash; semantic
                 // dedup can turn routine syncs into long pgvector/embedding waits.
                 'skip_dedup' => true,
+                // A Joplin item ID is its stable source identity. Updating the
+                // latest row in place preserves dependent RAG rows and avoids
+                // a foreign-key failure from insert-then-delete replacement.
+                'source_identity_upsert' => true,
                 'trace_timing' => true,
                 // Scheduled note sync should defer if fast embedding providers are
                 // down instead of falling into slow CPU/Python embedding fallback.
@@ -1029,12 +1049,9 @@ class JoplinSyncService
      */
     private function updateNote(object $existingNote, array $noteData, string $contentHash): void
     {
-        // Re-index before deleting the old version so a transient embedding
-        // outage cannot remove the existing searchable note.
+        // indexNote performs a source-identity upsert, preserving the existing
+        // row ID and any dependent foreign-key relationships.
         $this->indexNote($noteData, $contentHash);
-
-        $sql = 'DELETE FROM rag_documents WHERE id = ?';
-        DB::connection('pgsql_rag')->delete($sql, [$existingNote->id]);
     }
 
     /**
@@ -1204,12 +1221,6 @@ class JoplinSyncService
             case 'txt':
             case 'md':
                 $this->processedFormats['text'] = ($this->processedFormats['text'] ?? 0) + 1;
-                if ($this->enableAISummarization && $this->aiService && strlen($content) > 1000) {
-                    $summarized = $this->summarizeContent($content, $filename, 'text file');
-                    if ($summarized) {
-                        return $summarized;
-                    }
-                }
 
                 return "Text from {$filename}:\n".$this->cleanExtractedText($content);
 
@@ -1217,12 +1228,6 @@ class JoplinSyncService
             case 'htm':
                 $textContent = strip_tags($content);
                 $this->processedFormats['html'] = ($this->processedFormats['html'] ?? 0) + 1;
-                if ($this->enableAISummarization && $this->aiService && strlen($textContent) > 500) {
-                    $summarized = $this->summarizeContent($textContent, $filename, 'HTML document');
-                    if ($summarized) {
-                        return $summarized;
-                    }
-                }
 
                 return "HTML Content from {$filename}:\n".$this->cleanExtractedText($textContent);
 
@@ -1243,7 +1248,7 @@ class JoplinSyncService
         try {
             $response = $this->httpWithRetry(function () use ($url) {
                 return $this->http()
-                    ->timeout(30)
+                    ->timeout($this->policy()['webdav']['attachment_timeout_seconds'])
                     ->get($url);
             }, 'fetchAttachmentContent');
 
@@ -1259,7 +1264,7 @@ class JoplinSyncService
     }
 
     /**
-     * Extract text from PDF and optionally summarize with AI
+     * Extract and retain PDF text without lossy summarization.
      */
     private function extractPdfText(string $pdfContent, string $filename): ?string
     {
@@ -1274,15 +1279,6 @@ class JoplinSyncService
 
             $this->processedFormats['pdf'] = ($this->processedFormats['pdf'] ?? 0) + 1;
 
-            // If AI summarization is enabled and text is substantial, summarize it
-            if ($this->enableAISummarization && $this->aiService && strlen($rawText) > 500) {
-                $summarized = $this->summarizeContent($rawText, $filename, 'PDF document');
-                if ($summarized) {
-                    return $summarized;
-                }
-            }
-
-            // Fallback to raw text (cleaned up)
             return "PDF Content from {$filename}:\n".$this->cleanExtractedText($rawText);
         } catch (\Exception $e) {
             Log::warning('PDF extraction failed', [
@@ -1299,7 +1295,7 @@ class JoplinSyncService
      * Extract text/description from image using AI Vision model (preferred) or OCR (fallback)
      *
      * Priority:
-     * 1. AI Vision model (llava/Claude) - understands image content semantically
+     * 1. Configured AI vision model - understands image content semantically
      * 2. OCR (tesseract) - extracts visible text only
      */
     private function extractImageText(string $imageContent, string $filename): ?string
@@ -1364,8 +1360,8 @@ PROMPT;
         try {
             $result = $this->aiService->processImage($imageContent, $prompt, [
                 'factual_mode' => true,
-                'max_tokens' => 1500,
-                'timeout' => 120, // Vision processing can be slow
+                'max_tokens' => $this->policy()['vision']['max_tokens'],
+                'timeout' => $this->policy()['vision']['timeout_seconds'],
             ]);
 
             if (! $result['success'] || empty(trim($result['response'] ?? ''))) {
@@ -1403,7 +1399,8 @@ PROMPT;
     private function extractWithOCR(string $imageContent, string $filename): ?string
     {
         // Check if tesseract is available
-        $tesseractPath = trim(Process::timeout(5)->run(['which', 'tesseract'])->output());
+        $ocrPolicy = $this->policy()['ocr'];
+        $tesseractPath = trim(Process::timeout($ocrPolicy['probe_timeout_seconds'])->run(['which', 'tesseract'])->output());
         if (empty($tesseractPath) || ! file_exists($tesseractPath) || ! is_executable($tesseractPath)) {
             $this->unprocessableFormats[] = 'image_no_tesseract';
 
@@ -1417,7 +1414,7 @@ PROMPT;
 
             // Run tesseract OCR
             $tempOutput = tempnam(sys_get_temp_dir(), 'joplin_ocr_out_');
-            $returnCode = Process::timeout(60)->run([
+            $returnCode = Process::timeout($ocrPolicy['process_timeout_seconds'])->run([
                 $tesseractPath,
                 $tempImage,
                 $tempOutput,
@@ -1445,14 +1442,6 @@ PROMPT;
 
             $this->processedFormats['ocr'] = ($this->processedFormats['ocr'] ?? 0) + 1;
 
-            // Optionally summarize OCR text
-            if ($this->enableAISummarization && $this->aiService && strlen($ocrText) > 200) {
-                $summarized = $this->summarizeContent($ocrText, $filename, 'OCR extracted text from image');
-                if ($summarized) {
-                    return $summarized;
-                }
-            }
-
             return "OCR Text from {$filename}:\n".$this->cleanExtractedText($ocrText);
         } catch (\Exception $e) {
             Log::warning('OCR extraction failed', [
@@ -1463,66 +1452,6 @@ PROMPT;
 
             return null;
         }
-    }
-
-    /**
-     * Summarize extracted content using AI for accuracy and conciseness
-     */
-    private function summarizeContent(string $content, string $filename, string $contentType): ?string
-    {
-        if (! $this->aiService) {
-            return null;
-        }
-
-        try {
-            // Truncate very long content to avoid token limits
-            $maxChars = 8000;
-            if (strlen($content) > $maxChars) {
-                $content = substr($content, 0, $maxChars)."\n\n[Content truncated for summarization]";
-            }
-
-            $prompt = <<<PROMPT
-You are processing extracted text from a {$contentType} file named "{$filename}".
-
-The raw extracted text may contain OCR errors, formatting artifacts, or be disorganized.
-
-Your task:
-1. Clean up any obvious OCR or extraction errors
-2. Organize the information logically
-3. Summarize key facts, data points, and important information
-4. Remove redundant or meaningless content
-5. Preserve all factual information (names, dates, numbers, addresses, etc.)
-
-Output a clean, accurate, concise summary that captures all important information.
-If this appears to be a form, receipt, or document with structured data, preserve that structure.
-
-Raw extracted text:
----
-{$content}
----
-
-Provide only the cleaned/summarized content, no explanations:
-PROMPT;
-
-            $result = $this->aiService->process($prompt, [
-                'factual_mode' => true,
-                'max_tokens' => 2000,
-                'system_prompt' => 'You are a document processing assistant. Output clean, factual, organized content.',
-            ]);
-
-            if ($result['success'] && ! empty(trim($result['response'] ?? ''))) {
-                $this->processedFormats['ai_summarized'] = ($this->processedFormats['ai_summarized'] ?? 0) + 1;
-
-                return "Summarized {$contentType} ({$filename}):\n\n".trim($result['response']);
-            }
-        } catch (\Exception $e) {
-            Log::warning('AI summarization failed', [
-                'filename' => $filename,
-                'error' => $e->getMessage(),
-            ]);
-        }
-
-        return null;
     }
 
     /**
@@ -1629,10 +1558,11 @@ PROMPT;
     }
 
     /**
-     * Reprocess existing RAG attachments with AI summarization
+     * Reprocess existing RAG attachments with faithful extraction and OCR.
      *
-     * This method finds attachments that have raw/placeholder content
-     * and reprocesses them with AI summarization.
+     * This method finds attachments that have raw/placeholder content and
+     * improves extractable image content without replacing full PDF text with
+     * a lossy summary.
      *
      * @param  int  $limit  Maximum attachments to process
      * @param  bool  $pdfOnly  Only process PDFs (faster, no OCR needed)
@@ -1640,6 +1570,7 @@ PROMPT;
      */
     public function reprocessAttachments(int $limit = 50, bool $pdfOnly = false): array
     {
+        $this->policy();
         $stats = [
             'processed' => 0,
             'improved' => 0,
@@ -1669,7 +1600,8 @@ PROMPT;
                 $filename = $attachment->title;
                 $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
 
-                // Skip if already summarized
+                // Preserve legacy summarized rows until a separate source-backed
+                // restoration lane can reconstruct their original extracted text.
                 if (str_starts_with($attachment->content, 'Summarized ')) {
                     $stats['skipped']++;
 
@@ -1679,22 +1611,8 @@ PROMPT;
                 // Extract raw content from current entry
                 $rawContent = $attachment->content;
 
-                // For PDFs, content is already extracted, just needs summarization
-                if ($extension === 'pdf' && str_starts_with($rawContent, 'PDF Content:')) {
-                    $textContent = substr($rawContent, strlen('PDF Content:'));
-                    $textContent = trim($textContent);
-
-                    if (strlen($textContent) > 500 && $this->aiService) {
-                        $summarized = $this->summarizeContent($textContent, $filename, 'PDF document');
-                        if ($summarized) {
-                            $this->updateAttachmentContent($attachment->id, $summarized);
-                            $stats['improved']++;
-                            Log::info('Reprocessed PDF attachment', ['id' => $attachment->id, 'filename' => $filename]);
-
-                            continue;
-                        }
-                    }
-                }
+                // Existing PDF Content rows already retain their extracted text.
+                // Reprocessing must not replace that detail with a summary.
 
                 // For images, we need to re-fetch and OCR
                 if (in_array($extension, ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff', 'webp'])) {
@@ -1748,19 +1666,23 @@ PROMPT;
 
         // Format embedding for PostgreSQL
         $embeddingStr = PgVector::literal($result['embedding']);
+        $contentHash = hash('sha256', trim($newContent));
+        $provenance = app(RagEmbeddingProvenanceService::class)->attach(null, $result, $contentHash);
 
         // Update document
         $sql = 'UPDATE rag_documents
                 SET content = ?,
                     embedding = ?::vector,
                     content_hash = ?,
+                    metadata = COALESCE(metadata, \'{}\'::jsonb) || ?::jsonb,
                     updated_at = NOW()
                 WHERE id = ?';
 
         DB::connection('pgsql_rag')->update($sql, [
             $newContent,
             $embeddingStr,
-            md5($newContent),
+            $contentHash,
+            json_encode($provenance, JSON_THROW_ON_ERROR),
             $id,
         ]);
     }
@@ -1824,10 +1746,11 @@ PROMPT;
     private function checkNextcloudConnection(): bool
     {
         try {
+            $healthProbeTimeout = $this->policy()['webdav']['health_probe_timeout_seconds'];
             $url = $this->nextcloudUrl.'/remote.php/dav/files/'.$this->username.$this->joplinPath;
 
             $response = $this->http()
-                ->timeout(10)
+                ->timeout($healthProbeTimeout)
                 ->withHeaders(['Depth' => '0'])
                 ->send('PROPFIND', $url);
 
@@ -1933,7 +1856,7 @@ PROMPT;
 
         if ($failures['quarantined_at']) {
             $quarantinedAt = Carbon::parse($failures['quarantined_at']);
-            if ($quarantinedAt->diffInHours(now()) < self::QUARANTINE_HOURS) {
+            if ($quarantinedAt->diffInHours(now()) < $this->policy()['quarantine']['duration_hours']) {
                 return true;
             }
             // Quarantine expired, reset
@@ -1946,39 +1869,53 @@ PROMPT;
     /**
      * Record a sync failure for a note
      */
-    private function recordSyncFailure(string $noteId, string $title, string $error): void
+    private function recordSyncFailure(string $noteId, \Throwable $error): void
     {
+        $quarantinePolicy = $this->policy()['quarantine'];
         $key = self::FAILURE_CACHE_PREFIX.$noteId;
         $failures = Cache::get($key, ['count' => 0, 'quarantined_at' => null, 'errors' => []]);
-
-        $failures['count']++;
-        $failures['last_error'] = $error;
-        $failures['last_attempt'] = now()->toIso8601String();
-        $failures['title'] = $title;
-        $failures['errors'][] = [
-            'time' => now()->toIso8601String(),
-            'error' => substr($error, 0, 200),
+        $errorReceipt = [
+            'exception_type' => $error::class,
+            ...SensitiveTextTelemetry::content(
+                $error->getMessage(),
+                self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                'error',
+            ),
         ];
 
-        // Keep only last 5 errors
-        if (count($failures['errors']) > 5) {
-            $failures['errors'] = array_slice($failures['errors'], -5);
+        $failures['count']++;
+        $failures['last_error'] = $errorReceipt;
+        $failures['last_attempt'] = now()->toIso8601String();
+        $failures['errors'][] = [
+            'time' => now()->toIso8601String(),
+            ...$errorReceipt,
+        ];
+
+        if (count($failures['errors']) > $quarantinePolicy['retained_errors']) {
+            $failures['errors'] = array_slice($failures['errors'], -$quarantinePolicy['retained_errors']);
         }
 
         // Quarantine after max failures
-        if ($failures['count'] >= self::MAX_FAILURES_BEFORE_QUARANTINE) {
+        if ($failures['count'] >= $quarantinePolicy['failure_threshold']) {
             $failures['quarantined_at'] = now()->toIso8601String();
             Log::warning('Joplin note quarantined after repeated failures', [
-                'note_id' => $noteId,
-                'title' => $title,
                 'failure_count' => $failures['count'],
-                'last_error' => $error,
-                'quarantine_hours' => self::QUARANTINE_HOURS,
+                'quarantine_hours' => $quarantinePolicy['duration_hours'],
+                'note_receipt' => SensitiveTextTelemetry::content(
+                    $noteId,
+                    self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                    'note_id',
+                ),
+                'error_receipt' => $errorReceipt,
             ]);
         }
 
         // Cache for quarantine duration + buffer
-        Cache::put($key, $failures, now()->addHours(self::QUARANTINE_HOURS + 24));
+        Cache::put(
+            $key,
+            $failures,
+            now()->addHours($quarantinePolicy['duration_hours'] + $quarantinePolicy['cache_buffer_hours']),
+        );
     }
 
     private function appendErrorSample(array &$stats, array $noteData, \Throwable $e): void
@@ -1987,14 +1924,24 @@ PROMPT;
             $stats['error_samples'] = [];
         }
 
-        if (count($stats['error_samples']) >= 5) {
+        $quarantinePolicy = $this->policy()['quarantine'];
+        if (count($stats['error_samples']) >= $quarantinePolicy['retained_errors']) {
             return;
         }
 
         $noteId = (string) ($noteData['id'] ?? 'unknown');
         $stats['error_samples'][] = [
-            'note_hash' => substr(hash('sha256', $noteId), 0, 12),
-            'error' => substr($e->getMessage(), 0, 200),
+            'exception_type' => $e::class,
+            'note_receipt' => SensitiveTextTelemetry::content(
+                $noteId,
+                self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                'note_id',
+            ),
+            'error_receipt' => SensitiveTextTelemetry::content(
+                $e->getMessage(),
+                self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                'error',
+            ),
         ];
     }
 

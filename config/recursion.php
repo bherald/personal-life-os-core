@@ -50,7 +50,11 @@ return [
     'min_parent_tokens' => 5000,
     'min_parent_time_seconds' => 30,
 
-    // Auto-decompose: transparent context shrinkage in AIService::process()
+    // Automatic prompt decomposition/synthesis is a lossy prompt transform and
+    // is operator-disabled without an environment override.
+    'auto_decompose_enabled' => false,
+
+    // Historical tuning values retained for old telemetry and rollback review.
     'auto_decompose_threshold' => 8000,       // Token estimate threshold to trigger decomposition
     'auto_decompose_target_chunk' => 3000,    // Target tokens per sub-call chunk
     'auto_decompose_max_chunks' => 8,         // Max chunks to prevent explosion

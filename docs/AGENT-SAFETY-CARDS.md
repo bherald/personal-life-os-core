@@ -185,8 +185,7 @@ Formal safety documentation for PLOS agents. Each card documents capabilities, c
 - Cannot delete persons, families, or sources from genealogy database
 - Cannot modify existing verified records
 - NARA downloads consume API quota — rate-limited
-- FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, FindMyPast, and default MyHeritage automation are manual/browser-only sources; no automated API, OAuth, login, or scraping tools are available
-- Newspapers.com automation is private/personal-only and requires explicit local configuration
+- FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, FindMyPast, default MyHeritage, and Newspapers.com are provider-specific sources. Use configured APIs, private adapters, headed-browser capture, or review-first tasks only; do not plan credential, paywall, CAPTCHA, or prohibited-scraping bypass.
 - Hybrid mode: framework controls phase transitions, not LLM
 
 **Tool Phases:**
@@ -196,7 +195,7 @@ Formal safety documentation for PLOS agents. Each card documents capabilities, c
 - report (8 tools): submit_for_review, propose_relationship, propose_change, post_agent_message, update_hint_status, create_research_task, log_research_search, rag_index
 
 **Failure Modes:**
-- Manual-only source unavailable in browser → continue with NARA/newspapers/WikiTree/SearXNG and log negative evidence
+- Provider-specific source unavailable through configured access → continue with NARA/newspapers/WikiTree/SearXNG and log negative evidence
 - NARA API down → cannot download federal records → continues with other sources
 - Ollama unavailable → hybrid phase analysis fails → run aborts, retries next day
 - Phase validation failure → max 2 retries per phase → abort with partial results logged
@@ -278,11 +277,12 @@ Formal safety documentation for PLOS agents. Each card documents capabilities, c
 | **Permissions** | system:read, system:write, workflow:read |
 | **Notifications** | None |
 
-**Capabilities:** Workflow health summary, failing workflows, compensation stats, job stats, webhook stats, error patterns, slow nodes. Can fix stuck jobs, refresh diagnostics, and resume executions within current workflow controls.
+**Capabilities:** Workflow health summary, failing workflows, compensation stats, job stats, webhook stats, error patterns, slow nodes, and pending approval visibility. Can fix stuck jobs, refresh diagnostics, and resume failed executions within current workflow controls.
 
 **Constraints:**
 - Cannot create, delete, or modify workflow definitions
 - Workflow resumption requires human review via submit_for_review
+- Cannot approve, reject, expire, or bypass an `Approval` node; only an authenticated operator can decide its one-shot gate
 - Cannot modify workflow node code or configurations
 
 **Tool Phases:**

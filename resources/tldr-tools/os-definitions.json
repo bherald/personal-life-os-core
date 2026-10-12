@@ -1,0 +1,111 @@
+{
+  "sql-tap": {
+    "category": "database_diagnostics",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/sql-tap"
+    ],
+    "dependencies": [
+      "sql-tapd"
+    ],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://github.com/mickamy/sql-tap/tree/v0.3.2",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Inspect an explicitly configured local SQL diagnostic proxy. Captures private query text and bound parameters. Synthetic PostgreSQL/MySQL PDO compatibility passed; no production routing or execution admission is implied."
+  },
+  "sql-tapd": {
+    "category": "database_diagnostics",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/sql-tapd"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://github.com/mickamy/sql-tap/tree/v0.3.2",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Optional on-demand PostgreSQL/MySQL protocol diagnostic proxy. Bind proxy, gRPC and HTTP to loopback; preserve direct application connections unless a scoped diagnostic run explicitly selects the proxy. EXPLAIN credentials remain absent by default."
+  },
+  "plos-archify": {
+    "category": "plos_reference_tools",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-archify"
+    ],
+    "dependencies": [
+      "python3",
+      "node"
+    ],
+    "adapter": null,
+    "references": [],
+    "purpose": "Render offline PLOS architecture diagrams from explicit JSON sources."
+  },
+  "plos-pdf": {
+    "category": "plos_reference_tools",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-pdf"
+    ],
+    "dependencies": [
+      "python3",
+      "java"
+    ],
+    "adapter": null,
+    "references": [],
+    "purpose": "Extract local PDF text and page coordinates; retain existing extraction fallback."
+  },
+  "plos-hister": {
+    "category": "plos_reference_tools",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-hister"
+    ],
+    "dependencies": [
+      "python3"
+    ],
+    "adapter": null,
+    "references": [],
+    "purpose": "Search or explicitly import the selected local reference collection. No automatic browser collection."
+  },
+  "plos-pggraph-query": {
+    "category": "database_diagnostics",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-pggraph-query"
+    ],
+    "dependencies": [
+      "docker",
+      "python3"
+    ],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://github.com/Evokoa/pgGraph/tree/v1.2.1",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Read-only known-ID queries over the installed source-backed PLOS architecture reference graph. Supports --diagram ID and --path FROM_NODE TO_NODE. Curated relationships, not a traced callgraph. Unavailable service returns a structured fallback to the atlas JSON and source files."
+  },
+  "docker": {
+    "category": "runtime_dependency",
+    "package": null,
+    "paths": [
+      "/usr/bin/docker",
+      "/usr/local/bin/docker"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Observe the installed container client used by the optional local pgGraph query wrapper. Discovery grants no container execution permissions."
+  }
+}

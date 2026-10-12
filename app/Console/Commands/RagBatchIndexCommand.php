@@ -2,8 +2,9 @@
 
 namespace App\Console\Commands;
 
-use App\Services\RAGService;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\DomainRegistryService;
+use App\Services\RAGService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -16,26 +17,54 @@ use Illuminate\Support\Facades\Log;
 class RagBatchIndexCommand extends Command
 {
     private const DEFAULT_TIMEOUT_MINUTES = 90;
+
     private const TIMEOUT_SAFETY_BUFFER_SECONDS = 300;
+
     private const FALLBACK_SECONDS_PER_RECORD = 20.0;
 
     protected $signature = 'rag:batch-index
                             {--domain= : Specific domain to index}
                             {--limit=100 : Records per domain}
+                            {--source-id=* : Exact YouTube transcript row IDs; requires --domain=youtube}
                             {--dry-run : Show what would be indexed without indexing}';
 
     protected $description = 'Batch index pending records to RAG across all domains';
 
     private RAGService $ragService;
 
+    private array $sourceIds = [];
+
+    private bool $youtubeFailure = false;
+
     public function handle(RAGService $ragService, DomainRegistryService $registry): int
     {
         $this->ragService = $ragService;
+        $this->sourceIds = [];
+        $this->youtubeFailure = false;
         $specificDomain = $this->option('domain');
         $limit = (int) $this->option('limit');
         $dryRun = $this->option('dry-run');
+        $selectors = $this->option('source-id');
+        if ($selectors && ($specificDomain !== 'youtube' || $limit < 1)) {
+            $this->error('Exact source IDs require --domain=youtube and a positive limit.');
 
-        $this->info('RAG Batch Indexing' . ($dryRun ? ' (DRY RUN)' : ''));
+            return self::FAILURE;
+        }
+        foreach ($selectors as $selector) {
+            if (! is_string($selector) || ! preg_match('/^[1-9][0-9]{0,17}$/D', $selector)) {
+                $this->error('Exact source IDs must be positive integers.');
+
+                return self::FAILURE;
+            }
+        }
+        $this->sourceIds = array_values(array_unique(array_map('intval', $selectors)));
+        if (count($this->sourceIds) > $limit) {
+            $this->error('Exact source selection exceeds the requested limit.');
+
+            return self::FAILURE;
+        }
+
+        $this->info('RAG Batch Indexing'.($dryRun ? ' (DRY RUN)' : ''));
         $this->newLine();
 
         $totalIndexed = 0;
@@ -46,8 +75,12 @@ class RagBatchIndexCommand extends Command
             : $registry->getEnabledDomains();
 
         foreach ($domains as $key => $domain) {
-            if (!$domain) {
+            if (! $domain) {
+                if ($key === 'youtube') {
+                    $this->youtubeFailure = true;
+                }
                 $this->warn("Domain not found: {$key}");
+
                 continue;
             }
 
@@ -58,7 +91,7 @@ class RagBatchIndexCommand extends Command
         $this->newLine();
         $this->info("Total indexed: {$totalIndexed} records");
 
-        return 0;
+        return $this->youtubeFailure ? self::FAILURE : self::SUCCESS;
     }
 
     private function indexDomain(string $key, array $domain, int $limit, bool $dryRun, float $startedAt, int $deadlineSeconds): int
@@ -73,34 +106,56 @@ class RagBatchIndexCommand extends Command
                 ->getSchemaBuilder()
                 ->hasColumn($table, 'rag_indexed_at');
 
-            if (!$hasRagColumn) {
+            if (! $hasRagColumn) {
+                if ($key === 'youtube') {
+                    $this->youtubeFailure = true;
+                }
                 $this->line("<comment>{$key}:</comment> No rag_indexed_at column, skipping");
+
                 return 0;
             }
         } catch (\Exception $e) {
+            if ($key === 'youtube') {
+                $this->youtubeFailure = true;
+            }
             $this->line("<comment>{$key}:</comment> Table not accessible ({$e->getMessage()})");
+
             return 0;
         }
 
         // Get pending records
         try {
-            $pending = DB::connection($connection)->select(
-                "SELECT * FROM {$table} WHERE rag_indexed_at IS NULL LIMIT ?",
-                [$limit]
-            );
+            if ($key === 'youtube' && $this->sourceIds !== []) {
+                $pending = DB::connection($connection)->table($table)->whereIn('id', $this->sourceIds)
+                    ->orderBy('id')->limit($limit)->get()->all();
+                if (count($pending) !== count($this->sourceIds)) {
+                    throw new \RuntimeException('Exact stored source selection is incomplete.');
+                }
+            } else {
+                $pending = DB::connection($connection)->select(
+                    "SELECT * FROM {$table} WHERE rag_indexed_at IS NULL LIMIT ?",
+                    [$limit]
+                );
+            }
         } catch (\Exception $e) {
+            if ($key === 'youtube') {
+                $this->youtubeFailure = true;
+            }
             $this->warn("{$key}: Error querying - {$e->getMessage()}");
+
             return 0;
         }
 
         $count = count($pending);
         if ($count === 0) {
             $this->line("<info>{$key}:</info> No pending records");
+
             return 0;
         }
 
         if ($dryRun) {
             $this->line("<info>{$key}:</info> Would index {$count} records");
+
             return 0;
         }
 
@@ -117,6 +172,9 @@ class RagBatchIndexCommand extends Command
 
         foreach ($pending as $record) {
             if ($this->shouldStopBeforeStartingRecord($startedAt, $deadlineSeconds, $processed, $domainStartedAt, $key)) {
+                if ($key === 'youtube') {
+                    $this->youtubeFailure = true;
+                }
                 Log::warning("RagBatchIndex: stopping {$key} early for runtime budget", [
                     'deadline_seconds' => $deadlineSeconds,
                     'processed' => $processed,
@@ -129,32 +187,40 @@ class RagBatchIndexCommand extends Command
 
             $processed++;
             try {
-                $content = $this->buildContent($key, $record);
+                $content = $key === 'youtube' ? (string) ($record->content ?? '') : $this->buildContent($key, $record);
                 $title = $this->buildTitle($key, $record);
                 $metadata = $this->buildMetadata($key, $record);
 
-                if (empty($content)) {
+                if ($key === 'youtube' ? trim($content) === '' : empty($content)) {
+                    if ($key === 'youtube') {
+                        throw new \RuntimeException('Exact YouTube source content is empty.');
+                    }
                     $progressBar->advance();
+
                     continue;
                 }
 
-                $this->ragService->indexDocument(
-                    documentType: $ragType,
-                    content: $content,
-                    title: $title,
-                    metadata: $metadata,
-                    sourceId: $record->id ?? null
-                );
-
-                // Mark as indexed
-                DB::connection($connection)->update(
-                    "UPDATE {$table} SET rag_indexed_at = NOW() WHERE id = ?",
-                    [$record->id]
-                );
+                if ($key === 'youtube') {
+                    $this->indexYouTubeRecord($domain, $record, $title, $metadata);
+                } else {
+                    $this->ragService->indexDocument(
+                        documentType: $ragType, content: $content, title: $title,
+                        metadata: $metadata, sourceId: $record->id ?? null,
+                    );
+                    DB::connection($connection)->update(
+                        "UPDATE {$table} SET rag_indexed_at = NOW() WHERE id = ?", [$record->id],
+                    );
+                }
 
                 $indexed++;
                 $consecutiveFailures = 0; // Reset on success
             } catch (\Exception $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
+                if ($key === 'youtube') {
+                    $this->youtubeFailure = true;
+                }
                 $errors++;
                 $consecutiveFailures++;
                 Log::warning("RAG index failed for {$key}:{$record->id}", [
@@ -182,6 +248,48 @@ class RagBatchIndexCommand extends Command
         }
 
         return $indexed;
+    }
+
+    private function indexYouTubeRecord(array $domain, object $record, string $title, array $metadata): void
+    {
+        $sourceType = $domain['source_type'] ?? null;
+        $content = $record->content ?? null;
+        if (! is_string($sourceType) || $sourceType === '' || ! is_string($content) || trim($content) === '') {
+            throw new \RuntimeException('Exact YouTube source policy or content is unavailable.');
+        }
+        $connection = DB::connection($domain['connection'] ?? 'mysql');
+        $table = $domain['table'];
+        $assertCurrent = function () use ($connection, $table, $record, $content): void {
+            $current = $connection->table($table)->where('id', $record->id)->lockForUpdate()->first();
+            if (! $current || $current->video_id !== $record->video_id || $current->language !== $record->language
+                || ! is_string($current->content) || ! hash_equals(hash('sha256', $content), hash('sha256', $current->content))) {
+                throw new \RuntimeException('Exact YouTube source changed; indexing remains pending.');
+            }
+        };
+        $guard = fn (callable $publish): mixed => $connection->transaction(function () use ($assertCurrent, $publish): mixed {
+            $assertCurrent();
+
+            return $publish();
+        });
+        $metadata += ['video_id' => $record->video_id, 'language' => $record->language, 'source_hash' => hash('sha256', $content)];
+        $document = $this->ragService->indexDocument(
+            documentType: $domain['rag_type'] ?? 'youtube', content: $content, title: $title,
+            metadata: $metadata, sourceId: $record->id, sourceType: $sourceType,
+            options: ['preserve_content' => true, 'source_identity_upsert' => true], publicationGuard: $guard,
+        );
+        if (! $document || ($document->source_type ?? null) !== $sourceType || (string) ($document->source_id ?? '') !== (string) $record->id
+            || ($document->document_type ?? null) !== ($domain['rag_type'] ?? 'youtube')
+            || ($document->content ?? null) !== $content || ($document->content_hash ?? null) !== hash('sha256', $content)) {
+            throw new \RuntimeException('Exact YouTube RAG read-back is unverified.');
+        }
+        $connection->transaction(function () use ($assertCurrent, $connection, $table, $record): void {
+            $assertCurrent();
+            $stamp = now()->toDateTimeString();
+            $updated = $connection->table($table)->where('id', $record->id)->update(['rag_indexed_at' => $stamp]);
+            if ($updated !== 1 && ! ($updated === 0 && $connection->table($table)->where('id', $record->id)->value('rag_indexed_at') === $stamp)) {
+                throw new \RuntimeException('Exact YouTube source stamp was not acknowledged.');
+            }
+        });
     }
 
     private function resolveDeadlineSeconds(): int
@@ -219,6 +327,7 @@ class RagBatchIndexCommand extends Command
     {
         if ($processedCount > 0) {
             $avgSecondsPerRecord = (microtime(true) - $domainStartedAt) / $processedCount;
+
             return max($this->getFallbackSecondsPerRecord($domain), min(180.0, $avgSecondsPerRecord));
         }
 
@@ -241,86 +350,142 @@ class RagBatchIndexCommand extends Command
         // Domain-specific content building
         switch ($domain) {
             case 'calendar':
-                if (!empty($record->title)) $parts[] = "Event: {$record->title}";
-                if (!empty($record->description)) $parts[] = $record->description;
-                if (!empty($record->location)) $parts[] = "Location: {$record->location}";
-                if (!empty($record->calendar_name)) $parts[] = "Calendar: {$record->calendar_name}";
-                if (!empty($record->start_at)) $parts[] = "Date: {$record->start_at}";
+                if (! empty($record->title)) {
+                    $parts[] = "Event: {$record->title}";
+                }
+                if (! empty($record->description)) {
+                    $parts[] = $record->description;
+                }
+                if (! empty($record->location)) {
+                    $parts[] = "Location: {$record->location}";
+                }
+                if (! empty($record->calendar_name)) {
+                    $parts[] = "Calendar: {$record->calendar_name}";
+                }
+                if (! empty($record->start_at)) {
+                    $parts[] = "Date: {$record->start_at}";
+                }
                 break;
 
             case 'contacts':
-                if (!empty($record->full_name)) $parts[] = "Contact: {$record->full_name}";
-                if (!empty($record->organization)) $parts[] = "Organization: {$record->organization}";
-                if (!empty($record->title)) $parts[] = "Title: {$record->title}";
-                if (!empty($record->notes)) $parts[] = $record->notes;
-                if (!empty($record->emails)) {
+                if (! empty($record->full_name)) {
+                    $parts[] = "Contact: {$record->full_name}";
+                }
+                if (! empty($record->organization)) {
+                    $parts[] = "Organization: {$record->organization}";
+                }
+                if (! empty($record->title)) {
+                    $parts[] = "Title: {$record->title}";
+                }
+                if (! empty($record->notes)) {
+                    $parts[] = $record->notes;
+                }
+                if (! empty($record->emails)) {
                     $emails = json_decode($record->emails, true);
                     if ($emails) {
-                        $parts[] = "Email: " . implode(', ', array_column($emails, 'email'));
+                        $parts[] = 'Email: '.implode(', ', array_column($emails, 'email'));
                     }
                 }
-                if (!empty($record->phones)) {
+                if (! empty($record->phones)) {
                     $phones = json_decode($record->phones, true);
                     if ($phones) {
-                        $parts[] = "Phone: " . implode(', ', array_column($phones, 'number'));
+                        $parts[] = 'Phone: '.implode(', ', array_column($phones, 'number'));
                     }
                 }
                 break;
 
             case 'news':
-                if (!empty($record->title)) $parts[] = $record->title;
-                if (!empty($record->description)) $parts[] = $record->description;
-                if (!empty($record->content)) $parts[] = $record->content;
-                if (!empty($record->author)) $parts[] = "Author: {$record->author}";
-                if (!empty($record->feed_name)) $parts[] = "Source: {$record->feed_name}";
+                if (! empty($record->title)) {
+                    $parts[] = $record->title;
+                }
+                if (! empty($record->description)) {
+                    $parts[] = $record->description;
+                }
+                if (! empty($record->content)) {
+                    $parts[] = $record->content;
+                }
+                if (! empty($record->author)) {
+                    $parts[] = "Author: {$record->author}";
+                }
+                if (! empty($record->feed_name)) {
+                    $parts[] = "Source: {$record->feed_name}";
+                }
                 break;
 
             case 'genealogy':
                 // For genealogy_persons table
-                $name = trim(($record->given_name ?? '') . ' ' . ($record->surname ?? ''));
-                if (!empty($name)) $parts[] = "Person: {$name}";
-                if (!empty($record->birth_date)) $parts[] = "Born: {$record->birth_date}";
-                if (!empty($record->birth_place)) $parts[] = "Birth Place: {$record->birth_place}";
-                if (!empty($record->death_date)) $parts[] = "Died: {$record->death_date}";
-                if (!empty($record->death_place)) $parts[] = "Death Place: {$record->death_place}";
-                if (!empty($record->notes)) $parts[] = $record->notes;
+                $name = trim(($record->given_name ?? '').' '.($record->surname ?? ''));
+                if (! empty($name)) {
+                    $parts[] = "Person: {$name}";
+                }
+                if (! empty($record->birth_date)) {
+                    $parts[] = "Born: {$record->birth_date}";
+                }
+                if (! empty($record->birth_place)) {
+                    $parts[] = "Birth Place: {$record->birth_place}";
+                }
+                if (! empty($record->death_date)) {
+                    $parts[] = "Died: {$record->death_date}";
+                }
+                if (! empty($record->death_place)) {
+                    $parts[] = "Death Place: {$record->death_place}";
+                }
+                if (! empty($record->notes)) {
+                    $parts[] = $record->notes;
+                }
                 break;
 
             case 'files':
                 // file_registry uses 'filename' and 'current_path'
-                if (!empty($record->filename)) $parts[] = "File: {$record->filename}";
-                if (!empty($record->current_path)) $parts[] = "Path: {$record->current_path}";
-                if (!empty($record->extension)) $parts[] = "Type: {$record->extension}";
-                if (!empty($record->mime_type)) $parts[] = "MIME: {$record->mime_type}";
-                if (!empty($record->title)) $parts[] = "Title: {$record->title}";
-                if (!empty($record->description)) $parts[] = $record->description;
-                if (!empty($record->ai_description)) $parts[] = $record->ai_description;
-                if (!empty($record->ai_tags)) {
+                if (! empty($record->filename)) {
+                    $parts[] = "File: {$record->filename}";
+                }
+                if (! empty($record->current_path)) {
+                    $parts[] = "Path: {$record->current_path}";
+                }
+                if (! empty($record->extension)) {
+                    $parts[] = "Type: {$record->extension}";
+                }
+                if (! empty($record->mime_type)) {
+                    $parts[] = "MIME: {$record->mime_type}";
+                }
+                if (! empty($record->title)) {
+                    $parts[] = "Title: {$record->title}";
+                }
+                if (! empty($record->description)) {
+                    $parts[] = $record->description;
+                }
+                if (! empty($record->ai_description)) {
+                    $parts[] = $record->ai_description;
+                }
+                if (! empty($record->ai_tags)) {
                     $tags = is_string($record->ai_tags) ? json_decode($record->ai_tags, true) : $record->ai_tags;
                     if ($tags && is_array($tags)) {
-                        $parts[] = "Tags: " . implode(', ', $tags);
+                        $parts[] = 'Tags: '.implode(', ', $tags);
                     }
                 }
-                if (!empty($record->tags)) {
+                if (! empty($record->tags)) {
                     $tags = is_string($record->tags) ? json_decode($record->tags, true) : $record->tags;
                     if ($tags && is_array($tags)) {
-                        $parts[] = "Tags: " . implode(', ', $tags);
+                        $parts[] = 'Tags: '.implode(', ', $tags);
                     }
                 }
-                if (!empty($record->search_keywords)) $parts[] = "Keywords: {$record->search_keywords}";
+                if (! empty($record->search_keywords)) {
+                    $parts[] = "Keywords: {$record->search_keywords}";
+                }
 
                 // For code/text files, extract actual content
                 $codeExtensions = ['php', 'js', 'ts', 'py', 'md', 'json', 'yaml', 'yml', 'sh', 'css', 'html', 'vue', 'txt', 'xml', 'sql'];
-                if (!empty($record->extension) && in_array(strtolower($record->extension), $codeExtensions)) {
+                if (! empty($record->extension) && in_array(strtolower($record->extension), $codeExtensions)) {
                     $filePath = $record->current_path ?? null;
                     if ($filePath && file_exists($filePath) && is_readable($filePath)) {
                         $content = @file_get_contents($filePath, false, null, 0, 50000); // Max 50KB
                         if ($content !== false && strlen(trim($content)) > 0) {
                             // Truncate to ~8000 chars for embedding limits
                             if (strlen($content) > 8000) {
-                                $content = substr($content, 0, 8000) . "\n[truncated]";
+                                $content = substr($content, 0, 8000)."\n[truncated]";
                             }
-                            $parts[] = "Content:\n" . $content;
+                            $parts[] = "Content:\n".$content;
                         }
                     }
                 }
@@ -328,29 +493,42 @@ class RagBatchIndexCommand extends Command
 
             case 'research':
                 // research_results uses ai_output, not content/title
-                if (!empty($record->ai_output)) $parts[] = $record->ai_output;
-                if (!empty($record->ai_recommendation)) $parts[] = "Recommendation: {$record->ai_recommendation}";
-                if (!empty($record->extracted_facts)) {
+                if (! empty($record->ai_output)) {
+                    $parts[] = $record->ai_output;
+                }
+                if (! empty($record->ai_recommendation)) {
+                    $parts[] = "Recommendation: {$record->ai_recommendation}";
+                }
+                if (! empty($record->extracted_facts)) {
                     $facts = is_string($record->extracted_facts) ? json_decode($record->extracted_facts, true) : $record->extracted_facts;
                     if ($facts && is_array($facts)) {
                         // Facts are objects with type/value - extract values
-                        $factStrings = array_map(function($f) {
+                        $factStrings = array_map(function ($f) {
                             if (is_array($f) && isset($f['value'])) {
-                                return ($f['type'] ?? 'fact') . ': ' . $f['value'];
+                                return ($f['type'] ?? 'fact').': '.$f['value'];
                             }
+
                             return is_string($f) ? $f : json_encode($f);
                         }, array_slice($facts, 0, 10));
-                        $parts[] = "Key Facts: " . implode('; ', $factStrings);
+                        $parts[] = 'Key Facts: '.implode('; ', $factStrings);
                     }
                 }
                 break;
 
             default:
                 // Generic fallback
-                if (!empty($record->title)) $parts[] = $record->title;
-                if (!empty($record->description)) $parts[] = $record->description;
-                if (!empty($record->content)) $parts[] = $record->content;
-                if (!empty($record->notes)) $parts[] = $record->notes;
+                if (! empty($record->title)) {
+                    $parts[] = $record->title;
+                }
+                if (! empty($record->description)) {
+                    $parts[] = $record->description;
+                }
+                if (! empty($record->content)) {
+                    $parts[] = $record->content;
+                }
+                if (! empty($record->notes)) {
+                    $parts[] = $record->notes;
+                }
         }
 
         return implode("\n\n", array_filter($parts));
@@ -366,16 +544,19 @@ class RagBatchIndexCommand extends Command
             case 'news':
                 return $record->title ?? 'News Article';
             case 'genealogy':
-                return trim(($record->given_name ?? '') . ' ' . ($record->surname ?? '')) ?: 'Person';
+                return trim(($record->given_name ?? '').' '.($record->surname ?? '')) ?: 'Person';
             case 'files':
                 return $record->filename ?? $record->title ?? 'File';
             case 'research':
                 // Build title from topic or first part of ai_output
                 $title = 'Research';
-                if (!empty($record->ai_output)) {
+                if (! empty($record->ai_output)) {
                     $title = substr(strip_tags($record->ai_output), 0, 80);
-                    if (strlen($record->ai_output) > 80) $title .= '...';
+                    if (strlen($record->ai_output) > 80) {
+                        $title .= '...';
+                    }
                 }
+
                 return $title;
             default:
                 return $record->title ?? $record->name ?? "Record #{$record->id}";
@@ -422,7 +603,7 @@ class RagBatchIndexCommand extends Command
         }
 
         // Add timestamps if available
-        if (!empty($record->created_at)) {
+        if (! empty($record->created_at)) {
             $metadata['created_at'] = $record->created_at;
         }
 

@@ -113,7 +113,7 @@ return new class extends Migration
                 'profile' => 'uncensored_multimodal',
                 'capabilities' => ['text_input', 'text_output', 'image_input', 'image_to_text', 'ocr_text_extraction', 'vision', 'uncensored', 'operator_uncensored', 'local_candidate'],
                 'use_cases' => ['private_uncensored_image_review_candidate', 'ocr_assist_candidate', 'visual_qa_candidate'],
-                'vetting_notes' => '2026-06-09 RTS: pulled to .87 and benign OCR smoke passed (read PLOS 42). Cold load was about 51s, slower than Qwen3-VL abliterated; keep override-only candidate.',
+                'vetting_notes' => '2026-06-09 RTC: pulled to .87 and benign OCR smoke passed (read PLOS 42). Cold load was about 51s, slower than Qwen3-VL abliterated; keep override-only candidate.',
                 'quality_rating' => 82,
             ],
             'huihui_ai/qwen3-abliterated:8b' => [
@@ -121,7 +121,7 @@ return new class extends Migration
                 'profile' => 'uncensored_text_qwen',
                 'capabilities' => ['text_input', 'text_output', 'private_uncensored_text', 'uncensored', 'operator_uncensored', 'local_candidate'],
                 'use_cases' => ['private_uncensored_text_candidate', 'operator_text_review_candidate'],
-                'vetting_notes' => '2026-06-09 RTS: pulled to .87 and text smoke passed. Emits thinking before final content; avoid tiny output caps and keep override-only candidate.',
+                'vetting_notes' => '2026-06-09 RTC: pulled to .87 and text smoke passed. Emits thinking before final content; avoid tiny output caps and keep override-only candidate.',
                 'quality_rating' => 80,
             ],
         ];
@@ -160,7 +160,7 @@ return new class extends Migration
             ->update([
                 'status' => 'unavailable',
                 'is_available' => 0,
-                'vetting_notes' => '2026-06-09 RTS: .87 text-only and image-input smokes both failed with unable-to-load blob error; model was removed from .87 Ollama. Keep unavailable and hidden.',
+                'vetting_notes' => '2026-06-09 RTC: .87 text-only and image-input smokes both failed with unable-to-load blob error; model was removed from .87 Ollama. Keep unavailable and hidden.',
                 'updated_at' => $now,
             ]);
     }

@@ -3,6 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Contracts\HostCommandRunner;
+use App\Services\LLMPoolManagerService;
+use App\Services\Ops\JetsonTegrastatsParserService;
 use App\Services\ShellExecHostCommandRunner;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
@@ -10,14 +12,17 @@ use Illuminate\Support\Facades\DB;
 
 class OllamaProbeCommand extends Command
 {
+    private const MAX_METADATA_RESPONSE_BYTES = 1048576;
+
     protected $signature = 'ollama:probe
-        {subcommand : health|fit|tokenize}
-        {--model= : model name (required for fit and tokenize)}
+        {subcommand : health|fit|tokenize|metadata}
+        {--instance= : exact active Ollama instance_id (metadata only)}
+        {--model= : model name (required for fit, tokenize, and metadata)}
         {--context=4096 : context length in tokens (fit only)}
         {--prompt= : prompt text (tokenize only); mutually exclusive with --file}
-        {--file= : path to a local file whose contents to tokenize (tokenize only)}';
+        {--file= : path to a local file to inspect for readability; contents are not sent (tokenize only)}';
 
-    protected $description = 'Read-only Ollama diagnostic probe (subcommands: health, fit, tokenize). Emits JSON envelope to stdout.';
+    protected $description = 'Ollama diagnostics: read-only health/fit/metadata; tokenize holds until an exact local tokenizer is qualified. Emits JSON.';
 
     public function handle(): int
     {
@@ -37,6 +42,13 @@ class OllamaProbeCommand extends Command
 
             case 'tokenize':
                 $envelope = $this->buildTokenizeEnvelope();
+                if ($envelope === null) {
+                    return 2;
+                }
+                break;
+
+            case 'metadata':
+                $envelope = $this->buildMetadataEnvelope();
                 if ($envelope === null) {
                     return 2;
                 }
@@ -75,6 +87,11 @@ class OllamaProbeCommand extends Command
             'nvidia-smi --query-gpu=name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu --format=csv,noheader,nounits',
             5
         ));
+        $jetsonTegrastats = ! $busyLockActive && $gpu === []
+            ? app(JetsonTegrastatsParserService::class)->parse(
+                $runner->run(JetsonTegrastatsParserService::SAMPLE_COMMAND, 5)
+            )
+            : null;
 
         return [
             'version' => 1,
@@ -85,6 +102,7 @@ class OllamaProbeCommand extends Command
             'result' => [
                 'instances' => $instanceResults,
                 'gpu' => $gpu,
+                'jetson_tegrastats' => $jetsonTegrastats,
             ],
         ];
     }
@@ -174,13 +192,6 @@ class OllamaProbeCommand extends Command
             $path = (string) $fileOpt;
             if (! is_file($path) || ! is_readable($path)) {
                 $loadError = 'file_not_readable';
-            } else {
-                $contents = @file_get_contents($path);
-                if ($contents === false) {
-                    $loadError = 'file_read_failed';
-                } else {
-                    $prompt = $contents;
-                }
             }
         }
 
@@ -212,14 +223,169 @@ class OllamaProbeCommand extends Command
         ];
     }
 
-    private function loadInstances(): array
+    private function buildMetadataEnvelope(): ?array
     {
-        return DB::select(
-            "SELECT id, instance_id, instance_name, base_url, priority, is_healthy, health_score
-             FROM llm_instances
-             WHERE instance_type = 'ollama' AND is_active = 1
-             ORDER BY priority ASC"
-        );
+        $instanceId = trim((string) $this->option('instance'));
+        $model = trim((string) $this->option('model'));
+        if ($instanceId === '' || $model === '') {
+            $this->error('--instance and --model are required for metadata.');
+
+            return null;
+        }
+        if ($this->hasNonEmptyOption('prompt') || $this->hasNonEmptyOption('file')) {
+            $this->error('--prompt and --file are unsupported for metadata.');
+
+            return null;
+        }
+
+        $busyLockActive = Cache::has('ollama_busy_lock');
+        $rows = $this->loadInstances($instanceId);
+        $row = count($rows) === 1 ? $rows[0] : null;
+        $result = $row === null
+            ? $this->metadataFailure($instanceId, $model, 'instance_not_found_or_ambiguous')
+            : $this->buildMetadataInstanceResult($row, $model, $busyLockActive);
+
+        return [
+            'version' => 1,
+            'timestamp' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
+            'subcommand' => 'metadata',
+            'result' => $result,
+            'qualification' => 'observed_metadata_only',
+        ];
+    }
+
+    private function loadInstances(?string $instanceId = null): array
+    {
+        $sql = "SELECT id, instance_id, instance_name, instance_type, base_url, priority, is_healthy, health_score,
+                       routability, compat_status, quarantine_status, allows_private_data, capabilities, config
+                FROM llm_instances
+                WHERE instance_type = 'ollama' AND is_active = 1";
+        if ($instanceId !== null) {
+            $sql .= ' AND instance_id = ?';
+
+            return DB::select($sql.' ORDER BY priority ASC LIMIT 2', [$instanceId]);
+        }
+
+        return DB::select($sql.' ORDER BY priority ASC');
+    }
+
+    private function buildMetadataInstanceResult(object $row, string $model, bool $busyLockActive): array
+    {
+        $instanceId = (string) ($row->instance_id ?? '');
+        if ($instanceId === '' || ($row->instance_type ?? null) !== 'ollama') {
+            return $this->metadataFailure($instanceId, $model, 'instance_invalid');
+        }
+        if ($busyLockActive) {
+            return $this->metadataFailure($instanceId, $model, 'busy_lock_active');
+        }
+
+        $blocked = app(LLMPoolManagerService::class)->providerProbeBlockReason($row);
+        if ($blocked !== null) {
+            return $this->metadataFailure($instanceId, $model, $blocked);
+        }
+
+        $baseUrl = rtrim((string) ($row->base_url ?? ''), '/');
+        if (! filter_var($baseUrl, FILTER_VALIDATE_URL) || ! in_array(parse_url($baseUrl, PHP_URL_SCHEME), ['http', 'https'], true)) {
+            return $this->metadataFailure($instanceId, $model, 'instance_url_invalid');
+        }
+
+        $runner = $this->resolveCommandRunner();
+        $tagsBefore = $this->readMetadataTags($runner, $baseUrl);
+        if ($tagsBefore === null) {
+            return $this->metadataFailure($instanceId, $model, 'tags_unavailable_or_invalid');
+        }
+        $digestBefore = $this->exactModelDigest($tagsBefore, $model);
+        if ($digestBefore === null) {
+            return $this->metadataFailure($instanceId, $model, 'model_missing_ambiguous_or_digest_invalid');
+        }
+
+        $versionRaw = $this->runMetadataCurl($runner, 'GET', $baseUrl.'/api/version');
+        $versionDecoded = $versionRaw !== null ? json_decode($versionRaw, true) : null;
+        $runtimeVersion = is_array($versionDecoded) && is_string($versionDecoded['version'] ?? null)
+            ? trim($versionDecoded['version'])
+            : '';
+        if (! preg_match('/^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$/D', $runtimeVersion)) {
+            return $this->metadataFailure($instanceId, $model, 'runtime_version_unavailable_or_invalid');
+        }
+
+        $showRaw = $this->runMetadataCurl($runner, 'POST', $baseUrl.'/api/show', ['name' => $model]);
+        $showDecoded = $showRaw !== null ? json_decode($showRaw, true) : null;
+        $template = is_array($showDecoded) ? ($showDecoded['template'] ?? null) : null;
+        if (! is_array($showDecoded) || array_key_exists('error', $showDecoded)
+            || ! is_string($template) || $template === '') {
+            return $this->metadataFailure($instanceId, $model, 'template_unavailable_or_invalid');
+        }
+
+        $tagsAfter = $this->readMetadataTags($runner, $baseUrl);
+        $digestAfter = $tagsAfter !== null ? $this->exactModelDigest($tagsAfter, $model) : null;
+        if ($digestAfter === null || ! hash_equals($digestBefore, $digestAfter)) {
+            return $this->metadataFailure($instanceId, $model, 'model_digest_changed_or_unavailable');
+        }
+
+        return [
+            'instance_id' => $instanceId,
+            'model' => $model,
+            'result' => 'ok',
+            'runtime_version' => $runtimeVersion,
+            'model_digest' => $digestAfter,
+            'template_sha256' => hash('sha256', $template),
+            'qualification' => 'observed_metadata_only',
+        ];
+    }
+
+    private function readMetadataTags(HostCommandRunner $runner, string $baseUrl): ?array
+    {
+        $raw = $this->runMetadataCurl($runner, 'GET', $baseUrl.'/api/tags');
+        $decoded = $raw !== null ? json_decode($raw, true) : null;
+
+        return is_array($decoded) && is_array($decoded['models'] ?? null) ? $decoded['models'] : null;
+    }
+
+    private function exactModelDigest(array $models, string $model): ?string
+    {
+        $matches = array_values(array_filter($models, static function ($row) use ($model): bool {
+            return is_array($row) && ($row['name'] ?? null) === $model;
+        }));
+        if (count($matches) !== 1 || ! is_string($matches[0]['digest'] ?? null)
+            || ! preg_match('/^(?:sha256:)?([a-f0-9]{64})$/D', $matches[0]['digest'], $digestParts)) {
+            return null;
+        }
+
+        return 'sha256:'.$digestParts[1];
+    }
+
+    private function runMetadataCurl(HostCommandRunner $runner, string $method, string $url, ?array $body = null): ?string
+    {
+        $command = sprintf('curl -fsS --max-time 5 --max-filesize %d', self::MAX_METADATA_RESPONSE_BYTES);
+        if ($method === 'POST') {
+            $encoded = json_encode($body, JSON_UNESCAPED_SLASHES);
+            if ($encoded === false) {
+                return null;
+            }
+            $command .= ' -H '.escapeshellarg('Content-Type: application/json').' -d '.escapeshellarg($encoded);
+        }
+
+        $response = $runner->run($command.' '.escapeshellarg($url), 5);
+
+        return $response !== null && strlen($response) <= self::MAX_METADATA_RESPONSE_BYTES ? $response : null;
+    }
+
+    private function metadataFailure(string $instanceId, string $model, string $reason): array
+    {
+        return [
+            'instance_id' => $instanceId,
+            'model' => $model,
+            'result' => 'held',
+            'reason' => $reason,
+            'qualification' => 'observed_metadata_only',
+        ];
+    }
+
+    private function hasNonEmptyOption(string $name): bool
+    {
+        $value = $this->option($name);
+
+        return is_string($value) && $value !== '';
     }
 
     private function buildInstanceResult(object $row, bool $busyLockActive, HostCommandRunner $runner): array
@@ -241,6 +407,12 @@ class OllamaProbeCommand extends Command
                 'loaded_models' => [],
                 'probe_error' => 'busy_lock_active',
             ]);
+        }
+
+        $blocked = app(LLMPoolManagerService::class)->providerProbeBlockReason($row);
+        if ($blocked !== null) {
+            return array_merge($base, ['result' => 'skipped', 'reachable' => null,
+                'installed_models' => [], 'loaded_models' => [], 'probe_error' => $blocked]);
         }
 
         $baseUrl = rtrim($base['base_url'], '/');
@@ -313,6 +485,11 @@ class OllamaProbeCommand extends Command
             ]);
         }
 
+        $blocked = app(LLMPoolManagerService::class)->providerProbeBlockReason($row);
+        if ($blocked !== null) {
+            return array_merge($base, ['result' => 'skipped', 'reason' => $blocked]);
+        }
+
         $baseUrl = rtrim((string) ($row->base_url ?? ''), '/');
         $showUrl = $baseUrl.'/api/show';
         $body = json_encode(['name' => $model]);
@@ -345,7 +522,7 @@ class OllamaProbeCommand extends Command
             return array_merge($base, [
                 'result' => 'ok',
                 'verdict' => 'unknown',
-                'reason' => 'show_error:'.(string) $showDecoded['error'],
+                'reason' => 'show_error',
             ]);
         }
 
@@ -417,7 +594,7 @@ class OllamaProbeCommand extends Command
             'instance_id' => (string) ($row->instance_id ?? ''),
             'base_url' => (string) ($row->base_url ?? ''),
             'model' => $model,
-            'prompt_chars' => $prompt !== null ? strlen($prompt) : 0,
+            'prompt_chars' => $prompt !== null ? strlen($prompt) : null,
             'actual_tokens' => null,
             'estimated_tokens' => null,
             'ratio' => null,
@@ -431,98 +608,17 @@ class OllamaProbeCommand extends Command
             ]);
         }
 
+        $blocked = app(LLMPoolManagerService::class)->providerProbeBlockReason($row);
+        if ($blocked !== null) {
+            return array_merge($base, ['result' => 'skipped', 'error' => $blocked]);
+        }
         if ($loadError !== null) {
-            return array_merge($base, [
-                'result' => 'ok',
-                'error' => $loadError,
-            ]);
+            return array_merge($base, ['result' => 'unsupported', 'error' => $loadError]);
         }
 
-        if ($prompt === null) {
-            return array_merge($base, [
-                'result' => 'ok',
-                'error' => 'prompt_missing',
-            ]);
-        }
-
-        $baseUrl = rtrim((string) ($row->base_url ?? ''), '/');
-
-        // Confirm model is installed on this instance before sending /api/generate.
-        $tagsRaw = $runner->run(
-            'curl -fsS --max-time 5 '.escapeshellarg($baseUrl.'/api/tags'),
-            5
-        );
-        if ($tagsRaw === null) {
-            return array_merge($base, [
-                'result' => 'ok',
-                'error' => 'tags_unreachable',
-            ]);
-        }
-
-        $tagsDecoded = json_decode($tagsRaw, true);
-        if (! is_array($tagsDecoded)) {
-            return array_merge($base, [
-                'result' => 'ok',
-                'error' => 'tags_invalid_json',
-            ]);
-        }
-
-        $installed = $this->extractTagNames($tagsDecoded);
-        if (! in_array($model, $installed, true)) {
-            return array_merge($base, [
-                'result' => 'ok',
-                'error' => 'model not installed on this instance',
-            ]);
-        }
-
-        $body = json_encode([
-            'model' => $model,
-            'prompt' => $prompt,
-            'options' => ['num_predict' => 1],
-            'stream' => false,
-        ]);
-        $curl = sprintf(
-            'curl -fsS --max-time 30 -H %s -d %s %s',
-            escapeshellarg('Content-Type: application/json'),
-            escapeshellarg($body !== false ? $body : '{}'),
-            escapeshellarg($baseUrl.'/api/generate')
-        );
-        $genRaw = $runner->run($curl, 30);
-
-        if ($genRaw === null) {
-            return array_merge($base, [
-                'result' => 'ok',
-                'error' => 'generate_unreachable',
-            ]);
-        }
-
-        $decoded = json_decode($genRaw, true);
-        if (! is_array($decoded)) {
-            return array_merge($base, [
-                'result' => 'ok',
-                'error' => 'generate_invalid_json',
-            ]);
-        }
-
-        $actual = null;
-        if (isset($decoded['prompt_eval_count']) && is_numeric($decoded['prompt_eval_count'])) {
-            $actual = (int) $decoded['prompt_eval_count'];
-        }
-
-        $chars = strlen($prompt);
-        $estimated = (int) ceil($chars / 1.5);
-        $ratio = null;
-        if ($actual !== null && $estimated > 0) {
-            $ratio = round($actual / $estimated, 3);
-        }
-
-        return array_merge($base, [
-            'result' => 'ok',
-            'actual_tokens' => $actual,
-            'estimated_tokens' => $estimated,
-            'ratio' => $ratio,
-            'error' => $actual === null ? 'prompt_eval_count_missing' : null,
-        ]);
+        // Provider inference counts do not prove complete input or exact template/tokenizer fit.
+        // Until a registered local tokenizer exists, send neither tags nor generate requests.
+        return array_merge($base, ['result' => 'unsupported', 'error' => 'exact_local_tokenizer_unavailable']);
     }
 
     private function extractModelSizeBytes(array $show): ?int
@@ -717,6 +813,6 @@ class OllamaProbeCommand extends Command
             return app(HostCommandRunner::class);
         }
 
-        return new ShellExecHostCommandRunner();
+        return new ShellExecHostCommandRunner;
     }
 }

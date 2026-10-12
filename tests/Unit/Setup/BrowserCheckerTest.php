@@ -78,6 +78,31 @@ class BrowserCheckerTest extends TestCase
         $this->assertStringContainsString('npx playwright install --with-deps chromium', $results[0]->message);
     }
 
+    public function test_playwright_accepts_system_browser_fallback(): void
+    {
+        $chrome = $this->makeExecutable('system/google-chrome');
+        $checker = new class extends BrowserChecker
+        {
+            protected function playwrightChromiumPath(): ?string
+            {
+                return '/missing/bundled/chromium';
+            }
+        };
+
+        $results = $checker->run('media', [
+            'core' => [],
+            'media' => [[
+                'name' => 'playwright.chromium',
+                'engine' => 'playwright',
+                'required' => false,
+                'fallback_paths' => [$chrome],
+            ]],
+        ]);
+
+        $this->assertSame('pass', $results[0]->status);
+        $this->assertSame($chrome, $results[0]->context['path']);
+    }
+
     public function test_puppeteer_fallback_path_present_passes(): void
     {
         $chrome = $this->makeExecutable('chrome-linux64/chrome');

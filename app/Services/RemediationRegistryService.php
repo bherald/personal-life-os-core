@@ -15,12 +15,19 @@ use Illuminate\Support\Facades\Log;
  * Risk levels (reuse AgentGuardrailService pattern):
  *   - read:        Safe, auto-executable (circuit reset, lock clear, status check)
  *   - write:       Needs human approval via Review Hub button
- *   - destructive: Escalate to Claude Code session (not executable via UI)
+ *   - destructive: Escalate to an operator-owned maintenance session
  */
 class RemediationRegistryService
 {
     private const CACHE_KEY = 'remediation_actions_registry';
+
     private const CACHE_TTL = 3600;
+
+    private const SEED_POLICY_KEY = 'ops.remediation_registry_seed_policy';
+
+    private const SEED_POLICY_SCHEMA = 'plos.remediation_registry_seed_policy.v1';
+
+    public function __construct(private readonly SystemConfigService $systemConfig) {}
 
     // =========================================================================
     // Lookup
@@ -53,16 +60,16 @@ class RemediationRegistryService
     {
         try {
             return Cache::remember(self::CACHE_KEY, self::CACHE_TTL, function () {
-                $rows = DB::select("
+                $rows = DB::select('
                     SELECT id, finding_type, action_type, action_target, action_params,
                            risk_level, description, requires_confirmation, cooldown_minutes,
                            last_executed_at, execution_count, success_count, failure_count
                     FROM remediation_actions
                     WHERE is_active = 1
                     ORDER BY finding_type
-                ");
+                ');
 
-                return array_map(fn($row) => [
+                return array_map(fn ($row) => [
                     'id' => (int) $row->id,
                     'finding_type' => $row->finding_type,
                     'action_type' => $row->action_type,
@@ -80,6 +87,7 @@ class RemediationRegistryService
             });
         } catch (\Exception $e) {
             Log::warning('RemediationRegistry: Failed to load actions', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -91,7 +99,7 @@ class RemediationRegistryService
     {
         return array_values(array_filter(
             $this->getAllActions(),
-            fn($a) => $a['risk_level'] === $riskLevel
+            fn ($a) => $a['risk_level'] === $riskLevel
         ));
     }
 
@@ -123,7 +131,7 @@ class RemediationRegistryService
             $successIncrement = $success ? 1 : 0;
             $failureIncrement = $success ? 0 : 1;
 
-            DB::update("
+            DB::update('
                 UPDATE remediation_actions
                 SET execution_count = execution_count + 1,
                     success_count = success_count + ?,
@@ -131,7 +139,7 @@ class RemediationRegistryService
                     last_executed_at = NOW(),
                     updated_at = NOW()
                 WHERE id = ?
-            ", [$successIncrement, $failureIncrement, $actionId]);
+            ', [$successIncrement, $failureIncrement, $actionId]);
 
             Cache::forget(self::CACHE_KEY);
         } catch (\Exception $e) {
@@ -152,12 +160,12 @@ class RemediationRegistryService
     public function register(array $definition): ?int
     {
         try {
-            DB::insert("
+            DB::insert('
                 INSERT INTO remediation_actions
                 (finding_type, action_type, action_target, action_params, risk_level,
                  description, requires_confirmation, cooldown_minutes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ", [
+            ', [
                 $definition['finding_type'],
                 $definition['action_type'],
                 $definition['action_target'],
@@ -170,13 +178,15 @@ class RemediationRegistryService
 
             Cache::forget(self::CACHE_KEY);
 
-            $inserted = DB::selectOne("SELECT LAST_INSERT_ID() as id");
+            $inserted = DB::selectOne('SELECT LAST_INSERT_ID() as id');
+
             return $inserted ? (int) $inserted->id : null;
         } catch (\Exception $e) {
             Log::error('RemediationRegistry: Failed to register action', [
                 'finding_type' => $definition['finding_type'] ?? 'unknown',
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }
@@ -187,11 +197,12 @@ class RemediationRegistryService
     public function deactivate(int $actionId): bool
     {
         try {
-            $affected = DB::update("
+            $affected = DB::update('
                 UPDATE remediation_actions SET is_active = 0, updated_at = NOW() WHERE id = ?
-            ", [$actionId]);
+            ', [$actionId]);
 
             Cache::forget(self::CACHE_KEY);
+
             return $affected > 0;
         } catch (\Exception $e) {
             return false;
@@ -258,9 +269,9 @@ class RemediationRegistryService
 
         foreach ($definitions as $def) {
             $exists = DB::selectOne(
-                "SELECT id, action_type, action_target, action_params, risk_level, description, requires_confirmation, cooldown_minutes
+                'SELECT id, action_type, action_target, action_params, risk_level, description, requires_confirmation, cooldown_minutes
                  FROM remediation_actions
-                 WHERE finding_type = ?",
+                 WHERE finding_type = ?',
                 [$def['finding_type']]
             );
 
@@ -287,14 +298,15 @@ class RemediationRegistryService
 
                 if ($current === $desired) {
                     $skipped++;
+
                     continue;
                 }
 
                 DB::update(
-                    "UPDATE remediation_actions
+                    'UPDATE remediation_actions
                      SET action_type = ?, action_target = ?, action_params = ?, risk_level = ?,
                          description = ?, requires_confirmation = ?, cooldown_minutes = ?, updated_at = NOW()
-                     WHERE id = ?",
+                     WHERE id = ?',
                     [
                         $desired['action_type'],
                         $desired['action_target'],
@@ -308,6 +320,7 @@ class RemediationRegistryService
                 );
 
                 $updated++;
+
                 continue;
             }
 
@@ -320,127 +333,67 @@ class RemediationRegistryService
         return ['inserted' => $inserted, 'updated' => $updated, 'skipped' => $skipped];
     }
 
-    /**
-     * Known remediation action definitions.
-     */
+    /** @return list<array<string, mixed>> */
     private function getSeedDefinitions(): array
     {
-        return [
-            // === READ risk (auto-healable) ===
-            [
-                'finding_type' => 'circuit_breaker_open',
-                'action_type' => 'service_method',
-                'action_target' => 'App\\Services\\AutoHealService::resetAllCircuits',
-                'action_params' => [],
-                'risk_level' => 'read',
-                'description' => 'Reset all open LLM circuit breakers to closed state',
-                'requires_confirmation' => false,
-                'cooldown_minutes' => 15,
-            ],
-            [
-                'finding_type' => 'stalled_job',
-                'action_type' => 'service_method',
-                'action_target' => 'App\\Services\\ScheduledJobService::fixStuckJobs',
-                'action_params' => [],
-                'risk_level' => 'read',
-                'description' => 'Reset stuck scheduled jobs (running beyond timeout + 15min)',
-                'requires_confirmation' => false,
-                'cooldown_minutes' => 30,
-            ],
-            [
-                'finding_type' => 'stuck_lock',
-                'action_type' => 'service_method',
-                'action_target' => 'App\\Services\\AutoHealService::clearStaleLocks',
-                'action_params' => [],
-                'risk_level' => 'read',
-                'description' => 'Clear stale Redis locks (ollama_busy_lock, whisper_gpu_lock)',
-                'requires_confirmation' => false,
-                'cooldown_minutes' => 10,
-            ],
-            [
-                'finding_type' => 'horizon_down',
-                'action_type' => 'service_method',
-                'action_target' => 'App\\Services\\AutoHealService::recoverHorizonService',
-                'action_params' => [],
-                'risk_level' => 'write',
-                'description' => 'Restart Horizon through systemd when available, with fallback termination for external supervisors',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 5,
-            ],
+        $policy = $this->systemConfig->get(self::SEED_POLICY_KEY);
+        if (! is_array($policy) || ($policy['schema'] ?? null) !== self::SEED_POLICY_SCHEMA) {
+            throw new \RuntimeException('Remediation registry seed policy is unavailable or has an unsupported schema.');
+        }
 
-            // === WRITE risk (one-click approve in Review Hub) ===
-            [
-                'finding_type' => 'enrichment_pipeline_stalled',
-                'action_type' => 'artisan_command',
-                'action_target' => 'scheduled-job:run-now',
-                'action_params' => ['jobName' => 'file_enrich_ai'],
-                'risk_level' => 'write',
-                'description' => 'Restart the file AI enrichment pipeline',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 60,
-            ],
-            [
-                'finding_type' => 'rag_indexing_stalled',
-                'action_type' => 'artisan_command',
-                'action_target' => 'scheduled-job:run-now',
-                'action_params' => ['jobName' => 'rag_sentence_indexing'],
-                'risk_level' => 'write',
-                'description' => 'Restart the RAG sentence indexing pipeline',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 60,
-            ],
-            [
-                'finding_type' => 'youtube_rag_stalled',
-                'action_type' => 'artisan_command',
-                'action_target' => 'scheduled-job:run-now',
-                'action_params' => ['jobName' => 'rag_sentence_indexing'],
-                'risk_level' => 'write',
-                'description' => 'Trigger RAG indexing for YouTube transcripts',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 60,
-            ],
-            [
-                'finding_type' => 'research_approval_low',
-                'action_type' => 'service_method',
-                'action_target' => 'App\\Services\\Research\\SourceOptimizationService::runSelfHealing',
-                'action_params' => [],
-                'risk_level' => 'write',
-                'description' => 'Run research pipeline self-healing (reset filters, clear quarantine)',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 120,
-            ],
-            [
-                'finding_type' => 'face_clustering_stale',
-                'action_type' => 'artisan_command',
-                'action_target' => 'scheduled-job:run-now',
-                'action_params' => ['jobName' => 'face_recluster'],
-                'risk_level' => 'write',
-                'description' => 'Trigger face re-clustering job',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 120,
-            ],
-            [
-                'finding_type' => 'knowledge_graph_stale',
-                'action_type' => 'artisan_command',
-                'action_target' => 'scheduled-job:run-now',
-                'action_params' => ['jobName' => 'knowledge_graph_build'],
-                'risk_level' => 'write',
-                'description' => 'Trigger knowledge graph build job',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 120,
-            ],
+        $definitions = $policy['actions'] ?? null;
+        if (! is_array($definitions) || $definitions === [] || ! array_is_list($definitions)) {
+            throw new \RuntimeException('Remediation registry seed policy must contain a non-empty action list.');
+        }
 
-            // === DESTRUCTIVE risk (escalate only) ===
-            [
-                'finding_type' => 'duplicate_files',
-                'action_type' => 'service_method',
-                'action_target' => 'ESCALATE',
-                'action_params' => [],
-                'risk_level' => 'destructive',
-                'description' => 'Duplicate file resolution requires human review with context (paths, dates, usage). Not auto-executable.',
-                'requires_confirmation' => true,
-                'cooldown_minutes' => 0,
-            ],
-        ];
+        $validated = [];
+        $findingTypes = [];
+        foreach ($definitions as $index => $definition) {
+            if (! is_array($definition)) {
+                throw new \RuntimeException("Remediation registry action {$index} must be an object.");
+            }
+
+            $findingType = $definition['finding_type'] ?? null;
+            $actionType = $definition['action_type'] ?? null;
+            $actionTarget = $definition['action_target'] ?? null;
+            $actionParams = $definition['action_params'] ?? null;
+            $riskLevel = $definition['risk_level'] ?? null;
+            $description = $definition['description'] ?? null;
+            $requiresConfirmation = $definition['requires_confirmation'] ?? null;
+            $cooldownMinutes = $definition['cooldown_minutes'] ?? null;
+
+            if (! is_string($findingType) || $findingType === '' || strlen($findingType) > 100) {
+                throw new \RuntimeException("Remediation registry action {$index} has an invalid finding_type.");
+            }
+            if (isset($findingTypes[$findingType])) {
+                throw new \RuntimeException("Remediation registry seed policy repeats finding_type {$findingType}.");
+            }
+            if (! in_array($actionType, ['artisan_command', 'service_method', 'sql_update'], true)) {
+                throw new \RuntimeException("Remediation registry action {$index} has an invalid action_type.");
+            }
+            if (! is_string($actionTarget) || $actionTarget === '' || strlen($actionTarget) > 500) {
+                throw new \RuntimeException("Remediation registry action {$index} has an invalid action_target.");
+            }
+            if (! is_array($actionParams)) {
+                throw new \RuntimeException("Remediation registry action {$index} has invalid action_params.");
+            }
+            if (! in_array($riskLevel, ['read', 'write', 'destructive'], true)) {
+                throw new \RuntimeException("Remediation registry action {$index} has an invalid risk_level.");
+            }
+            if (! is_string($description) || $description === '' || strlen($description) > 500) {
+                throw new \RuntimeException("Remediation registry action {$index} has an invalid description.");
+            }
+            if (! is_bool($requiresConfirmation)) {
+                throw new \RuntimeException("Remediation registry action {$index} has invalid requires_confirmation.");
+            }
+            if (! is_int($cooldownMinutes) || $cooldownMinutes < 0 || $cooldownMinutes > 4294967295) {
+                throw new \RuntimeException("Remediation registry action {$index} has invalid cooldown_minutes.");
+            }
+
+            $findingTypes[$findingType] = true;
+            $validated[] = $definition;
+        }
+
+        return $validated;
     }
 }

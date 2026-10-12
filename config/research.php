@@ -16,8 +16,6 @@ return [
         'request_delay_ms' => (int) env('RESEARCH_REQUEST_DELAY_MS', 1000),
     ],
 
-    // Research orchestration limits (N87)
-    'max_articles_per_source' => (int) env('RESEARCH_MAX_ARTICLES_PER_SOURCE', 3),  // Articles to follow per source in research orchestration
     'max_sources_stored'      => (int) env('RESEARCH_MAX_SOURCES_STORED', 10),       // Max source URLs stored per research result
 
     // SmartSchedulerService constants (N87 — moved from hardcoded)

@@ -15,7 +15,8 @@ class WorkflowRun extends Command
      */
     protected $signature = 'workflow:run
                             {name : The workflow name}
-                            {--input= : JSON-encoded initial input for the workflow}';
+                            {--input= : JSON-encoded initial input for the workflow}
+                            {--trace-session= : Caller trace session ID for cross-system correlation}';
 
     /**
      * The console command description.
@@ -49,10 +50,13 @@ class WorkflowRun extends Command
 
         try {
             $engine = new WorkflowEngine();
-            $result = $engine->executeWorkflow($workflowName, $initialInput);
+            $result = $engine->executeWorkflow($workflowName, $initialInput, [
+                'trace_session_id' => $this->option('trace-session'),
+            ]);
 
             $this->info("Workflow completed successfully");
             $this->line("Run ID: {$result['run_id']}");
+            $this->line("Trace session: {$result['trace_session_id']}");
 
             if (!empty($result['output'])) {
                 $this->displayOutput($result['output']);
@@ -72,7 +76,7 @@ class WorkflowRun extends Command
     private function displayOutput(array $output): void
     {
         // Check if output has standardOutput structure (data/meta/error)
-        if (isset($output['error']) && $output['error'] !== null) {
+        if (isset($output['error'])) {
             $this->error("Output Error: {$output['error']}");
             return;
         }

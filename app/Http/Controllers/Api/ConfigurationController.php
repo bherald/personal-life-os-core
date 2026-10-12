@@ -3,14 +3,24 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\SystemConfigSecretService;
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
+use InvalidArgumentException;
+use Throwable;
 
 class ConfigurationController extends Controller
 {
+    public function __construct(
+        private readonly SystemConfigSecretService $secretService,
+        private readonly SystemConfigService $systemConfigService
+    ) {}
+
     /**
      * Get all configurations grouped by section
      */
@@ -27,23 +37,19 @@ class ConfigurationController extends Controller
                 if (! isset($grouped[$item->section])) {
                     $grouped[$item->section] = [];
                 }
-                $grouped[$item->section][] = [
-                    'id' => $item->id,
-                    'key' => $item->config_key,
-                    'value' => $this->parseValue($item->config_value, $item->data_type),
-                    'data_type' => $item->data_type,
-                    'description' => $item->description,
-                ];
+                $grouped[$item->section][] = $this->projectConfig($item);
             }
 
             return response()->json([
                 'success' => true,
                 'data' => $grouped,
             ]);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            $this->logFailure('fetch_all', $e);
+
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'FETCH_FAILED', 'message' => $e->getMessage()],
+                'error' => ['code' => 'FETCH_FAILED', 'message' => 'Unable to fetch configuration.'],
             ], 500);
         }
     }
@@ -58,24 +64,18 @@ class ConfigurationController extends Controller
             $sql = 'SELECT * FROM system_configs WHERE section = ? ORDER BY config_key';
             $configRecords = DB::select($sql, [$section]);
 
-            $configs = array_map(function ($item) {
-                return [
-                    'id' => $item->id,
-                    'key' => $item->config_key,
-                    'value' => $this->parseValue($item->config_value, $item->data_type),
-                    'data_type' => $item->data_type,
-                    'description' => $item->description,
-                ];
-            }, $configRecords);
+            $configs = array_map(fn ($item): array => $this->projectConfig($item), $configRecords);
 
             return response()->json([
                 'success' => true,
                 'data' => $configs,
             ]);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            $this->logFailure('fetch_section', $e, ['section' => $section]);
+
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'FETCH_FAILED', 'message' => $e->getMessage()],
+                'error' => ['code' => 'FETCH_FAILED', 'message' => 'Unable to fetch configuration.'],
             ], 500);
         }
     }
@@ -88,7 +88,8 @@ class ConfigurationController extends Controller
         $validator = Validator::make($request->all(), [
             'configs' => 'required|array',
             'configs.*.id' => 'required|integer|exists:system_configs,id',
-            'configs.*.value' => 'required',
+            'configs.*.value' => 'present|nullable',
+            'configs.*.clear_secret' => 'sometimes|boolean',
         ]);
 
         if ($validator->fails()) {
@@ -101,9 +102,13 @@ class ConfigurationController extends Controller
         try {
             DB::beginTransaction();
 
+            $changedKeys = [];
+            $updated = 0;
+            $preserved = 0;
+
             foreach ($request->configs as $configData) {
                 // Get config using raw SQL
-                $sql = 'SELECT * FROM system_configs WHERE id = ? LIMIT 1';
+                $sql = 'SELECT * FROM system_configs WHERE id = ? LIMIT 1 FOR UPDATE';
                 $configs = DB::select($sql, [$configData['id']]);
                 $config = $configs[0] ?? null;
 
@@ -111,26 +116,68 @@ class ConfigurationController extends Controller
                     continue;
                 }
 
-                $value = $this->formatValue($configData['value'], $config->data_type);
+                $existingValue = $this->parseValue($config->config_value, $config->data_type);
+                $merge = $this->secretService->mergeForUpdate(
+                    $config->config_key,
+                    $configData['value'],
+                    $existingValue,
+                    (bool) ($configData['clear_secret'] ?? false)
+                );
+
+                if ($merge['preserved']) {
+                    $preserved++;
+                }
+
+                if ($merge['preserved'] && $this->secretService->isSecretKey($config->config_key)) {
+                    continue;
+                }
+
+                $value = $this->formatValue($merge['value'], $config->data_type);
 
                 DB::update(
                     'UPDATE system_configs SET config_value = ?, updated_at = ? WHERE id = ?',
                     [$value, now(), $configData['id']]
                 );
+                $changedKeys[] = $config->section.'.'.$config->config_key;
+                $updated++;
             }
 
             DB::commit();
+            foreach (array_unique($changedKeys) as $key) {
+                $this->systemConfigService->forget($key);
+            }
+
+            Log::info('Configuration bulk update completed', [
+                'action' => 'bulk_update',
+                'operator_id' => $request->user()?->getAuthIdentifier(),
+                'config_keys' => array_values(array_unique($changedKeys)),
+                'updated' => $updated,
+                'preserved' => $preserved,
+            ]);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Configuration updated successfully',
+                'data' => ['updated' => $updated, 'preserved' => $preserved],
             ]);
-        } catch (Exception $e) {
-            DB::rollBack();
+        } catch (InvalidArgumentException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
 
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'UPDATE_FAILED', 'message' => $e->getMessage()],
+                'error' => ['code' => 'SECRET_PLACEHOLDER_INVALID', 'message' => $e->getMessage()],
+            ], 422);
+        } catch (Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            $this->logFailure('bulk_update', $e);
+
+            return response()->json([
+                'success' => false,
+                'error' => ['code' => 'UPDATE_FAILED', 'message' => 'Unable to update configuration.'],
             ], 500);
         }
     }
@@ -141,7 +188,8 @@ class ConfigurationController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $validator = Validator::make($request->all(), [
-            'value' => 'required',
+            'value' => 'present|nullable',
+            'clear_secret' => 'sometimes|boolean',
         ]);
 
         if ($validator->fails()) {
@@ -152,33 +200,74 @@ class ConfigurationController extends Controller
         }
 
         try {
+            DB::beginTransaction();
+
             // Get config using raw SQL
-            $sql = 'SELECT * FROM system_configs WHERE id = ? LIMIT 1';
+            $sql = 'SELECT * FROM system_configs WHERE id = ? LIMIT 1 FOR UPDATE';
             $configs = DB::select($sql, [$id]);
             $config = $configs[0] ?? null;
 
             if (! $config) {
+                DB::rollBack();
+
                 return response()->json([
                     'success' => false,
                     'error' => ['code' => 'NOT_FOUND', 'message' => 'Configuration not found'],
                 ], 404);
             }
 
-            $value = $this->formatValue($request->value, $config->data_type);
-
-            DB::update(
-                'UPDATE system_configs SET config_value = ?, updated_at = ? WHERE id = ?',
-                [$value, now(), $id]
+            $merge = $this->secretService->mergeForUpdate(
+                $config->config_key,
+                $request->input('value'),
+                $this->parseValue($config->config_value, $config->data_type),
+                $request->boolean('clear_secret')
             );
+
+            if (! ($merge['preserved'] && $this->secretService->isSecretKey($config->config_key))) {
+                $value = $this->formatValue($merge['value'], $config->data_type);
+                DB::update(
+                    'UPDATE system_configs SET config_value = ?, updated_at = ? WHERE id = ?',
+                    [$value, now(), $id]
+                );
+            }
+
+            DB::commit();
+            if (! ($merge['preserved'] && $this->secretService->isSecretKey($config->config_key))) {
+                $this->systemConfigService->forget($config->section.'.'.$config->config_key);
+            }
+
+            Log::info('Configuration update completed', [
+                'action' => 'update',
+                'operator_id' => $request->user()?->getAuthIdentifier(),
+                'section' => $config->section,
+                'config_key' => $config->config_key,
+                'preserved' => $merge['preserved'],
+                'cleared' => $merge['cleared'],
+            ]);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Configuration updated successfully',
+                'data' => ['preserved' => $merge['preserved'], 'cleared' => $merge['cleared']],
             ]);
-        } catch (Exception $e) {
+        } catch (InvalidArgumentException $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'UPDATE_FAILED', 'message' => $e->getMessage()],
+                'error' => ['code' => 'SECRET_PLACEHOLDER_INVALID', 'message' => $e->getMessage()],
+            ], 422);
+        } catch (Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            $this->logFailure('update', $e, ['config_id' => $id]);
+
+            return response()->json([
+                'success' => false,
+                'error' => ['code' => 'UPDATE_FAILED', 'message' => 'Unable to update configuration.'],
             ], 500);
         }
     }
@@ -211,16 +300,26 @@ class ConfigurationController extends Controller
                 [$request->section, $request->config_key, $value, $request->data_type, $request->description, now(), now()]
             );
             $id = DB::getPdo()->lastInsertId();
+            $this->systemConfigService->forget($request->section.'.'.$request->config_key);
+
+            Log::info('Configuration created', [
+                'action' => 'create',
+                'operator_id' => $request->user()?->getAuthIdentifier(),
+                'section' => $request->section,
+                'config_key' => $request->config_key,
+            ]);
 
             return response()->json([
                 'success' => true,
                 'data' => ['id' => $id],
                 'message' => 'Configuration created successfully',
             ], 201);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            $this->logFailure('create', $e);
+
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'CREATE_FAILED', 'message' => $e->getMessage()],
+                'error' => ['code' => 'CREATE_FAILED', 'message' => 'Unable to create configuration.'],
             ], 500);
         }
     }
@@ -228,9 +327,13 @@ class ConfigurationController extends Controller
     /**
      * Delete a configuration entry
      */
-    public function destroy(int $id): JsonResponse
+    public function destroy(Request $request, int $id): JsonResponse
     {
         try {
+            $config = DB::selectOne(
+                'SELECT section, config_key FROM system_configs WHERE id = ? LIMIT 1',
+                [$id]
+            );
             $deleted = DB::delete('DELETE FROM system_configs WHERE id = ?', [$id]);
 
             if (! $deleted) {
@@ -240,14 +343,25 @@ class ConfigurationController extends Controller
                 ], 404);
             }
 
+            $this->systemConfigService->forget($config->section.'.'.$config->config_key);
+
+            Log::info('Configuration deleted', [
+                'action' => 'delete',
+                'operator_id' => $request->user()?->getAuthIdentifier(),
+                'section' => $config->section,
+                'config_key' => $config->config_key,
+            ]);
+
             return response()->json([
                 'success' => true,
                 'message' => 'Configuration deleted successfully',
             ]);
-        } catch (Exception $e) {
+        } catch (Throwable $e) {
+            $this->logFailure('delete', $e, ['config_id' => $id]);
+
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'DELETE_FAILED', 'message' => $e->getMessage()],
+                'error' => ['code' => 'DELETE_FAILED', 'message' => 'Unable to delete configuration.'],
             ], 500);
         }
     }
@@ -255,7 +369,7 @@ class ConfigurationController extends Controller
     /**
      * Initialize default configurations
      */
-    public function initializeDefaults(): JsonResponse
+    public function initializeDefaults(Request $request): JsonResponse
     {
         try {
             $defaults = [
@@ -465,6 +579,8 @@ class ConfigurationController extends Controller
 
             DB::beginTransaction();
 
+            $inserted = 0;
+
             foreach ($defaults as $default) {
                 // Check if already exists
                 $existsResult = DB::select(
@@ -478,21 +594,32 @@ class ConfigurationController extends Controller
                         'INSERT INTO system_configs (section, config_key, config_value, data_type, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
                         [$default['section'], $default['config_key'], $default['config_value'], $default['data_type'], $default['description'], now(), now()]
                     );
+                    $inserted++;
                 }
             }
 
             DB::commit();
+            $this->systemConfigService->flushCache();
+
+            Log::info('Default configuration initialized', [
+                'action' => 'initialize_defaults',
+                'operator_id' => $request->user()?->getAuthIdentifier(),
+                'inserted' => $inserted,
+            ]);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Default configurations initialized successfully',
             ]);
-        } catch (Exception $e) {
-            DB::rollBack();
+        } catch (Throwable $e) {
+            if (DB::transactionLevel() > 0) {
+                DB::rollBack();
+            }
+            $this->logFailure('initialize_defaults', $e);
 
             return response()->json([
                 'success' => false,
-                'error' => ['code' => 'INIT_FAILED', 'message' => $e->getMessage()],
+                'error' => ['code' => 'INIT_FAILED', 'message' => 'Unable to initialize configuration.'],
             ], 500);
         }
     }
@@ -500,7 +627,7 @@ class ConfigurationController extends Controller
     /**
      * Parse value based on data type
      */
-    private function parseValue($value, string $dataType)
+    private function parseValue($value, string $dataType): mixed
     {
         if ($value === null) {
             return null;
@@ -529,10 +656,44 @@ class ConfigurationController extends Controller
             case 'number':
                 return (string) $value;
             case 'json':
-                return is_string($value) ? $value : json_encode($value);
+                return is_string($value) ? $value : json_encode($value, JSON_THROW_ON_ERROR);
             default:
                 return (string) $value;
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function projectConfig(object $item): array
+    {
+        $projection = $this->secretService->project(
+            $item->config_key,
+            $this->parseValue($item->config_value, $item->data_type)
+        );
+
+        return [
+            'id' => $item->id,
+            'key' => $item->config_key,
+            'value' => $projection['value'],
+            'data_type' => $item->data_type,
+            'description' => $item->description,
+            'is_secret' => $projection['is_secret'],
+            'is_configured' => $projection['is_configured'],
+            'has_redacted_fields' => $projection['has_redacted_fields'],
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function logFailure(string $action, Throwable $exception, array $context = []): void
+    {
+        Log::error('Configuration operation failed', array_merge($context, [
+            'action' => $action,
+            'exception' => $exception::class,
+            'code' => $exception->getCode(),
+        ]));
     }
 
     private function resolveDefaultOllamaModel(): string

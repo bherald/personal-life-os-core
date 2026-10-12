@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
@@ -94,15 +96,6 @@ class MonitoringPreScreenService
                 }
             } catch (\Exception $e) {
                 $issues[] = 'redis_error';
-            }
-
-            // Check Claude CLI auth only when the provider is intentionally enabled.
-            $aiOps = app(AIOperationsService::class);
-            if ($aiOps->isClaudeCliEnabled()) {
-                $claudeAuth = $aiOps->checkClaudeCliAuth();
-                if (! ($claudeAuth['logged_in'] ?? false)) {
-                    $issues[] = 'claude_cli_not_logged_in';
-                }
             }
 
         } catch (\Exception $e) {
@@ -202,7 +195,7 @@ class MonitoringPreScreenService
 
         try {
             // Check cached log analysis from OpsMaintenanceJob
-            $opsCache = \Illuminate\Support\Facades\Cache::get('ops_maintenance_report', []);
+            $opsCache = Cache::get('ops_maintenance_report', []);
             $logData = $opsCache['logs'] ?? null;
 
             if ($logData) {
@@ -262,7 +255,7 @@ class MonitoringPreScreenService
             }
 
             try {
-                if (\Carbon\Carbon::parse($matches[1])->greaterThanOrEqualTo($cutoff)) {
+                if (Carbon::parse($matches[1])->greaterThanOrEqualTo($cutoff)) {
                     $count++;
                 }
             } catch (\Throwable) {

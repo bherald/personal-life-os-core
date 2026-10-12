@@ -9,6 +9,7 @@ class KnowledgeGraphProvenanceRepairCommand extends Command
 {
     protected $signature = 'graph:repair-provenance-links
                             {--limit=1000 : Maximum endpoint links to update}
+                            {--dry-run : Explicitly preview eligible endpoint-link repairs without writing}
                             {--execute : Apply capped endpoint-link repairs}
                             {--json : Output machine-readable JSON}
                             {--compact : Omit nonessential detail from output}';
@@ -25,6 +26,13 @@ class KnowledgeGraphProvenanceRepairCommand extends Command
         }
 
         $execute = (bool) $this->option('execute');
+        $explicitDryRun = (bool) $this->option('dry-run');
+        if ($execute && $explicitDryRun) {
+            $this->error('Use either --execute or --dry-run, not both.');
+
+            return self::FAILURE;
+        }
+
         $eligible = $this->eligibleCounts();
         $updated = [
             'subject_entity_links' => 0,
@@ -45,6 +53,7 @@ class KnowledgeGraphProvenanceRepairCommand extends Command
             'generated_at' => now()->toIso8601String(),
             'mode' => $execute ? 'execute' : 'dry_run',
             'dry_run' => ! $execute,
+            'explicit_dry_run' => $explicitDryRun,
             'limit' => $limit,
             'status' => $execute ? 'executed' : 'review_required',
             'eligible' => $eligible,

@@ -4,20 +4,25 @@
   "type": "module",
   "main": "dist/index.js",
   "overrides": {
-    "ip-address": "10.7.0"
+    "ip-address": "10.7.2",
+    "proxy-addr": "2.0.8"
   },
   "scripts": {
-    "build": "tsc",
-    "test": "npm run build && node --test dist/**/*.test.js",
+    "build:compile": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
+    "build": "npm run build:compile && npm run audit:tool-contract",
+    "audit:tool-contract": "node dist/tool-contract-audit.js --fail-on-violations --fail-on-drift",
+    "refresh:tool-contract-baseline": "npm run build:compile && node dist/tool-contract-audit.js --write-baseline --fail-on-violations",
+    "test": "npm run build && node --test dist/*.test.js dist/**/*.test.js",
     "start": "node dist/index.js",
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "dotenv": "^16.4.0",
     "mysql2": "^3.11.0",
     "pg": "^8.13.0",
     "zod": "^3.23.0",
-    "dotenv": "^16.4.0"
+    "zod-to-json-schema": "^3.25.1"
   },
   "devDependencies": {
     "@types/node": "^20.12.0",

@@ -3,7 +3,9 @@
 namespace App\Nodes\YouTube;
 
 use App\Controllers\NotificationController;
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Nodes\BaseNode;
+use App\Services\YouTubeJoplinDeliveryService;
 use App\Services\YouTubeJoplinService;
 use Exception;
 use Illuminate\Support\Facades\File;
@@ -39,7 +41,7 @@ class YouTubeJoplinCreate extends BaseNode
             if (! $createNotes) {
                 Log::info('YouTubeJoplinCreate: Note creation disabled, skipping');
 
-                return $this->standardOutput($input);
+                return $this->standardOutput($input['data'] ?? $input);
             }
 
             // Get videos from input (handles both wrapped and direct input)
@@ -48,7 +50,7 @@ class YouTubeJoplinCreate extends BaseNode
             if (empty($videos)) {
                 Log::info('YouTubeJoplinCreate: No videos to process');
 
-                return $this->standardOutput($input);
+                return $this->standardOutput($input['data'] ?? $input);
             }
 
             Log::info('YouTubeJoplinCreate: Creating Joplin notes', [
@@ -126,6 +128,23 @@ class YouTubeJoplinCreate extends BaseNode
                             $videos[$index]['joplin_notebook_id'] = $result['notebook_id'];
                             $videos[$index]['joplin_notebook'] = $result['notebook_name'];
                             $videos[$index]['joplin_url'] = $result['joplin_url'];
+                            if ($result['reused'] ?? false) {
+                                $videos[$index]['delivery_repair'] = ['status' => 'hold', 'reason_code' => 'source_retention_unverified'];
+                                try {
+                                    $videos[$index]['delivery_repair'] = app(YouTubeJoplinDeliveryService::class)
+                                        ->reconcileReusedVideo($videos[$index], $result['note_id']);
+                                } catch (\Throwable $failure) {
+                                    if (InferenceAdmissionException::isAdmissionFailure($failure)) {
+                                        throw $failure;
+                                    }
+                                    // An uncertain retention write cannot create a fallback copy
+                                    // or authorize another write. Final read-back retains the hold.
+                                    Log::warning('YouTube source retention remains unverified', ['reason_code' => 'source_retention_unverified']);
+                                }
+                                if (($videos[$index]['delivery_repair']['reason_code'] ?? null) === 'source_write_outcome_unknown') {
+                                    throw new InferenceAdmissionException('YouTube source write outcome is unknown; automatic processing held');
+                                }
+                            }
                         }
 
                         $results[] = $result;
@@ -158,6 +177,9 @@ class YouTubeJoplinCreate extends BaseNode
                     }
 
                 } catch (Exception $e) {
+                    if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                        throw $e;
+                    }
                     $error = $e->getMessage();
 
                     // Check if this is a connection error
@@ -204,14 +226,14 @@ class YouTubeJoplinCreate extends BaseNode
 
             // Return updated videos with Joplin metadata
             // Pass through ip_blocked status and transcript counts from previous nodes
-            return $this->standardOutput([
+            return $this->standardOutput(array_merge($input['data'] ?? $input, [
                 'videos' => $videos,
                 'count' => count($videos),
                 'transcripts_fetched' => $input['data']['transcripts_fetched'] ?? $input['transcripts_fetched'] ?? 0,
                 'transcripts_failed' => $input['data']['transcripts_failed'] ?? $input['transcripts_failed'] ?? 0,
                 'ip_blocked' => $input['data']['ip_blocked'] ?? $input['ip_blocked'] ?? false,
                 'ip_block_error' => $input['data']['ip_block_error'] ?? $input['ip_block_error'] ?? null,
-            ], [
+            ]), [
                 'joplin_notes_created' => $successCount,
                 'joplin_notes_queued' => $queuedCount,
                 'joplin_notes_failed' => $failedCount,
@@ -223,6 +245,9 @@ class YouTubeJoplinCreate extends BaseNode
             ]);
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('YouTubeJoplinCreate: Execution failed', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),

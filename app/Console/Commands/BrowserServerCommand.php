@@ -18,7 +18,10 @@ class BrowserServerCommand extends Command
 {
     protected $signature = 'browser:server
                             {action=status : Action: status, start, stop, restart}
-                            {--engine= : Specific engine (puppeteer, playwright, or all)}';
+                            {--engine= : Specific engine (puppeteer, playwright, or all)}
+                            {--json : Emit machine-readable status output}
+                            {--compact : Emit one-line status output}
+                            {--fail-on-unsafe : Fail when a reachable sidecar lacks the required security contract}';
 
     protected $description = 'Manage persistent browser automation servers';
 
@@ -47,6 +50,29 @@ class BrowserServerCommand extends Command
     private function showStatus(): int
     {
         $status = $this->browserService->getStatus();
+        $audit = $this->securityAuditPayload($status);
+
+        if ($this->option('json')) {
+            $flags = JSON_UNESCAPED_SLASHES;
+            if (! $this->option('compact')) {
+                $flags |= JSON_PRETTY_PRINT;
+            }
+            $this->line(json_encode($audit, $flags | JSON_THROW_ON_ERROR));
+
+            return $this->statusExitCode($audit);
+        }
+
+        if ($this->option('compact')) {
+            $this->line(sprintf(
+                'Browser security: %s secure=%d unsafe=%d stopped=%d required=navigation_scope,no_credential_api,content_windows',
+                $audit['status'],
+                $audit['summary']['secure'],
+                $audit['summary']['unsafe'],
+                $audit['summary']['stopped'],
+            ));
+
+            return $this->statusExitCode($audit);
+        }
 
         $this->info('Browser Server Status');
         $this->line('');
@@ -56,16 +82,19 @@ class BrowserServerCommand extends Command
         foreach (['puppeteer', 'playwright'] as $engine) {
             $engineStatus = $status[$engine] ?? [];
             $available = $engineStatus['available'] ?? false;
+            $reachable = $engineStatus['reachable'] ?? $available;
             $port = $engineStatus['port'] ?? 'N/A';
             $health = $engineStatus['health'] ?? [];
 
             $tableData[] = [
                 ucfirst($engine),
-                $available ? '<info>Running</info>' : '<comment>Stopped</comment>',
+                $available
+                    ? '<info>Running</info>'
+                    : ($reachable ? '<error>Rejected</error>' : '<comment>Stopped</comment>'),
                 $port,
                 $health['browser'] ?? 'N/A',
                 $health['page'] ?? 'N/A',
-                isset($health['uptime']) ? round($health['uptime']) . 's' : 'N/A',
+                isset($health['uptime']) ? round($health['uptime']).'s' : 'N/A',
             ];
         }
 
@@ -79,29 +108,146 @@ class BrowserServerCommand extends Command
             $this->info("Active engine: {$status['active_engine']}");
         }
 
-        // Show security status for Puppeteer
-        $puppeteerStatus = $status['puppeteer'] ?? [];
-        if ($puppeteerStatus['available'] ?? false) {
-            $health = $puppeteerStatus['health'] ?? [];
-            $security = $health['security'] ?? [];
-
-            if (!empty($security)) {
-                $this->line('');
-                $this->info('🔒 Puppeteer Security Status:');
-                $this->line('   Sandbox: ' . ($security['sandboxEnabled'] ? '<info>Enabled</info>' : '<comment>Disabled (running as root)</comment>'));
-                $this->line('   Download Blocking: ' . ($security['downloadBlocking'] ? '<info>Enabled</info>' : '<comment>Disabled</comment>'));
-                $this->line('   Domain Allowlist: ' . ($security['domainAllowlist'] ?? 0) . ' domains');
-                $this->line('   Request Interception: ' . ($security['requestInterception'] ? '<info>Enabled</info>' : '<comment>Disabled</comment>'));
-                $this->line('   Session Count: ' . ($security['sessionCount'] ?? 0) . '/' . ($security['maxSessionsBeforeRestart'] ?? 10));
+        $securityRows = [];
+        foreach (['puppeteer', 'playwright'] as $engine) {
+            $engineStatus = (array) ($status[$engine] ?? []);
+            if (! ($engineStatus['available'] ?? false) && ! ($engineStatus['reachable'] ?? false)) {
+                continue;
             }
+
+            $security = (array) ($engineStatus['health']['security'] ?? []);
+            $controlPlane = ($security['authRequired'] ?? false)
+                && ($security['hostProtection'] ?? false)
+                && ($security['originProtection'] ?? false);
+            $isolation = $engine === 'playwright'
+                ? (($security['freshContextPerNavigation'] ?? false) ? 'fresh context' : 'shared context')
+                : 'bounded sessions';
+            $downloadsBlocked = $engine === 'playwright'
+                ? ! ($security['downloadsAccepted'] ?? true)
+                : (bool) ($security['downloadBlocking'] ?? false);
+            $navigationScoped = ($security['topLevelNavigationAllowlist'] ?? false)
+                && ($security['documentRequestsScoped'] ?? false)
+                && ($security['popupsBlocked'] ?? false);
+            $ipTargetsBlocked = (bool) ($security['ipLiteralAndLocalhostTargetsBlocked'] ?? false);
+            $dnsTargetsBlocked = ($security['topLevelDnsPublicAddressesRequired'] ?? false)
+                && ($security['dnsResolutionFailClosed'] ?? false);
+            $credentialApiDisabled = ($security['credentialApiEnabled'] ?? true) === false;
+            $contentWindowed = (bool) ($security['contentWindowing'] ?? false);
+
+            $securityRows[] = [
+                ucfirst($engine),
+                $controlPlane ? '<info>Protected</info>' : '<error>Incomplete</error>',
+                ($security['sandboxEnabled'] ?? false) ? '<info>Enabled</info>' : '<comment>Root fallback</comment>',
+                (string) ($security['domainAllowlist'] ?? 0),
+                $isolation,
+                $downloadsBlocked ? '<info>Blocked</info>' : '<error>Allowed</error>',
+                $engine === 'playwright'
+                    ? (($security['arbitraryEvaluateEnabled'] ?? true) ? '<error>Enabled</error>' : '<info>Disabled</info>')
+                    : 'Safe mode',
+                $navigationScoped ? '<info>Scoped</info>' : '<error>Open</error>',
+                $ipTargetsBlocked ? '<info>Blocked</info>' : '<error>Allowed</error>',
+                $dnsTargetsBlocked ? '<info>Public only</info>' : '<error>Unchecked</error>',
+                $credentialApiDisabled ? '<info>No API</info>' : '<error>Exposed</error>',
+                $contentWindowed ? '<info>Windowed</info>' : '<error>Unbounded</error>',
+            ];
         }
 
-        return Command::SUCCESS;
+        if ($securityRows !== []) {
+            $this->line('');
+            $this->info('Browser Control-Plane Security');
+            $this->table(
+                [
+                    'Engine',
+                    'Auth/Host/Origin',
+                    'Sandbox',
+                    'Allowlist',
+                    'Isolation',
+                    'Downloads',
+                    'Evaluate',
+                    'Navigation',
+                    'IP Targets',
+                    'DNS Targets',
+                    'Credentials',
+                    'Content',
+                ],
+                $securityRows,
+            );
+        }
+
+        return $this->statusExitCode($audit);
+    }
+
+    /**
+     * @param  array<string, mixed>  $status
+     * @return array<string, mixed>
+     */
+    private function securityAuditPayload(array $status): array
+    {
+        $engines = [];
+        $summary = ['secure' => 0, 'unsafe' => 0, 'stopped' => 0];
+
+        foreach (['puppeteer', 'playwright'] as $engine) {
+            $engineStatus = (array) ($status[$engine] ?? []);
+            $security = (array) ($engineStatus['health']['security'] ?? []);
+            $available = (bool) ($engineStatus['available'] ?? false);
+            $reachable = (bool) ($engineStatus['reachable'] ?? $available);
+            $state = $available ? 'secure' : ($reachable ? 'unsafe' : 'stopped');
+            $summary[$state]++;
+
+            $engines[$engine] = [
+                'state' => $state,
+                'reachable' => $reachable,
+                'security_contract_complete' => $available,
+                'checks' => [
+                    'authenticated_loopback_control_plane' => ($security['authRequired'] ?? false)
+                        && ($security['hostProtection'] ?? false)
+                        && ($security['originProtection'] ?? false),
+                    'top_level_navigation_scoped' => ($security['topLevelNavigationAllowlist'] ?? false)
+                        && ($security['documentRequestsScoped'] ?? false)
+                        && ($security['popupsBlocked'] ?? false),
+                    'ip_literal_and_localhost_targets_blocked' => (bool) ($security['ipLiteralAndLocalhostTargetsBlocked'] ?? false),
+                    'top_level_dns_public_addresses_required' => ($security['topLevelDnsPublicAddressesRequired'] ?? false)
+                        && ($security['dnsResolutionFailClosed'] ?? false),
+                    'credential_api_disabled' => ($security['credentialApiEnabled'] ?? true) === false,
+                    'content_windowed' => (bool) ($security['contentWindowing'] ?? false),
+                    'downloads_blocked' => $engine === 'playwright'
+                        ? ($security['downloadsAccepted'] ?? true) === false
+                        : (bool) ($security['downloadBlocking'] ?? false),
+                    'fresh_session' => $engine === 'playwright'
+                        ? (bool) ($security['freshContextPerNavigation'] ?? false)
+                        : (bool) ($security['freshSessionPerNavigation'] ?? false),
+                    'arbitrary_evaluate_disabled' => $engine === 'playwright'
+                        ? ($security['arbitraryEvaluateEnabled'] ?? true) === false
+                        : true,
+                ],
+            ];
+        }
+
+        return [
+            'schema' => 'plos_browser_security_audit.v1',
+            'mode' => 'observe',
+            'read_only' => true,
+            'status' => $summary['unsafe'] > 0
+                ? 'unsafe'
+                : ($summary['secure'] > 0 ? 'secure' : 'stopped'),
+            'summary' => $summary,
+            'engines' => $engines,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $audit
+     */
+    private function statusExitCode(array $audit): int
+    {
+        return $this->option('fail-on-unsafe') && ($audit['status'] ?? null) === 'unsafe'
+            ? Command::FAILURE
+            : Command::SUCCESS;
     }
 
     private function startServers(string $engine): int
     {
-        $this->info("Starting browser server(s)...");
+        $this->info('Starting browser server(s)...');
 
         $started = 0;
 
@@ -128,7 +274,7 @@ class BrowserServerCommand extends Command
 
     private function stopServers(string $engine): int
     {
-        $this->info("Stopping browser server(s)...");
+        $this->info('Stopping browser server(s)...');
 
         if ($engine === 'all') {
             $this->browserService->shutdownAll();
@@ -137,7 +283,7 @@ class BrowserServerCommand extends Command
             // Kill specific server by port
             $port = $engine === 'puppeteer' ? 9222 : 9223;
             Process::timeout(10)->run(['fuser', '-k', "{$port}/tcp"]);
-            $this->info(ucfirst($engine) . ' server stopped');
+            $this->info(ucfirst($engine).' server stopped');
         }
 
         return Command::SUCCESS;
@@ -147,6 +293,7 @@ class BrowserServerCommand extends Command
     {
         $this->stopServers($engine);
         sleep(2);
+
         return $this->startServers($engine);
     }
 

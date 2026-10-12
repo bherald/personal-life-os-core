@@ -28,42 +28,45 @@ class AgentTraceRunCommand extends Command
 
         // Step 1: Find the session
         $session = $this->findSession($agentName, $sessionId, $last);
-        if (!$session) {
+        if (! $session) {
             $this->error("No session found for agent '{$agentName}'");
+
             return 1;
         }
 
         // Step 2: Load all episodes
-        $episodes = DB::select("
+        $episodes = DB::select('
             SELECT id, event_type, summary, details, tokens_used, duration_ms, created_at
             FROM agent_episodes
             WHERE session_id = ?
             ORDER BY created_at ASC, id ASC
-        ", [$session->session_id]);
+        ', [$session->session_id]);
 
         // Step 3: Find matching scheduled_job_run
         $jobRun = $this->findJobRun($agentName, $session->created_at);
 
         // Step 4: Load episode summary
-        $episodeSummary = DB::selectOne("
+        $episodeSummary = DB::selectOne('
             SELECT task, summary, outcome, importance, tools_used, tool_count,
                    tokens_used, duration_ms, episode_count, notes, created_at
             FROM agent_episode_summaries
             WHERE session_id = ?
             ORDER BY created_at DESC LIMIT 1
-        ", [$session->session_id]);
+        ', [$session->session_id]);
 
         // Build structured trace data
         $trace = $this->buildTrace($session, $episodes, $jobRun, $episodeSummary);
 
         if ($jsonOutput) {
             $this->line(json_encode($trace, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
             return 0;
         }
 
         // If --phase specified, dump that phase's full LLM output
         if ($phaseFilter) {
             $this->dumpPhaseOutput($trace, $phaseFilter);
+
             return 0;
         }
 
@@ -76,17 +79,17 @@ class AgentTraceRunCommand extends Command
     private function findSession(string $agentName, ?string $sessionId, int $last): ?object
     {
         if ($sessionId) {
-            return DB::selectOne("
+            return DB::selectOne('
                 SELECT * FROM agent_sessions WHERE session_id = ?
-            ", [$sessionId]);
+            ', [$sessionId]);
         }
 
-        return DB::selectOne("
+        return DB::selectOne('
             SELECT * FROM agent_sessions
             WHERE agent_name = ?
             ORDER BY created_at DESC
             LIMIT 1 OFFSET ?
-        ", [$agentName, $last - 1]);
+        ', [$agentName, $last - 1]);
     }
 
     private function findJobRun(string $agentName, string $sessionCreatedAt): ?object
@@ -243,16 +246,18 @@ class AgentTraceRunCommand extends Command
             $hasFindings = false;
             $findingsDetail = [];
             foreach ($personsResearched as $p) {
-                if (!is_array($p)) continue;
+                if (! is_array($p)) {
+                    continue;
+                }
                 $findings = $p['findings'] ?? '';
-                if (!is_string($findings)) {
+                if (! is_string($findings)) {
                     $findings = is_array($findings) ? implode('; ', array_filter($findings)) : (string) $findings;
                 }
                 $trimmed = trim($findings);
                 $isNegative = preg_match(
                     '/^(none|nothing|zero|empty$)|^no records|^no results|found no records|found nothing|negative result|exhaustive search.*no|could not locate|unable to find/i',
                     $trimmed
-                ) && !preg_match(
+                ) && ! preg_match(
                     '/\b(but found|however found|did find|also found|found a|found the|found one|found evidence|record found|records found)\b/i',
                     $trimmed
                 );
@@ -260,7 +265,7 @@ class AgentTraceRunCommand extends Command
                     '/(found|record|census|certificate|document|source|born|died|married|buried|\d{4})/i',
                     $findings
                 );
-                $triggersHasFindings = strlen($findings) > 30 && !$isNegative && $hasPositiveEvidence;
+                $triggersHasFindings = strlen($findings) > 30 && ! $isNegative && $hasPositiveEvidence;
                 $findingsDetail[] = [
                     'id' => $p['id'] ?? '?',
                     'name' => $p['name'] ?? 'Unknown',
@@ -276,7 +281,7 @@ class AgentTraceRunCommand extends Command
             }
             $validationIssues['findings_analysis'] = $findingsDetail;
             $validationIssues['has_findings'] = $hasFindings;
-            $validationIssues['would_fail_validation'] = $hasFindings && !$validationIssues['proposals']['has_proposals'];
+            $validationIssues['would_fail_validation'] = $hasFindings && ! $validationIssues['proposals']['has_proposals'];
 
             // Check for fallback synthesis markers
             $taskCompleted = collect($events)->firstWhere('type', 'task_completed');
@@ -292,7 +297,7 @@ class AgentTraceRunCommand extends Command
             if ($phase['elapsed_sec'] > 900) {
                 $bottlenecks[] = [
                     'type' => 'slow_phase',
-                    'summary' => "Phase '{$phaseName}' took " . round($phase['elapsed_sec'] / 60, 1) . " minutes",
+                    'summary' => "Phase '{$phaseName}' took ".round($phase['elapsed_sec'] / 60, 1).' minutes',
                     'at' => $phase['started_at'],
                 ];
             }
@@ -301,7 +306,7 @@ class AgentTraceRunCommand extends Command
         // Tool frequency analysis
         $toolFreq = [];
         foreach ($toolCalls as $tc) {
-            $key = $tc['phase'] . ':' . $tc['tool'];
+            $key = $tc['phase'].':'.$tc['tool'];
             $toolFreq[$key] = ($toolFreq[$key] ?? 0) + 1;
         }
         arsort($toolFreq);
@@ -360,44 +365,46 @@ class AgentTraceRunCommand extends Command
         if (preg_match('/^\s*(\{[\s\S]*\})\s*$/m', $content, $m)) {
             return json_decode($m[1], true);
         }
+
         return null;
     }
 
     private function dumpPhaseOutput(array $trace, string $phaseName): void
     {
         $phase = $trace['phases'][$phaseName] ?? null;
-        if (!$phase) {
-            $this->error("Phase '{$phaseName}' not found. Available: " . implode(', ', array_keys($trace['phases'])));
+        if (! $phase) {
+            $this->error("Phase '{$phaseName}' not found. Available: ".implode(', ', array_keys($trace['phases'])));
+
             return;
         }
 
         $this->info("=== Phase: {$phaseName} ===");
         $this->line("Started: {$phase['started_at']} | Ended: {$phase['ended_at']} | Elapsed: {$phase['elapsed_sec']}s");
         $provider = $phase['provider'] ?? null;
-        $modelStr = ($phase['model'] ?? 'N/A') . ($provider ? " ({$provider})" : '');
-        $this->line("Tool calls: " . count($phase['tool_calls']) . " | Model: {$modelStr}");
+        $modelStr = ($phase['model'] ?? 'N/A').($provider ? " ({$provider})" : '');
+        $this->line('Tool calls: '.count($phase['tool_calls'])." | Model: {$modelStr}");
         $this->newLine();
 
-        $this->info("--- Tool Calls ---");
+        $this->info('--- Tool Calls ---');
         foreach ($phase['tool_calls'] as $tc) {
             $dur = isset($tc['approx_duration_sec']) ? " (~{$tc['approx_duration_sec']}s)" : '';
             $durMs = isset($tc['duration_ms']) ? " [{$tc['duration_ms']}ms]" : '';
             $status = isset($tc['success']) ? ($tc['success'] ? 'OK' : 'FAIL') : '?';
             $this->line("  [{$tc['created_at']}] [{$status}] {$tc['tool']}{$dur}{$durMs}");
-            if (!empty($tc['tool_result'])) {
-                $this->line("    Result: " . mb_substr($tc['tool_result'], 0, 200));
+            if (! empty($tc['tool_result'])) {
+                $this->line('    Result: '.mb_substr($tc['tool_result'], 0, 200));
             }
         }
         $this->newLine();
 
-        $this->info("--- LLM Output ---");
+        $this->info('--- LLM Output ---');
         $this->line($phase['llm_output'] ?? '(no output captured)');
 
         if ($phase['llm_json']) {
             $this->newLine();
-            $this->info("--- Parsed JSON Keys ---");
+            $this->info('--- Parsed JSON Keys ---');
             foreach ($phase['llm_json'] as $key => $val) {
-                $preview = is_array($val) ? 'array(' . count($val) . ')' : mb_substr((string) $val, 0, 100);
+                $preview = is_array($val) ? 'array('.count($val).')' : mb_substr((string) $val, 0, 100);
                 $this->line("  {$key}: {$preview}");
             }
         }
@@ -410,7 +417,7 @@ class AgentTraceRunCommand extends Command
 
         $this->info("=== Agent Trace: {$s['agent']} ===");
         $this->line("Session: {$s['session_id']} (v{$s['skill_version']})");
-        $this->line("Status: {$s['status']} | Tokens: {$s['total_tokens']} | Duration: {$dur} | Tree: " . ($s['tree_id'] ?? 'N/A'));
+        $this->line("Status: {$s['status']} | Tokens: {$s['total_tokens']} | Duration: {$dur} | Tree: ".($s['tree_id'] ?? 'N/A'));
         $this->line("Started: {$s['started_at']} | Ended: {$s['ended_at']}");
 
         if ($trace['job_run']) {
@@ -419,25 +426,25 @@ class AgentTraceRunCommand extends Command
         }
 
         $this->newLine();
-        $this->info("=== Phase Timeline ===");
+        $this->info('=== Phase Timeline ===');
 
         foreach ($trace['phases'] as $name => $phase) {
             $elapsed = $phase['elapsed_sec'] > 60
-                ? round($phase['elapsed_sec'] / 60, 1) . 'min'
-                : $phase['elapsed_sec'] . 's';
+                ? round($phase['elapsed_sec'] / 60, 1).'min'
+                : $phase['elapsed_sec'].'s';
             $toolCount = count($phase['tool_calls']);
             $model = $phase['model'] ?? '?';
 
             $provider = $phase['provider'] ?? null;
-            $modelProvider = $model . ($provider ? " ({$provider})" : '');
+            $modelProvider = $model.($provider ? " ({$provider})" : '');
             $this->line("  [{$name}] {$phase['started_at']} → {$phase['ended_at']} ({$elapsed}) — {$toolCount} tools — model: {$modelProvider}");
 
             // Top tools in this phase
             $toolNames = array_count_values(array_column($phase['tool_calls'], 'tool'));
             arsort($toolNames);
             $topTools = array_slice($toolNames, 0, 5, true);
-            if (!empty($topTools)) {
-                $toolStr = implode(', ', array_map(fn($t, $c) => "{$t}({$c})", array_keys($topTools), $topTools));
+            if (! empty($topTools)) {
+                $toolStr = implode(', ', array_map(fn ($t, $c) => "{$t}({$c})", array_keys($topTools), $topTools));
                 $this->line("    Top tools: {$toolStr}");
             }
 
@@ -445,15 +452,29 @@ class AgentTraceRunCommand extends Command
             if ($phase['llm_json']) {
                 $json = $phase['llm_json'];
                 $keys = [];
-                if (isset($json['persons_researched'])) $keys[] = 'persons:' . count($json['persons_researched']);
-                if (isset($json['persons_found'])) $keys[] = 'persons:' . count($json['persons_found']);
-                if (isset($json['key_findings'])) $keys[] = 'findings:' . count($json['key_findings']);
-                if (isset($json['next_phase_targets'])) $keys[] = 'targets:' . count($json['next_phase_targets']);
-                if (isset($json['proposed_changes'])) $keys[] = 'proposals:' . count($json['proposed_changes']);
-                if (isset($json['proposed_relationships'])) $keys[] = 'relationships:' . count($json['proposed_relationships']);
-                if (isset($json['proposed_marriages'])) $keys[] = 'marriages:' . count($json['proposed_marriages']);
-                if (!empty($keys)) {
-                    $this->line("    Output: " . implode(' | ', $keys));
+                if (isset($json['persons_researched'])) {
+                    $keys[] = 'persons:'.count($json['persons_researched']);
+                }
+                if (isset($json['persons_found'])) {
+                    $keys[] = 'persons:'.count($json['persons_found']);
+                }
+                if (isset($json['key_findings'])) {
+                    $keys[] = 'findings:'.count($json['key_findings']);
+                }
+                if (isset($json['next_phase_targets'])) {
+                    $keys[] = 'targets:'.count($json['next_phase_targets']);
+                }
+                if (isset($json['proposed_changes'])) {
+                    $keys[] = 'proposals:'.count($json['proposed_changes']);
+                }
+                if (isset($json['proposed_relationships'])) {
+                    $keys[] = 'relationships:'.count($json['proposed_relationships']);
+                }
+                if (isset($json['proposed_marriages'])) {
+                    $keys[] = 'marriages:'.count($json['proposed_marriages']);
+                }
+                if (! empty($keys)) {
+                    $this->line('    Output: '.implode(' | ', $keys));
                 }
             }
         }
@@ -467,42 +488,42 @@ class AgentTraceRunCommand extends Command
         }
 
         // Validation analysis
-        if (!empty($trace['validation'])) {
+        if (! empty($trace['validation'])) {
             $v = $trace['validation'];
             $this->newLine();
-            $this->info("=== Report Phase Validation ===");
+            $this->info('=== Report Phase Validation ===');
 
             if (isset($v['proposals'])) {
                 $p = $v['proposals'];
                 $this->line("  Proposals: changes={$p['proposed_changes']} rels={$p['proposed_relationships']} marriages={$p['proposed_marriages']}");
-                $this->line("  Has proposals: " . ($p['has_proposals'] ? 'YES' : 'NO'));
+                $this->line('  Has proposals: '.($p['has_proposals'] ? 'YES' : 'NO'));
             }
 
-            $this->line("  Has findings: " . ($v['has_findings'] ? 'YES' : 'NO'));
-            $this->line("  Would fail validation: " . (($v['would_fail_validation'] ?? false) ? 'YES — LLM found data but produced no proposals' : 'NO'));
+            $this->line('  Has findings: '.($v['has_findings'] ? 'YES' : 'NO'));
+            $this->line('  Would fail validation: '.(($v['would_fail_validation'] ?? false) ? 'YES — LLM found data but produced no proposals' : 'NO'));
 
-            if (!empty($v['findings_analysis'])) {
+            if (! empty($v['findings_analysis'])) {
                 $this->newLine();
-                $this->line("  Persons findings analysis:");
+                $this->line('  Persons findings analysis:');
                 foreach ($v['findings_analysis'] as $fa) {
                     $trigger = $fa['triggers_has_findings'] ? 'TRIGGERS' : 'skip';
                     $neg = $fa['is_negative'] ? 'NEG' : 'pos';
                     $this->line("    #{$fa['id']} {$fa['name']} [{$trigger}] ({$neg}, {$fa['findings_length']}ch)");
                     if ($raw || $fa['triggers_has_findings']) {
-                        $this->line("      " . $fa['findings_preview']);
+                        $this->line('      '.$fa['findings_preview']);
                     }
                 }
             }
 
             if (isset($v['fallback_synthesis'])) {
-                $this->line("  Fallback synthesis used: " . ($v['fallback_synthesis'] ? 'YES' : 'NO'));
+                $this->line('  Fallback synthesis used: '.($v['fallback_synthesis'] ? 'YES' : 'NO'));
             }
         }
 
         // Bottlenecks
-        if (!empty($trace['bottlenecks'])) {
+        if (! empty($trace['bottlenecks'])) {
             $this->newLine();
-            $this->warn("=== Bottlenecks & Issues ===");
+            $this->warn('=== Bottlenecks & Issues ===');
             foreach ($trace['bottlenecks'] as $b) {
                 $this->line("  [{$b['type']}] {$b['summary']}");
             }
@@ -512,41 +533,41 @@ class AgentTraceRunCommand extends Command
         if ($trace['episode_summary']) {
             $es = $trace['episode_summary'];
             $this->newLine();
-            $this->info("=== Episode Summary ===");
+            $this->info('=== Episode Summary ===');
             $this->line("  Outcome: {$es['outcome']} | Importance: {$es['importance']} | Tools: {$es['tool_count']}");
-            $durMs = $es['duration_ms'] > 0 ? round($es['duration_ms'] / 1000) . 's' : 'N/A';
+            $durMs = $es['duration_ms'] > 0 ? round($es['duration_ms'] / 1000).'s' : 'N/A';
             $this->line("  Tokens: {$es['tokens_used']} | Duration: {$durMs}");
 
             // Quality metrics from hybrid run (persisted to episode summary notes)
-            if (!empty($es['hybrid_metrics'])) {
+            if (! empty($es['hybrid_metrics'])) {
                 $hm = $es['hybrid_metrics'];
                 $this->newLine();
-                $this->info("=== Quality Metrics ===");
-                $this->line("  Templates detected: " . ($hm['template_detections'] ?? 0)
-                    . " | Escalations: " . ($hm['claude_escalations'] ?? 0)
-                    . " | Proposals filtered: " . ($hm['proposals_filtered'] ?? 0));
-                $this->line("  Review items: " . ($hm['review_items_submitted'] ?? 0)
-                    . " | Phases: " . ($hm['phases_completed'] ?? 0) . "/" . ($hm['total_phases'] ?? 0));
+                $this->info('=== Quality Metrics ===');
+                $this->line('  Templates detected: '.($hm['template_detections'] ?? 0)
+                    .' | Escalations: '.($hm['provider_escalations'] ?? 0)
+                    .' | Proposals filtered: '.($hm['proposals_filtered'] ?? 0));
+                $this->line('  Review items: '.($hm['review_items_submitted'] ?? 0)
+                    .' | Phases: '.($hm['phases_completed'] ?? 0).'/'.($hm['total_phases'] ?? 0));
 
-                if (!empty($hm['phase_providers'])) {
+                if (! empty($hm['phase_providers'])) {
                     $providerParts = [];
                     foreach ($hm['phase_providers'] as $phase => $provider) {
                         $providerParts[] = "{$phase}={$provider}";
                     }
-                    $this->line("  Providers: " . implode(', ', $providerParts));
+                    $this->line('  Providers: '.implode(', ', $providerParts));
                 }
 
-                if (!empty($hm['review_item_types'])) {
+                if (! empty($hm['review_item_types'])) {
                     $typeParts = [];
                     foreach ($hm['review_item_types'] as $type => $count) {
                         $typeParts[] = "{$count} {$type}";
                     }
-                    $this->line("  Review types: " . implode(', ', $typeParts));
+                    $this->line('  Review types: '.implode(', ', $typeParts));
                 }
             }
         }
 
         $this->newLine();
-        $this->info("Tip: Use --phase=report to see full LLM output | --json for machine-readable | --raw for full findings text");
+        $this->info('Tip: Use --phase=report to see full LLM output | --json for machine-readable | --raw for full findings text');
     }
 }

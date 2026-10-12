@@ -2,15 +2,20 @@
 
 namespace App\Services\Ops;
 
+use App\Services\AgentActionabilityGateService;
 use App\Services\DevAgent\TraceEnvelopeService;
 use App\Services\SkillLoaderService;
 use Carbon\CarbonImmutable;
+use Cron\CronExpression;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Throwable;
 
 class AgentDoctorService
 {
+    private const MEMORY_CAPACITY_HORIZON_MAX_RUN_DATES = 1000;
+
     private const TRACE_READINESS_HOURS = 24;
 
     private const TRACE_READINESS_LIMIT = 200;
@@ -50,6 +55,7 @@ class AgentDoctorService
         private readonly SkillLoaderService $skillLoader,
         private readonly AgentDoctorRecursionTelemetryService $recursionTelemetry,
         private readonly TraceEnvelopeService $traceEnvelopes,
+        private readonly AgentActionabilityGateService $actionabilityGate,
     ) {}
 
     /**
@@ -71,6 +77,7 @@ class AgentDoctorService
             $this->collectEpisodeSummarySignals($since, $now, $checks),
             $this->collectProcedureSignals($checks)
         );
+        $memoryMaintenance = $this->collectMemoryMaintenancePosture($memory, $now);
         $recursion = $this->recursionTelemetry->collect();
         $trace = $this->collectTraceReadiness();
 
@@ -98,12 +105,13 @@ class AgentDoctorService
                 $scheduledJobs[$agentId] ?? $this->emptyScheduledJobSummary(),
                 $reviewQueues[$agentId] ?? $this->emptyReviewQueueSummary(),
                 $registryCoverage[$agentId] ?? $this->emptyRegistrySummary(),
-                $memory[$agentId] ?? $this->emptyMemorySummary()
+                $memory[$agentId] ?? $this->emptyMemorySummary(),
+                $memoryMaintenance
             ))
             ->values()
             ->all();
 
-        $checks = array_merge($checks, $this->buildAggregateChecks($agents));
+        $checks = array_merge($checks, $this->buildAggregateChecks($agents, $memoryMaintenance));
         $overallStatus = $this->overallStatus($checks, $agents);
 
         return [
@@ -112,6 +120,7 @@ class AgentDoctorService
             'overall_status' => $overallStatus,
             'summary' => $this->buildSummary($agents, $now),
             'agents' => $agents,
+            'memory_maintenance' => $memoryMaintenance,
             'recursion' => $recursion,
             'trace' => $trace,
             'quick' => $quick,
@@ -363,8 +372,16 @@ class AgentDoctorService
             return [];
         }
 
+        $actionabilityColumns = ['review_type', 'finding_type', 'title', 'summary', 'details', 'confidence'];
+        $canClassifyActionability = collect($actionabilityColumns)
+            ->every(fn (string $column): bool => Schema::hasColumn('agent_review_queue', $column));
+        $columns = ['agent_id', 'priority', 'created_at', 'expires_at'];
+        if ($canClassifyActionability) {
+            $columns = array_merge($columns, $actionabilityColumns);
+        }
+
         $rows = DB::table('agent_review_queue')
-            ->select('agent_id', 'priority', 'created_at', 'expires_at')
+            ->select($columns)
             ->where('status', 'pending')
             ->get();
 
@@ -380,17 +397,35 @@ class AgentDoctorService
             $createdAt = $this->parseTime($row->created_at ?? null);
             $expiresAt = $this->parseTime($row->expires_at ?? null);
             $ageHours = $createdAt !== null ? round($createdAt->floatDiffInHours($now), 1) : null;
+            $actionabilityState = $canClassifyActionability
+                ? $this->reviewActionabilityState($row)
+                : null;
+            $operatorActionable = $actionabilityState === null
+                || $actionabilityState === AgentActionabilityGateService::STATE_OPERATOR_ACTIONABLE;
 
             $summary['pending']++;
-            if ((int) ($row->priority ?? 0) >= $highPriorityThreshold) {
+            if ($operatorActionable) {
+                $summary['actionable_pending']++;
+            } elseif ($actionabilityState === AgentActionabilityGateService::STATE_REVIEW_READY) {
+                $summary['review_ready_pending']++;
+            } else {
+                $summary['non_actionable_pending']++;
+            }
+            if ($ageHours !== null) {
+                $summary['oldest_age_hours'] = max((float) ($summary['oldest_age_hours'] ?? 0.0), $ageHours);
+            }
+            if ($operatorActionable && $ageHours !== null) {
+                $summary['oldest_actionable_age_hours'] = max(
+                    (float) ($summary['oldest_actionable_age_hours'] ?? 0.0),
+                    $ageHours
+                );
+            }
+            if ($operatorActionable && (int) ($row->priority ?? 0) >= $highPriorityThreshold) {
                 $summary['high_priority']++;
                 $summary['oldest_high_priority_age_hours'] = max(
                     (float) ($summary['oldest_high_priority_age_hours'] ?? 0.0),
                     (float) ($ageHours ?? 0.0)
                 );
-            }
-            if ($ageHours !== null) {
-                $summary['oldest_age_hours'] = max((float) ($summary['oldest_age_hours'] ?? 0.0), $ageHours);
             }
             if ($expiresAt !== null && $expiresAt->lessThan($now)) {
                 $summary['expired']++;
@@ -400,6 +435,49 @@ class AgentDoctorService
         }
 
         return $summaries;
+    }
+
+    private function reviewActionabilityState(object $row): ?string
+    {
+        if (trim((string) ($row->review_type ?? '')) === ''
+            && trim((string) ($row->finding_type ?? '')) === '') {
+            return null;
+        }
+
+        $details = [];
+        $encodedDetails = $row->details ?? null;
+        if (is_string($encodedDetails) && trim($encodedDetails) !== '') {
+            try {
+                $decoded = json_decode($encodedDetails, true, 512, JSON_THROW_ON_ERROR);
+                $details = is_array($decoded) ? $decoded : [];
+            } catch (\JsonException) {
+                return null;
+            }
+        } elseif (is_array($encodedDetails)) {
+            $details = $encodedDetails;
+        }
+
+        try {
+            $classification = $this->actionabilityGate->classifyReviewSubmission([
+                'agent_id' => $row->agent_id ?? null,
+                'review_type' => $row->review_type ?? null,
+                'finding_type' => $row->finding_type ?? null,
+                'title' => $row->title ?? null,
+                'summary' => $row->summary ?? null,
+                'confidence' => $row->confidence ?? null,
+            ], $details);
+        } catch (Throwable) {
+            return null;
+        }
+
+        $state = $classification['state'] ?? null;
+
+        return is_string($state) && in_array($state, [
+            AgentActionabilityGateService::STATE_SILENT_AUDIT,
+            AgentActionabilityGateService::STATE_OBSERVE_ONLY,
+            AgentActionabilityGateService::STATE_REVIEW_READY,
+            AgentActionabilityGateService::STATE_OPERATOR_ACTIONABLE,
+        ], true) ? $state : null;
     }
 
     /**
@@ -541,6 +619,227 @@ class AgentDoctorService
         }
 
         return $summaries;
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $memory
+     * @return array<string, mixed>
+     */
+    private function collectMemoryMaintenancePosture(array $memory, CarbonImmutable $now): array
+    {
+        $backlogSessions = array_sum(array_map(
+            static fn (array $summary): int => (int) ($summary['undistilled_sessions_window'] ?? 0),
+            $memory
+        ));
+        $backlogEpisodes = array_sum(array_map(
+            static fn (array $summary): int => (int) ($summary['undistilled_episodes_window'] ?? 0),
+            $memory
+        ));
+        $oldestAgeHours = null;
+        foreach ($memory as $summary) {
+            $age = $summary['oldest_undistilled_age_hours'] ?? null;
+            if ($age !== null) {
+                $oldestAgeHours = max((float) ($oldestAgeHours ?? 0.0), (float) $age);
+            }
+        }
+
+        $posture = [
+            'status' => $backlogSessions === 0 ? 'idle' : 'unconfigured',
+            'policy_source' => 'scheduled_jobs.notes.runtime',
+            'job_name' => 'episodic_memory_backfill_recent',
+            'enabled' => false,
+            'last_run_status' => 'unknown',
+            'last_run_at' => null,
+            'last_run_age_hours' => null,
+            'session_limit' => 0,
+            'daily_capacity' => 0,
+            'freshness_slo_hours' => 0.0,
+            'backlog_sessions' => $backlogSessions,
+            'backlog_episodes' => $backlogEpisodes,
+            'oldest_backlog_age_hours' => $oldestAgeHours !== null ? round($oldestAgeHours, 1) : null,
+            'within_next_run_capacity' => false,
+            'runs_required' => 0,
+            'runs_available_before_slo' => 0,
+            'freshness_horizon_capacity' => 0,
+            'projected_clearance_hours' => null,
+            'projected_oldest_age_at_clear_hours' => null,
+            'within_freshness_capacity' => false,
+            'projection_scope' => 'current_backlog_only',
+            'within_freshness_slo' => false,
+            'last_run_within_slo' => false,
+            'on_track' => false,
+        ];
+
+        if (! Schema::hasTable('scheduled_jobs')) {
+            return $posture;
+        }
+
+        $requiredColumns = ['name', 'command', 'enabled', 'last_run_at', 'last_run_status'];
+        foreach ($requiredColumns as $column) {
+            if (! Schema::hasColumn('scheduled_jobs', $column)) {
+                return $posture;
+            }
+        }
+
+        $columns = $requiredColumns;
+        if (Schema::hasColumn('scheduled_jobs', 'notes')) {
+            $columns[] = 'notes';
+        }
+        if (Schema::hasColumn('scheduled_jobs', 'cron_expression')) {
+            $columns[] = 'cron_expression';
+        }
+        $job = DB::table('scheduled_jobs')
+            ->where('name', 'episodic_memory_backfill_recent')
+            ->first($columns);
+        if (! $job || ! str_starts_with((string) ($job->command ?? ''), 'episodic:memory --backfill')) {
+            return $posture;
+        }
+
+        $notes = is_string($job->notes ?? null) ? json_decode((string) $job->notes, true) : [];
+        $notes = is_array($notes) ? $notes : [];
+        $runtime = is_array($notes['runtime'] ?? null) ? $notes['runtime'] : [];
+        $sessionLimit = max(0, (int) ($runtime['session_limit'] ?? 0));
+        if ($sessionLimit === 0
+            && preg_match('/(?:^|\s)--limit=(\d+)(?:\s|$)/', (string) $job->command, $matches) === 1
+        ) {
+            $sessionLimit = (int) $matches[1];
+        }
+        $dailyCapacity = max(0, (int) ($runtime['daily_capacity'] ?? 0));
+        $freshnessSloHours = max(0.0, (float) ($runtime['freshness_slo_hours'] ?? 0.0));
+        $lastRunAt = $this->parseTime($job->last_run_at ?? null);
+        $lastRunAgeHours = $this->ageHours($lastRunAt, $now);
+        $lastRunStatus = trim((string) ($job->last_run_status ?? 'unknown')) ?: 'unknown';
+        $enabled = (bool) ($job->enabled ?? false);
+        $withinCapacity = $sessionLimit > 0 && $backlogSessions <= $sessionLimit;
+        $capacityHorizon = $this->memoryCapacityHorizon(
+            cronExpression: trim((string) ($job->cron_expression ?? '')),
+            now: $now,
+            backlogSessions: $backlogSessions,
+            sessionLimit: $sessionLimit,
+            dailyCapacity: $dailyCapacity,
+            oldestAgeHours: $oldestAgeHours,
+            freshnessSloHours: $freshnessSloHours,
+        );
+        $withinFreshnessSlo = $backlogSessions === 0
+            || ($freshnessSloHours > 0 && $oldestAgeHours !== null && $oldestAgeHours <= $freshnessSloHours);
+        $lastRunWithinSlo = $freshnessSloHours > 0
+            && $lastRunAgeHours !== null
+            && $lastRunAgeHours <= $freshnessSloHours;
+        $onTrack = $backlogSessions > 0
+            && $enabled
+            && $lastRunStatus === 'success'
+            && $lastRunWithinSlo
+            && $capacityHorizon['within_freshness_capacity']
+            && $withinFreshnessSlo;
+
+        return [
+            ...$posture,
+            'status' => $backlogSessions === 0
+                ? 'idle'
+                : ($onTrack ? ($withinCapacity ? 'on_track' : 'catching_up') : 'degraded'),
+            'enabled' => $enabled,
+            'last_run_status' => $lastRunStatus,
+            'last_run_at' => $lastRunAt?->toIso8601String(),
+            'last_run_age_hours' => $lastRunAgeHours,
+            'session_limit' => $sessionLimit,
+            'daily_capacity' => $dailyCapacity,
+            'freshness_slo_hours' => $freshnessSloHours,
+            'within_next_run_capacity' => $withinCapacity,
+            ...$capacityHorizon,
+            'within_freshness_slo' => $withinFreshnessSlo,
+            'last_run_within_slo' => $lastRunWithinSlo,
+            'on_track' => $onTrack,
+        ];
+    }
+
+    /**
+     * @return array{
+     *     runs_required:int,
+     *     runs_available_before_slo:int,
+     *     freshness_horizon_capacity:int,
+     *     projected_clearance_hours:?float,
+     *     projected_oldest_age_at_clear_hours:?float,
+     *     within_freshness_capacity:bool,
+     *     projection_scope:string
+     * }
+     */
+    private function memoryCapacityHorizon(
+        string $cronExpression,
+        CarbonImmutable $now,
+        int $backlogSessions,
+        int $sessionLimit,
+        int $dailyCapacity,
+        ?float $oldestAgeHours,
+        float $freshnessSloHours,
+    ): array {
+        $projection = [
+            'runs_required' => $sessionLimit > 0 ? (int) ceil($backlogSessions / $sessionLimit) : 0,
+            'runs_available_before_slo' => 0,
+            'freshness_horizon_capacity' => 0,
+            'projected_clearance_hours' => null,
+            'projected_oldest_age_at_clear_hours' => null,
+            'within_freshness_capacity' => $backlogSessions === 0,
+            'projection_scope' => 'current_backlog_only',
+        ];
+
+        if ($backlogSessions === 0) {
+            return $projection;
+        }
+
+        if ($cronExpression === ''
+            || $sessionLimit <= 0
+            || $dailyCapacity <= 0
+            || $oldestAgeHours === null
+            || $freshnessSloHours <= 0
+            || $oldestAgeHours > $freshnessSloHours
+        ) {
+            return $projection;
+        }
+
+        $remainingFreshnessHours = max(0.0, $freshnessSloHours - $oldestAgeHours);
+        $maxDates = min(self::MEMORY_CAPACITY_HORIZON_MAX_RUN_DATES, max(
+            $projection['runs_required'],
+            (int) ceil($remainingFreshnessHours * 60) + 1
+        ));
+
+        try {
+            $runDates = (new CronExpression($cronExpression))->getMultipleRunDates(
+                $maxDates,
+                $now->toDateTimeImmutable(),
+                false,
+                false,
+                $now->getTimezone()->getName(),
+            );
+        } catch (Throwable) {
+            return $projection;
+        }
+
+        $deadline = $now->addSeconds((int) floor($remainingFreshnessHours * 3600));
+        $availableRuns = count(array_filter(
+            $runDates,
+            static fn (\DateTimeInterface $date): bool => $date->getTimestamp() <= $deadline->getTimestamp()
+        ));
+        $cronCapacity = $availableRuns * $sessionLimit;
+        $dailyCapacityCeiling = $dailyCapacity * max(1, (int) ceil($remainingFreshnessHours / 24));
+        $horizonCapacity = min($cronCapacity, $dailyCapacityCeiling);
+        $clearanceDate = $runDates[$projection['runs_required'] - 1] ?? null;
+        $clearanceHours = $clearanceDate instanceof \DateTimeInterface
+            ? max(0.0, ($clearanceDate->getTimestamp() - $now->getTimestamp()) / 3600)
+            : null;
+        $projectedOldestAge = $clearanceHours !== null
+            ? $oldestAgeHours + $clearanceHours
+            : null;
+
+        return [
+            ...$projection,
+            'runs_available_before_slo' => $availableRuns,
+            'freshness_horizon_capacity' => $horizonCapacity,
+            'projected_clearance_hours' => $clearanceHours !== null ? round($clearanceHours, 1) : null,
+            'projected_oldest_age_at_clear_hours' => $projectedOldestAge !== null ? round($projectedOldestAge, 1) : null,
+            'within_freshness_capacity' => $horizonCapacity >= $backlogSessions
+                && $projectedOldestAge !== null
+                && $projectedOldestAge <= $freshnessSloHours,
+        ];
     }
 
     /**
@@ -788,10 +1087,18 @@ class AgentDoctorService
      * @param  array<string, mixed>  $reviewQueue
      * @param  array<string, mixed>  $registry
      * @param  array<string, mixed>  $memory
+     * @param  array<string, mixed>  $memoryMaintenance
      * @return array<string, mixed>
      */
-    private function buildAgentReport(string $agentId, array $sessions, array $scheduledJob, array $reviewQueue, array $registry, array $memory): array
-    {
+    private function buildAgentReport(
+        string $agentId,
+        array $sessions,
+        array $scheduledJob,
+        array $reviewQueue,
+        array $registry,
+        array $memory,
+        array $memoryMaintenance,
+    ): array {
         $sessions = $this->publicSessionSummary($sessions);
         $warnings = [];
         $critical = [];
@@ -830,11 +1137,11 @@ class AgentDoctorService
         $reviewExpiryHours = max(1, (int) config('agents.review_expiry_days', 7) * 24);
         $reviewWarnHours = $reviewExpiryHours * (float) config('health_thresholds.agents.review_queue_warning_fraction', 0.5);
         $reviewCritHours = $reviewExpiryHours * (float) config('health_thresholds.agents.review_queue_critical_fraction', 0.9);
-        $oldestAge = $reviewQueue['oldest_age_hours'] ?? null;
+        $oldestAge = $reviewQueue['oldest_actionable_age_hours'] ?? null;
         if ($oldestAge !== null && $oldestAge >= $reviewCritHours) {
-            $critical[] = "oldest pending review is {$oldestAge}h old";
+            $critical[] = "oldest operator-actionable review is {$oldestAge}h old";
         } elseif ($oldestAge !== null && $oldestAge >= $reviewWarnHours) {
-            $warnings[] = "oldest pending review is {$oldestAge}h old";
+            $warnings[] = "oldest operator-actionable review is {$oldestAge}h old";
         }
 
         $highPriorityAge = (float) ($reviewQueue['oldest_high_priority_age_hours'] ?? 0.0);
@@ -904,11 +1211,14 @@ class AgentDoctorService
         $episodesWithoutDistillationWarn = (int) config('health_thresholds.agents.episodes_without_distillation_warning', 25);
         $undistilledEpisodes = (int) ($memory['undistilled_episodes_window'] ?? 0);
         $undistilledSessions = (int) ($memory['undistilled_sessions_window'] ?? 0);
-        if ($episodesWithoutDistillationWarn > 0 && $undistilledEpisodes >= $episodesWithoutDistillationWarn) {
+        if ($episodesWithoutDistillationWarn > 0
+            && $undistilledEpisodes >= $episodesWithoutDistillationWarn
+            && ! (bool) ($memoryMaintenance['on_track'] ?? false)
+        ) {
             $warnings[] = "{$undistilledEpisodes} undistilled episode(s) across {$undistilledSessions} session(s)";
         }
 
-        $distillationStaleHours = (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
+        $distillationStaleHours = (float) config('health_thresholds.agents.distillation_stale_hours_warning');
         $oldestUndistilledAgeHours = $memory['oldest_undistilled_age_hours'] ?? null;
         if ($distillationStaleHours > 0 && $oldestUndistilledAgeHours !== null && (float) $oldestUndistilledAgeHours >= $distillationStaleHours) {
             $warnings[] = "oldest undistilled session is {$oldestUndistilledAgeHours}h old";
@@ -933,6 +1243,7 @@ class AgentDoctorService
             'review_queue' => $reviewQueue,
             'registry' => $registry,
             'memory' => $memory,
+            'memory_maintenance_on_track' => (bool) ($memoryMaintenance['on_track'] ?? false),
             'status' => $status,
             'warnings' => $warnings,
             'critical' => $critical,
@@ -992,6 +1303,7 @@ class AgentDoctorService
         $reviewQueue = is_array($agent['review_queue'] ?? null) ? $agent['review_queue'] : [];
         $registry = is_array($agent['registry'] ?? null) ? $agent['registry'] : [];
         $memory = is_array($agent['memory'] ?? null) ? $agent['memory'] : [];
+        $memoryMaintenanceOnTrack = (bool) ($agent['memory_maintenance_on_track'] ?? false);
 
         if ((int) ($sessions['critical_stalled'] ?? 0) > 0) {
             self::addReasonCode($codes, 'session_critical_stalled');
@@ -1026,7 +1338,7 @@ class AgentDoctorService
 
         $reviewExpiryHours = max(1, (int) config('agents.review_expiry_days', 7) * 24);
         $reviewWarnHours = $reviewExpiryHours * (float) config('health_thresholds.agents.review_queue_warning_fraction', 0.5);
-        $oldestAge = $reviewQueue['oldest_age_hours'] ?? null;
+        $oldestAge = $reviewQueue['oldest_actionable_age_hours'] ?? null;
         if ($oldestAge !== null && (float) $oldestAge >= $reviewWarnHours) {
             self::addReasonCode($codes, 'review_queue_aged');
         }
@@ -1080,11 +1392,14 @@ class AgentDoctorService
 
         $episodesWithoutDistillationWarn = (int) config('health_thresholds.agents.episodes_without_distillation_warning', 25);
         $undistilledEpisodes = (int) ($memory['undistilled_episodes_window'] ?? 0);
-        if ($episodesWithoutDistillationWarn > 0 && $undistilledEpisodes >= $episodesWithoutDistillationWarn) {
+        if ($episodesWithoutDistillationWarn > 0
+            && $undistilledEpisodes >= $episodesWithoutDistillationWarn
+            && ! $memoryMaintenanceOnTrack
+        ) {
             self::addReasonCode($codes, 'memory_distillation_missing');
         }
 
-        $distillationStaleHours = (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
+        $distillationStaleHours = (float) config('health_thresholds.agents.distillation_stale_hours_warning');
         $oldestUndistilledAgeHours = $memory['oldest_undistilled_age_hours'] ?? null;
         if ($distillationStaleHours > 0 && $oldestUndistilledAgeHours !== null && (float) $oldestUndistilledAgeHours >= $distillationStaleHours) {
             self::addReasonCode($codes, 'memory_distillation_stale');
@@ -1271,7 +1586,7 @@ class AgentDoctorService
                     if ((int) $readiness['malformed_lines_24h'] > 0) {
                         $warnings[] = "{$readiness['malformed_lines_24h']} malformed trace line(s) in the last 24h";
                     }
-                } catch (\Throwable) {
+                } catch (Throwable) {
                     $readiness['scan_status'] = 'failed';
                     $warnings[] = 'trace readiness scan failed';
                 }
@@ -1402,7 +1717,7 @@ class AgentDoctorService
 
             try {
                 $date = CarbonImmutable::parse($matches[1], 'UTC')->startOfDay();
-            } catch (\Throwable) {
+            } catch (Throwable) {
                 continue;
             }
 
@@ -1456,6 +1771,9 @@ class AgentDoctorService
         $sessionsActive = 0;
         $sessionsStalled = 0;
         $reviewPending = 0;
+        $reviewActionablePending = 0;
+        $reviewReadyPending = 0;
+        $reviewNonActionablePending = 0;
         $reviewAged = 0;
         $toolsMissing = 0;
         $toolsBlocked = 0;
@@ -1487,6 +1805,9 @@ class AgentDoctorService
             $sessionsActive += (int) ($agent['sessions']['active'] ?? 0);
             $sessionsStalled += (int) ($agent['sessions']['stalled'] ?? 0);
             $reviewPending += (int) ($agent['review_queue']['pending'] ?? 0);
+            $reviewActionablePending += (int) ($agent['review_queue']['actionable_pending'] ?? 0);
+            $reviewReadyPending += (int) ($agent['review_queue']['review_ready_pending'] ?? 0);
+            $reviewNonActionablePending += (int) ($agent['review_queue']['non_actionable_pending'] ?? 0);
             $toolsMissing += count($agent['registry']['tools_missing'] ?? []);
             $toolsBlocked += count($agent['registry']['tools_blocked'] ?? []);
             $toolsUnavailable += count($agent['registry']['tools_unavailable'] ?? []);
@@ -1529,7 +1850,7 @@ class AgentDoctorService
                 $latestScheduledGuardedOutputAt,
                 $this->parseTime($agent['scheduled_job']['latest_guarded_output_at'] ?? null)
             );
-            if (($agent['review_queue']['oldest_age_hours'] ?? null) !== null && $agent['warnings'] !== []) {
+            if (in_array('review_queue_aged', (array) ($agent['issue_codes'] ?? []), true)) {
                 $reviewAged++;
             }
 
@@ -1550,6 +1871,9 @@ class AgentDoctorService
             'sessions_active' => $sessionsActive,
             'sessions_stalled' => $sessionsStalled,
             'review_queue_pending' => $reviewPending,
+            'review_queue_actionable_pending' => $reviewActionablePending,
+            'review_queue_review_ready_pending' => $reviewReadyPending,
+            'review_queue_non_actionable_pending' => $reviewNonActionablePending,
             'review_queue_aged' => $reviewAged,
             'tools_missing_total' => $toolsMissing,
             'tools_blocked_total' => $toolsBlocked,
@@ -1590,9 +1914,10 @@ class AgentDoctorService
 
     /**
      * @param  array<int, array<string, mixed>>  $agents
+     * @param  array<string, mixed>  $memoryMaintenance
      * @return array<int, array<string, string>>
      */
-    private function buildAggregateChecks(array $agents): array
+    private function buildAggregateChecks(array $agents, array $memoryMaintenance): array
     {
         $sessionsStalled = array_sum(array_map(fn (array $agent): int => (int) ($agent['sessions']['stalled'] ?? 0), $agents));
         $criticalSessions = array_sum(array_map(fn (array $agent): int => (int) ($agent['sessions']['critical_stalled'] ?? 0), $agents));
@@ -1611,16 +1936,18 @@ class AgentDoctorService
         $undistilledSessions = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['undistilled_sessions_window'] ?? 0), $agents));
         $lowSignalUndistilledSessions = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['low_signal_undistilled_sessions_window'] ?? 0), $agents));
         $episodesWithoutDistillationWarn = (int) config('health_thresholds.agents.episodes_without_distillation_warning', 25);
-        $undistilledEpisodesWarning = $episodesWithoutDistillationWarn > 0 && $undistilledEpisodes >= $episodesWithoutDistillationWarn;
+        $undistilledEpisodesWarning = $episodesWithoutDistillationWarn > 0
+            && $undistilledEpisodes >= $episodesWithoutDistillationWarn
+            && ! (bool) ($memoryMaintenance['on_track'] ?? false);
         $staleDistillations = count(array_filter($agents, function (array $agent): bool {
             $oldestUndistilled = $agent['memory']['oldest_undistilled_age_hours'] ?? null;
-            if ($oldestUndistilled !== null && (float) $oldestUndistilled >= (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0)) {
+            if ($oldestUndistilled !== null && (float) $oldestUndistilled >= (float) config('health_thresholds.agents.distillation_stale_hours_warning')) {
                 return true;
             }
 
             $hours = $agent['memory']['hours_since_last_summary'] ?? null;
 
-            return $hours !== null && (float) $hours >= (float) config('health_thresholds.agents.distillation_stale_hours_warning', 48.0);
+            return $hours !== null && (float) $hours >= (float) config('health_thresholds.agents.distillation_stale_hours_warning');
         }));
         $lowQualityProcedures = array_sum(array_map(fn (array $agent): int => (int) ($agent['memory']['procedures_low_quality'] ?? 0), $agents));
         $cjkOutputRuns = array_sum(array_map(fn (array $agent): int => (int) ($agent['scheduled_job']['cjk_output_runs_24h'] ?? 0), $agents));
@@ -1796,8 +2123,12 @@ class AgentDoctorService
     {
         return [
             'pending' => 0,
+            'actionable_pending' => 0,
+            'review_ready_pending' => 0,
+            'non_actionable_pending' => 0,
             'high_priority' => 0,
             'oldest_age_hours' => null,
+            'oldest_actionable_age_hours' => null,
             'oldest_high_priority_age_hours' => null,
             'expired' => 0,
         ];
@@ -1894,7 +2225,7 @@ class AgentDoctorService
 
         try {
             return CarbonImmutable::parse($value);
-        } catch (\Throwable) {
+        } catch (Throwable) {
             return null;
         }
     }

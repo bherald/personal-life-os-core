@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Support\PromptIntegrityPolicy;
 use Illuminate\Console\Command;
 
 class OllamaEvalScorecardCommand extends Command
@@ -27,11 +28,21 @@ class OllamaEvalScorecardCommand extends Command
         }
 
         $payload = [
+            'suite_id' => $config['suite_id'] ?? 'unknown',
             'routing' => $config['routing'] ?? [],
             'scorecard_fields' => $config['scorecard_fields'] ?? [],
             'minimum_acceptance' => $config['minimum_acceptance'] ?? [],
             'candidate_queue' => $config['candidate_queue'] ?? [],
             'eval_cases' => $config['eval_cases'] ?? [],
+            'compression_eval_enabled' => PromptIntegrityPolicy::allowsLossyTransforms(),
+            'compression_benchmark_enabled' => PromptIntegrityPolicy::allowsLossyTransforms(),
+            'compression_families' => $config['compression_families'] ?? [],
+            'structured_output_evidence' => [
+                'schema_version' => config('ollama_output_schemas.schema_version', 'unknown'),
+                'provider_neutral_transport' => true,
+                'evaluator_revalidation' => true,
+                'promotion_requires_all_compliant' => true,
+            ],
         ];
 
         if ($model !== null) {
@@ -135,7 +146,14 @@ class OllamaEvalScorecardCommand extends Command
     {
         $candidates = is_array($payload['candidate_queue'] ?? null) ? $payload['candidate_queue'] : [];
         $routing = is_array($payload['routing'] ?? null) ? $payload['routing'] : [];
-        $compressionFamilies = config('ollama_eval.compression_families', []);
+        $configuredCompressionFamilies = config('ollama_eval.compression_families', []);
+        $compressionEvalEnabled = filter_var($payload['compression_eval_enabled'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $compressionBenchmarkEnabled = filter_var($payload['compression_benchmark_enabled'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $compressionFamiliesActive = $compressionEvalEnabled || $compressionBenchmarkEnabled;
+        $compressionFamilyNames = array_values(array_map(
+            static fn (array $family): string => (string) ($family['family'] ?? 'unknown'),
+            is_array($configuredCompressionFamilies) ? $configuredCompressionFamilies : []
+        ));
 
         $candidateCounts = [];
         $activeModels = [];
@@ -170,19 +188,22 @@ class OllamaEvalScorecardCommand extends Command
             'read_only' => true,
             'no_write' => true,
             'promotion_apply_enabled' => false,
+            'suite_id' => (string) ($payload['suite_id'] ?? 'unknown'),
+            'structured_output_evidence' => $payload['structured_output_evidence'] ?? [],
             'routing_buckets' => array_map(static fn ($tasks): int => is_array($tasks) ? count($tasks) : 0, $routing),
             'scorecard_field_count' => count($payload['scorecard_fields'] ?? []),
             'minimum_acceptance_count' => count($payload['minimum_acceptance'] ?? []),
             'eval_case_count' => count($payload['eval_cases'] ?? []),
+            'active_eval_case_count' => $this->activeEvalCaseCount($payload['eval_cases'] ?? []),
             'candidate_counts' => $candidateCounts,
             'active_models' => $activeModels,
             'bench_models' => $benchModels,
             'watch_models' => $watchModels,
             'caveat_models' => $caveatModels,
-            'compression_families' => array_values(array_map(
-                static fn (array $family): string => (string) ($family['family'] ?? 'unknown'),
-                is_array($compressionFamilies) ? $compressionFamilies : []
-            )),
+            'compression_eval_enabled' => $compressionEvalEnabled,
+            'compression_benchmark_enabled' => $compressionBenchmarkEnabled,
+            'compression_families' => $compressionFamiliesActive ? $compressionFamilyNames : [],
+            'compression_families_configured' => $compressionFamilyNames,
         ];
     }
 
@@ -198,5 +219,18 @@ class OllamaEvalScorecardCommand extends Command
             'intended_use' => (string) ($candidate['intended_use'] ?? 'unknown'),
             'has_caveat' => str_contains(strtolower((string) ($candidate['notes'] ?? '')), 'caveat'),
         ];
+    }
+
+    private function activeEvalCaseCount(array $cases): int
+    {
+        $compressionEvalEnabled = PromptIntegrityPolicy::allowsLossyTransforms()
+            && filter_var(config('ollama_eval.compression_eval_enabled', false), FILTER_VALIDATE_BOOLEAN);
+
+        return collect($cases)
+            ->filter(static fn (array $case): bool => ! filter_var(
+                $case['requires_lossy_transform'] ?? false,
+                FILTER_VALIDATE_BOOLEAN
+            ) || $compressionEvalEnabled)
+            ->count();
     }
 }

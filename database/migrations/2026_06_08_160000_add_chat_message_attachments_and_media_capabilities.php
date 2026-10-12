@@ -160,7 +160,7 @@ return new class extends Migration
                 'huihui_ai/qwen3-vl-abliterated:8b-instruct',
                 'Candidate local uncensored vision model',
                 ['operator_uncensored', 'image_input', 'image_to_text', 'ocr_text_extraction', 'local_candidate'],
-                '2026-06-08 RTS: candidate only. Requires local pull, license review, hardware fit, and PLOS eval before enabling. Community abliterated models may lose reasoning quality; do not make default without bench proof.',
+                '2026-06-08 RTC: candidate only. Requires local pull, license review, hardware fit, and PLOS eval before enabling. Community abliterated models may lose reasoning quality; do not make default without bench proof.',
                 false,
                 $now
             );
@@ -170,7 +170,7 @@ return new class extends Migration
                 'maxwellb/gemma4-12b-it-oym',
                 'Candidate uncensored multimodal operator model',
                 ['operator_uncensored', 'image_input', 'audio_input', 'tool_calling', 'thinking_or_reasoning_modes', 'local_candidate'],
-                '2026-06-08 RTS: candidate only from Ollama community listing. Verify exact upstream license, local runtime support, and refusal/quality behavior before enabling.',
+                '2026-06-08 RTC: candidate only from Ollama community listing. Verify exact upstream license, local runtime support, and refusal/quality behavior before enabling.',
                 false,
                 $now
             );
@@ -180,7 +180,7 @@ return new class extends Migration
                 'dolphincoder:15b',
                 'Candidate uncensored coding model',
                 ['operator_uncensored', 'code_input', 'code_output', 'private_uncensored_text', 'local_candidate'],
-                '2026-06-08 RTS: older uncensored StarCoder2-derived coding option. Candidate only; benchmark against current qwen/devstral coding models before enabling.',
+                '2026-06-08 RTC: older uncensored StarCoder2-derived coding option. Candidate only; benchmark against current qwen/devstral coding models before enabling.',
                 false,
                 $now
             );
@@ -190,7 +190,7 @@ return new class extends Migration
                 'qwen3-coder:30b',
                 'Candidate local agentic coding model',
                 ['code_input', 'code_output', 'tool_calling', 'agentic_coding', 'long_context', 'local_candidate'],
-                '2026-06-08 RTS: .90+ candidate for agentic coding and repo-scale tasks. Requires local pull, memory check, and PLOS coding eval before enabling.',
+                '2026-06-08 RTC: .90+ candidate for agentic coding and repo-scale tasks. Requires local pull, memory check, and PLOS coding eval before enabling.',
                 false,
                 $now
             );
@@ -200,7 +200,7 @@ return new class extends Migration
                 'devstral:24b',
                 'Candidate lightweight local coding agent',
                 ['code_input', 'code_output', 'agentic_coding', 'long_context', 'local_candidate'],
-                '2026-06-08 RTS: .87 candidate for single-GPU/local coding agent work. Verify current Ollama build and compare to qwen3-coder before enabling.',
+                '2026-06-08 RTC: .87 candidate for single-GPU/local coding agent work. Verify current Ollama build and compare to qwen3-coder before enabling.',
                 false,
                 $now
             );
@@ -210,7 +210,7 @@ return new class extends Migration
                 'qwen3-vl:8b',
                 'Candidate detailed local vision and OCR model',
                 ['image_input', 'image_to_text', 'ocr_text_extraction', 'visual_reasoning', 'visual_coding', 'local_candidate'],
-                '2026-06-08 RTS: .89 candidate for detailed vision, OCR, layout, and visual coding. Requires Ollama 0.12.7+ and local eval before enabling.',
+                '2026-06-08 RTC: .89 candidate for detailed vision, OCR, layout, and visual coding. Requires Ollama 0.12.7+ and local eval before enabling.',
                 false,
                 $now
             );
@@ -220,7 +220,7 @@ return new class extends Migration
                 'qwen3-vl:30b',
                 'Candidate high-quality local vision model',
                 ['image_input', 'image_to_text', 'ocr_text_extraction', 'visual_reasoning', 'visual_coding', 'long_context', 'local_candidate'],
-                '2026-06-08 RTS: .91 heavy candidate for detailed vision and visual coding. Disabled pending hardware fit and eval.',
+                '2026-06-08 RTC: .91 heavy candidate for detailed vision and visual coding. Disabled pending hardware fit and eval.',
                 false,
                 $now
             );
@@ -230,7 +230,7 @@ return new class extends Migration
                 'x/z-image-turbo',
                 'Candidate local image output generator',
                 ['image_output', 'text_to_image', 'local_candidate', 'experimental'],
-                '2026-06-08 RTS: candidate only. Ollama image generation is experimental and platform-gated; do not enable until local runtime support is proven.',
+                '2026-06-08 RTC: candidate only. Ollama image generation is experimental and platform-gated; do not enable until local runtime support is proven.',
                 false,
                 $now
             );
@@ -240,7 +240,7 @@ return new class extends Migration
                 'whisper-local',
                 'Local audio/video transcription path',
                 ['audio_input', 'video_input', 'audio_to_text', 'video_to_text', 'local_tool'],
-                '2026-06-08 RTS: represents local Whisper extraction/tool path, not a chat LLM. Use as attachment preprocessing capability.',
+                '2026-06-08 RTC: represents local Whisper extraction/tool path, not a chat LLM. Use as attachment preprocessing capability.',
                 false,
                 $now
             );

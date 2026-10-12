@@ -191,10 +191,10 @@ class LlmProviderModelSyncReviewService
         $instanceType = (string) ($row->instance_type ?? '');
         $baseUrl = rtrim((string) ($row->base_url ?? ''), '/');
 
-        if ($instanceType === 'claude_cli') {
+        if (in_array($instanceType, ['claude_cli', 'anthropic_api'], true)) {
             return [
                 'status' => 'skipped',
-                'reason' => 'claude_cli_has_no_model_list_endpoint',
+                'reason' => 'retired_provider',
                 'models' => [],
             ];
         }

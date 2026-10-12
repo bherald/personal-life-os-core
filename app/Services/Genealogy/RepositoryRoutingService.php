@@ -65,7 +65,7 @@ class RepositoryRoutingService
     public function lookupMatrix(string $era, string $region, string $ethnicity = 'default'): array
     {
         $always = [
-            ['name' => 'FamilySearch',   'url' => 'https://www.familysearch.org/search',  'record_types' => ['vital', 'census', 'church', 'military', 'immigration'], 'priority' => 1, 'tool_name' => null, 'notes' => 'Manual/browser-only source; no supported PLOS API integration'],
+            ['name' => 'FamilySearch',   'url' => 'https://www.familysearch.org/search',  'record_types' => ['vital', 'census', 'church', 'military', 'immigration'], 'priority' => 1, 'tool_name' => null, 'notes' => 'Provider-specific source; use configured API/private adapter/operator-opened capture path'],
             ['name' => 'Ancestry.com',   'url' => 'https://www.ancestry.com/search',       'record_types' => ['census', 'vital', 'military', 'immigration', 'newspaper'], 'priority' => 2, 'tool_name' => null, 'notes' => 'Largest paid database; check library free access'],
             ['name' => 'WikiTree',       'url' => 'https://www.wikitree.com',              'record_types' => ['family_tree'], 'priority' => 7, 'tool_name' => 'wikitree_search', 'notes' => 'Collaborative tree; cross-reference with sources'],
             ['name' => 'FindAGrave',     'url' => 'https://www.findagrave.com',            'record_types' => ['cemetery', 'death'], 'priority' => 8, 'tool_name' => null, 'notes' => 'Cemetery records, death dates, photos'],
@@ -159,12 +159,12 @@ class RepositoryRoutingService
                 ['name' => 'NEHGS LifeVitals',            'url' => 'https://www.americanancestors.org/databases/massachusetts-vital-records',                  'record_types' => ['vital'],                      'priority' => 4, 'tool_name' => null, 'notes' => 'Manual membership lookup for MA, ME, NH, VT, RI vital records'],
             ],
             'mid_atlantic' => [
-                ['name' => 'Family History Center (Philadelphia area)', 'url' => 'https://www.familysearch.org/en/wiki/Pennsylvania_Genealogy', 'record_types' => ['church', 'vital', 'land'], 'priority' => 4, 'tool_name' => null, 'notes' => 'Manual/browser-only PA German church records (Reformed, Lutheran, Mennonite, Brethren)'],
+                ['name' => 'Family History Center (Philadelphia area)', 'url' => 'https://www.familysearch.org/en/wiki/Pennsylvania_Genealogy', 'record_types' => ['church', 'vital', 'land'], 'priority' => 4, 'tool_name' => null, 'notes' => 'Provider-specific PA German church record lead (Reformed, Lutheran, Mennonite, Brethren)'],
                 ['name' => 'New York State Archives',                    'url' => 'https://www.archives.nysed.gov',                             'record_types' => ['vital', 'land', 'census'], 'priority' => 5, 'tool_name' => null,                      'notes' => 'NY state censuses (1855, 1865, 1875, 1892, 1905, 1915, 1925)'],
             ],
             'south' => [
                 ['name' => "Freedmen's Bureau Records", 'url' => 'https://www.freedmensbureau.com',                              'record_types' => ['vital', 'labor'],       'priority' => 4, 'tool_name' => 'freedmens_bureau_search', 'notes' => 'For post-1865 research on African-American families in the South'],
-                ['name' => 'Southern States Archives',  'url' => 'https://www.familysearch.org/en/wiki/Southern_States_Genealogy', 'record_types' => ['vital', 'church', 'land'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Manual/browser-only county-level records; FamilySearch has extensive indexing for the South'],
+                ['name' => 'Southern States Archives',  'url' => 'https://www.familysearch.org/en/wiki/Southern_States_Genealogy', 'record_types' => ['vital', 'church', 'land'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Provider-specific county-level records; FamilySearch has extensive indexing for the South'],
             ],
             'midwest' => [
                 ['name' => 'Allen County Public Library (Fort Wayne)', 'url' => 'https://www.genealogycenter.org', 'record_types' => ['various'], 'priority' => 4, 'tool_name' => null,              'notes' => 'Second largest genealogy collection in USA; excellent Midwest coverage'],
@@ -172,10 +172,10 @@ class RepositoryRoutingService
             ],
             'great_plains' => [
                 ['name' => 'Midwest State Land Records',       'url' => 'https://glorecords.blm.gov',                                     'record_types' => ['land'],    'priority' => 4, 'tool_name' => null, 'notes' => 'Homestead Act filings; key for 1870-1910 Great Plains settlement'],
-                ['name' => 'State Historical Society Records', 'url' => 'https://www.familysearch.org/en/wiki/Great_Plains_Genealogy',    'record_types' => ['vital', 'church'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Manual/browser-only ND, SD, NE, KS state historical societies; strong for immigrant communities'],
+                ['name' => 'State Historical Society Records', 'url' => 'https://www.familysearch.org/en/wiki/Great_Plains_Genealogy',    'record_types' => ['vital', 'church'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Provider-specific ND, SD, NE, KS state historical society lead; strong for immigrant communities'],
             ],
             'southwest' => [
-                ['name' => 'Catholic Church Records (Southwest)', 'url' => 'https://www.familysearch.org/en/wiki/Texas_Genealogy',        'record_types' => ['church', 'vital'], 'priority' => 4, 'tool_name' => null, 'notes' => 'Manual/browser-only Spanish/Mexican colonial church records; TX, NM, AZ, OK'],
+                ['name' => 'Catholic Church Records (Southwest)', 'url' => 'https://www.familysearch.org/en/wiki/Texas_Genealogy',        'record_types' => ['church', 'vital'], 'priority' => 4, 'tool_name' => null, 'notes' => 'Provider-specific Spanish/Mexican colonial church record lead; TX, NM, AZ, OK'],
                 ['name' => 'NARA Fort Worth (Southwest Records)', 'url' => 'https://www.archives.gov/fort-worth',                         'record_types' => ['land', 'military', 'vital'], 'priority' => 5, 'tool_name' => 'nara_search', 'notes' => 'Regional NARA for TX, OK, NM, LA, AR, AZ, OK — Native American records'],
             ],
             'west' => [
@@ -195,7 +195,7 @@ class RepositoryRoutingService
             ],
             'scandinavia' => [
                 ['name' => 'Digitalarkivet (Norwegian)',        'url' => 'https://www.digitalarkivet.no',     'record_types' => ['church', 'census'], 'priority' => 3, 'tool_name' => null, 'notes' => 'Norwegian National Archives — church books, census, emigration records; free'],
-                ['name' => 'Swedish Church Records (FamilySearch)', 'url' => 'https://www.familysearch.org/en/wiki/Sweden_Genealogy', 'record_types' => ['church'], 'priority' => 4, 'tool_name' => null, 'notes' => 'Manual/browser-only household exam records and birth/death registers'],
+                ['name' => 'Swedish Church Records (FamilySearch)', 'url' => 'https://www.familysearch.org/en/wiki/Sweden_Genealogy', 'record_types' => ['church'], 'priority' => 4, 'tool_name' => null, 'notes' => 'Provider-specific household exam records and birth/death register lead'],
                 ['name' => 'Danish National Archives',          'url' => 'https://www.sa.dk',                 'record_types' => ['church', 'census'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Danish church records, emigration lists, censuses; free access'],
             ],
             'france' => [
@@ -210,12 +210,12 @@ class RepositoryRoutingService
             'italy' => [
                 ['name' => 'Antenati (Italian Vital Records)',  'url' => 'https://antenati.cultura.gov.it',  'record_types' => ['vital'],           'priority' => 3, 'tool_name' => null, 'notes' => 'Free access to Italian civil registration 1809-1910; state archives'],
                 ['name' => 'Matricula Online (Italy)',          'url' => 'https://www.matricula-online.eu',  'record_types' => ['church'],          'priority' => 4, 'tool_name' => 'german_church_records_search', 'notes' => 'Catholic parish registers for Northern Italy (Lombardy, Veneto, Trentino)'],
-                ['name' => 'FamilySearch Italy Collections',   'url' => 'https://www.familysearch.org/en/wiki/Italy_Genealogy', 'record_types' => ['vital', 'church'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Manual/browser-only civil registration and church records for most Italian provinces'],
+                ['name' => 'FamilySearch Italy Collections',   'url' => 'https://www.familysearch.org/en/wiki/Italy_Genealogy', 'record_types' => ['vital', 'church'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Provider-specific civil registration and church record lead for most Italian provinces'],
             ],
             'canada' => [
                 ['name' => 'Library and Archives Canada',       'url' => 'https://www.bac-lac.gc.ca',        'record_types' => ['census', 'immigration', 'military'], 'priority' => 3, 'tool_name' => null, 'notes' => 'Canadian federal records; censuses 1851-1926, passenger lists, WWI/WWII'],
                 ['name' => 'Ontario Vital Statistics',          'url' => 'https://www.ontario.ca/page/vital-statistics', 'record_types' => ['vital'],              'priority' => 4, 'tool_name' => null, 'notes' => 'ON birth/death/marriage records; online ordering for deaths 1869-1921'],
-                ['name' => 'FamilySearch Canada',               'url' => 'https://www.familysearch.org/en/wiki/Canada_Genealogy', 'record_types' => ['vital', 'church', 'census'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Manual/browser-only province-level collections; Quebec notarial records, church registers'],
+                ['name' => 'FamilySearch Canada',               'url' => 'https://www.familysearch.org/en/wiki/Canada_Genealogy', 'record_types' => ['vital', 'church', 'census'], 'priority' => 5, 'tool_name' => null, 'notes' => 'Provider-specific province-level collection lead; Quebec notarial records, church registers'],
             ],
             default => [],
         };

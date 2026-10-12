@@ -18,6 +18,7 @@ class ExtensionGenealogyController extends Controller
         if ($this->cookieStore === null) {
             $this->cookieStore = app(ExtensionCookieStoreService::class);
         }
+
         return $this->cookieStore;
     }
 
@@ -35,7 +36,7 @@ class ExtensionGenealogyController extends Controller
         $domain = $request->input('domain');
         $cookies = $request->input('cookies', []);
 
-        if (!$domain || empty($cookies)) {
+        if (! $domain || empty($cookies)) {
             return response()->json(['error' => 'domain and cookies required'], 400);
         }
 
@@ -56,7 +57,7 @@ class ExtensionGenealogyController extends Controller
     public function getCookies(Request $request): JsonResponse
     {
         $domain = $request->input('domain');
-        if (!$domain) {
+        if (! $domain) {
             return response()->json(['error' => 'domain parameter required'], 400);
         }
 
@@ -87,18 +88,18 @@ class ExtensionGenealogyController extends Controller
             'extracted_data' => 'nullable|array',
             'raw_text' => 'nullable|string',
             'person_name' => 'nullable|string|max:255',
-            'tree_id' => 'nullable|integer',
+            'tree_id' => 'required|integer|min:1|exists:genealogy_trees,id',
         ]);
 
-        $treeId = $data['tree_id'] ?? 1;
+        $treeId = (int) $data['tree_id'];
         $apiSource = $this->mapDomainToSource($data['source_domain']);
 
         try {
-            DB::insert("
+            DB::insert('
                 INSERT INTO genealogy_newspaper_clippings
                     (tree_id, original_url, headline, newspaper_name, publication_date, clipping_text, api_source, created_at, updated_at)
                 VALUES (?, ?, ?, ?, NOW(), ?, ?, NOW(), NOW())
-            ", [
+            ', [
                 $treeId,
                 $data['url'],
                 $data['title'] ?? $data['url'],
@@ -122,7 +123,8 @@ class ExtensionGenealogyController extends Controller
             ]);
         } catch (\Exception $e) {
             Log::error('ExtensionGenealogy: Clip save failed', ['error' => $e->getMessage()]);
-            return response()->json(['error' => 'Failed to save clipping: ' . $e->getMessage()], 500);
+
+            return response()->json(['error' => 'Failed to save clipping: '.$e->getMessage()], 500);
         }
     }
 
@@ -171,23 +173,23 @@ class ExtensionGenealogyController extends Controller
      */
     public function submitBrowseResult(Request $request, int $id): JsonResponse
     {
-        $item = DB::selectOne("SELECT * FROM extension_browse_queue WHERE id = ?", [$id]);
-        if (!$item) {
+        $item = DB::selectOne('SELECT * FROM extension_browse_queue WHERE id = ?', [$id]);
+        if (! $item) {
             return response()->json(['error' => 'Queue item not found'], 404);
         }
 
         $result = $request->input('result', []);
         $status = $request->input('status', 'completed');
 
-        if (!in_array($status, ['completed', 'failed', 'skipped'])) {
+        if (! in_array($status, ['completed', 'failed', 'skipped'])) {
             $status = 'completed';
         }
 
-        DB::update("
+        DB::update('
             UPDATE extension_browse_queue
             SET status = ?, result = ?, completed_at = NOW()
             WHERE id = ?
-        ", [$status, json_encode($result), $id]);
+        ', [$status, json_encode($result), $id]);
 
         Log::info('ExtensionGenealogy: Browse result submitted', [
             'id' => $id,
@@ -216,7 +218,9 @@ class ExtensionGenealogyController extends Controller
 
         $created = 0;
         foreach ($items as $item) {
-            if (empty($item['url'])) continue;
+            if (empty($item['url'])) {
+                continue;
+            }
 
             $url = $item['url'];
             $domain = parse_url($url, PHP_URL_HOST) ?? '';
@@ -283,7 +287,7 @@ class ExtensionGenealogyController extends Controller
             str_contains($domain, 'familysearch') => 'familysearch_extension',
             str_contains($domain, 'myheritage') => 'myheritage_extension',
             str_contains($domain, 'billiongraves') => 'billiongraves_extension',
-            default => 'extension_' . str_replace('.', '_', $domain),
+            default => 'extension_'.str_replace('.', '_', $domain),
         };
     }
 }

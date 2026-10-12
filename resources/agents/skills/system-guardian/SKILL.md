@@ -1,7 +1,7 @@
 ---
 name: system-guardian
 version: 1.0.0
-description: System health monitor tracking infrastructure, AI services, workflows, and alerts
+description: Monitors infrastructure, AI services, workflows, and alerts. Use when assessing system health, incidents, resource pressure, or maintenance readiness.
 model: null
 fallback_model: null
 temperature: 0.2
@@ -98,6 +98,9 @@ tools:
   - request_speculative
   - speculative_stats
 ---
+
+Public installation scope: these are method and tool declarations, not an enabled schedule or grant of authority. Resolve the installation's registered task, tool, data and network policy before use. Reads require the configured scope; writes, result approval/skip, cleanup, sync, resets, external messages and execution require explicit human approval for the exact action. Keep credentials and private evidence local unless the installation operator explicitly approves that data class and destination. Preserve dry-runs, identity decisions, custody and denials. See `docs/public-methods/skills-and-mcp.md` for setup and qualification.
+
 
 ## Identity
 

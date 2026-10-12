@@ -2,10 +2,11 @@
 
 namespace App\Services;
 
+use App\Support\PromptIntegrityPolicy;
+use Exception;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
-use Exception;
 
 /**
  * Contextual Compression Service
@@ -23,26 +24,31 @@ class ContextualCompressionService
         if ($this->aiService === null) {
             $this->aiService = app(AIService::class);
         }
+
         return $this->aiService;
     }
 
     public function compress(string $chunk, string $query): array
     {
+        if (! PromptIntegrityPolicy::allowsLossyTransforms()) {
+            return $this->unchangedResult($chunk);
+        }
+
         // Check cache first
-        $cacheKey = 'ctx_compress_' . md5($chunk . $query);
+        $cacheKey = 'ctx_compress_'.md5($chunk.$query);
         $cached = Cache::get($cacheKey);
         if ($cached) {
             return $cached;
         }
 
         try {
-            $prompt = "Given the following search query and text chunk, remove sentences that are NOT relevant to answering the query. "
-                . "Keep only the sentences that directly help answer the query. Return the compressed text only, no explanations.\n\n"
-                . "Query: {$query}\n\n"
-                . "Text:\n{$chunk}";
+            $prompt = 'Given the following search query and text chunk, remove sentences that are NOT relevant to answering the query. '
+                ."Keep only the sentences that directly help answer the query. Return the compressed text only, no explanations.\n\n"
+                ."Query: {$query}\n\n"
+                ."Text:\n{$chunk}";
 
             $result = $this->getAIService()->process($prompt, [
-                'max_tokens' => max(100, (int)(strlen($chunk) / 2)),
+                'max_tokens' => max(100, (int) (strlen($chunk) / 2)),
                 'system' => 'You compress text by removing irrelevant sentences. Return only the compressed text.',
             ]);
 
@@ -56,13 +62,15 @@ class ContextualCompressionService
                 'original_length' => $originalLen,
                 'compressed_length' => $compressedLen,
                 'compression_ratio' => $ratio,
-                'tokens_saved_estimate' => (int)(($originalLen - $compressedLen) / 4),
+                'tokens_saved_estimate' => (int) (($originalLen - $compressedLen) / 4),
             ];
 
             Cache::put($cacheKey, $output, 3600);
+
             return $output;
         } catch (Exception $e) {
             Log::warning('ContextualCompression: Failed, returning original', ['error' => $e->getMessage()]);
+
             return [
                 'compressed' => $chunk,
                 'original_length' => strlen($chunk),
@@ -76,6 +84,31 @@ class ContextualCompressionService
 
     public function batchCompress(array $chunks, string $query, ?int $maxTokens = null): array
     {
+        if (! PromptIntegrityPolicy::allowsLossyTransforms()) {
+            return [
+                'chunks' => array_map(function (mixed $chunk): mixed {
+                    if (! is_array($chunk)) {
+                        return [
+                            'original' => (string) $chunk,
+                            'compressed' => (string) $chunk,
+                            'ratio' => 1.0,
+                            'compression_disabled' => true,
+                        ];
+                    }
+
+                    $content = $chunk['document']->content ?? $chunk['content'] ?? '';
+                    $chunk['compressed_content'] = (string) $content;
+                    $chunk['compression_ratio'] = 1.0;
+                    $chunk['compression_disabled'] = true;
+
+                    return $chunk;
+                }, $chunks),
+                'total_chunks' => count($chunks),
+                'total_tokens_saved' => 0,
+                'compression_disabled' => true,
+            ];
+        }
+
         $results = [];
         $totalSaved = 0;
 
@@ -83,6 +116,7 @@ class ContextualCompressionService
             $content = is_string($chunk) ? $chunk : ($chunk['document']->content ?? $chunk['content'] ?? '');
             if (empty($content)) {
                 $results[] = $chunk;
+
                 continue;
             }
 
@@ -105,7 +139,8 @@ class ContextualCompressionService
             if ($maxTokens) {
                 $currentTokens = array_sum(array_map(function ($r) {
                     $text = $r['compressed_content'] ?? $r['compressed'] ?? '';
-                    return (int)(strlen($text) / 4);
+
+                    return (int) (strlen($text) / 4);
                 }, $results));
 
                 if ($currentTokens >= $maxTokens) {
@@ -123,7 +158,7 @@ class ContextualCompressionService
 
     public function getCompressionStats(): array
     {
-        $stats = DB::connection('pgsql_rag')->selectOne("
+        $stats = DB::connection('pgsql_rag')->selectOne('
             SELECT
                 COUNT(*) as total_compressed,
                 AVG(compression_ratio) as avg_ratio,
@@ -131,7 +166,7 @@ class ContextualCompressionService
                 MAX(compression_ratio) as max_ratio
             FROM rag_documents
             WHERE compression_ratio IS NOT NULL
-        ");
+        ');
 
         return [
             'total_compressed_documents' => $stats->total_compressed ?? 0,
@@ -143,9 +178,17 @@ class ContextualCompressionService
 
     public function cacheCompression(int $documentId, string $query, string $compressed): void
     {
+        if (! PromptIntegrityPolicy::allowsLossyTransforms()) {
+            Log::notice('ContextualCompression: cache write refused by prompt-integrity policy', [
+                'document_id' => $documentId,
+            ]);
+
+            return;
+        }
+
         $ratio = null;
         $original = DB::connection('pgsql_rag')->selectOne(
-            "SELECT content FROM rag_documents WHERE id = ?",
+            'SELECT content FROM rag_documents WHERE id = ?',
             [$documentId]
         );
 
@@ -154,8 +197,24 @@ class ContextualCompressionService
         }
 
         DB::connection('pgsql_rag')->update(
-            "UPDATE rag_documents SET compressed_content = ?, compression_ratio = ? WHERE id = ?",
+            'UPDATE rag_documents SET compressed_content = ?, compression_ratio = ? WHERE id = ?',
             [$compressed, $ratio, $documentId]
         );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function unchangedResult(string $chunk): array
+    {
+        return [
+            'compressed' => $chunk,
+            'original_length' => strlen($chunk),
+            'compressed_length' => strlen($chunk),
+            'compression_ratio' => 1.0,
+            'tokens_saved_estimate' => 0,
+            'compression_disabled' => true,
+            'disabled_reason' => PromptIntegrityPolicy::DISABLED_REASON,
+        ];
     }
 }

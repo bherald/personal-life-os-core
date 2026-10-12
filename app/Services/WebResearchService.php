@@ -3,10 +3,13 @@
 namespace App\Services;
 
 use App\Engine\MCPRouter;
+use App\Support\SensitiveTextTelemetry;
 use App\Traits\RecursionAware;
 use Exception;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Concurrency;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -28,6 +31,8 @@ use Illuminate\Support\Facades\Log;
 class WebResearchService
 {
     use RecursionAware;
+
+    private const QUERY_TELEMETRY_SCOPE = 'web-research';
 
     private MCPRouter $mcpRouter;
 
@@ -76,9 +81,10 @@ class WebResearchService
         $allResults = [];
         $sources = [];
         $errors = [];
+        $sourceHealth = [];
 
         Log::info('WebResearchService: Starting parallel search', [
-            'query' => $query,
+            ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
             'max_results' => $maxResults,
         ]);
 
@@ -89,8 +95,8 @@ class WebResearchService
                 try {
                     return $fn();
                 } finally {
-                    \Illuminate\Support\Facades\DB::disconnect();
-                    \Illuminate\Support\Facades\DB::disconnect('pgsql_rag');
+                    DB::disconnect();
+                    DB::disconnect('pgsql_rag');
                 }
             };
         };
@@ -107,7 +113,7 @@ class WebResearchService
 
         // Execute all searches concurrently via Laravel Concurrency (forked processes)
         try {
-            $taskResults = \Illuminate\Support\Facades\Concurrency::run($tasks);
+            $taskResults = Concurrency::run($tasks);
         } catch (\Throwable $e) {
             // Fallback to sequential if concurrency fails (e.g., pcntl not available)
             Log::warning('WebResearchService: Concurrency unavailable, falling back to sequential', [
@@ -125,6 +131,9 @@ class WebResearchService
 
         // Merge results from all engines
         foreach ($taskResults as $engine => $engineResult) {
+            $sourceHealth[$engine] = array_diff_key($engineResult, array_flip(['results', 'query']));
+            $sourceHealth[$engine]['success'] = ($engineResult['success'] ?? false) === true;
+            $sourceHealth[$engine]['result_count'] = count($engineResult['results'] ?? []);
             if (isset($engineResult['success']) && $engineResult['success'] && ! empty($engineResult['results'])) {
                 foreach ($engineResult['results'] as $result) {
                     $result['source_engine'] = $engine;
@@ -161,7 +170,7 @@ class WebResearchService
         $duration = round((microtime(true) - $startTime) * 1000);
 
         Log::info('WebResearchService: Parallel search completed', [
-            'query' => $query,
+            ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
             'sources_used' => $sources,
             'total_raw' => count($allResults),
             'unique_results' => count($uniqueResults),
@@ -174,6 +183,8 @@ class WebResearchService
             'success' => ! empty($finalResults),
             'results' => $finalResults,
             'sources_used' => $sources,
+            'source_health' => $sourceHealth,
+            'degraded' => count(array_filter($sourceHealth, fn ($health) => ! $health['success'] || ($health['degraded'] ?? false))) > 0,
             'errors' => $errors,
             'duration_ms' => $duration,
         ];
@@ -196,7 +207,7 @@ class WebResearchService
         $useParallel = $config['parallel'] ?? false;
 
         Log::info('WebResearchService: Starting research', [
-            'query' => $query,
+            ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
             'search_depth' => $searchDepth,
             'max_sources' => $maxSources,
             'parallel_mode' => $useParallel,
@@ -305,7 +316,8 @@ class WebResearchService
             $curlResults = $this->searchWithCurlDirectScraping($query, $maxSources);
         }
         if ($curlResults['success'] && ! empty($curlResults['results'])) {
-            return $curlResults;
+            return [...$curlResults, 'source_health' => ['searxng' => array_diff_key($searxngResults, array_flip(['results', 'query']))],
+                'degraded' => ! $searxngResults['success'] || ($searxngResults['degraded'] ?? false)];
         }
 
         // Last resort: Puppeteer-based search (slow, often blocked)
@@ -316,7 +328,8 @@ class WebResearchService
                 Log::warning('WebResearchService: All engines exhausted (skipped: '.implode(', ', $skippedEngines).')');
             }
 
-            return ['success' => false, 'error' => 'All research engines unavailable', 'results' => [], 'skipped_engines' => $skippedEngines];
+            return ['success' => false, 'error' => 'All research engines unavailable', 'results' => [], 'skipped_engines' => $skippedEngines,
+                'source_health' => ['searxng' => array_diff_key($searxngResults, array_flip(['results', 'query']))], 'degraded' => true];
         }
         Log::info('WebResearchService: Curl scraping failed, trying Puppeteer engines');
 
@@ -330,6 +343,8 @@ class WebResearchService
             return [
                 'success' => false,
                 'error' => 'No active search engines available',
+                'source_health' => ['searxng' => array_diff_key($searxngResults, array_flip(['results', 'query']))],
+                'degraded' => true,
                 'results' => [],
             ];
         }
@@ -407,6 +422,8 @@ class WebResearchService
             'total_found' => count($allResults),
             'attempts' => $attempts,
             'engines_tried' => count($attempts),
+            'source_health' => ['searxng' => array_diff_key($searxngResults, array_flip(['results', 'query']))],
+            'degraded' => ! $searxngResults['success'] || ($searxngResults['degraded'] ?? false),
             'error' => empty($allResults) ? 'All search engines failed or returned no results.' : null,
         ];
     }
@@ -425,7 +442,8 @@ class WebResearchService
 
         Log::debug('WebResearchService: Searching with engine', [
             'engine' => $engine['name'],
-            'url' => $searchUrl,
+            ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
+            'search_url_logged' => false,
         ]);
 
         try {
@@ -920,7 +938,7 @@ class WebResearchService
         try {
             Log::info('WebResearchService: Searching with NewsAPI', ['query' => $query]);
 
-            $response = \Illuminate\Support\Facades\Http::connectTimeout(5)->timeout(15)
+            $response = Http::connectTimeout(5)->timeout(15)
                 ->get('https://newsapi.org/v2/everything', [
                     'q' => $query,
                     'pageSize' => min($maxResults, 100),
@@ -986,7 +1004,7 @@ class WebResearchService
         try {
             Log::info('WebResearchService: Searching with Wikipedia API', ['query' => $query]);
 
-            $response = \Illuminate\Support\Facades\Http::connectTimeout(5)->timeout(10)
+            $response = Http::connectTimeout(5)->timeout(10)
                 ->withHeaders([
                     'User-Agent' => 'PLOS/1.0 (Personal Automation Project; contact@example.com)',
                 ])
@@ -1073,6 +1091,9 @@ class WebResearchService
 
             if (! $results['success'] || empty($results['results'])) {
                 return [
+                    ...$results,
+                    'execution_success' => ($results['success'] ?? false) === true,
+                    'failure_reason' => $results['failure_reason'] ?? (empty($results['results']) ? 'no_results' : 'search_failed'),
                     'success' => false,
                     'results' => [],
                     'error' => $results['error'] ?? 'No results from SearXNG',
@@ -1086,6 +1107,7 @@ class WebResearchService
                 $rawSnippet = $item['snippet'] ?? '';
                 $rawUrl = $item['url'] ?? '';
                 $formattedResults[] = [
+                    ...$item,
                     'url' => is_array($rawUrl) ? ($rawUrl[0] ?? '') : $rawUrl,
                     'title' => is_array($rawTitle) ? implode(' ', $rawTitle) : $rawTitle,
                     'snippet' => is_array($rawSnippet) ? implode(' ', $rawSnippet) : $rawSnippet,
@@ -1096,6 +1118,8 @@ class WebResearchService
             }
 
             return [
+                ...$results,
+                'execution_success' => true,
                 'success' => true,
                 'query' => $query,
                 'results' => $formattedResults,
@@ -1133,16 +1157,17 @@ class WebResearchService
                     break;
                 }
 
-                if ($this->isManualOnlyUrl($source['url'] ?? null)) {
-                    Log::info('WebResearchService: Skipping manual-only source', [
+                if ($this->isProviderSpecificUrl($source['url'] ?? null)) {
+                    Log::info('WebResearchService: Skipping provider-specific source under strict policy', [
                         'source' => $source['name'] ?? 'unknown',
                         'url' => $source['url'] ?? null,
                     ]);
+
                     continue;
                 }
 
                 try {
-                    $response = \Illuminate\Support\Facades\Http::connectTimeout(5)->timeout(10)
+                    $response = Http::connectTimeout(5)->timeout(10)
                         ->withHeaders([
                             'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                             'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -1328,7 +1353,7 @@ class WebResearchService
      */
     private function buildSearchUrl(array $source, string $encodedQuery): ?string
     {
-        if ($this->isManualOnlyHost($source['domain'] ?? null)) {
+        if ($this->isProviderSpecificHost($source['domain'] ?? null)) {
             return null;
         }
 
@@ -1338,17 +1363,17 @@ class WebResearchService
             if (strpos($endpoint, '{query}') !== false) {
                 $url = str_replace('{query}', $encodedQuery, $endpoint);
 
-                return $this->isManualOnlyUrl($url) ? null : $url;
+                return $this->isProviderSpecificUrl($url) ? null : $url;
             }
             if (strpos($endpoint, '?') !== false) {
                 $url = $endpoint.'&q='.$encodedQuery;
 
-                return $this->isManualOnlyUrl($url) ? null : $url;
+                return $this->isProviderSpecificUrl($url) ? null : $url;
             }
 
             $url = $endpoint.'?q='.$encodedQuery;
 
-            return $this->isManualOnlyUrl($url) ? null : $url;
+            return $this->isProviderSpecificUrl($url) ? null : $url;
         }
 
         // Build search URL based on known domain patterns
@@ -1373,7 +1398,7 @@ class WebResearchService
 
         foreach ($searchPatterns as $pattern => $url) {
             if (strpos($domain, $pattern) !== false || strpos($pattern, $domain) !== false) {
-                return $this->isManualOnlyUrl($url) ? null : $url;
+                return $this->isProviderSpecificUrl($url) ? null : $url;
             }
         }
 
@@ -1383,23 +1408,27 @@ class WebResearchService
 
             $url = "{$baseUrl}/search?q={$encodedQuery}";
 
-            return $this->isManualOnlyUrl($url) ? null : $url;
+            return $this->isProviderSpecificUrl($url) ? null : $url;
         }
 
         return null;
     }
 
-    private function isManualOnlyUrl(?string $url): bool
+    private function isProviderSpecificUrl(?string $url): bool
     {
         if (! $url) {
             return false;
         }
 
-        return $this->isManualOnlyHost(parse_url($url, PHP_URL_HOST));
+        return $this->isProviderSpecificHost(parse_url($url, PHP_URL_HOST));
     }
 
-    private function isManualOnlyHost(?string $host): bool
+    private function isProviderSpecificHost(?string $host): bool
     {
+        if (! $this->shouldEnforceProviderSpecificDomains()) {
+            return false;
+        }
+
         $normalizedHost = strtolower(trim((string) $host));
         $normalizedHost = trim($normalizedHost, " \t\n\r\0\x0B\"'()[]{}<>.,;:");
         $normalizedHost = ltrim($normalizedHost, '*.');
@@ -1409,7 +1438,7 @@ class WebResearchService
             return false;
         }
 
-        foreach ((array) config('scraping.manual_only_domains', []) as $domain) {
+        foreach ((array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', [])) as $domain) {
             $domain = ltrim(strtolower(trim((string) $domain)), '*.');
             if ($domain === '') {
                 continue;
@@ -1421,6 +1450,11 @@ class WebResearchService
         }
 
         return false;
+    }
+
+    private function shouldEnforceProviderSpecificDomains(): bool
+    {
+        return (bool) config('scraping.enforce_provider_specific_domains', config('scraping.enforce_manual_only_domains', false));
     }
 
     /**

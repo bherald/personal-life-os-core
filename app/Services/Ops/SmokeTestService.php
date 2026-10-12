@@ -2,8 +2,12 @@
 
 namespace App\Services\Ops;
 
+use App\Engine\MCPRouter;
+use App\Services\OfflinePolicyService;
+use App\Services\SkillLoaderService;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 class SmokeTestService
@@ -152,8 +156,7 @@ class SmokeTestService
 
         $broken = [];
         $allCommands = collect(Artisan::all())->keys()->toArray();
-        $skillDirs = glob(base_path(config('agents.skills_path', 'resources/agents/skills').'/*'), GLOB_ONLYDIR);
-        $validSkills = array_map('basename', $skillDirs ?: []);
+        $validSkills = app(SkillLoaderService::class)->listSkills();
 
         foreach ($jobs as $job) {
             $command = $job->command ?? '';
@@ -226,10 +229,8 @@ class SmokeTestService
             return;
         }
 
-        $dirs = array_values(array_filter(
-            glob($basePath.'/*', GLOB_ONLYDIR) ?: [],
-            static fn (string $dir): bool => ! str_starts_with(basename($dir), '__')
-        ));
+        $skillLoader = app(SkillLoaderService::class);
+        $dirs = $skillLoader->activeSkillDirectories();
         $this->record('skills_count', 'PASS', count($dirs).' agent skill directories');
 
         $enabledTools = [];
@@ -254,31 +255,25 @@ class SmokeTestService
                 continue;
             }
 
-            $content = file_get_contents($skillFile);
-            if (! preg_match('/^---\s*\n(.*?)\n---/s', $content, $matches)) {
-                $parseErrors[] = "{$agentName}: no YAML frontmatter found";
+            $snapshot = $skillLoader->loadSkillSnapshot($agentName);
+            if ($snapshot === null) {
+                $parseErrors[] = "{$agentName}: invalid skill snapshot";
 
                 continue;
             }
 
-            $yaml = $matches[1];
-            if (preg_match('/^tools:\s*$/m', $yaml, $m, PREG_OFFSET_CAPTURE)) {
-                $toolsStart = $m[0][1] + strlen($m[0][0]);
-                $toolsSection = substr($yaml, $toolsStart);
-                preg_match_all('/^  - (\w+)/m', $toolsSection, $toolMatches);
-                $declaredTools = array_unique($toolMatches[1] ?? []);
-
-                if (! empty($enabledTools)) {
-                    foreach ($declaredTools as $tool) {
-                        if (! in_array($tool, $enabledTools)) {
-                            $orphanedTools[] = "{$agentName}/{$tool}";
-                        }
+            $frontmatter = $snapshot['frontmatter'];
+            $declaredTools = SkillLoaderService::declaredToolNames($frontmatter);
+            if (! empty($enabledTools)) {
+                foreach ($declaredTools as $tool) {
+                    if (! in_array($tool, $enabledTools, true)) {
+                        $orphanedTools[] = "{$agentName}/{$tool}";
                     }
                 }
             }
 
-            if (preg_match('/^id:\s*["\']?([^"\'\n]+)/m', $yaml, $idMatch)) {
-                $id = trim($idMatch[1]);
+            if (isset($frontmatter['id'])) {
+                $id = trim((string) $frontmatter['id']);
                 if ($id !== $agentName) {
                     $this->record('skills_id', 'WARN', "{$agentName}: SKILL.md id='{$id}' does not match directory name");
                 }
@@ -299,7 +294,7 @@ class SmokeTestService
 
         if (! empty($orphanedTools)) {
             foreach ($orphanedTools as $tool) {
-                $this->record('skills_orphaned_tool', 'WARN', "Tool declared in SKILL.md but not in registry: {$tool}");
+                $this->record('skills_orphaned_tool', 'WARN', "Tool declared in SKILL.md but not enabled in registry: {$tool}");
             }
         }
 
@@ -419,7 +414,7 @@ class SmokeTestService
                 $snippet = mb_substr($output, 0, 200);
                 $this->record('daily_report', 'FAIL', "Dry-run exit code {$process->getExitCode()}: {$snippet}");
             }
-        } catch (\Symfony\Component\Process\Exception\ProcessTimedOutException $e) {
+        } catch (ProcessTimedOutException $e) {
             $this->record('daily_report', 'FAIL', 'Dry-run timed out after 60s (killed)');
         } catch (\Throwable $e) {
             $this->record('daily_report', 'FAIL', 'Exception: '.$e->getMessage());
@@ -431,7 +426,7 @@ class SmokeTestService
         $this->section('Offline Policy');
 
         try {
-            $policy = app(\App\Services\OfflinePolicyService::class);
+            $policy = app(OfflinePolicyService::class);
             $profile = $policy->activeProfile();
             $offline = $policy->isOfflineModeActive();
             $this->record('offline_state', 'PASS', "profile={$profile}, offline_mode=".($offline ? 'on' : 'off'));
@@ -461,7 +456,7 @@ class SmokeTestService
         }
 
         try {
-            $tools = app(\App\Engine\MCPRouter::class)->getAvailableToolsForProfile('offline_review');
+            $tools = app(MCPRouter::class)->getAvailableToolsForProfile('offline_review');
             $internetServers = ['research', 'puppeteer', 'web-research', 'searxng'];
             $leaked = array_values(array_unique(array_filter(array_map(
                 static fn (array $tool) => in_array((string) ($tool['server'] ?? ''), $internetServers, true)

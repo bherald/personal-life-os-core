@@ -1,0 +1,63 @@
+{
+  "schema": "plos.model_host_controller.host_manifest.v1",
+  "revision": "fictional-example-only",
+  "host_id": "example-host-a",
+  "execution_mode": "serial",
+  "automatic_activation_enabled": false,
+  "compatible_residency_enabled": false,
+  "concurrent_inference_enabled": false,
+  "controller": {
+    "install_root": "C:\\ExampleController\\a",
+    "listen_address": "127.0.0.1",
+    "port": 11439,
+    "external_port": 11440,
+    "production_remote": "192.0.2.20",
+    "host_only_remote": "192.0.2.21",
+    "maximum_request_bytes": 8192,
+    "lease_ttl_seconds": 7200,
+    "max_switches_per_hour": 4
+  },
+  "resource_floors": {
+    "drive_c_free_bytes": 2147483648,
+    "drive_d_free_bytes": 2147483648,
+    "maximum_thermal_celsius": 85
+  },
+  "targets": {
+    "example_chat_a": {
+      "model": "example-chat-model",
+      "engine": "llama.cpp",
+      "task_name": "Example-A-Chat",
+      "port": 11438,
+      "process_names": [
+        "llama-server.exe"
+      ],
+      "health_path": "/health",
+      "activation_allowed": false,
+      "state": "staged",
+      "resource_group": "example-host-a-serial",
+      "minimum_free_physical_bytes": 2147483648,
+      "startup_timeout_seconds": 300,
+      "runtime_revision": "unqualified-example",
+      "engine_identity": "UNQUALIFIED_ENGINE_IDENTITY",
+      "model_identity": "UNQUALIFIED_MODEL_IDENTITY"
+    },
+    "example_embed_a": {
+      "model": "example-embed-model",
+      "engine": "ollama",
+      "task_name": "Example-A-Embed",
+      "port": 11434,
+      "process_names": [
+        "ollama.exe"
+      ],
+      "health_path": "/api/tags",
+      "activation_allowed": false,
+      "state": "staged",
+      "resource_group": "example-host-a-serial",
+      "minimum_free_physical_bytes": 2147483648,
+      "startup_timeout_seconds": 300,
+      "runtime_revision": "unqualified-example",
+      "engine_identity": "UNQUALIFIED_ENGINE_IDENTITY",
+      "model_identity": "UNQUALIFIED_MODEL_IDENTITY"
+    }
+  }
+}

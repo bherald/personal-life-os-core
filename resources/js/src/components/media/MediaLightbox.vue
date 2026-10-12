@@ -317,6 +317,8 @@
 
       <!-- Metadata Tab (read-only, comprehensive) -->
       <div v-if="activeTab === 'metadata'" class="p-4">
+        <PhotoReviewEvidence v-if="isImage" :key="photoEvidenceRefresh" :selector="photoEvidenceSelector"
+          @evidence-loaded="photoBundle = $event" @preview-ready="photoPreview = $event" />
         <!-- Section nav pills -->
         <div class="flex flex-wrap gap-1.5 mb-3">
           <button v-for="sec in metaSections" :key="sec.id"
@@ -598,6 +600,8 @@
 
         <!-- EXIF/Dates edit -->
         <div v-if="activeEditSection === 'core'" class="space-y-3 text-sm">
+          <PhotoReviewEvidence v-if="isImage" :key="photoEvidenceRefresh" :selector="photoEvidenceSelector"
+            @evidence-loaded="photoBundle = $event" @preview-ready="photoPreview = $event" />
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label class="text-gray-500 text-xs block mb-1">Date Taken</label>
@@ -620,8 +624,10 @@
           <div>
             <label class="text-gray-500 text-xs block mb-1">Description</label>
             <textarea v-model="editForm.description" rows="2"
+              :disabled="isImage && !captionSourcePin"
               class="w-full bg-gray-800 border border-gray-600 rounded text-white px-2 py-1.5 text-sm resize-none"
               placeholder="Enter description..." />
+            <p v-if="isImage && !captionSourcePin" class="text-xs text-gray-400 mt-1">Load the current photo preview before editing its caption.</p>
           </div>
           <div>
             <label class="text-gray-500 text-xs block mb-1">Tags (comma-separated)</label>
@@ -720,6 +726,8 @@
 import { ref, computed, reactive, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import axios from 'axios'
 import ImageEditor from './ImageEditor.vue'
+import PhotoReviewEvidence from '../review/PhotoReviewEvidence.vue'
+import { assetUuidPhotoEvidenceSelector } from '../review/photoEvidenceSelector'
 
 // Inline MetaField component
 const MetaField = {
@@ -762,6 +770,18 @@ const MetaField = {
 
 const props = defineProps({
   item: { type: Object, required: true },
+})
+const photoEvidenceSelector = computed(() => assetUuidPhotoEvidenceSelector(props.item?.asset_uuid))
+const photoBundle = ref(null)
+const photoPreview = ref(null)
+const photoEvidenceRefresh = ref(0)
+const captionSourcePin = computed(() => {
+  const source = photoBundle.value?.source
+  const assetUuid = photoBundle.value?.asset?.asset_uuid
+  if (source?.status !== 'verified_current' || assetUuid !== props.item?.asset_uuid
+    || photoPreview.value?.asset_uuid !== assetUuid || photoPreview.value?.source_sha256 !== source.source_sha256
+    || !/^[a-f0-9]{64}$/.test(source.source_sha256 || '')) return ''
+  return source.source_sha256
 })
 
 const emit = defineEmits(['close', 'next', 'prev', 'refresh', 'deleted'])
@@ -1093,6 +1113,8 @@ const editForm = reactive({
   exifFields: [],
   ragContent: '',
 })
+let editBaseline = null
+let metadataFetchId = 0
 const saving = ref(false)
 const activeEditSection = ref('core')
 const editSections = [
@@ -1173,10 +1195,17 @@ onUnmounted(() => {
 })
 
 async function fetchMetadata() {
-  if (!props.item.asset_uuid) return
+  const assetUuid = props.item.asset_uuid
+  const fetchId = ++metadataFetchId
+  editBaseline = null
+  photoBundle.value = null
+  photoPreview.value = null
+  photoEvidenceRefresh.value++
+  if (!assetUuid) return
   loadingMeta.value = true
   try {
-    const { data } = await axios.get(`/api/media/${props.item.asset_uuid}/metadata`)
+    const { data } = await axios.get(`/api/media/${assetUuid}/metadata`)
+    if (fetchId !== metadataFetchId || assetUuid !== props.item.asset_uuid) return
     if (data.success) {
       faces.value = data.data.faces || []
       linkedPersons.value = data.data.linked_persons || []
@@ -1227,7 +1256,7 @@ async function fetchMetadata() {
       // Pre-fill edit form
       const tagsStr = Array.isArray(file.tags) ? file.tags.join(', ') : (file.tags || '')
       editForm.date_taken = file.date_taken ? file.date_taken.replace(' ', 'T').slice(0, 16) : ''
-      editForm.description = file.ai_description || ''
+      editForm.description = file.description ?? file.ai_description ?? ''
       editForm.tags = tagsStr
       editForm.title = file.title || ''
       editForm.copyright = ''
@@ -1237,11 +1266,12 @@ async function fetchMetadata() {
       // Pre-fill copyright from EXIF if available
       const exifRaw = data.data.exif || {}
       editForm.copyright = exifRaw['IFD0:Copyright'] || exifRaw['IPTC:CopyrightNotice'] || exifRaw['XMP-xmpRights:UsageTerms'] || ''
+      editBaseline = { ...editForm, assetUuid }
     }
   } catch (err) {
     console.error('Failed to fetch metadata:', err)
   } finally {
-    loadingMeta.value = false
+    if (fetchId === metadataFetchId) loadingMeta.value = false
   }
 }
 
@@ -1545,13 +1575,27 @@ async function createAndSelect(key) {
 async function saveMetadata(writeToFile = false) {
   saving.value = true
   try {
+    if (!editBaseline || editBaseline.assetUuid !== props.item.asset_uuid) {
+      showToast('Load metadata before saving edits.')
+      return
+    }
     const payload = { write_to_file: writeToFile }
-    if (editForm.date_taken) payload.date_taken = editForm.date_taken.replace('T', ' ') + ':00'
-    if (editForm.date_taken === '' && meta.date_taken) payload.date_taken = null
-    payload.description = editForm.description
-    payload.tags = editForm.tags
-    if (editForm.title) payload.title = editForm.title
-    if (editForm.copyright) payload.copyright = editForm.copyright
+    if (editForm.date_taken !== editBaseline.date_taken) {
+      const date = editForm.date_taken.replace('T', ' ')
+      payload.date_taken = date ? (date.length === 16 ? date + ':00' : date) : null
+      payload.date_taken_intent = editForm.date_taken ? 'set_original_date' : 'clear_original_date'
+    }
+    for (const field of ['description', 'tags', 'title', 'copyright']) {
+      if (editForm[field] !== editBaseline[field]) payload[field] = editForm[field]
+    }
+    if (Object.hasOwn(payload, 'description')) {
+      const pin = isImage.value ? captionSourcePin.value : fileData.content_hash
+      if (!/^[a-f0-9]{64}$/.test(pin || '')) {
+        showToast('Load the current source before saving a caption edit.')
+        return
+      }
+      payload.source_sha256 = pin
+    }
 
     // Custom EXIF fields
     const validExifFields = editForm.exifFields.filter(f => f.tag && f.value !== undefined)
@@ -1562,19 +1606,27 @@ async function saveMetadata(writeToFile = false) {
       payload.rag_content = editForm.ragContent
     }
 
+    if (Object.keys(payload).length === 1) {
+      showToast('No metadata changes.')
+      return
+    }
+
     const { data } = await axios.post(`/api/media/${props.item.asset_uuid}/metadata`, payload)
     if (data.success) {
       const writeInfo = data.file_written
-      fetchMetadata()
+      await fetchMetadata()
       if (writeToFile && writeInfo) {
         if (writeInfo.success) {
-          showToast('Saved & written to file. DB synced from EXIF.')
+          showToast('Saved & written to file.')
         } else {
           showToast('Saved to DB but file write failed: ' + (writeInfo.error || writeInfo.output))
         }
       } else {
         showToast('Metadata saved to DB.', { label: 'Write to file now', handler: () => triggerWriteback() })
       }
+    } else {
+      const repairRequired = data.repair_required || data.file_written?.repair_required
+      showToast((repairRequired ? 'File changed; repair required: ' : 'Save held: ') + (data.error || data.file_written?.error || 'Metadata was not saved.'))
     }
   } catch (err) {
     console.error('Save metadata failed:', err)

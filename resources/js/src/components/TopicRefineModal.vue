@@ -1,5 +1,5 @@
 <template>
-  <div v-if="visible" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+  <div v-if="visible" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
     <div class="bg-[#2d2d2d] rounded-lg w-full max-w-2xl border-2 border-[#444] max-h-[90vh] flex flex-col">
       <!-- Header -->
       <div class="px-6 py-4 border-b border-[#444] flex justify-between items-center shrink-0">
@@ -48,7 +48,7 @@
             :class="[
               'rounded-lg px-4 py-3 text-sm',
               msg.role === 'user'
-                ? 'bg-[#3498db] bg-opacity-20 text-[#e0e0e0] ml-12 border border-[#3498db] border-opacity-30'
+                ? 'bg-[#3498db]/20 text-[#e0e0e0] ml-12 border border-[#3498db]/30'
                 : 'bg-[#1a1a1a] text-[#e0e0e0] mr-12 border border-[#444]'
             ]"
           >
@@ -67,8 +67,8 @@
           <textarea
             v-model="userReply"
             class="form-textarea"
-            rows="2"
-            placeholder="Answer the question above, or type 'save it' to generate the brief now..."
+            rows="3"
+            placeholder="Answer the numbered questions above, or type 'save it' to generate the brief now..."
             @keydown.ctrl.enter="sendReply"
             ref="replyInput"
           ></textarea>

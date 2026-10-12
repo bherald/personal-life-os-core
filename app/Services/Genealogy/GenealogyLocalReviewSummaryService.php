@@ -4,6 +4,7 @@ namespace App\Services\Genealogy;
 
 use App\Services\AIService;
 use App\Services\OllamaBoundedPayloadService;
+use InvalidArgumentException;
 
 class GenealogyLocalReviewSummaryService
 {
@@ -14,7 +15,12 @@ class GenealogyLocalReviewSummaryService
 
     public function cleanup(string $text, array $context = []): string
     {
-        $payload = $this->payloads->buildPayload('review_summary_cleanup', $text, $context);
+        try {
+            $payload = $this->payloads->buildPayload('review_summary_cleanup', $text, $context);
+        } catch (InvalidArgumentException) {
+            return trim($text);
+        }
+
         if (($payload['chunk_count'] ?? 0) === 0) {
             return trim($text);
         }

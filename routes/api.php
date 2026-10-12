@@ -1,30 +1,46 @@
 <?php
 
+use App\Controllers\NotificationController;
+use App\Http\Controllers\Api\A2AController;
 use App\Http\Controllers\Api\AgentDoctorController;
 use App\Http\Controllers\Api\AIStatusController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ChatController;
+use App\Http\Controllers\Api\ChatResponseFeedbackController;
 use App\Http\Controllers\Api\ConfigurationController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DataRemovalController;
 use App\Http\Controllers\Api\DevToolsController;
 use App\Http\Controllers\Api\EmailAutomationController;
+use App\Http\Controllers\Api\EmailController;
 use App\Http\Controllers\Api\ExecutionController;
 use App\Http\Controllers\Api\ExtensionController;
+use App\Http\Controllers\Api\ExtensionGenealogyController;
+use App\Http\Controllers\Api\FileCatalogController;
+use App\Http\Controllers\Api\GlobalFaceIdentityController;
+use App\Http\Controllers\Api\InternetArchiveController;
 use App\Http\Controllers\Api\JoplinController;
 use App\Http\Controllers\Api\JoplinWriteController;
+use App\Http\Controllers\Api\LemmaModelGatewayController;
 use App\Http\Controllers\Api\MCPController;
+use App\Http\Controllers\Api\MediaBrowserController;
 use App\Http\Controllers\Api\MediaProxyController;
+use App\Http\Controllers\Api\ModelHostControllerMhc08K3JobController;
+use App\Http\Controllers\Api\NaraController;
 use App\Http\Controllers\Api\NodeController;
 use App\Http\Controllers\Api\OAuthController;
 use App\Http\Controllers\Api\OperatorEvidenceController;
 use App\Http\Controllers\Api\OperatorOfflineStatusController;
 use App\Http\Controllers\Api\OrchestratorController;
+use App\Http\Controllers\Api\PlosWorkboardController;
 use App\Http\Controllers\Api\QueueController;
 use App\Http\Controllers\Api\RAGController;
 use App\Http\Controllers\Api\ResearchAssistantController;
+use App\Http\Controllers\Api\ResearchHubController;
 use App\Http\Controllers\Api\ResearchMissionController;
 use App\Http\Controllers\Api\ResearchTopicController;
+use App\Http\Controllers\Api\ReviewDeskController;
+use App\Http\Controllers\Api\ScheduledJobController;
 use App\Http\Controllers\Api\SystemPromptController;
 use App\Http\Controllers\Api\UnifiedResearchController;
 use App\Http\Controllers\Api\UnifiedReviewController;
@@ -35,10 +51,38 @@ use App\Http\Controllers\CalendarController;
 use App\Http\Controllers\ContactsController;
 use App\Http\Controllers\GenealogyController;
 use App\Http\Controllers\SystemIssuesController;
+use App\Http\Middleware\GenealogySelectedTreeMiddleware;
+use App\Http\Middleware\RequireMcpAuthorization;
+use App\Services\AgentGuardrailService;
+use App\Services\AgentLoopService;
+use App\Services\AgentToolRegistryService;
+use App\Services\AIService;
+use App\Services\OfflinePolicyService;
+use App\Services\SkillLoaderService;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 
 // Public routes - Authentication
-Route::post('/auth/login', [AuthController::class, 'login']);
+// Login rotates the session token; refresh Laravel's XSRF cookie for the SPA.
+Route::post('/auth/login', [AuthController::class, 'login'])
+    ->middleware(VerifyCsrfToken::class);
+
+// Private Lemma model ingress; the controller requires a dedicated bearer token.
+Route::get('/lemma-model/v1/models', [LemmaModelGatewayController::class, 'models']);
+Route::post('/lemma-model/v1/chat/completions', [LemmaModelGatewayController::class, 'complete']);
+
+Route::get('/global-face-identities', [GlobalFaceIdentityController::class, 'index']);
+Route::get('/global-face-identities/{uuid}', [GlobalFaceIdentityController::class, 'show']);
+Route::get('/review-desk/items', [ReviewDeskController::class, 'index']);
+Route::get('/review-desk/items/{reference}', [ReviewDeskController::class, 'show']);
+Route::middleware('auth:web')->group(function () {
+    Route::post('/review-desk/items/{reference}/decisions', [ReviewDeskController::class, 'decide']);
+    Route::post('/review-desk/batch', [ReviewDeskController::class, 'batch']);
+    Route::post('/global-face-identities/proposals', [GlobalFaceIdentityController::class, 'stage']);
+});
 
 // Public routes - Read-only access for personal/family use
 // Dashboard
@@ -59,7 +103,10 @@ Route::get('/workflows', [WorkflowController::class, 'index']);
 Route::get('/workflows/templates', [WorkflowController::class, 'listTemplates']);
 Route::post('/workflows/templates', [WorkflowController::class, 'createTemplate']);
 Route::post('/workflows/from-template/{id}', [WorkflowController::class, 'instantiateTemplate']);
-Route::get('/workflows/pending-approvals', [WorkflowController::class, 'pendingApprovals']);
+Route::middleware('auth:web')->group(function () {
+    Route::get('/workflows/pending-approvals', [WorkflowController::class, 'pendingApprovals']);
+    Route::post('/workflows/pending-approvals', [WorkflowController::class, 'decideApproval']);
+});
 
 Route::get('/workflows/{id}', [WorkflowController::class, 'show']);
 Route::post('/workflows', [WorkflowController::class, 'store']);
@@ -128,7 +175,12 @@ Route::delete('/chat/conversations/{id}', [ChatController::class, 'destroy']);
 Route::delete('/chat/conversations/{id}/messages', [ChatController::class, 'clearMessages']);
 Route::post('/chat/conversations/{id}/messages', [ChatController::class, 'sendMessage']);
 Route::post('/chat/conversations/{id}/messages/stream', [ChatController::class, 'sendMessageStream']);
+Route::post('/chat/conversations/{id}/runs/{runId}/cancel', [ChatController::class, 'cancelStream']);
 Route::post('/chat/conversations/{conversationId}/messages/{messageId}/save-to-rag', [ChatController::class, 'saveMessageToRAG']);
+Route::middleware('auth:web')->post(
+    '/chat/conversations/{conversationId}/messages/{messageId}/feedback',
+    ChatResponseFeedbackController::class
+);
 Route::get('/chat/model-modes', [ChatController::class, 'getModelModes']);
 Route::get('/chat/attachments/{id}', [ChatController::class, 'downloadAttachment']);
 
@@ -139,14 +191,20 @@ Route::delete('/system-prompts/conversations/{id}', [SystemPromptController::cla
 Route::get('/system-prompts/default', [SystemPromptController::class, 'getDefaultPrompt']);
 Route::put('/system-prompts/default', [SystemPromptController::class, 'updateDefaultPrompt']);
 
-// MCP Tool Calling - read only
+// MCP discovery remains observable; invocation and configuration require authorization.
 Route::get('/mcp/status', [MCPController::class, 'status']);
 Route::get('/mcp/tools', [MCPController::class, 'tools']);
 Route::get('/mcp/servers', [MCPController::class, 'servers']);
-Route::post('/mcp/call', [MCPController::class, 'call']);
-Route::post('/mcp/call-direct', [MCPController::class, 'callDirect']);
-Route::put('/mcp/servers/{server}', [MCPController::class, 'updateServer']);
-Route::post('/mcp/clear-cache', [MCPController::class, 'clearCache']);
+Route::post('/mcp/call', [MCPController::class, 'call'])
+    ->middleware(RequireMcpAuthorization::class.':mcp.tools.invoke');
+Route::post('/mcp/call-direct', [MCPController::class, 'callDirect'])
+    ->middleware(RequireMcpAuthorization::class.':mcp.tools.invoke');
+Route::post('/mcp/call-direct-scoped', [MCPController::class, 'callDirectScoped'])
+    ->middleware(RequireMcpAuthorization::class.':mcp.tools.invoke');
+Route::put('/mcp/servers/{server}', [MCPController::class, 'updateServer'])
+    ->middleware(RequireMcpAuthorization::class.':mcp.servers.manage');
+Route::post('/mcp/clear-cache', [MCPController::class, 'clearCache'])
+    ->middleware(RequireMcpAuthorization::class.':mcp.servers.manage');
 Route::get('/mcp/config', [MCPController::class, 'getConfig']);
 Route::get('/mcp/analytics', [MCPController::class, 'analytics']);
 
@@ -169,58 +227,68 @@ Route::post('/email/rules', [EmailAutomationController::class, 'createRule']);
 // EA2: Unified Email Service - comprehensive email access
 Route::prefix('email/v2')->group(function () {
     // Status & Diagnostics
-    Route::get('/status', [\App\Http\Controllers\Api\EmailController::class, 'status']);
-    Route::get('/stats', [\App\Http\Controllers\Api\EmailController::class, 'stats']);
-    Route::post('/reset-circuit', [\App\Http\Controllers\Api\EmailController::class, 'resetCircuit']);
+    Route::get('/status', [EmailController::class, 'status']);
+    Route::get('/stats', [EmailController::class, 'stats']);
+    Route::post('/reset-circuit', [EmailController::class, 'resetCircuit']);
 
     // Email Reading (requires Thunderbird MCP)
-    Route::get('/folders', [\App\Http\Controllers\Api\EmailController::class, 'folders']);
-    Route::get('/mailboxes', [\App\Http\Controllers\Api\EmailController::class, 'mailboxes']);
-    Route::get('/search', [\App\Http\Controllers\Api\EmailController::class, 'search']);
-    Route::get('/recent', [\App\Http\Controllers\Api\EmailController::class, 'recent']);
+    Route::get('/folders', [EmailController::class, 'folders']);
+    Route::get('/mailboxes', [EmailController::class, 'mailboxes']);
+    Route::get('/search', [EmailController::class, 'search']);
+    Route::get('/recent', [EmailController::class, 'recent']);
 
     // Draft Queue (human approval workflow)
-    Route::get('/queue', [\App\Http\Controllers\Api\EmailController::class, 'queue']);
-    Route::post('/queue', [\App\Http\Controllers\Api\EmailController::class, 'createDraft']);
-    Route::get('/queue/{id}', [\App\Http\Controllers\Api\EmailController::class, 'getDraft']);
-    Route::put('/queue/{id}', [\App\Http\Controllers\Api\EmailController::class, 'updateDraft']);
-    Route::post('/queue/{id}/approve', [\App\Http\Controllers\Api\EmailController::class, 'approveDraft']);
-    Route::post('/queue/{id}/reject', [\App\Http\Controllers\Api\EmailController::class, 'rejectDraft']);
+    Route::get('/queue', [EmailController::class, 'queue']);
+    Route::post('/queue', [EmailController::class, 'createDraft']);
+    Route::get('/queue/{id}', [EmailController::class, 'getDraft']);
+    Route::put('/queue/{id}', [EmailController::class, 'updateDraft']);
+    Route::post('/queue/{id}/approve', [EmailController::class, 'approveDraft']);
+    Route::post('/queue/{id}/reject', [EmailController::class, 'rejectDraft']);
 
     // Classification
-    Route::post('/classify', [\App\Http\Controllers\Api\EmailController::class, 'classify']);
-    Route::get('/classification/stats', [\App\Http\Controllers\Api\EmailController::class, 'classificationStats']);
+    Route::post('/classify', [EmailController::class, 'classify']);
+    Route::get('/classification/stats', [EmailController::class, 'classificationStats']);
 
     // Settings
-    Route::get('/settings', [\App\Http\Controllers\Api\EmailController::class, 'settings']);
-    Route::put('/settings', [\App\Http\Controllers\Api\EmailController::class, 'updateSettings']);
+    Route::get('/settings', [EmailController::class, 'settings']);
+    Route::put('/settings', [EmailController::class, 'updateSettings']);
 
     // EA2: AI Suggestions (contacts, calendar, bills)
-    Route::get('/suggestions', [\App\Http\Controllers\Api\EmailController::class, 'suggestions']);
-    Route::get('/suggestions/stats', [\App\Http\Controllers\Api\EmailController::class, 'suggestionStats']);
-    Route::post('/suggestions/scan', [\App\Http\Controllers\Api\EmailController::class, 'scanSuggestions']);
-    Route::post('/suggestions/{id}/approve', [\App\Http\Controllers\Api\EmailController::class, 'approveSuggestion']);
-    Route::post('/suggestions/{id}/reject', [\App\Http\Controllers\Api\EmailController::class, 'rejectSuggestion']);
-    Route::get('/suggestions/settings', [\App\Http\Controllers\Api\EmailController::class, 'suggestionSettings']);
-    Route::put('/suggestions/settings', [\App\Http\Controllers\Api\EmailController::class, 'updateSuggestionSettings']);
+    Route::get('/suggestions', [EmailController::class, 'suggestions']);
+    Route::get('/suggestions/stats', [EmailController::class, 'suggestionStats']);
+    Route::post('/suggestions/scan', [EmailController::class, 'scanSuggestions']);
+    Route::post('/suggestions/{id}/approve', [EmailController::class, 'approveSuggestion']);
+    Route::post('/suggestions/{id}/reject', [EmailController::class, 'rejectSuggestion']);
+    Route::get('/suggestions/settings', [EmailController::class, 'suggestionSettings']);
+    Route::put('/suggestions/settings', [EmailController::class, 'updateSuggestionSettings']);
 
     // Shipment tracking compatibility contract (D1 removed local shipment tables)
-    Route::get('/shipments', [\App\Http\Controllers\Api\EmailController::class, 'shipments']);
-    Route::get('/shipments/stats', [\App\Http\Controllers\Api\EmailController::class, 'shipmentStats']);
-    Route::post('/shipments/scan', [\App\Http\Controllers\Api\EmailController::class, 'scanShipments']);
-    Route::post('/shipments/{id}/received', [\App\Http\Controllers\Api\EmailController::class, 'markShipmentReceived']);
-    Route::post('/shipments/{id}/archive', [\App\Http\Controllers\Api\EmailController::class, 'archiveShipment']);
+    Route::get('/shipments', [EmailController::class, 'shipments']);
+    Route::get('/shipments/stats', [EmailController::class, 'shipmentStats']);
+    Route::post('/shipments/scan', [EmailController::class, 'scanShipments']);
+    Route::post('/shipments/{id}/received', [EmailController::class, 'markShipmentReceived']);
+    Route::post('/shipments/{id}/archive', [EmailController::class, 'archiveShipment']);
 
     // Sentiment, unsubscribe, follow-up, draft versions, scheduled — removed (D1)
 
     // Email Analytics
-    Route::get('/analytics', [\App\Http\Controllers\Api\EmailController::class, 'emailAnalytics']);
+    Route::get('/analytics', [EmailController::class, 'emailAnalytics']);
 });
 
 // Operator Evidence - authenticated read-only ops counts
 Route::middleware('auth:web')->get('/ops/operator-evidence', OperatorEvidenceController::class);
 Route::middleware('auth:web')->get('/ops/offline-status', OperatorOfflineStatusController::class);
+Route::middleware('auth:web')->get('/ops/workboard', PlosWorkboardController::class);
 Route::middleware('auth:web')->get('/ops/agents/doctor', AgentDoctorController::class);
+Route::middleware('auth:web')->prefix('ops/model-host/k3/jobs')->group(function () {
+    Route::post('/', [ModelHostControllerMhc08K3JobController::class, 'submit'])->name('ops.model-host.k3.jobs.submit');
+    Route::get('/{taskId}', [ModelHostControllerMhc08K3JobController::class, 'status'])
+        ->whereUuid('taskId')->name('ops.model-host.k3.jobs.status');
+    Route::post('/{taskId}/cancel', [ModelHostControllerMhc08K3JobController::class, 'cancel'])
+        ->whereUuid('taskId')->name('ops.model-host.k3.jobs.cancel');
+});
+Route::middleware(['auth:api', 'passport.scope.exact:ops.status.read'])
+    ->get('/v1/ops/offline-status', OperatorOfflineStatusController::class);
 
 // Joplin note data is personal by default. Public releases expose it only to authenticated users.
 Route::middleware('auth:web')->group(function () {
@@ -256,95 +324,100 @@ Route::middleware('auth:web')->get('/media/file', [MediaProxyController::class, 
 // Media Browser - Standalone media management
 // Integrates with genealogy for face matching, but operates independently
 // ============================================================================
-Route::get('/media', [\App\Http\Controllers\Api\MediaBrowserController::class, 'index']);
-Route::get('/media/browse', [\App\Http\Controllers\Api\MediaBrowserController::class, 'browse']);
-Route::get('/media/folders', [\App\Http\Controllers\Api\MediaBrowserController::class, 'folders']);
-Route::get('/media/persons', [\App\Http\Controllers\Api\MediaBrowserController::class, 'persons']);
-Route::get('/media/genealogy-persons', [\App\Http\Controllers\Api\MediaBrowserController::class, 'genealogyPersons']);
-Route::get('/media/stats', [\App\Http\Controllers\Api\MediaBrowserController::class, 'stats']);
-Route::get('/media/faces/queue', [\App\Http\Controllers\Api\MediaBrowserController::class, 'faceQueue']);
+Route::get('/media', [MediaBrowserController::class, 'index']);
+Route::get('/media/browse', [MediaBrowserController::class, 'browse']);
+Route::get('/media/folders', [MediaBrowserController::class, 'folders']);
+Route::get('/media/persons', [MediaBrowserController::class, 'persons']);
+Route::get('/media/genealogy-persons', [MediaBrowserController::class, 'genealogyPersons']);
+Route::get('/media/stats', [MediaBrowserController::class, 'stats']);
+Route::get('/media/faces/queue', [MediaBrowserController::class, 'faceQueue']);
+Route::middleware('auth:web')->get('/media/photo-evidence', [MediaBrowserController::class, 'photoEvidence']);
+Route::middleware('auth:web')->get('/media/photo-evidence/preview', [MediaBrowserController::class, 'photoEvidencePreview']);
 
 // AI Face Clusters (pgvector)
-Route::get('/media/face-clusters', [\App\Http\Controllers\Api\MediaBrowserController::class, 'faceClusters']);
-Route::get('/media/face-clusters/{id}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'faceCluster']);
-Route::get('/media/face-clusters/{id}/similar', [\App\Http\Controllers\Api\MediaBrowserController::class, 'similarClusters']);
-Route::get('/media/face-clusters/{id}/faces', [\App\Http\Controllers\Api\MediaBrowserController::class, 'clusterFaces']);
-Route::get('/media/face/{id}/photo-context', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facePhotoContext']);
-Route::get('/media/face-crop/{id}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'serveFaceCrop']);
-Route::get('/media/face-match-crop/{id}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'serveFaceMatchCrop']);
-Route::get('/media/face-counts-by-person', [\App\Http\Controllers\Api\MediaBrowserController::class, 'faceCountsByPerson']);
+Route::get('/media/face-clusters', [MediaBrowserController::class, 'faceClusters']);
+Route::get('/media/face-clusters/{id}', [MediaBrowserController::class, 'faceCluster']);
+Route::get('/media/face-clusters/{id}/similar', [MediaBrowserController::class, 'similarClusters']);
+Route::get('/media/face-clusters/{id}/faces', [MediaBrowserController::class, 'clusterFaces']);
+Route::get('/media/face/{id}/photo-context', [MediaBrowserController::class, 'facePhotoContext']);
+Route::get('/media/face-crop/{id}', [MediaBrowserController::class, 'serveFaceCrop']);
+Route::get('/media/face-match-crop/{id}', [MediaBrowserController::class, 'serveFaceMatchCrop']);
+Route::get('/media/face-match-source/{id}', [MediaBrowserController::class, 'serveFaceMatchSource']);
+Route::middleware('auth:web')->get('/media/registry-face-source/{id}/proof', [MediaBrowserController::class, 'registryFaceSourceProof'])->whereNumber('id');
+Route::get('/media/face-match-source/{id}/proof', [MediaBrowserController::class, 'faceMatchSourceProof']);
+Route::get('/media/face-counts-by-person', [MediaBrowserController::class, 'faceCountsByPerson']);
 
 // Faces page
-Route::get('/media/faces/recognized', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facesRecognized']);
-Route::get('/media/faces/new', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facesNew']);
-Route::middleware('auth:web')->get('/media/faces/named-only', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facesNamedOnly']);
-Route::middleware('auth:web')->get('/media/faces/{faceId}/candidates', [\App\Http\Controllers\Api\MediaBrowserController::class, 'faceCandidates'])->where('faceId', '[0-9]+');
-Route::middleware('auth:web')->get('/media/faces/registry-crop/{faceId}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'serveFaceRegistryCrop']);
-Route::get('/media/faces/hidden', [\App\Http\Controllers\Api\MediaBrowserController::class, 'facesHidden']);
-Route::get('/media/faces/unidentified', [\App\Http\Controllers\Api\MediaBrowserController::class, 'unidentifiedFaces']);
-Route::get('/media/faces/person-faces', [\App\Http\Controllers\Api\MediaBrowserController::class, 'personFaces']);
+Route::get('/media/faces/recognized', [MediaBrowserController::class, 'facesRecognized']);
+Route::get('/media/faces/new', [MediaBrowserController::class, 'facesNew']);
+Route::middleware('auth:web')->get('/media/faces/named-only', [MediaBrowserController::class, 'facesNamedOnly']);
+Route::middleware('auth:web')->get('/media/faces/{faceId}/candidates', [MediaBrowserController::class, 'faceCandidates'])->where('faceId', '[0-9]+');
+Route::middleware('auth:web')->get('/media/faces/registry-crop/{faceId}', [MediaBrowserController::class, 'serveFaceRegistryCrop']);
+Route::get('/media/faces/hidden', [MediaBrowserController::class, 'facesHidden']);
+Route::get('/media/faces/unidentified', [MediaBrowserController::class, 'unidentifiedFaces']);
+Route::get('/media/faces/person-faces', [MediaBrowserController::class, 'personFaces']);
 
 // Metadata editing
-Route::get('/media/{uuid}/metadata', [\App\Http\Controllers\Api\MediaBrowserController::class, 'getMetadata'])->where('uuid', '[a-f0-9-]{36}');
+Route::get('/media/{uuid}/metadata', [MediaBrowserController::class, 'getMetadata'])->where('uuid', '[a-f0-9-]{36}');
 
 // Media item routes (UUID-based)
-Route::get('/media/{uuid}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'show'])->where('uuid', '[a-f0-9-]{36}');
-Route::get('/media/{uuid}/thumbnail/{size?}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'thumbnail'])->where('uuid', '[a-f0-9-]{36}');
-Route::get('/media/{uuid}/stream', [\App\Http\Controllers\Api\MediaBrowserController::class, 'stream'])->where('uuid', '[a-f0-9-]{36}');
+Route::get('/media/{uuid}', [MediaBrowserController::class, 'show'])->where('uuid', '[a-f0-9-]{36}');
+Route::get('/media/{uuid}/thumbnail/{size?}', [MediaBrowserController::class, 'thumbnail'])->where('uuid', '[a-f0-9-]{36}');
+Route::get('/media/{uuid}/stream', [MediaBrowserController::class, 'stream'])->where('uuid', '[a-f0-9-]{36}');
 
-Route::get('/media/{uuid}/versions', [\App\Http\Controllers\Api\MediaBrowserController::class, 'versions'])->where('uuid', '[a-f0-9-]{36}');
-Route::get('/media/path-thumbnail', [\App\Http\Controllers\Api\MediaBrowserController::class, 'thumbnailByPath']);
-Route::get('/media/face-crop', [\App\Http\Controllers\Api\MediaBrowserController::class, 'faceCrop']);
+Route::get('/media/{uuid}/versions', [MediaBrowserController::class, 'versions'])->where('uuid', '[a-f0-9-]{36}');
+Route::get('/media/path-thumbnail', [MediaBrowserController::class, 'thumbnailByPath']);
+Route::get('/media/face-crop', [MediaBrowserController::class, 'faceCrop']);
 
 // Media mutations can alter tags, names, metadata, physical files, and genealogy links.
 Route::middleware('auth:web')->group(function () {
     // EXIF Writeback - Write metadata to physical files (runs as www-data via PHP-FPM)
-    Route::get('/media/writeback/stats', [\App\Http\Controllers\Api\MediaBrowserController::class, 'writebackStats']);
+    Route::get('/media/writeback/stats', [MediaBrowserController::class, 'writebackStats']);
 
-    Route::post('/media/faces/queue/{id}/review', [\App\Http\Controllers\Api\MediaBrowserController::class, 'reviewFaceMatch']);
-    Route::post('/media/faces/link', [\App\Http\Controllers\Api\MediaBrowserController::class, 'linkFace']);
+    Route::post('/media/faces/queue/{id}/review', [MediaBrowserController::class, 'reviewFaceMatch']);
+    Route::post('/media/faces/link', [MediaBrowserController::class, 'linkFace']);
 
-    Route::post('/media/face-clusters/{id}/confirm', [\App\Http\Controllers\Api\MediaBrowserController::class, 'confirmCluster']);
-    Route::post('/media/face-clusters/{id}/link', [\App\Http\Controllers\Api\MediaBrowserController::class, 'linkClusterToGenealogy']);
-    Route::post('/media/face-clusters/merge', [\App\Http\Controllers\Api\MediaBrowserController::class, 'mergeClusters']);
-    Route::post('/media/face-clusters/batch-confirm', [\App\Http\Controllers\Api\MediaBrowserController::class, 'batchConfirmClusters']);
-    Route::post('/media/face-clusters/{id}/propagate', [\App\Http\Controllers\Api\MediaBrowserController::class, 'propagateMatches']);
-    Route::post('/media/face-clusters/{id}/ignore', [\App\Http\Controllers\Api\MediaBrowserController::class, 'ignoreCluster']);
-    Route::post('/media/face-clusters/{id}/revert', [\App\Http\Controllers\Api\MediaBrowserController::class, 'revertCluster']);
-    Route::post('/media/face-clusters/{id}/split', [\App\Http\Controllers\Api\MediaBrowserController::class, 'splitCluster']);
+    Route::post('/media/face-clusters/{id}/confirm', [MediaBrowserController::class, 'confirmCluster']);
+    Route::post('/media/face-clusters/{id}/link', [MediaBrowserController::class, 'linkClusterToGenealogy']);
+    Route::post('/media/face-clusters/merge', [MediaBrowserController::class, 'mergeClusters']);
+    Route::post('/media/face-clusters/batch-confirm', [MediaBrowserController::class, 'batchConfirmClusters']);
+    Route::post('/media/face-clusters/{id}/propagate', [MediaBrowserController::class, 'propagateMatches']);
+    Route::post('/media/face-clusters/{id}/ignore', [MediaBrowserController::class, 'ignoreCluster']);
+    Route::post('/media/face-clusters/{id}/revert', [MediaBrowserController::class, 'revertCluster']);
+    Route::post('/media/face-clusters/{id}/split', [MediaBrowserController::class, 'splitCluster']);
 
     // Unified Face Cluster API (Phase 4 — coexists with legacy endpoints above)
-    Route::post('/media/faces/clusters/{id}/identify', [\App\Http\Controllers\Api\MediaBrowserController::class, 'identifyClusterUnified']);
-    Route::post('/media/faces/clusters/batch-identify', [\App\Http\Controllers\Api\MediaBrowserController::class, 'batchIdentifyClusters']);
-    Route::post('/media/faces/clusters/{id}/hide', [\App\Http\Controllers\Api\MediaBrowserController::class, 'hideClusterUnified']);
-    Route::post('/media/faces/clusters/{id}/restore', [\App\Http\Controllers\Api\MediaBrowserController::class, 'restoreClusterUnified']);
+    Route::post('/media/faces/clusters/{id}/identify', [MediaBrowserController::class, 'identifyClusterUnified']);
+    Route::post('/media/faces/clusters/batch-identify', [MediaBrowserController::class, 'batchIdentifyClusters']);
+    Route::post('/media/faces/clusters/{id}/hide', [MediaBrowserController::class, 'hideClusterUnified']);
+    Route::post('/media/faces/clusters/{id}/restore', [MediaBrowserController::class, 'restoreClusterUnified']);
 
-    Route::post('/media/writeback/batch', [\App\Http\Controllers\Api\MediaBrowserController::class, 'writebackBatch']);
-    Route::post('/media/writeback/{uuid}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'writebackFile'])->where('uuid', '[a-f0-9-]{36}');
+    Route::post('/media/writeback/batch', [MediaBrowserController::class, 'writebackBatch']);
+    Route::post('/media/writeback/{uuid}', [MediaBrowserController::class, 'writebackFile'])->where('uuid', '[a-f0-9-]{36}');
 
     // Face reassignment & person links
-    Route::post('/media/faces/{faceId}/reassign', [\App\Http\Controllers\Api\MediaBrowserController::class, 'reassignFace']);
-    Route::post('/media/faces/{faceId}/unlink', [\App\Http\Controllers\Api\MediaBrowserController::class, 'unlinkFace']);
-    Route::post('/media/faces/{faceId}/name', [\App\Http\Controllers\Api\MediaBrowserController::class, 'setFaceName']);
-    Route::post('/media/faces/{faceId}/candidate-decision', [\App\Http\Controllers\Api\MediaBrowserController::class, 'decideFaceCandidate'])->where('faceId', '[0-9]+');
-    Route::post('/media/faces/bulk-name', [\App\Http\Controllers\Api\MediaBrowserController::class, 'bulkNameFaces']);
-    Route::post('/media/faces/bulk-hide', [\App\Http\Controllers\Api\MediaBrowserController::class, 'bulkHideFaces']);
-    Route::post('/media/faces/rename-person/preview', [\App\Http\Controllers\Api\MediaBrowserController::class, 'previewRenamePerson']);
-    Route::post('/media/faces/rename-person', [\App\Http\Controllers\Api\MediaBrowserController::class, 'renamePerson']);
-    Route::patch('/media/face-match/{id}/status', [\App\Http\Controllers\Api\MediaBrowserController::class, 'updateFaceMatchStatus']);
-    Route::post('/media/faces/{faceId}/exclude', [\App\Http\Controllers\Api\MediaBrowserController::class, 'excludeFace']);
+    Route::post('/media/faces/{faceId}/reassign', [MediaBrowserController::class, 'reassignFace']);
+    Route::post('/media/faces/{faceId}/unlink', [MediaBrowserController::class, 'unlinkFace']);
+    Route::post('/media/faces/{faceId}/name', [MediaBrowserController::class, 'setFaceName']);
+    Route::post('/media/faces/{faceId}/candidate-decision', [MediaBrowserController::class, 'decideFaceCandidate'])->where('faceId', '[0-9]+');
+    Route::post('/media/faces/bulk-name', [MediaBrowserController::class, 'bulkNameFaces']);
+    Route::post('/media/faces/bulk-hide', [MediaBrowserController::class, 'bulkHideFaces']);
+    Route::post('/media/faces/rename-person/preview', [MediaBrowserController::class, 'previewRenamePerson']);
+    Route::post('/media/faces/rename-person', [MediaBrowserController::class, 'renamePerson']);
+    Route::patch('/media/face-match/{id}/status', [MediaBrowserController::class, 'updateFaceMatchStatus']);
+    Route::post('/media/faces/{faceId}/exclude', [MediaBrowserController::class, 'excludeFace']);
 
-    Route::post('/media/{uuid}/person-link', [\App\Http\Controllers\Api\MediaBrowserController::class, 'addPersonLink'])->where('uuid', '[a-f0-9-]{36}');
-    Route::delete('/media/{uuid}/person-link/{personId}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'removePersonLink'])->where('uuid', '[a-f0-9-]{36}');
-    Route::post('/media/{uuid}/metadata', [\App\Http\Controllers\Api\MediaBrowserController::class, 'updateMetadata'])->where('uuid', '[a-f0-9-]{36}');
-    Route::delete('/media/{uuid}', [\App\Http\Controllers\Api\MediaBrowserController::class, 'deleteFile'])->where('uuid', '[a-f0-9-]{36}');
-    Route::delete('/media/{uuid}/purge', [\App\Http\Controllers\Api\MediaBrowserController::class, 'hardPurgeFile'])->where('uuid', '[a-f0-9-]{36}');
-    Route::post('/media/{uuid}/rename', [\App\Http\Controllers\Api\MediaBrowserController::class, 'renameFile'])->where('uuid', '[a-f0-9-]{36}');
+    Route::post('/media/{uuid}/person-link', [MediaBrowserController::class, 'addPersonLink'])->where('uuid', '[a-f0-9-]{36}');
+    Route::delete('/media/{uuid}/person-link/{personId}', [MediaBrowserController::class, 'removePersonLink'])->where('uuid', '[a-f0-9-]{36}');
+    Route::post('/media/{uuid}/metadata', [MediaBrowserController::class, 'updateMetadata'])->where('uuid', '[a-f0-9-]{36}');
+    Route::delete('/media/{uuid}', [MediaBrowserController::class, 'deleteFile'])->where('uuid', '[a-f0-9-]{36}');
+    Route::delete('/media/{uuid}/purge', [MediaBrowserController::class, 'hardPurgeFile'])->where('uuid', '[a-f0-9-]{36}');
+    Route::post('/media/{uuid}/rename', [MediaBrowserController::class, 'renameFile'])->where('uuid', '[a-f0-9-]{36}');
 
     // Image editing & version history
-    Route::post('/media/{uuid}/edit', [\App\Http\Controllers\Api\MediaBrowserController::class, 'editImage'])->where('uuid', '[a-f0-9-]{36}');
-    Route::post('/media/{uuid}/edit-preview', [\App\Http\Controllers\Api\MediaBrowserController::class, 'editPreview'])->where('uuid', '[a-f0-9-]{36}');
-    Route::post('/media/{uuid}/versions/{versionId}/restore', [\App\Http\Controllers\Api\MediaBrowserController::class, 'restoreVersion'])->where('uuid', '[a-f0-9-]{36}');
+    Route::post('/media/{uuid}/edit', [MediaBrowserController::class, 'editImage'])->where('uuid', '[a-f0-9-]{36}');
+    Route::post('/media/{uuid}/edit-preview', [MediaBrowserController::class, 'editPreview'])->where('uuid', '[a-f0-9-]{36}');
+    Route::post('/media/{uuid}/versions/{versionId}/restore', [MediaBrowserController::class, 'restoreVersion'])->where('uuid', '[a-f0-9-]{36}');
 });
 
 // ============================================================================
@@ -498,91 +571,91 @@ Route::prefix('reviews')->group(function () {
 // =========================================================================
 Route::prefix('research-hub')->group(function () {
     // Review type registry
-    Route::get('/types', [\App\Http\Controllers\Api\ResearchHubController::class, 'types']);
-    Route::get('/stats', [\App\Http\Controllers\Api\ResearchHubController::class, 'stats']);
-    Route::get('/items', [\App\Http\Controllers\Api\ResearchHubController::class, 'items']);
-    Route::get('/items/by-target-ref', [\App\Http\Controllers\Api\ResearchHubController::class, 'itemByTargetRef']);
+    Route::get('/types', [ResearchHubController::class, 'types']);
+    Route::get('/stats', [ResearchHubController::class, 'stats']);
+    Route::get('/items', [ResearchHubController::class, 'items']);
+    Route::get('/items/by-target-ref', [ResearchHubController::class, 'itemByTargetRef']);
 
     // Phase 1 (Genealogy Review UI redesign): enriched detail-pane payload
     // Returns review item + on-file person dossier + per-field diffs in one call
-    Route::get('/items/{unifiedId}/context', [\App\Http\Controllers\Api\ResearchHubController::class, 'context'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::get('/items/{unifiedId}/context', [ResearchHubController::class, 'context'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
 
     // Phase 3: per-field accept/reject with structured reason codes and conflict resolutions.
     // genealogy_finding only — other types use whole-item approve/reject.
-    Route::post('/items/{unifiedId}/apply-fields', [\App\Http\Controllers\Api\ResearchHubController::class, 'applyFields'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/items/{unifiedId}/apply-fields', [ResearchHubController::class, 'applyFields'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
 
     // Individual item actions
-    Route::post('/approve/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'approve'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::post('/reject/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'reject'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::post('/clarify/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'clarify'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::post('/defer/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'defer'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/approve/{unifiedId}', [ResearchHubController::class, 'approve'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/reject/{unifiedId}', [ResearchHubController::class, 'reject'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/clarify/{unifiedId}', [ResearchHubController::class, 'clarify'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/defer/{unifiedId}', [ResearchHubController::class, 'defer'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
     // Pushover action button callbacks (GET for mobile browser open)
-    Route::get('/quick-approve/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'quickApprove'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::get('/quick-reject/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'quickReject'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::get('/quick-view/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'quickView'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::post('/ignore/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'ignore'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::post('/revive/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'revive'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::get('/quick-approve/{unifiedId}', [ResearchHubController::class, 'quickApprove'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::get('/quick-reject/{unifiedId}', [ResearchHubController::class, 'quickReject'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::get('/quick-view/{unifiedId}', [ResearchHubController::class, 'quickView'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/ignore/{unifiedId}', [ResearchHubController::class, 'ignore'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/revive/{unifiedId}', [ResearchHubController::class, 'revive'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
 
     // Batch operations
-    Route::post('/batch/approve', [\App\Http\Controllers\Api\ResearchHubController::class, 'batchApprove']);
-    Route::post('/batch/reject', [\App\Http\Controllers\Api\ResearchHubController::class, 'batchReject']);
+    Route::post('/batch/approve', [ResearchHubController::class, 'batchApprove']);
+    Route::post('/batch/reject', [ResearchHubController::class, 'batchReject']);
 
     // INF-10c: Remediation actions
-    Route::get('/remediation/registry', [\App\Http\Controllers\Api\ResearchHubController::class, 'remediationRegistry']);
-    Route::get('/remediation/{unifiedId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'getRemediation'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
-    Route::post('/remediation/{unifiedId}/execute', [\App\Http\Controllers\Api\ResearchHubController::class, 'executeRemediation'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::get('/remediation/registry', [ResearchHubController::class, 'remediationRegistry']);
+    Route::get('/remediation/{unifiedId}', [ResearchHubController::class, 'getRemediation'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
+    Route::post('/remediation/{unifiedId}/execute', [ResearchHubController::class, 'executeRemediation'])->where('unifiedId', '[a-z_]+:[a-zA-Z0-9_-]+');
 
     // Agent status (merged from agent dashboard)
-    Route::get('/agents/status', [\App\Http\Controllers\Api\ResearchHubController::class, 'agentStatus']);
-    Route::get('/agents/reviewer-feedback', [\App\Http\Controllers\Api\ResearchHubController::class, 'reviewerFeedback']);
-    Route::get('/agents/activity', [\App\Http\Controllers\Api\ResearchHubController::class, 'agentActivity']);
-    Route::get('/agents/jobs', [\App\Http\Controllers\Api\ResearchHubController::class, 'scheduledJobs']);
-    Route::get('/agents/reports', [\App\Http\Controllers\Api\ResearchHubController::class, 'agentReports']);
-    Route::get('/agents/handoffs', [\App\Http\Controllers\Api\ResearchHubController::class, 'agentHandoffs']);
-    Route::get('/agents/{agentId}/episodes', [\App\Http\Controllers\Api\ResearchHubController::class, 'agentEpisodes']);
+    Route::get('/agents/status', [ResearchHubController::class, 'agentStatus']);
+    Route::get('/agents/reviewer-feedback', [ResearchHubController::class, 'reviewerFeedback']);
+    Route::get('/agents/activity', [ResearchHubController::class, 'agentActivity']);
+    Route::get('/agents/jobs', [ResearchHubController::class, 'scheduledJobs']);
+    Route::get('/agents/reports', [ResearchHubController::class, 'agentReports']);
+    Route::get('/agents/handoffs', [ResearchHubController::class, 'agentHandoffs']);
+    Route::get('/agents/{agentId}/episodes', [ResearchHubController::class, 'agentEpisodes']);
 
     // Procedural memory
-    Route::get('/agents/procedures', [\App\Http\Controllers\Api\ResearchHubController::class, 'agentProcedures']);
-    Route::get('/agents/procedures/stats', [\App\Http\Controllers\Api\ResearchHubController::class, 'agentProcedureStats']);
-    Route::post('/agents/procedures/{id}/retire', [\App\Http\Controllers\Api\ResearchHubController::class, 'retireProcedure']);
-    Route::post('/agents/procedures/{id}/restore', [\App\Http\Controllers\Api\ResearchHubController::class, 'restoreProcedure']);
+    Route::get('/agents/procedures', [ResearchHubController::class, 'agentProcedures']);
+    Route::get('/agents/procedures/stats', [ResearchHubController::class, 'agentProcedureStats']);
+    Route::post('/agents/procedures/{id}/retire', [ResearchHubController::class, 'retireProcedure']);
+    Route::post('/agents/procedures/{id}/restore', [ResearchHubController::class, 'restoreProcedure']);
 
     // Speculative execution (S19)
-    Route::get('/agents/speculative/stats', [\App\Http\Controllers\Api\ResearchHubController::class, 'speculativeStats']);
-    Route::get('/agents/speculative/history', [\App\Http\Controllers\Api\ResearchHubController::class, 'speculativeHistory']);
-    Route::get('/agents/speculative/{specRunId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'speculativeDetail']);
-    Route::post('/agents/speculative/run', [\App\Http\Controllers\Api\ResearchHubController::class, 'speculativeRun']);
-    Route::post('/agents/speculative/{specRunId}/cancel', [\App\Http\Controllers\Api\ResearchHubController::class, 'speculativeCancel']);
+    Route::get('/agents/speculative/stats', [ResearchHubController::class, 'speculativeStats']);
+    Route::get('/agents/speculative/history', [ResearchHubController::class, 'speculativeHistory']);
+    Route::get('/agents/speculative/{specRunId}', [ResearchHubController::class, 'speculativeDetail']);
+    Route::post('/agents/speculative/run', [ResearchHubController::class, 'speculativeRun']);
+    Route::post('/agents/speculative/{specRunId}/cancel', [ResearchHubController::class, 'speculativeCancel']);
 
     // Adaptive mode selection (S20)
-    Route::get('/agents/adaptive/stats', [\App\Http\Controllers\Api\ResearchHubController::class, 'adaptiveModeStats']);
-    Route::get('/agents/adaptive/history/{agentId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'adaptiveModeHistory']);
-    Route::get('/agents/adaptive/recommend/{agentId}', [\App\Http\Controllers\Api\ResearchHubController::class, 'adaptiveModeRecommend']);
+    Route::get('/agents/adaptive/stats', [ResearchHubController::class, 'adaptiveModeStats']);
+    Route::get('/agents/adaptive/history/{agentId}', [ResearchHubController::class, 'adaptiveModeHistory']);
+    Route::get('/agents/adaptive/recommend/{agentId}', [ResearchHubController::class, 'adaptiveModeRecommend']);
 });
 
 // =========================================================================
 // Internet Archive Integration
 // =========================================================================
 Route::prefix('internet-archive')->group(function () {
-    Route::get('/search', [\App\Http\Controllers\Api\InternetArchiveController::class, 'search']);
-    Route::get('/genealogy', [\App\Http\Controllers\Api\InternetArchiveController::class, 'searchGenealogy']);
-    Route::get('/family', [\App\Http\Controllers\Api\InternetArchiveController::class, 'searchFamily']);
-    Route::get('/item/{identifier}', [\App\Http\Controllers\Api\InternetArchiveController::class, 'item']);
-    Route::get('/item/{identifier}/files', [\App\Http\Controllers\Api\InternetArchiveController::class, 'files']);
-    Route::post('/download', [\App\Http\Controllers\Api\InternetArchiveController::class, 'download']);
-    Route::post('/download-best', [\App\Http\Controllers\Api\InternetArchiveController::class, 'downloadBest']);
-    Route::post('/copy-to-tree', [\App\Http\Controllers\Api\InternetArchiveController::class, 'copyToTree']);
+    Route::get('/search', [InternetArchiveController::class, 'search']);
+    Route::get('/genealogy', [InternetArchiveController::class, 'searchGenealogy']);
+    Route::get('/family', [InternetArchiveController::class, 'searchFamily']);
+    Route::get('/item/{identifier}', [InternetArchiveController::class, 'item']);
+    Route::get('/item/{identifier}/files', [InternetArchiveController::class, 'files']);
+    Route::post('/download', [InternetArchiveController::class, 'download']);
+    Route::post('/download-best', [InternetArchiveController::class, 'downloadBest']);
+    Route::post('/copy-to-tree', [InternetArchiveController::class, 'copyToTree']);
 });
 
 // =========================================================================
 // NARA (National Archives) Integration
 // =========================================================================
 Route::prefix('nara')->group(function () {
-    Route::get('/search', [\App\Http\Controllers\Api\NaraController::class, 'search']);
-    Route::get('/{naId}/objects', [\App\Http\Controllers\Api\NaraController::class, 'objects']);
-    Route::post('/download', [\App\Http\Controllers\Api\NaraController::class, 'download']);
-    Route::post('/download-best', [\App\Http\Controllers\Api\NaraController::class, 'downloadBest']);
-    Route::post('/copy-to-tree', [\App\Http\Controllers\Api\NaraController::class, 'copyToTree']);
+    Route::get('/search', [NaraController::class, 'search']);
+    Route::get('/{naId}/objects', [NaraController::class, 'objects']);
+    Route::post('/download', [NaraController::class, 'download']);
+    Route::post('/download-best', [NaraController::class, 'downloadBest']);
+    Route::post('/copy-to-tree', [NaraController::class, 'copyToTree']);
 });
 
 // Data Removal System - public for personal/family use
@@ -659,13 +732,13 @@ Route::prefix('extension')->group(function () {
 
     // Genealogy: Cookie sharing, clipping, browse queue
     Route::prefix('genealogy')->group(function () {
-        Route::post('/cookies', [\App\Http\Controllers\Api\ExtensionGenealogyController::class, 'storeCookies']);
-        Route::get('/cookies', [\App\Http\Controllers\Api\ExtensionGenealogyController::class, 'getCookies']);
-        Route::post('/clips', [\App\Http\Controllers\Api\ExtensionGenealogyController::class, 'saveClip']);
-        Route::get('/browse-queue', [\App\Http\Controllers\Api\ExtensionGenealogyController::class, 'getBrowseQueue']);
-        Route::post('/browse-queue', [\App\Http\Controllers\Api\ExtensionGenealogyController::class, 'createBrowseQueue']);
-        Route::post('/browse-queue/{id}/result', [\App\Http\Controllers\Api\ExtensionGenealogyController::class, 'submitBrowseResult']);
-        Route::get('/browse-queue/stats', [\App\Http\Controllers\Api\ExtensionGenealogyController::class, 'browseQueueStats']);
+        Route::post('/cookies', [ExtensionGenealogyController::class, 'storeCookies']);
+        Route::get('/cookies', [ExtensionGenealogyController::class, 'getCookies']);
+        Route::post('/clips', [ExtensionGenealogyController::class, 'saveClip']);
+        Route::get('/browse-queue', [ExtensionGenealogyController::class, 'getBrowseQueue']);
+        Route::post('/browse-queue', [ExtensionGenealogyController::class, 'createBrowseQueue']);
+        Route::post('/browse-queue/{id}/result', [ExtensionGenealogyController::class, 'submitBrowseResult']);
+        Route::get('/browse-queue/stats', [ExtensionGenealogyController::class, 'browseQueueStats']);
     });
 });
 
@@ -683,62 +756,62 @@ Route::prefix('system-issues')->group(function () {
 // File Catalog - Read-only file browsing, search, and RAG sync
 Route::prefix('file-catalog')->group(function () {
     // Dashboard & Stats
-    Route::get('/dashboard', [\App\Http\Controllers\Api\FileCatalogController::class, 'dashboard']);
-    Route::get('/stats', [\App\Http\Controllers\Api\FileCatalogController::class, 'stats']);
+    Route::get('/dashboard', [FileCatalogController::class, 'dashboard']);
+    Route::get('/stats', [FileCatalogController::class, 'stats']);
 
     // File Browsing
-    Route::get('/files', [\App\Http\Controllers\Api\FileCatalogController::class, 'listFiles']);
-    Route::get('/files/{uuid}', [\App\Http\Controllers\Api\FileCatalogController::class, 'getFile']);
-    Route::get('/files/{uuid}/download', [\App\Http\Controllers\Api\FileCatalogController::class, 'downloadUrl']);
-    Route::get('/files/{uuid}/archive', [\App\Http\Controllers\Api\FileCatalogController::class, 'listArchiveContents']);
-    Route::get('/files/{uuid}/preview', [\App\Http\Controllers\Api\FileCatalogController::class, 'previewFile']);
+    Route::get('/files', [FileCatalogController::class, 'listFiles']);
+    Route::get('/files/{uuid}', [FileCatalogController::class, 'getFile']);
+    Route::get('/files/{uuid}/download', [FileCatalogController::class, 'downloadUrl']);
+    Route::get('/files/{uuid}/archive', [FileCatalogController::class, 'listArchiveContents']);
+    Route::get('/files/{uuid}/preview', [FileCatalogController::class, 'previewFile']);
 
     // Scanning
-    Route::post('/scan', [\App\Http\Controllers\Api\FileCatalogController::class, 'triggerScan']);
-    Route::get('/scan/history', [\App\Http\Controllers\Api\FileCatalogController::class, 'scanHistory']);
-    Route::post('/scan/cleanup', [\App\Http\Controllers\Api\FileCatalogController::class, 'cleanupStuck']);
+    Route::post('/scan', [FileCatalogController::class, 'triggerScan']);
+    Route::get('/scan/history', [FileCatalogController::class, 'scanHistory']);
+    Route::post('/scan/cleanup', [FileCatalogController::class, 'cleanupStuck']);
 
     // RAG Sync
-    Route::get('/rag/status', [\App\Http\Controllers\Api\FileCatalogController::class, 'ragStatus']);
-    Route::post('/rag/sync', [\App\Http\Controllers\Api\FileCatalogController::class, 'ragSync']);
-    Route::get('/rag/search', [\App\Http\Controllers\Api\FileCatalogController::class, 'ragSearch']);
+    Route::get('/rag/status', [FileCatalogController::class, 'ragStatus']);
+    Route::post('/rag/sync', [FileCatalogController::class, 'ragSync']);
+    Route::get('/rag/search', [FileCatalogController::class, 'ragSearch']);
 
     // Duplicates (read-only)
-    Route::get('/duplicates', [\App\Http\Controllers\Api\FileCatalogController::class, 'listDuplicates']);
-    Route::get('/duplicates/stats', [\App\Http\Controllers\Api\FileCatalogController::class, 'duplicateStats']);
+    Route::get('/duplicates', [FileCatalogController::class, 'listDuplicates']);
+    Route::get('/duplicates/stats', [FileCatalogController::class, 'duplicateStats']);
 
     // Settings
-    Route::get('/settings', [\App\Http\Controllers\Api\FileCatalogController::class, 'settings']);
-    Route::put('/settings', [\App\Http\Controllers\Api\FileCatalogController::class, 'updateSettings']);
+    Route::get('/settings', [FileCatalogController::class, 'settings']);
+    Route::put('/settings', [FileCatalogController::class, 'updateSettings']);
 
     // Thumbnails
-    Route::get('/files/{uuid}/thumbnail/{size?}', [\App\Http\Controllers\Api\FileCatalogController::class, 'thumbnail']);
-    Route::post('/thumbnails/generate', [\App\Http\Controllers\Api\FileCatalogController::class, 'generateThumbnails']);
-    Route::get('/thumbnails/stats', [\App\Http\Controllers\Api\FileCatalogController::class, 'thumbnailStats']);
+    Route::get('/files/{uuid}/thumbnail/{size?}', [FileCatalogController::class, 'thumbnail']);
+    Route::post('/thumbnails/generate', [FileCatalogController::class, 'generateThumbnails']);
+    Route::get('/thumbnails/stats', [FileCatalogController::class, 'thumbnailStats']);
 
     // Quarantine
-    Route::get('/quarantine', [\App\Http\Controllers\Api\FileCatalogController::class, 'listQuarantined']);
-    Route::post('/quarantine/{fileId}', [\App\Http\Controllers\Api\FileCatalogController::class, 'quarantineFile']);
-    Route::post('/quarantine/{id}/review', [\App\Http\Controllers\Api\FileCatalogController::class, 'reviewQuarantined']);
+    Route::get('/quarantine', [FileCatalogController::class, 'listQuarantined']);
+    Route::post('/quarantine/{fileId}', [FileCatalogController::class, 'quarantineFile']);
+    Route::post('/quarantine/{id}/review', [FileCatalogController::class, 'reviewQuarantined']);
 
     // Bundles
-    Route::get('/bundles', [\App\Http\Controllers\Api\FileCatalogController::class, 'listBundles']);
-    Route::get('/bundles/{id}', [\App\Http\Controllers\Api\FileCatalogController::class, 'getBundle']);
-    Route::post('/bundles/detect', [\App\Http\Controllers\Api\FileCatalogController::class, 'detectBundles']);
+    Route::get('/bundles', [FileCatalogController::class, 'listBundles']);
+    Route::get('/bundles/{id}', [FileCatalogController::class, 'getBundle']);
+    Route::post('/bundles/detect', [FileCatalogController::class, 'detectBundles']);
 
     // Collections
-    Route::get('/collections', [\App\Http\Controllers\Api\FileCatalogController::class, 'listCollections']);
-    Route::post('/collections', [\App\Http\Controllers\Api\FileCatalogController::class, 'createCollection']);
-    Route::get('/collections/{id}/items', [\App\Http\Controllers\Api\FileCatalogController::class, 'collectionItems']);
-    Route::post('/collections/{id}/evaluate', [\App\Http\Controllers\Api\FileCatalogController::class, 'evaluateCollection']);
-    Route::delete('/collections/{id}', [\App\Http\Controllers\Api\FileCatalogController::class, 'deleteCollection']);
+    Route::get('/collections', [FileCatalogController::class, 'listCollections']);
+    Route::post('/collections', [FileCatalogController::class, 'createCollection']);
+    Route::get('/collections/{id}/items', [FileCatalogController::class, 'collectionItems']);
+    Route::post('/collections/{id}/evaluate', [FileCatalogController::class, 'evaluateCollection']);
+    Route::delete('/collections/{id}', [FileCatalogController::class, 'deleteCollection']);
 
     // Versions
-    Route::get('/files/{uuid}/versions', [\App\Http\Controllers\Api\FileCatalogController::class, 'fileVersions']);
+    Route::get('/files/{uuid}/versions', [FileCatalogController::class, 'fileVersions']);
 
     // Semantic Search
-    Route::get('/semantic-search', [\App\Http\Controllers\Api\FileCatalogController::class, 'semanticSearch']);
-    Route::post('/files/{uuid}/describe', [\App\Http\Controllers\Api\FileCatalogController::class, 'generateDescription']);
+    Route::get('/semantic-search', [FileCatalogController::class, 'semanticSearch']);
+    Route::post('/files/{uuid}/describe', [FileCatalogController::class, 'generateDescription']);
 });
 
 // RAG Query Tracing
@@ -760,33 +833,32 @@ Route::get('/queue/failed', [QueueController::class, 'getFailedJobs']);
 Route::get('/queue/stats', [QueueController::class, 'getStats']);
 
 // Scheduled Jobs - Centralized job scheduling
-Route::prefix('scheduled-jobs')->group(function () {
-    Route::get('/', [\App\Http\Controllers\Api\ScheduledJobController::class, 'index']);
-    Route::get('/stats', [\App\Http\Controllers\Api\ScheduledJobController::class, 'stats']);
-    Route::get('/modules', [\App\Http\Controllers\Api\ScheduledJobController::class, 'modules']);
-    Route::get('/by-module', [\App\Http\Controllers\Api\ScheduledJobController::class, 'byModule']);
-    Route::post('/validate-cron', [\App\Http\Controllers\Api\ScheduledJobController::class, 'validateCron']);
-    Route::get('/{id}', [\App\Http\Controllers\Api\ScheduledJobController::class, 'show']);
-    Route::get('/{id}/history', [\App\Http\Controllers\Api\ScheduledJobController::class, 'history']);
-    Route::post('/', [\App\Http\Controllers\Api\ScheduledJobController::class, 'store']);
-    Route::put('/{id}', [\App\Http\Controllers\Api\ScheduledJobController::class, 'update']);
-    Route::delete('/{id}', [\App\Http\Controllers\Api\ScheduledJobController::class, 'destroy']);
-    Route::post('/{id}/toggle', [\App\Http\Controllers\Api\ScheduledJobController::class, 'toggle']);
-    Route::post('/{id}/run', [\App\Http\Controllers\Api\ScheduledJobController::class, 'run']);
-    Route::post('/cleanup-history', [\App\Http\Controllers\Api\ScheduledJobController::class, 'cleanupHistory']);
+Route::middleware('auth:web')->prefix('scheduled-jobs')->group(function () {
+    Route::get('/', [ScheduledJobController::class, 'index']);
+    Route::get('/stats', [ScheduledJobController::class, 'stats']);
+    Route::get('/modules', [ScheduledJobController::class, 'modules']);
+    Route::get('/by-module', [ScheduledJobController::class, 'byModule']);
+    Route::post('/validate-cron', [ScheduledJobController::class, 'validateCron']);
+    Route::get('/{id}', [ScheduledJobController::class, 'show']);
+    Route::get('/{id}/history', [ScheduledJobController::class, 'history']);
+    Route::post('/', [ScheduledJobController::class, 'store']);
+    Route::put('/{id}', [ScheduledJobController::class, 'update']);
+    Route::delete('/{id}', [ScheduledJobController::class, 'destroy']);
+    Route::post('/{id}/toggle', [ScheduledJobController::class, 'toggle']);
+    Route::post('/{id}/run', [ScheduledJobController::class, 'run']);
+    Route::post('/cleanup-history', [ScheduledJobController::class, 'cleanupHistory']);
 });
 
-// OAuth - read only
-Route::get('/oauth/tokens', [OAuthController::class, 'getTokens']);
-
-// Configuration - public for personal/family use
-Route::get('/configuration', [ConfigurationController::class, 'index']);
-Route::get('/configuration/section/{section}', [ConfigurationController::class, 'getBySection']);
-Route::post('/configuration/initialize', [ConfigurationController::class, 'initializeDefaults']);
-Route::post('/configuration/update-multiple', [ConfigurationController::class, 'updateMultiple']);
-Route::put('/configuration/{id}', [ConfigurationController::class, 'update']);
-Route::post('/configuration', [ConfigurationController::class, 'store']);
-Route::delete('/configuration/{id}', [ConfigurationController::class, 'destroy']);
+// Configuration - authenticated operator surface
+Route::middleware('auth:web')->prefix('configuration')->group(function () {
+    Route::get('/', [ConfigurationController::class, 'index']);
+    Route::get('/section/{section}', [ConfigurationController::class, 'getBySection']);
+    Route::post('/initialize', [ConfigurationController::class, 'initializeDefaults']);
+    Route::post('/update-multiple', [ConfigurationController::class, 'updateMultiple']);
+    Route::put('/{id}', [ConfigurationController::class, 'update']);
+    Route::post('/', [ConfigurationController::class, 'store']);
+    Route::delete('/{id}', [ConfigurationController::class, 'destroy']);
+});
 
 // Protected routes - require authentication for modifications
 Route::middleware('auth:web')->group(function () {
@@ -807,7 +879,8 @@ Route::middleware('auth:web')->group(function () {
     Route::post('/queue/retry/{id}', [QueueController::class, 'retryJob']);
     Route::delete('/queue/failed/{id}', [QueueController::class, 'deleteJob']);
 
-    // OAuth - modifications
+    // Personal API token lifecycle remains session-only. Bearer tokens cannot mint tokens.
+    Route::get('/oauth/tokens', [OAuthController::class, 'getTokens']);
     Route::post('/oauth/tokens', [OAuthController::class, 'createToken']);
     Route::delete('/oauth/tokens/{id}', [OAuthController::class, 'revokeToken']);
 
@@ -832,11 +905,12 @@ Route::middleware('auth:web')->group(function () {
     Route::delete('/rag/knowledge-graph/entity/{id}', [RAGController::class, 'deleteEntity']);
 
     // MCP - test tool (requires auth in production)
-    Route::post('/mcp/servers/{server}/test/{tool}', [MCPController::class, 'testTool']);
+    Route::post('/mcp/servers/{server}/test/{tool}', [MCPController::class, 'testTool'])
+        ->middleware(RequireMcpAuthorization::class.':mcp.tools.invoke');
 });
 
 // E20: Genealogy - Family Tree Management
-Route::prefix('genealogy')->middleware(['genealogy.privacy'])->group(function () {
+Route::prefix('genealogy')->middleware([GenealogySelectedTreeMiddleware::class, 'genealogy.privacy'])->group(function () {
     // Status
     Route::get('/status', [GenealogyController::class, 'getStatus']);
 
@@ -1195,7 +1269,7 @@ Route::prefix('genealogy')->middleware(['genealogy.privacy'])->group(function ()
 Route::prefix('agent')->group(function () {
     // Guardrail confirmation endpoints (no auth - uses token-based access)
     Route::get('/guardrail/confirm/{token}/approve', function (string $token) {
-        $result = app(\App\Services\AgentGuardrailService::class)->confirm($token, true, 'pushover_link');
+        $result = app(AgentGuardrailService::class)->confirm($token, true, 'pushover_link');
         if ($result['success']) {
             return response()->json(['status' => 'approved', 'operation' => $result['operation']]);
         }
@@ -1204,7 +1278,7 @@ Route::prefix('agent')->group(function () {
     });
 
     Route::get('/guardrail/confirm/{token}/deny', function (string $token) {
-        $result = app(\App\Services\AgentGuardrailService::class)->confirm($token, false, 'pushover_link');
+        $result = app(AgentGuardrailService::class)->confirm($token, false, 'pushover_link');
         if ($result['success']) {
             return response()->json(['status' => 'denied', 'operation' => $result['operation']]);
         }
@@ -1215,15 +1289,15 @@ Route::prefix('agent')->group(function () {
     // ─── Kill Switch ──────────────────────────────────────────────
     Route::post('/kill/{agentId}', function (string $agentId) {
         $ttl = (int) request('ttl', 3600);
-        \Illuminate\Support\Facades\Cache::put("agent_kill:{$agentId}", true, $ttl);
-        \Illuminate\Support\Facades\Log::warning('Agent kill switch activated', ['agent_id' => $agentId, 'ttl' => $ttl]);
+        Cache::put("agent_kill:{$agentId}", true, $ttl);
+        Log::warning('Agent kill switch activated', ['agent_id' => $agentId, 'ttl' => $ttl]);
 
         return response()->json(['success' => true, 'agent_id' => $agentId, 'ttl_seconds' => $ttl, 'message' => "Kill switch set for {$agentId} ({$ttl}s)"]);
     });
 
     Route::delete('/kill/{agentId}', function (string $agentId) {
-        \Illuminate\Support\Facades\Cache::forget("agent_kill:{$agentId}");
-        \Illuminate\Support\Facades\Log::info('Agent kill switch cleared', ['agent_id' => $agentId]);
+        Cache::forget("agent_kill:{$agentId}");
+        Log::info('Agent kill switch cleared', ['agent_id' => $agentId]);
 
         return response()->json(['success' => true, 'agent_id' => $agentId, 'message' => "Kill switch cleared for {$agentId}"]);
     });
@@ -1232,32 +1306,32 @@ Route::prefix('agent')->group(function () {
     Route::get('/episodes/{agentId}', function (string $agentId) {
         return response()->json([
             'success' => true,
-            'data' => app(\App\Services\AgentLoopService::class)->getRecentEpisodes($agentId, (int) request('limit', 50)),
+            'data' => app(AgentLoopService::class)->getRecentEpisodes($agentId, (int) request('limit', 50)),
         ]);
     });
 
     Route::get('/skills', function () {
         return response()->json([
             'success' => true,
-            'data' => app(\App\Services\SkillLoaderService::class)->getSkillIndex(),
+            'data' => app(SkillLoaderService::class)->getSkillIndex(),
         ]);
     });
 
     Route::get('/tools', function () {
-        $policy = app(\App\Services\OfflinePolicyService::class);
+        $policy = app(OfflinePolicyService::class);
         $profile = (string) request('profile', $policy->activeProfile());
 
         return response()->json([
             'success' => true,
             'profile' => $profile,
-            'data' => app(\App\Services\AgentToolRegistryService::class)->listToolsForProfile($profile),
+            'data' => app(AgentToolRegistryService::class)->listToolsForProfile($profile),
         ]);
     });
 
     // Dashboard: all episodes across all agents
     Route::get('/episodes', function () {
         try {
-            $episodes = \Illuminate\Support\Facades\DB::select(
+            $episodes = DB::select(
                 'SELECT * FROM agent_episodes ORDER BY created_at DESC LIMIT ?',
                 [(int) request('limit', 100)]
             );
@@ -1270,7 +1344,7 @@ Route::prefix('agent')->group(function () {
                     return $e;
                 }, $episodes),
             ]);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return response()->json(['success' => true, 'data' => []]);
         }
     });
@@ -1278,13 +1352,13 @@ Route::prefix('agent')->group(function () {
     // Dashboard: scheduled agent jobs
     Route::get('/scheduled', function () {
         try {
-            $jobs = \Illuminate\Support\Facades\DB::select(
+            $jobs = DB::select(
                 "SELECT id, name, description, command, cron_expression, enabled, last_run_at, last_run_status, notes
                  FROM scheduled_jobs WHERE job_type = 'agent_task' ORDER BY name"
             );
 
             return response()->json(['success' => true, 'data' => $jobs]);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return response()->json(['success' => true, 'data' => []]);
         }
     });
@@ -1296,13 +1370,13 @@ Route::prefix('agent')->group(function () {
 
         return response()->json([
             'success' => true,
-            'data' => app(\App\Services\AgentLoopService::class)->getPendingReviews($agentId, $limit),
+            'data' => app(AgentLoopService::class)->getPendingReviews($agentId, $limit),
         ]);
     });
 
     Route::get('/review/stats', function () {
         try {
-            $stats = \Illuminate\Support\Facades\DB::selectOne("
+            $stats = DB::selectOne("
                 SELECT
                     COUNT(*) as total,
                     COALESCE(SUM(CASE WHEN status = 'pending' AND (expires_at IS NULL OR expires_at > NOW()) THEN 1 ELSE 0 END), 0) as pending,
@@ -1313,14 +1387,14 @@ Route::prefix('agent')->group(function () {
             ");
 
             return response()->json(['success' => true, 'data' => (array) $stats]);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return response()->json(['success' => true, 'data' => ['total' => 0, 'pending' => 0, 'approved' => 0, 'rejected' => 0, 'expired' => 0]]);
         }
     });
 
     Route::get('/review/{token}/approve', function (string $token) {
         $notes = request('notes');
-        $result = app(\App\Services\AgentLoopService::class)->resolveReview($token, true, $notes);
+        $result = app(AgentLoopService::class)->resolveReview($token, true, $notes);
         if ($result['success']) {
             return response()->json($result);
         }
@@ -1330,7 +1404,7 @@ Route::prefix('agent')->group(function () {
 
     Route::get('/review/{token}/reject', function (string $token) {
         $notes = request('notes');
-        $result = app(\App\Services\AgentLoopService::class)->resolveReview($token, false, $notes);
+        $result = app(AgentLoopService::class)->resolveReview($token, false, $notes);
         if ($result['success']) {
             return response()->json($result);
         }
@@ -1341,7 +1415,7 @@ Route::prefix('agent')->group(function () {
     Route::post('/review/{token}/resolve', function (string $token) {
         $approved = (bool) request('approved', false);
         $notes = request('notes');
-        $result = app(\App\Services\AgentLoopService::class)->resolveReview($token, $approved, $notes);
+        $result = app(AgentLoopService::class)->resolveReview($token, $approved, $notes);
         if ($result['success']) {
             return response()->json($result);
         }
@@ -1358,7 +1432,7 @@ Route::prefix('agent')->group(function () {
         }
 
         // Verify token exists
-        $item = \Illuminate\Support\Facades\DB::selectOne(
+        $item = DB::selectOne(
             'SELECT agent_id, title, summary, details FROM agent_review_queue WHERE token = ?',
             [$token]
         );
@@ -1380,7 +1454,7 @@ Route::prefix('agent')->group(function () {
         $context .= "\nHuman message: {$message}\n\nRespond concisely and helpfully. If they're asking for clarification about your recommendation, explain your reasoning. If they're giving instructions, acknowledge and confirm.";
 
         try {
-            $aiService = app(\App\Services\AIService::class);
+            $aiService = app(AIService::class);
             $result = $aiService->process($context, [
                 'max_tokens' => 1000,
                 'temperature' => 0.3,
@@ -1390,7 +1464,7 @@ Route::prefix('agent')->group(function () {
 
             if ($result['success']) {
                 // Log the conversation
-                \Illuminate\Support\Facades\DB::insert("
+                DB::insert("
                     INSERT INTO agent_messages (from_agent, to_agent, message_type, subject, body, priority, created_at)
                     VALUES (?, ?, 'chat', ?, ?, 0, NOW())
                 ", ['human', $item->agent_id, "Re: {$item->title}", "Human: {$message}\n\nAI: {$result['response']}"]);
@@ -1403,7 +1477,7 @@ Route::prefix('agent')->group(function () {
             }
 
             return response()->json(['success' => false, 'error' => $result['error'] ?? 'AI processing failed'], 500);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
         }
     });
@@ -1415,13 +1489,13 @@ Route::prefix('agent')->group(function () {
         $msg = request('msg', '');
 
         $approved = in_array($action, ['approve', 'yes', 'ok', 'y']);
-        $result = app(\App\Services\AgentLoopService::class)->resolveReview($token, $approved, $msg ?: "Quick action: {$action}");
+        $result = app(AgentLoopService::class)->resolveReview($token, $approved, $msg ?: "Quick action: {$action}");
 
         if ($result['success']) {
             // Send confirmation back via Pushover
             try {
                 $status = $approved ? 'APPROVED' : 'REJECTED';
-                $controller = app(\App\Controllers\NotificationController::class);
+                $controller = app(NotificationController::class);
                 $controller->send('pushover', [
                     'source_group' => 'agent_approval_review',
                     'title' => "{$status}: {$result['title']}",
@@ -1429,7 +1503,7 @@ Route::prefix('agent')->group(function () {
                     'priority' => -1,
                     'sound' => 'none',
                 ]);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 // Non-fatal
             }
 
@@ -1461,7 +1535,7 @@ Route::prefix('agent')->group(function () {
         }
 
         // Log the inbound human command
-        \Illuminate\Support\Facades\DB::insert("
+        DB::insert("
             INSERT INTO agent_messages (from_agent, to_agent, message_type, subject, body, priority, created_at)
             VALUES ('human', ?, 'command', ?, ?, 0, NOW())
         ", [$agentId, 'Human command', $command]);
@@ -1471,7 +1545,7 @@ Route::prefix('agent')->group(function () {
 
         // If linked to a review item, include that context
         if ($reviewToken) {
-            $item = \Illuminate\Support\Facades\DB::selectOne(
+            $item = DB::selectOne(
                 'SELECT agent_id, title, summary FROM agent_review_queue WHERE token = ?',
                 [$reviewToken]
             );
@@ -1485,26 +1559,26 @@ Route::prefix('agent')->group(function () {
         $cmd = strtolower(trim($command));
         if ($cmd === 'status') {
             try {
-                $pipelines = \Illuminate\Support\Facades\DB::select('
+                $pipelines = DB::select('
                     SELECT name, cron_expression, enabled,
                         (SELECT MAX(started_at) FROM scheduled_job_runs WHERE scheduled_job_id = scheduled_jobs.id) as last_run
                     FROM scheduled_jobs WHERE enabled = 1 ORDER BY category, name LIMIT 20
                 ');
-                $pending = \Illuminate\Support\Facades\DB::selectOne("SELECT COUNT(*) as cnt FROM agent_review_queue WHERE status = 'pending'");
+                $pending = DB::selectOne("SELECT COUNT(*) as cnt FROM agent_review_queue WHERE status = 'pending'");
                 $response = 'Active jobs: '.count($pipelines)."\nPending reviews: {$pending->cnt}\n\n";
                 foreach (array_slice($pipelines, 0, 10) as $p) {
                     $response .= "- {$p->name} ({$p->cron_expression})".($p->last_run ? " last: {$p->last_run}" : '')."\n";
                 }
 
                 return response()->json(['success' => true, 'response' => $response]);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
             }
         }
 
         if ($cmd === 'pipeline status') {
             try {
-                $stats = \Illuminate\Support\Facades\DB::select("
+                $stats = DB::select("
                     SELECT
                         CASE
                             WHEN name LIKE 'file_enrich_%' THEN 'File Enrichment'
@@ -1524,7 +1598,7 @@ Route::prefix('agent')->group(function () {
                 }
 
                 return response()->json(['success' => true, 'response' => $response]);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
             }
         }
@@ -1533,14 +1607,14 @@ Route::prefix('agent')->group(function () {
             $enable = $cmd === 'resume all' ? 1 : 0;
             $label = $cmd === 'resume all' ? 'resumed' : 'paused';
             try {
-                $affected = \Illuminate\Support\Facades\DB::update(
+                $affected = DB::update(
                     "UPDATE scheduled_jobs SET enabled = ? WHERE job_type != 'system'",
                     [$enable]
                 );
                 $response = "All non-system jobs {$label}. ({$affected} jobs affected)";
 
                 return response()->json(['success' => true, 'response' => $response]);
-            } catch (\Throwable $e) {
+            } catch (Throwable $e) {
                 return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
             }
         }
@@ -1548,14 +1622,14 @@ Route::prefix('agent')->group(function () {
         // Kill switch commands
         if (preg_match('/^kill\s+(\S+)$/i', $cmd, $killMatch)) {
             $targetAgent = $killMatch[1];
-            \Illuminate\Support\Facades\Cache::put("agent_kill:{$targetAgent}", true, 3600);
+            Cache::put("agent_kill:{$targetAgent}", true, 3600);
 
             return response()->json(['success' => true, 'response' => "Kill switch activated for '{$targetAgent}' (1 hour TTL)"]);
         }
 
         if (preg_match('/^unkill\s+(\S+)$/i', $cmd, $unkillMatch)) {
             $targetAgent = $unkillMatch[1];
-            \Illuminate\Support\Facades\Cache::forget("agent_kill:{$targetAgent}");
+            Cache::forget("agent_kill:{$targetAgent}");
 
             return response()->json(['success' => true, 'response' => "Kill switch cleared for '{$targetAgent}'"]);
         }
@@ -1566,7 +1640,7 @@ Route::prefix('agent')->group(function () {
         $context .= 'Be concise — this response will be shown on a mobile screen. Keep to 2-3 sentences max.';
 
         try {
-            $aiService = app(\App\Services\AIService::class);
+            $aiService = app(AIService::class);
             $result = $aiService->process($context, [
                 'max_tokens' => 500,
                 'temperature' => 0.3,
@@ -1578,7 +1652,7 @@ Route::prefix('agent')->group(function () {
                 $aiResponse = $result['response'];
 
                 // Log the AI response
-                \Illuminate\Support\Facades\DB::insert("
+                DB::insert("
                     INSERT INTO agent_messages (from_agent, to_agent, message_type, subject, body, priority, created_at)
                     VALUES (?, 'human', 'command_response', ?, ?, 0, NOW())
                 ", [$agentId, "Re: {$command}", $aiResponse]);
@@ -1586,7 +1660,7 @@ Route::prefix('agent')->group(function () {
                 // Optionally echo response back to Pushover
                 if ($notify) {
                     try {
-                        $controller = app(\App\Controllers\NotificationController::class);
+                        $controller = app(NotificationController::class);
                         $controller->send('pushover', [
                             'source_group' => 'agent_approval_review',
                             'title' => "PLOS: {$agentId}",
@@ -1594,7 +1668,7 @@ Route::prefix('agent')->group(function () {
                             'priority' => -1,
                             'sound' => 'none',
                         ]);
-                    } catch (\Throwable $e) {
+                    } catch (Throwable $e) {
                         // Non-fatal
                     }
                 }
@@ -1607,7 +1681,7 @@ Route::prefix('agent')->group(function () {
             }
 
             return response()->json(['success' => false, 'error' => $result['error'] ?? 'AI processing failed'], 500);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return response()->json(['success' => false, 'error' => $e->getMessage()], 500);
         }
     });
@@ -1619,13 +1693,13 @@ Route::prefix('agent')->group(function () {
 
         return response()->json([
             'success' => true,
-            'data' => app(\App\Services\AgentLoopService::class)->getAgentMessages($agentId, $limit),
+            'data' => app(AgentLoopService::class)->getAgentMessages($agentId, $limit),
         ]);
     });
 
     Route::get('/messages/stats', function () {
         try {
-            $stats = \Illuminate\Support\Facades\DB::selectOne('
+            $stats = DB::selectOne('
                 SELECT
                     COUNT(*) as total,
                     COALESCE(SUM(CASE WHEN expires_at IS NULL OR expires_at > NOW() THEN 1 ELSE 0 END), 0) as active,
@@ -1634,21 +1708,21 @@ Route::prefix('agent')->group(function () {
             ');
 
             return response()->json(['success' => true, 'data' => (array) $stats]);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             return response()->json(['success' => true, 'data' => ['total' => 0, 'active' => 0, 'high_priority' => 0]]);
         }
     });
 
     // Toggle scheduled agent job enabled/disabled
     Route::post('/scheduled/{jobId}/toggle', function (int $jobId) {
-        $job = \Illuminate\Support\Facades\DB::selectOne(
+        $job = DB::selectOne(
             "SELECT id, enabled FROM scheduled_jobs WHERE id = ? AND job_type = 'agent_task'", [$jobId]
         );
         if (! $job) {
             return response()->json(['success' => false, 'error' => 'Job not found'], 404);
         }
         $newState = $job->enabled ? 0 : 1;
-        \Illuminate\Support\Facades\DB::update('UPDATE scheduled_jobs SET enabled = ? WHERE id = ?', [$newState, $jobId]);
+        DB::update('UPDATE scheduled_jobs SET enabled = ? WHERE id = ?', [$newState, $jobId]);
 
         return response()->json(['success' => true, 'enabled' => (bool) $newState]);
     });
@@ -1664,7 +1738,7 @@ Route::prefix('agent')->group(function () {
             return response()->json(['success' => false, 'error' => 'agent_id required'], 400);
         }
 
-        $skillLoader = app(\App\Services\SkillLoaderService::class);
+        $skillLoader = app(SkillLoaderService::class);
         if (! $skillLoader->skillExists($agentId)) {
             return response()->json(['success' => false, 'error' => "Skill '{$agentId}' not found"], 404);
         }
@@ -1674,7 +1748,7 @@ Route::prefix('agent')->group(function () {
             $task = 'Perform scheduled autonomous research and analysis.';
         }
 
-        $result = app(\App\Services\AgentLoopService::class)->execute($agentId, $task, [
+        $result = app(AgentLoopService::class)->execute($agentId, $task, [
             'tree_id' => $treeId ? (int) $treeId : null,
             'notify' => (bool) $notify,
         ]);
@@ -1685,9 +1759,12 @@ Route::prefix('agent')->group(function () {
 
 // ─── AG-18: A2A Protocol Endpoints ──────────────────────────────
 Route::prefix('a2a')->group(function () {
-    Route::get('/.well-known/agent.json', [\App\Http\Controllers\Api\A2AController::class, 'agentCard']);
-    Route::get('/agents', [\App\Http\Controllers\Api\A2AController::class, 'listAgents']);
-    Route::get('/agents/{agentId}', [\App\Http\Controllers\Api\A2AController::class, 'getAgent']);
-    Route::post('/agents/{agentId}/tasks', [\App\Http\Controllers\Api\A2AController::class, 'submitTask']);
-    Route::get('/agents/{agentId}/tasks/{taskId}', [\App\Http\Controllers\Api\A2AController::class, 'getTaskStatus']);
+    Route::get('/.well-known/agent.json', [A2AController::class, 'agentCard']);
+    Route::get('/agents', [A2AController::class, 'listAgents']);
+    Route::get('/agents/{agentId}', [A2AController::class, 'getAgent']);
+    Route::post('/agents/{agentId}/tasks', [A2AController::class, 'submitTask']);
+    Route::get('/agents/{agentId}/tasks/{taskId}', [A2AController::class, 'getTaskStatus']);
 });
+
+// Narrow Passport-authenticated CYBER job API; separate from the general MCP routes.
+require __DIR__.'/cyber-jobs.php';

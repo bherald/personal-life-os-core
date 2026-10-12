@@ -1,4 +1,6 @@
 # Safety Card: email-ops
+
+Public installation scope: these are method and tool declarations, not an enabled schedule or grant of authority. Resolve the installation's registered task, tool, data and network policy before use. Reads require the configured scope; writes, result approval/skip, cleanup, sync, resets, external messages and execution require explicit human approval for the exact action. Keep credentials and private evidence local unless the installation operator explicitly approves that data class and destination. Preserve dry-runs, identity decisions, custody and denials. See `docs/public-methods/skills-and-mcp.md` for setup and qualification.
 **Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-03-23
 
 | Field | Value |
@@ -25,7 +27,7 @@
 - MEDIUM: submit_for_review for human decision
 - LOW: post_agent_message only; no review submission for routine status
 
-**Kill Switches:**
+**Operator-approved recovery options (review exact scope before execution):**
 - Disable job: `UPDATE scheduled_jobs SET enabled=0 WHERE command LIKE '%email-ops%'`
 - Clear session lock: `DEL agent_session_lock:email-ops`
 - Max iterations hard stop per run (framework-enforced)

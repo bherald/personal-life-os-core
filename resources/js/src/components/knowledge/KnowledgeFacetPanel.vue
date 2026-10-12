@@ -1,5 +1,5 @@
 <template>
-  <div class="knowledge-facet-panel w-48 lg:w-56 flex-shrink-0 border-r-2 border-ops-plum overflow-y-auto bg-black/50 hidden md:block">
+  <div class="knowledge-facet-panel w-48 lg:w-56 shrink-0 border-r-2 border-ops-plum overflow-y-auto bg-black/50 hidden md:block">
 
     <!-- Folder tree browser -->
     <div v-if="showFolderTree" class="border-b border-ops-plum/50">

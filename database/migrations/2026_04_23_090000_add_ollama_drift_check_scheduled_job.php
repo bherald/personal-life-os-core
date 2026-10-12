@@ -13,9 +13,8 @@ use Illuminate\Support\Facades\DB;
  * have produced noisy false positives. With F3 shipped, scheduling is
  * safe.
  *
- * Schedule: daily at 05:30 America/New_York, well before the 05:50 daily
- * report fires (MorningDigestCommand reads LLM state) so any drift is
- * already visible when operator reads the morning digest. 10-minute
+ * Original schedule: daily at 05:30 America/New_York, before the original
+ * 05:50 report. A later migration moves it ahead of the 05:00 report. 10-minute
  * timeout is generous — the command makes at most N HTTP requests to
  * live Ollama hosts with a 15s per-call timeout.
  */

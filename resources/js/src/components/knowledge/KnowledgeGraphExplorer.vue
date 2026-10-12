@@ -863,9 +863,9 @@ onBeforeUnmount(() => {
   display: flex;
   height: 100%;
   width: 100%;
-  background: var(--ops-bg, #1a1a2e);
+  background: var(--color-bg-secondary);
   overflow: hidden;
-  font-family: 'Antonio', sans-serif;
+  font-family: inherit;
 }
 
 /* ── LEFT SIDEBAR ─────────────────────────────────────────────────────── */
@@ -873,9 +873,9 @@ onBeforeUnmount(() => {
 .kg-sidebar {
   width: 264px;
   min-width: 264px;
-  border-right: 3px solid var(--ops-plum, #774477);
+  border-right: 3px solid var(--color-accent);
   overflow-y: auto;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--color-bg-tertiary);
 }
 
 .kg-sidebar-inner {
@@ -900,7 +900,7 @@ onBeforeUnmount(() => {
 .kg-label {
   font-size: 10px;
   letter-spacing: 1.5px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
   text-transform: uppercase;
 }
 
@@ -911,10 +911,10 @@ onBeforeUnmount(() => {
 
 .kg-search-input {
   width: 100%;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--ops-plum, #774477);
-  color: var(--ops-text, #ff9966);
-  font-family: 'Antonio', sans-serif;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-accent);
+  color: var(--color-text-primary);
+  font-family: inherit;
   font-size: 13px;
   letter-spacing: 1px;
   text-transform: uppercase;
@@ -925,12 +925,12 @@ onBeforeUnmount(() => {
 }
 
 .kg-search-input::placeholder {
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
   opacity: 0.5;
 }
 
 .kg-search-input:focus {
-  border-color: var(--ops-orange, #ff9900);
+  border-color: var(--ops-warning);
 }
 
 .kg-search-clear {
@@ -940,8 +940,8 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   background: none;
   border: none;
-  color: var(--ops-text-muted, #8899aa);
-  font-family: 'Antonio', sans-serif;
+  color: var(--color-text-secondary);
+  font-family: inherit;
   font-size: 12px;
   cursor: pointer;
 }
@@ -956,22 +956,22 @@ onBeforeUnmount(() => {
 .kg-stat {
   display: flex;
   flex-direction: column;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--color-bg-tertiary);
   border-radius: 0 10px 10px 0;
   padding: 8px 10px;
-  border-left: 3px solid var(--ops-violet, #9977aa);
+  border-left: 3px solid var(--color-accent);
 }
 
 .kg-stat-value {
   font-size: 20px;
-  color: var(--ops-text, #ff9966);
+  color: var(--color-text-primary);
   line-height: 1;
 }
 
 .kg-stat-label {
   font-size: 8px;
   letter-spacing: 1.5px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
   margin-top: 2px;
 }
 
@@ -983,7 +983,7 @@ onBeforeUnmount(() => {
 
 .kg-skel-line {
   height: 18px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--color-bg-tertiary);
   border-radius: 4px;
   animation: kg-pulse 1.2s ease-in-out infinite;
 }
@@ -1012,7 +1012,7 @@ onBeforeUnmount(() => {
 }
 
 .kg-type-check:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-primary));
 }
 
 .kg-type-active {
@@ -1029,13 +1029,13 @@ onBeforeUnmount(() => {
 .kg-type-name {
   font-size: 11px;
   letter-spacing: 1px;
-  color: var(--ops-text, #ff9966);
+  color: var(--color-text-primary);
   flex: 1;
 }
 
 .kg-type-count {
   font-size: 10px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
 }
 
 /* Slider */
@@ -1044,7 +1044,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 4px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-bg-tertiary);
   outline: none;
 }
 
@@ -1053,9 +1053,9 @@ onBeforeUnmount(() => {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--ops-sky, #99ccff);
+  background: var(--color-accent);
   cursor: pointer;
-  border: 2px solid var(--ops-bg, #1a1a2e);
+  border: 2px solid var(--color-bg-secondary);
 }
 
 /* Communities */
@@ -1081,11 +1081,11 @@ onBeforeUnmount(() => {
 }
 
 .kg-community-item:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--color-bg-tertiary);
 }
 
 .kg-community-active {
-  background: rgba(255, 255, 255, 0.1) !important;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-primary));
 }
 
 .kg-comm-dot {
@@ -1097,18 +1097,18 @@ onBeforeUnmount(() => {
 
 .kg-comm-title {
   font-size: 10px;
-  letter-spacing: 0.5px;
-  color: var(--ops-text, #ff9966);
+  letter-spacing: normal;
+  color: var(--color-text-primary);
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .kg-comm-count {
   font-size: 10px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
 }
 
 /* ── CENTER GRAPH ─────────────────────────────────────────────────────── */
@@ -1117,10 +1117,7 @@ onBeforeUnmount(() => {
   flex: 1;
   position: relative;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 30% 40%, rgba(119, 68, 119, 0.06) 0%, transparent 60%),
-    radial-gradient(circle at 70% 60%, rgba(102, 136, 204, 0.04) 0%, transparent 50%),
-    var(--ops-bg, #1a1a2e);
+  background: var(--color-bg-secondary);
 }
 
 .kg-svg {
@@ -1149,8 +1146,8 @@ onBeforeUnmount(() => {
 .kg-loading-ring {
   width: 48px;
   height: 48px;
-  border: 3px solid rgba(255, 153, 0, 0.15);
-  border-top-color: var(--ops-orange, #ff9900);
+  border: 3px solid var(--color-border);
+  border-top-color: var(--ops-warning);
   border-radius: 50%;
   animation: kg-spin 1s linear infinite;
 }
@@ -1162,7 +1159,7 @@ onBeforeUnmount(() => {
 .kg-loading-text {
   font-size: 12px;
   letter-spacing: 3px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
 }
 
 /* Empty */
@@ -1179,45 +1176,45 @@ onBeforeUnmount(() => {
 
 .kg-empty-title {
   font-size: 16px;
-  letter-spacing: 3px;
-  color: var(--ops-text-muted, #8899aa);
+  letter-spacing: normal;
+  color: var(--color-text-secondary);
 }
 
 .kg-empty-sub {
   font-size: 11px;
   letter-spacing: 1px;
-  color: var(--ops-plum, #774477);
+  color: var(--color-accent);
 }
 
 /* Tooltip */
 .kg-tooltip {
   position: absolute;
-  background: rgba(10, 10, 20, 0.92);
-  border: 1px solid var(--ops-plum, #774477);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-accent);
   border-radius: 0 10px 10px 0;
   padding: 8px 12px;
   pointer-events: none;
   z-index: 20;
   max-width: 260px;
-  border-left: 3px solid var(--ops-orange, #ff9900);
+  border-left: 3px solid var(--ops-warning);
 }
 
 .kg-tooltip-name {
   font-size: 12px;
-  color: var(--ops-text, #ff9966);
+  color: var(--color-text-primary);
   text-transform: uppercase;
   letter-spacing: 1px;
 }
 
 .kg-tooltip-meta {
   font-size: 10px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
   letter-spacing: 0.5px;
 }
 
 .kg-tooltip-edge {
   font-size: 10px;
-  color: var(--ops-sky, #99ccff);
+  color: var(--color-accent);
   margin-top: 2px;
   text-transform: uppercase;
 }
@@ -1236,11 +1233,11 @@ onBeforeUnmount(() => {
 .kg-zoom-btn {
   width: 36px;
   height: 28px;
-  background: rgba(119, 68, 119, 0.5);
-  border: 1px solid var(--ops-plum, #774477);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-accent);
   border-radius: 0 8px 8px 0;
-  color: var(--ops-text, #ff9966);
-  font-family: 'Antonio', sans-serif;
+  color: var(--color-text-primary);
+  font-family: inherit;
   font-size: 16px;
   cursor: pointer;
   display: flex;
@@ -1250,7 +1247,7 @@ onBeforeUnmount(() => {
 }
 
 .kg-zoom-btn:hover {
-  background: rgba(255, 153, 0, 0.4);
+  background: var(--color-bg-hover);
 }
 
 .kg-zoom-fit {
@@ -1268,15 +1265,15 @@ onBeforeUnmount(() => {
   gap: 8px;
   z-index: 10;
   padding: 6px 10px;
-  background: rgba(10, 10, 20, 0.7);
+  background: var(--color-bg-tertiary);
   border-radius: 0 10px 10px 0;
-  border-left: 3px solid var(--ops-plum, #774477);
+  border-left: 3px solid var(--color-accent);
 }
 
 .kg-legend-item {
   font-size: 9px;
   letter-spacing: 1px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1294,8 +1291,8 @@ onBeforeUnmount(() => {
 .kg-detail {
   width: 300px;
   min-width: 300px;
-  border-left: 3px solid var(--ops-plum, #774477);
-  background: rgba(0, 0, 0, 0.3);
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-bg-tertiary);
   overflow-y: auto;
 }
 
@@ -1320,10 +1317,10 @@ onBeforeUnmount(() => {
 }
 
 .kg-detail-close {
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--color-bg-tertiary);
   border: none;
-  color: var(--ops-text-muted, #8899aa);
-  font-family: 'Antonio', sans-serif;
+  color: var(--color-text-secondary);
+  font-family: inherit;
   font-size: 14px;
   width: 28px;
   height: 28px;
@@ -1336,13 +1333,13 @@ onBeforeUnmount(() => {
 }
 
 .kg-detail-close:hover {
-  background: rgba(204, 0, 0, 0.3);
-  color: var(--ops-text, #ff9966);
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
+  color: var(--color-text-primary);
 }
 
 .kg-detail-name {
   font-size: 20px;
-  color: var(--ops-orange, #ff9900);
+  color: var(--ops-warning);
   text-transform: uppercase;
   letter-spacing: 1px;
   line-height: 1.2;
@@ -1358,7 +1355,7 @@ onBeforeUnmount(() => {
 .kg-badge {
   font-size: 9px;
   letter-spacing: 1.5px;
-  color: #1a1a2e;
+  color: var(--color-text-secondary);
   padding: 3px 10px;
   border-radius: 0 8px 8px 0;
   text-transform: uppercase;
@@ -1373,23 +1370,23 @@ onBeforeUnmount(() => {
 .kg-detail-metric {
   display: flex;
   flex-direction: column;
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--color-bg-tertiary);
   padding: 8px 12px;
   border-radius: 0 10px 10px 0;
-  border-left: 3px solid var(--ops-violet, #9977aa);
+  border-left: 3px solid var(--color-accent);
   flex: 1;
 }
 
 .kg-detail-metric-val {
   font-size: 18px;
-  color: var(--ops-text, #ff9966);
+  color: var(--color-text-primary);
   line-height: 1;
 }
 
 .kg-detail-metric-lbl {
   font-size: 8px;
   letter-spacing: 1.5px;
-  color: var(--ops-text-muted, #8899aa);
+  color: var(--color-text-secondary);
   margin-top: 2px;
 }
 
@@ -1413,24 +1410,24 @@ onBeforeUnmount(() => {
   gap: 4px;
   font-size: 10px;
   padding: 3px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--color-border);
   flex-wrap: wrap;
 }
 
 .kg-rel-subject,
 .kg-rel-object {
-  color: var(--ops-text, #ff9966);
+  color: var(--color-text-primary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .kg-rel-self {
-  color: var(--ops-orange, #ff9900);
+  color: var(--ops-warning);
   font-weight: 700;
 }
 
 .kg-rel-predicate {
-  color: var(--ops-sky, #99ccff);
+  color: var(--color-accent);
   font-size: 9px;
   letter-spacing: 1px;
 }
@@ -1442,11 +1439,11 @@ onBeforeUnmount(() => {
 .kg-action-btn {
   width: 100%;
   padding: 8px;
-  background: var(--ops-plum, #774477);
-  color: var(--ops-text, #ff9966);
+  background: var(--color-accent);
+  color: white;
   border: none;
   border-radius: 0 12px 12px 0;
-  font-family: 'Antonio', sans-serif;
+  font-family: inherit;
   font-size: 12px;
   letter-spacing: 2px;
   cursor: pointer;
@@ -1455,7 +1452,7 @@ onBeforeUnmount(() => {
 }
 
 .kg-action-btn:hover {
-  background: var(--ops-violet, #9977aa);
+  background: var(--color-accent);
 }
 
 /* ── Transitions ──────────────────────────────────────────────────────── */
@@ -1491,14 +1488,14 @@ onBeforeUnmount(() => {
 .kg-detail::-webkit-scrollbar-thumb,
 .kg-rel-list::-webkit-scrollbar-thumb,
 .kg-community-list::-webkit-scrollbar-thumb {
-  background: var(--ops-plum, #774477);
+  background: var(--color-accent);
   border-radius: 2px;
 }
 
 /* Tailwind utility for Ops Console colors */
-.bg-ops-orange { background: var(--ops-orange, #ff9900); }
-.bg-ops-lilac { background: var(--ops-lilac, #cc99cc); }
-.bg-ops-teal { background: var(--ops-teal, #66cccc); }
-.bg-ops-sky { background: var(--ops-sky, #99ccff); }
-.bg-ops-gold { background: var(--ops-gold, #ffcc99); }
+.bg-ops-orange { background: var(--ops-warning); }
+.bg-ops-lilac { background: var(--color-accent); }
+.bg-ops-teal { background: var(--color-accent); }
+.bg-ops-sky { background: var(--color-accent); }
+.bg-ops-gold { background: var(--ops-warning); }
 </style>

@@ -2,10 +2,14 @@
 
 namespace App\Console\Commands;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\AgentLoopService;
 use App\Services\Genealogy\GenealogyCleanRoomGuidanceService;
+use App\Services\Genealogy\GenealogyService;
+use App\Services\UnifiedCli\CliWorkflowExecutionScope;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 
 class GenealogyResearchTaskRunCommand extends Command
 {
@@ -15,6 +19,8 @@ class GenealogyResearchTaskRunCommand extends Command
                             {--limit=1 : Max queued tasks to process when --task-id is omitted}
                             {--max-iterations=8 : Agent max iterations per task}
                             {--timeout-minutes=20 : Agent timeout budget per task}
+                            {--use-current-cli-settings : Override saved task settings with the current CLI session}
+                            {--save-cli-settings : Save that explicit override to the task when executing}
                             {--execute : Execute selected task(s); default is dry-run}
                             {--confirm-non-face : Confirm this run is not derived from face/cluster linkage}
                             {--confirm-review-write : Confirm review-first proposal/log writes are allowed}
@@ -67,7 +73,7 @@ class GenealogyResearchTaskRunCommand extends Command
                 'review_first_writes_enabled' => $execute && $confirmedReviewWrite,
                 'task_status_writes_enabled' => $execute,
             ],
-            'clean_room_guidance' => $cleanRoomGuidance->summary(),
+            'research_guidance' => $cleanRoomGuidance->summary(),
             'tasks' => array_map(fn (object $task): array => $this->taskPlan($task, $timeoutMinutes, $permissions), $tasks),
             'results' => [],
         ];
@@ -143,6 +149,12 @@ class GenealogyResearchTaskRunCommand extends Command
     private function taskPlan(object $task, ?int $timeoutMinutes = null, ?array $permissions = null): array
     {
         $blocked = $this->blockedTaskReason($task, $permissions, $timeoutMinutes);
+        $execution = null;
+        try {
+            $execution = $this->taskExecutionContext($task);
+        } catch (RuntimeException $error) {
+            $blocked ??= $error->getMessage();
+        }
 
         return [
             'id' => (int) $task->id,
@@ -152,7 +164,11 @@ class GenealogyResearchTaskRunCommand extends Command
             'priority' => (string) $task->priority,
             'outcome_state' => $task->outcome_state,
             'blocked_reason' => $blocked,
-            'question_preview' => mb_strimwidth((string) $task->research_question, 0, 180, '...'),
+            'question_preview' => $execution === null ? mb_strimwidth((string) $task->research_question, 0, 180, '...') : (string) $task->research_question,
+            'cli_execution_settings' => $execution['settings'] ?? null,
+            'execution_settings_source' => $execution === null ? 'plos_defaults'
+                : ($this->option('use-current-cli-settings') || empty($task->cli_execution_scope) ? 'current' : 'saved'),
+            'save_cli_settings' => (bool) $this->option('save-cli-settings'),
         ];
     }
 
@@ -178,15 +194,30 @@ class GenealogyResearchTaskRunCommand extends Command
             ];
         }
 
+        try {
+            $execution = $this->taskExecutionContext($task);
+            $previousResults = $this->decodeTaskJson($task->results ?? null);
+            if ($execution !== null && ($task->results ?? null) !== null && ! is_array(json_decode($task->results, true))) {
+                throw new RuntimeException('Saved task results are invalid; they were not overwritten.');
+            }
+            $history = $previousResults['cli_runs'] ?? [];
+            if ($execution !== null && (! is_array($history) || ! array_is_list($history))) {
+                throw new RuntimeException('Saved task result history is invalid; it was not overwritten.');
+            }
+        } catch (RuntimeException $error) {
+            return ['task_id' => $taskId, 'status' => 'failed', 'reason' => $error->getMessage()];
+        }
+        $saveScope = $this->option('save-cli-settings') ? ', cli_execution_scope = ?' : '';
+
         $claimed = DB::update(
             "UPDATE genealogy_research_tasks
              SET status = 'processing',
                  started_at = CURRENT_TIMESTAMP,
-                 updated_at = CURRENT_TIMESTAMP
+                 updated_at = CURRENT_TIMESTAMP{$saveScope}
              WHERE id = ?
                AND tree_id = ?
                AND status = 'queued'",
-            [$taskId, $treeId]
+            array_merge($saveScope === '' ? [] : [json_encode($execution, JSON_THROW_ON_ERROR)], [$taskId, $treeId])
         );
 
         if ($claimed === 0) {
@@ -201,9 +232,12 @@ class GenealogyResearchTaskRunCommand extends Command
             ? null
             : $this->personName($treeId, (int) $task->person_id);
         $hasAnchorPerson = $task->person_id !== null;
+        $taskParameters = $this->decodeTaskJson($task->parameters ?? null);
+        $relatedPeople = $this->decodeTaskJson($task->related_people_used ?? null);
+        $sourcesChecked = $this->decodeTaskJson($task->sources_checked ?? null);
         $runStartedAt = date('Y-m-d H:i:s');
 
-        $result = $agentLoop->execute('genealogy-records', $this->taskPrompt($task, $cleanRoomGuidance), [
+        $run = fn () => $agentLoop->execute('genealogy-records', $this->taskPrompt($task, $cleanRoomGuidance, $permissions), [
             'tree_id' => $treeId,
             'session_id' => 'genealogy-direct-task-'.$taskId.'-'.uniqid(),
             'notify' => false,
@@ -216,22 +250,60 @@ class GenealogyResearchTaskRunCommand extends Command
             'context' => [
                 'direct_genealogy_task_mode' => true,
                 'queue_mode' => $hasAnchorPerson,
+                'queue_quality_analysis' => true,
                 'skip_assess' => $hasAnchorPerson,
                 'genealogy_task_id' => $taskId,
                 'target_person_id' => $task->person_id === null ? null : (int) $task->person_id,
                 'target_person_name' => $personName,
                 'research_question' => (string) $task->research_question,
                 'selection_reason' => (string) ($task->selection_reason ?? ''),
+                'scope_reason' => (string) ($task->scope_reason ?? ''),
+                'evidence_summary' => (string) ($task->evidence_summary ?? ''),
+                'conflicts_found' => (string) ($task->conflicts_found ?? ''),
+                'related_people_used' => $relatedPeople,
+                'sources_checked' => $sourcesChecked,
+                'task_parameters' => $taskParameters,
                 'question_type' => (string) ($task->task_type ?? ''),
                 'non_face_confirmed' => true,
                 'operator_permissions' => $permissions,
             ],
         ]);
 
+        $compute = [];
+        $codex = [];
+        $effectiveExecution = null;
+        $invoke = function () use ($run, &$effectiveExecution): array {
+            $effectiveExecution = CliWorkflowExecutionScope::current();
+
+            return $run();
+        };
+        try {
+            $result = $execution === null ? $run() : (new CliWorkflowExecutionScope)->runCaptured($execution, $invoke,
+                function (array $output) use (&$compute): void {
+                    $compute[] = $output;
+                },
+                function (array $output) use (&$codex): void {
+                    $codex[] = $output;
+                });
+        } catch (\Throwable $error) {
+            $result = ['success' => false, 'response' => '', 'error' => $error->getMessage(), 'tool_calls' => []];
+        }
+        if ($execution !== null) {
+            $history[] = ['settings' => ($effectiveExecution ?? $execution)['settings'], 'started_at' => $runStartedAt,
+                'input' => ['research_question' => $task->research_question, 'selection_reason' => $task->selection_reason ?? null,
+                    'scope_reason' => $task->scope_reason ?? null, 'evidence_summary' => $task->evidence_summary ?? null,
+                    'conflicts_found' => $task->conflicts_found ?? null, 'related_people_used' => $relatedPeople,
+                    'sources_checked' => $sourcesChecked, 'parameters' => $taskParameters],
+                'agent_result' => $result, 'compute_executions' => $compute, 'codex_executions' => $codex];
+        }
+
         $findingsCount = 0;
         $reviewItemsCount = 0;
         foreach ($result['tool_calls'] ?? [] as $toolCall) {
             if (! ($toolCall['success'] ?? false)) {
+                continue;
+            }
+            if (($toolCall['outcome_eligible'] ?? true) === false) {
                 continue;
             }
 
@@ -285,6 +357,9 @@ class GenealogyResearchTaskRunCommand extends Command
         }
 
         $status = $success && $outcomeState !== 'requeue' ? 'completed' : ($success ? 'queued' : 'failed');
+        $controllerFailure = InferenceAdmissionException::sanitizeControllerFailure(
+            is_array($result['controller_failure'] ?? null) ? $result['controller_failure'] : []
+        );
 
         DB::update(
             "UPDATE genealogy_research_tasks
@@ -301,7 +376,7 @@ class GenealogyResearchTaskRunCommand extends Command
                  completed_at = CASE WHEN ? IN ('completed', 'failed') THEN CURRENT_TIMESTAMP ELSE NULL END,
                  error_message = ?,
                  updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?",
+             WHERE id = ? AND tree_id = ?",
             [
                 $status,
                 json_encode([
@@ -314,18 +389,19 @@ class GenealogyResearchTaskRunCommand extends Command
                     'duration_ms' => $result['duration_ms'] ?? null,
                     'tokens_used' => $result['tokens_used'] ?? null,
                     'direct_task_runner' => true,
-                    'clean_room_guidance_version' => $parsed['clean_room']['version'],
-                    'evidence_packets' => $parsed['clean_room']['evidence_packets'],
-                    'hypothesis_ledger' => $parsed['clean_room']['hypothesis_ledger'],
-                    'agent_activity_trace' => $parsed['clean_room']['agent_activity_trace'],
-                    'source_tool_gaps' => $parsed['clean_room']['source_tool_gaps'],
-                    'review_gates' => $parsed['clean_room']['review_gates'],
-                    'clean_room_marker_warnings' => $parsed['clean_room']['marker_warnings'],
-                ]),
+                    'research_guidance_version' => $parsed['research_guidance']['version'],
+                    'evidence_packets' => $parsed['research_guidance']['evidence_packets'],
+                    'hypothesis_ledger' => $parsed['research_guidance']['hypothesis_ledger'],
+                    'agent_activity_trace' => $parsed['research_guidance']['agent_activity_trace'],
+                    'source_tool_gaps' => $parsed['research_guidance']['source_tool_gaps'],
+                    'review_gates' => $parsed['research_guidance']['review_gates'],
+                    'research_marker_warnings' => $parsed['research_guidance']['marker_warnings'],
+                ] + ($execution === null ? [] : ['cli_runs' => $history])
+                    + ($controllerFailure === [] ? [] : ['controller_failure' => $controllerFailure]), JSON_THROW_ON_ERROR),
                 $parsed['scope_reason'] ?? 'none',
                 json_encode($parsed['related_people_used'] ?? []),
                 json_encode($parsed['sources_checked'] ?? []),
-                $parsed['evidence_summary'] ?? mb_substr(trim((string) ($result['response'] ?? '')), 0, 500),
+                $parsed['evidence_summary'] ?? ($execution === null ? mb_substr(trim((string) ($result['response'] ?? '')), 0, 500) : (string) ($result['response'] ?? '')),
                 $parsed['conflicts_found'] ?? 'none',
                 $outcomeState,
                 $outcomeReason,
@@ -333,8 +409,13 @@ class GenealogyResearchTaskRunCommand extends Command
                 $status,
                 $success ? null : ($result['error'] ?? 'unknown'),
                 $taskId,
+                $treeId,
             ]
         );
+
+        if ($hasAnchorPerson) {
+            app(GenealogyService::class)->markPersonAgentWorked($treeId, (int) $task->person_id);
+        }
 
         return [
             'task_id' => $taskId,
@@ -343,27 +424,61 @@ class GenealogyResearchTaskRunCommand extends Command
             'outcome_state' => $outcomeState,
             'findings_count' => $findingsCount,
             'review_items_count' => $reviewItemsCount,
-        ];
+        ] + ($controllerFailure === [] ? [] : ['controller_failure' => $controllerFailure])
+            + ($execution === null ? [] : ['agent_result' => $result, 'compute_executions' => $compute, 'codex_executions' => $codex]);
     }
 
-    private function taskPrompt(object $task, GenealogyCleanRoomGuidanceService $cleanRoomGuidance): string
+    private function taskExecutionContext(object $task): ?array
+    {
+        if ($this->option('save-cli-settings') && ! $this->option('use-current-cli-settings')) {
+            throw new RuntimeException('--save-cli-settings requires --use-current-cli-settings.');
+        }
+        $current = CliWorkflowExecutionScope::current();
+        if ($this->option('use-current-cli-settings')) {
+            return $current ?? throw new RuntimeException('Choose settings in the CLI before using --use-current-cli-settings.');
+        }
+        if (($task->cli_execution_scope ?? null) === null) {
+            return $current;
+        }
+        try {
+            $saved = is_array($task->cli_execution_scope) ? $task->cli_execution_scope
+                : json_decode($task->cli_execution_scope, true, flags: JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            throw new RuntimeException('Saved task execution settings are invalid; no alternate settings were selected.');
+        }
+        CliWorkflowExecutionScope::validateCaptured($saved);
+
+        return $saved;
+    }
+
+    private function taskPrompt(object $task, GenealogyCleanRoomGuidanceService $cleanRoomGuidance, array $permissions): string
     {
         $personLine = $task->person_id
             ? "Anchor person ID: {$task->person_id}\n"
             : "Anchor person ID: none; stay inside the task scope.\n";
+        $relatedPeople = $this->decodeTaskJson($task->related_people_used ?? null);
+        $sourcesChecked = $this->decodeTaskJson($task->sources_checked ?? null);
+        $taskParameters = $this->decodeTaskJson($task->parameters ?? null);
 
         return "Bounded non-face genealogy research task for tree {$task->tree_id}.\n"
             ."Existing task ID: {$task->id}\n"
             .$personLine
             ."Task type: {$task->task_type}\n"
             ."Research question: {$task->research_question}\n"
-            .'Selection reason: '.($task->selection_reason ?: 'none supplied')."\n\n"
+            .'Selection reason: '.($task->selection_reason ?? 'none supplied')."\n"
+            .'Scope reason: '.($task->scope_reason ?? 'none supplied')."\n"
+            .'Existing evidence: '.($task->evidence_summary ?? 'none supplied')."\n"
+            .'Known conflicts: '.($task->conflicts_found ?? 'none supplied')."\n"
+            .'Related person IDs: '.($relatedPeople !== [] ? implode(', ', $relatedPeople) : 'none')."\n"
+            .'Sources already checked: '.($sourcesChecked !== [] ? implode(', ', $sourcesChecked) : 'none')."\n"
+            .'Task parameters: '.($taskParameters !== [] ? json_encode($taskParameters, JSON_UNESCAPED_SLASHES) : 'none')."\n\n"
             ."Rules:\n"
             ."- This is not a face recognition, face cluster, or face/person-linking task.\n"
             ."- Do not use face clusters or photo identity as evidence.\n"
-            ."- Operator permits non-face person creation, source-backed canonical facts, downloads, scheduled enablement, and writeback in this operator-approved window, but only through existing bounded tool gates, approved apply paths, and review-first packets where the tool requires review.\n"
+            .'- Current operator permission flags: '.json_encode($permissions, JSON_THROW_ON_ERROR).". Only enabled actions may proceed, through existing tool gates, approved apply paths, and required review packets.\n"
             ."- Same-name web hits are leads only until a source provides an identity bridge.\n"
             ."- FT4 tasks should prefer source-backed expansion and fill-ins for blank facts, relationships, source gaps, and media gaps; submit packets only when source text identifies the target beyond a shared name.\n"
+            ."- If a source exposes a stable public/operator-owned image, PDF, document, OCR/text export, or repository object, use available capture/download tools and cite/link the resulting media. If capture needs visible Chrome/manual download, report it in SOURCE_TOOL_GAPS with the exact artifact needed.\n"
             ."- Use source-backed public/API searches and log negative searches as evidence.\n"
             ."- Document searches in the final outcome and use search-coverage tools when available; do not pass this genealogy_research_tasks ID to GPS-only logging tools unless the runtime supplies a compatible GPS task ID.\n\n"
             .$cleanRoomGuidance->buildPromptBlock()
@@ -381,6 +496,21 @@ class GenealogyResearchTaskRunCommand extends Command
             ."AGENT_ACTIVITY_TRACE: <JSON array as specified above, or none>\n"
             ."SOURCE_TOOL_GAPS: <JSON array as specified above, or none>\n"
             .'REVIEW_GATES: <JSON object as specified above, or none>';
+    }
+
+    /** @return array<int|string, mixed> */
+    private function decodeTaskJson(mixed $value): array
+    {
+        if (is_array($value)) {
+            return $value;
+        }
+        if (! is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+
+        return is_array($decoded) ? $decoded : [];
     }
 
     private function parseOutcome(string $response, GenealogyCleanRoomGuidanceService $cleanRoomGuidance): array
@@ -409,7 +539,7 @@ class GenealogyResearchTaskRunCommand extends Command
             'sources_checked' => $splitList($extract('SOURCES_CHECKED')),
             'evidence_summary' => $extract('EVIDENCE_SUMMARY'),
             'conflicts_found' => $extract('CONFLICTS_FOUND'),
-            'clean_room' => $cleanRoomGuidance->parseFinalMarkers($response),
+            'research_guidance' => $cleanRoomGuidance->parseFinalMarkers($response),
         ];
     }
 

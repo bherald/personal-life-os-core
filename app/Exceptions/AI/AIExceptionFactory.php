@@ -2,8 +2,9 @@
 
 namespace App\Exceptions\AI;
 
-use Illuminate\Http\Client\Response;
+use App\Services\LlmCircuitBreakerPolicyService;
 use Exception;
+use Illuminate\Http\Client\Response;
 
 /**
  * Factory for creating typed AI exceptions from HTTP responses or error messages.
@@ -119,10 +120,7 @@ class AIExceptionFactory
      */
     private static function parseRetryAfter(Response $response): int
     {
-        $retryAfter = $response->header('Retry-After');
-        if ($retryAfter && is_numeric($retryAfter)) {
-            return max(10000, (int) $retryAfter * 1000);
-        }
-        return 30000; // Default 30s for rate limits
+        return app(LlmCircuitBreakerPolicyService::class)
+            ->retryAfterMilliseconds($response->header('Retry-After'));
     }
 }

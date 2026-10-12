@@ -2,10 +2,16 @@
 
 namespace App\Services\Genealogy;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\ComputeRouterService;
+use App\Services\OfflinePolicyService;
+use App\Support\RuntimeBoolean;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * N102 — Local HTR (Handwritten Text Recognition) Pipeline
@@ -24,7 +30,7 @@ use Illuminate\Support\Facades\Log;
  *
  * To install:
  *   pip install torch torchvision transformers Pillow tiktoken sentencepiece
- *   (model downloads automatically on first use to ~/.cache/huggingface)
+ *   Provision the approved model cache separately; runtime never downloads models.
  */
 class HtrTranscriptionService
 {
@@ -34,13 +40,17 @@ class HtrTranscriptionService
 
     private const MIN_FREE_VRAM_MB = 2048;
 
-    private const OOM_COOLDOWN_SEC = 600;
+    public const OOM_COOLDOWN_SEC = 600;
 
     private const MIN_GENEALOGY_PERSIST_CONFIDENCE = 0.70;
+
+    private const GENEALOGY_ATTEMPT_TABLE = 'genealogy_media_htr_attempts';
 
     private ?ComputeRouterService $computeRouter = null;
 
     private ?bool $available = null;
+
+    private ?string $lastPreDispatchDeferralCode = null;
 
     private function getComputeRouter(): ComputeRouterService
     {
@@ -62,6 +72,8 @@ class HtrTranscriptionService
      */
     public function transcribe(string $imagePath, array $options = []): ?array
     {
+        $this->lastPreDispatchDeferralCode = null;
+
         if (! $this->isAvailable()) {
             return null;
         }
@@ -86,22 +98,27 @@ class HtrTranscriptionService
             return null;
         }
 
-        $cacheKey = 'htr_transcription:'.md5($imagePath.filemtime($imagePath));
-        $cached = Cache::get($cacheKey);
+        $sourceHash = is_file($imagePath) && is_readable($imagePath) ? hash_file('sha256', $imagePath) : false;
+        if (! is_string($sourceHash)) {
+            return null;
+        }
+        $cacheKey = 'htr_transcription:v2:'.hash('sha256', $imagePath."\0".$sourceHash);
+        $bypassCache = (bool) ($options['bypass_cache'] ?? false);
+        $cached = $bypassCache ? null : Cache::get($cacheKey);
         if ($cached !== null) {
-            if (! $this->isUsableTranscriptResult($cached)) {
+            if (! self::isCompleteTranscriptResult($cached)) {
                 Cache::forget($cacheKey);
 
                 return null;
             }
 
-            return $cached;
+            return $this->currentSourceMatches($imagePath, $sourceHash) ? $cached : null;
         }
 
         try {
             $instance = $this->getComputeRouter()->route('htr');
             if (! $instance) {
-                return null;
+                return $this->recordPreDispatchDeferral($options, 'route_unavailable');
             }
 
             if ($this->isInstanceCoolingDown($instance->instance_id)) {
@@ -110,7 +127,7 @@ class HtrTranscriptionService
                     'instance' => $instance->instance_id,
                 ]);
 
-                return null;
+                return $this->recordPreDispatchDeferral($options, 'instance_cooling_down');
             }
 
             $health = $this->getComputeRouter()->healthCheckInstance($instance);
@@ -123,16 +140,13 @@ class HtrTranscriptionService
                     'threshold_mb' => self::MIN_FREE_VRAM_MB,
                 ]);
 
-                return null;
+                return $this->recordPreDispatchDeferral($options, 'insufficient_vram');
             }
 
             $input = json_encode(['image_path' => $imagePath]);
-            $result = $this->getComputeRouter()->executeScript(
-                'htr',
-                'htr_transcribe.py',
-                $input,
-                [],
-                self::TIMEOUT_SEC
+            $result = ComputeRouterService::withRequiredInstance(
+                $instance->instance_id,
+                fn () => $this->getComputeRouter()->executeScript('htr', 'htr_transcribe.py', $input, [], self::TIMEOUT_SEC)
             );
 
             if (! $result['success'] || empty($result['output'])) {
@@ -159,7 +173,7 @@ class HtrTranscriptionService
                 return null;
             }
 
-            if (! $this->isUsableTranscriptResult($parsed)) {
+            if (! self::isCompleteTranscriptResult($parsed) || ! $this->currentSourceMatches($imagePath, $sourceHash)) {
                 Log::warning('HtrTranscriptionService: unusable transcript result', [
                     'path' => $imagePath,
                     'instance' => $result['instance_id'],
@@ -170,12 +184,17 @@ class HtrTranscriptionService
                 return null;
             }
 
-            Cache::put($cacheKey, $parsed, self::CACHE_TTL);
+            if (! $bypassCache) {
+                Cache::put($cacheKey, $parsed, self::CACHE_TTL);
+            }
 
             return $parsed;
 
         } catch (\Exception $e) {
-            Log::error('HtrTranscriptionService: exception', ['error' => $e->getMessage()]);
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+            Log::error('HtrTranscriptionService: exception', ['exception_kind' => $e::class]);
 
             return null;
         }
@@ -241,58 +260,285 @@ class HtrTranscriptionService
     public function transcribeGenealogyMedia(int $mediaId): ?array
     {
         $media = DB::selectOne(
-            'SELECT gm.id, gm.nextcloud_path, gm.local_filename, gm.media_type AS mime_type, gm.description AS title
+            'SELECT gm.id, gm.tree_id, gm.file_exists, gm.nextcloud_path, gm.local_filename,
+                    gm.media_type AS mime_type, gm.description AS title, gm.transcription_text,
+                    gm.transcription, gm.analysis_status
              FROM genealogy_media gm
              WHERE gm.id = ?',
             [$mediaId]
         );
 
-        if (! $media) {
+        if (! $media || ! $this->genealogyMediaEligible($media)) {
             return null;
         }
 
-        // Try nextcloud_path-based transcription
-        $result = null;
-        if ($media->nextcloud_path) {
-            $local = $this->resolveLocalPath($media->nextcloud_path);
-            if ($local) {
-                $result = $this->transcribe($local);
-            }
+        // Known unavailability and path-policy skips happen before durable intent.
+        if (! $this->isAvailable()) {
+            return null;
         }
 
-        if ($result && ! empty($result['text'])) {
-            if (! $this->isPersistableGenealogyTranscript($result)) {
-                $confidence = (float) ($result['confidence'] ?? 0);
-                $preview = mb_substr(trim((string) $result['text']), 0, 160);
+        $local = $this->resolveLocalPath((string) $media->nextcloud_path);
+        if (! $local || ! is_file($local) || ! is_readable($local) || ! $this->pathIsHtrEnabled($local)) {
+            return null;
+        }
 
-                DB::update(
-                    "UPDATE genealogy_media
-                     SET analysis_status = CASE WHEN analysis_status = 'completed' THEN analysis_status ELSE 'skipped' END,
-                         analysis_error = ?,
-                         updated_at = NOW()
-                     WHERE id = ?",
-                    ['htr_low_confidence:'.round($confidence, 4), $mediaId]
-                );
+        $sourceHash = hash_file('sha256', $local);
+        if (! is_string($sourceHash)) {
+            return null;
+        }
 
-                Log::warning('HtrTranscriptionService: low-confidence genealogy transcript not persisted', [
-                    'media_id' => $mediaId,
-                    'confidence' => $confidence,
-                    'threshold' => self::MIN_GENEALOGY_PERSIST_CONFIDENCE,
-                    'preview' => $preview,
-                ]);
-
-                $result['skipped_reason'] = 'low_confidence';
-                $result['confidence_threshold'] = self::MIN_GENEALOGY_PERSIST_CONFIDENCE;
-                $result['persisted'] = false;
-
-                return $result;
+        $sourceRevision = hash('sha256', implode("\0", [
+            (string) $media->id,
+            (string) $media->tree_id,
+            (string) $media->nextcloud_path,
+            $sourceHash,
+        ]));
+        $attemptToken = (string) Str::uuid();
+        $claim = $this->claimGenealogyHtrAttempt($media, $sourceHash, $sourceRevision, $attemptToken);
+        if ($claim !== 'claimed') {
+            $result = ['persisted' => false, 'skipped_reason' => $claim];
+            if (in_array($claim, ['processing', 'unknown', 'deferred', 'held_low_confidence', 'completed', 'stale_source'], true)) {
+                $result['attempt_state'] = $claim;
             }
 
-            // Persist transcription back to genealogy_media
-            DB::update(
-                'UPDATE genealogy_media SET transcription_text = ?, analysis_error = NULL, updated_at = NOW() WHERE id = ?',
-                [substr($result['text'], 0, 65535), $mediaId]
+            return $result;
+        }
+
+        $preDispatchHash = is_file($local) ? hash_file('sha256', $local) : false;
+        if (! is_string($preDispatchHash) || ! hash_equals($sourceHash, $preDispatchHash)) {
+            $this->finishGenealogyHtrAttempt($mediaId, $attemptToken, 'stale_source', 'source_changed_before_dispatch');
+
+            return ['persisted' => false, 'skipped_reason' => 'source_changed'];
+        }
+
+        // The provider may have received work after this intent. Never retry a
+        // null, timeout, exception, or incomplete result automatically.
+        try {
+            $result = $this->transcribe($local, [
+                'bypass_cache' => true,
+                'report_pre_dispatch_deferral' => true,
+            ]);
+        } catch (\Throwable $exception) {
+            $this->finishGenealogyHtrAttempt($mediaId, $attemptToken, 'unknown', 'post_dispatch_exception');
+            Log::warning('HtrTranscriptionService: genealogy HTR attempt outcome unknown', ['media_id' => $mediaId]);
+
+            return ['persisted' => false, 'attempt_state' => 'unknown', 'skipped_reason' => 'attempt_unknown'];
+        }
+
+        if (in_array($this->lastPreDispatchDeferralCode, ['route_unavailable', 'instance_cooling_down', 'insufficient_vram'], true)) {
+            $this->finishGenealogyHtrAttempt($mediaId, $attemptToken, 'deferred', $this->lastPreDispatchDeferralCode);
+
+            return ['persisted' => false, 'attempt_state' => 'deferred', 'skipped_reason' => $this->lastPreDispatchDeferralCode];
+        }
+
+        if (! self::isCompleteTranscriptResult($result)) {
+            $this->finishGenealogyHtrAttempt($mediaId, $attemptToken, 'unknown', 'non_complete_result');
+
+            return ['persisted' => false, 'attempt_state' => 'unknown', 'skipped_reason' => 'attempt_unknown'];
+        }
+
+        $confidence = (float) ($result['confidence'] ?? 0);
+        if (! $this->isPersistableGenealogyTranscript($result)) {
+            $sourceAfter = hash_file('sha256', $local);
+            $state = $sourceAfter === $sourceHash ? 'held_low_confidence' : 'stale_source';
+            $this->finishGenealogyHtrAttempt(
+                $mediaId,
+                $attemptToken,
+                $state,
+                $state === 'held_low_confidence' ? 'low_confidence' : 'source_changed'
             );
+            Log::warning('HtrTranscriptionService: low-confidence genealogy transcript held', [
+                'media_id' => $mediaId,
+                'confidence' => $confidence,
+                'threshold' => self::MIN_GENEALOGY_PERSIST_CONFIDENCE,
+            ]);
+
+            $result['skipped_reason'] = $state === 'held_low_confidence' ? 'low_confidence' : 'source_changed';
+            $result['attempt_state'] = $state;
+            $result['confidence_threshold'] = self::MIN_GENEALOGY_PERSIST_CONFIDENCE;
+            $result['persisted'] = false;
+
+            return $result;
+        }
+
+        $sourceAfter = hash_file('sha256', $local);
+        if (! is_string($sourceAfter) || ! hash_equals($sourceHash, $sourceAfter)) {
+            $this->finishGenealogyHtrAttempt($mediaId, $attemptToken, 'stale_source', 'source_changed');
+            $result['persisted'] = false;
+            $result['skipped_reason'] = 'source_changed';
+
+            return $result;
+        }
+
+        return $this->publishGenealogyHtrResult($media, $sourceHash, $sourceRevision, $attemptToken, $result);
+    }
+
+    private function genealogyMediaEligible(object $media): bool
+    {
+        $status = (string) ($media->analysis_status ?? '');
+
+        return (int) ($media->file_exists ?? 0) === 1
+            && trim((string) ($media->nextcloud_path ?? '')) !== ''
+            && trim((string) ($media->transcription_text ?? '')) === ''
+            && trim((string) ($media->transcription ?? '')) === ''
+            && $status !== 'skipped'
+            && $status !== 'processing'
+            && ! str_starts_with($status, 'processing:');
+    }
+
+    private function claimGenealogyHtrAttempt(object $snapshot, string $sourceHash, string $sourceRevision, string $attemptToken): string
+    {
+        return DB::transaction(function () use ($snapshot, $sourceHash, $sourceRevision, $attemptToken): string {
+            $current = DB::table('genealogy_media')->where('id', $snapshot->id)->lockForUpdate()->first();
+            if (! $current || ! $this->genealogyMediaEligible($current)
+                || (int) $current->tree_id !== (int) $snapshot->tree_id
+                || (string) $current->nextcloud_path !== (string) $snapshot->nextcloud_path) {
+                return 'media_changed_or_ineligible';
+            }
+
+            // Unknown/processing attempts hold the media across source revisions.
+            $unresolved = DB::table(self::GENEALOGY_ATTEMPT_TABLE)->where('media_id', $snapshot->id)
+                ->whereIn('state', ['processing', 'unknown'])->first();
+            if ($unresolved) {
+                return (string) $unresolved->state;
+            }
+
+            $existing = DB::table(self::GENEALOGY_ATTEMPT_TABLE)->where('media_id', $snapshot->id)
+                ->where('source_revision_sha256', $sourceRevision)->first();
+            if ($existing) {
+                if ($existing->state === 'deferred') {
+                    if (Carbon::parse($existing->updated_at)->addSeconds(self::OOM_COOLDOWN_SEC)->isFuture()) {
+                        return 'deferred';
+                    }
+
+                    $reclaimed = DB::table(self::GENEALOGY_ATTEMPT_TABLE)
+                        ->where('id', $existing->id)
+                        ->where('attempt_token', $existing->attempt_token)
+                        ->where('state', 'deferred')
+                        ->update([
+                            'attempt_token' => $attemptToken,
+                            'state' => 'processing',
+                            'outcome_code' => null,
+                            'updated_at' => now(),
+                        ]);
+
+                    return $reclaimed === 1 ? 'claimed' : 'deferred';
+                }
+
+                return (string) $existing->state;
+            }
+
+            DB::table(self::GENEALOGY_ATTEMPT_TABLE)->insert([
+                'media_id' => $snapshot->id,
+                'tree_id' => $snapshot->tree_id,
+                'source_sha256' => $sourceHash,
+                'source_revision_sha256' => $sourceRevision,
+                'attempt_token' => $attemptToken,
+                'state' => 'processing',
+                'outcome_code' => null,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            return 'claimed';
+        });
+    }
+
+    private function finishGenealogyHtrAttempt(int $mediaId, string $attemptToken, string $state, string $outcomeCode): void
+    {
+        DB::table(self::GENEALOGY_ATTEMPT_TABLE)
+            ->where('media_id', $mediaId)
+            ->where('attempt_token', $attemptToken)
+            ->where('state', 'processing')
+            ->update(['state' => $state, 'outcome_code' => $outcomeCode, 'updated_at' => now()]);
+    }
+
+    private function recordPreDispatchDeferral(array $options, string $code): ?array
+    {
+        if (($options['report_pre_dispatch_deferral'] ?? false) === true) {
+            $this->lastPreDispatchDeferralCode = $code;
+        }
+
+        return null;
+    }
+
+    private function publishGenealogyHtrResult(object $snapshot, string $sourceHash, string $sourceRevision, string $attemptToken, array $result): array
+    {
+        $published = DB::transaction(function () use ($snapshot, $sourceHash, $sourceRevision, $attemptToken, $result): bool {
+            $attempt = DB::table(self::GENEALOGY_ATTEMPT_TABLE)
+                ->where('media_id', $snapshot->id)
+                ->where('attempt_token', $attemptToken)
+                ->where('source_revision_sha256', $sourceRevision)
+                ->where('state', 'processing')
+                ->lockForUpdate()
+                ->first();
+            if (! $attempt) {
+                return false;
+            }
+
+            $current = DB::table('genealogy_media')->where('id', $snapshot->id)->lockForUpdate()->first();
+            $sourcePath = $this->resolveLocalPath((string) $snapshot->nextcloud_path);
+            $currentHash = $sourcePath && is_file($sourcePath) ? hash_file('sha256', $sourcePath) : false;
+            $status = (string) ($current->analysis_status ?? '');
+            $eligible = $current
+                && (int) $current->tree_id === (int) $snapshot->tree_id
+                && (int) $current->file_exists === 1
+                && (string) $current->nextcloud_path === (string) $snapshot->nextcloud_path
+                && trim((string) ($current->transcription_text ?? '')) === ''
+                && trim((string) ($current->transcription ?? '')) === ''
+                && $status !== 'skipped'
+                && $status !== 'processing'
+                && ! str_starts_with($status, 'processing:')
+                && is_string($currentHash)
+                && hash_equals($sourceHash, $currentHash);
+
+            if (! $eligible) {
+                DB::table(self::GENEALOGY_ATTEMPT_TABLE)->where('id', $attempt->id)->where('attempt_token', $attemptToken)
+                    ->where('state', 'processing')->update([
+                        'state' => 'stale_source', 'outcome_code' => 'publication_guard_lost', 'updated_at' => now(),
+                    ]);
+
+                return false;
+            }
+
+            $updated = DB::table('genealogy_media')->where('id', $snapshot->id)
+                ->where('tree_id', $snapshot->tree_id)->where('file_exists', 1)
+                ->where('nextcloud_path', $snapshot->nextcloud_path)
+                ->where(function ($query): void {
+                    $query->whereNull('transcription_text')->orWhereRaw("TRIM(transcription_text) = ''");
+                })
+                ->where(function ($query): void {
+                    $query->whereNull('transcription')->orWhereRaw("TRIM(transcription) = ''");
+                })
+                ->where(function ($query): void {
+                    $query->whereNull('analysis_status')->orWhere(function ($nested): void {
+                        $nested->where('analysis_status', '<>', 'skipped')
+                            ->where('analysis_status', '<>', 'processing')
+                            ->where('analysis_status', 'not like', 'processing:%');
+                    });
+                })
+                ->update(['transcription_text' => $result['text'], 'updated_at' => now()]);
+
+            if ($updated !== 1) {
+                DB::table(self::GENEALOGY_ATTEMPT_TABLE)->where('id', $attempt->id)->where('state', 'processing')
+                    ->update(['state' => 'stale_source', 'outcome_code' => 'publication_cas_lost', 'updated_at' => now()]);
+
+                return false;
+            }
+
+            $completed = DB::table(self::GENEALOGY_ATTEMPT_TABLE)->where('id', $attempt->id)
+                ->where('attempt_token', $attemptToken)->where('state', 'processing')
+                ->update(['state' => 'completed', 'outcome_code' => 'published', 'updated_at' => now()]);
+            if ($completed !== 1) {
+                throw new \RuntimeException('HTR attempt publication state changed inside locked transaction.');
+            }
+
+            return true;
+        });
+
+        $result['persisted'] = $published;
+        if (! $published) {
+            $result['skipped_reason'] = 'media_changed_or_transcript_present';
         }
 
         return $result;
@@ -432,14 +678,14 @@ class HtrTranscriptionService
             || str_contains($error, 'model_load_failed');
     }
 
-    private function isUsableTranscriptResult(mixed $result): bool
+    private static function isUsableTranscriptResult(mixed $result): bool
     {
         if (! is_array($result) || isset($result['error'])) {
             return false;
         }
 
         $text = trim((string) ($result['text'] ?? ''));
-        if ($text !== '' && str_contains(strtolower($text), '[transcription error:')) {
+        if ($text === '' || str_contains(strtolower($text), '[transcription error:')) {
             return false;
         }
 
@@ -453,6 +699,13 @@ class HtrTranscriptionService
         return true;
     }
 
+    private function currentSourceMatches(string $path, string $expectedHash): bool
+    {
+        $current = is_file($path) && is_readable($path) ? hash_file('sha256', $path) : false;
+
+        return is_string($current) && hash_equals($expectedHash, $current);
+    }
+
     private function isPersistableGenealogyTranscript(array $result): bool
     {
         $text = trim((string) ($result['text'] ?? ''));
@@ -463,8 +716,29 @@ class HtrTranscriptionService
         return (float) ($result['confidence'] ?? 0) >= self::MIN_GENEALOGY_PERSIST_CONFIDENCE;
     }
 
+    public static function isCompleteTranscriptResult(mixed $result): bool
+    {
+        return self::isUsableTranscriptResult($result)
+            && ($result['complete'] ?? null) === true
+            && is_int($result['total_strips'] ?? null)
+            && $result['total_strips'] > 0
+            && is_int($result['source_frame_count'] ?? null)
+            && $result['source_frame_count'] === 1
+            && is_int($result['processed_strips'] ?? null)
+            && $result['processed_strips'] === $result['total_strips']
+            && is_int($result['max_new_tokens'] ?? null)
+            && $result['max_new_tokens'] === 128
+            && ($result['termination'] ?? null) === 'eos'
+            && array_key_exists('confidence', $result)
+            && is_numeric($result['confidence'])
+            && is_finite((float) $result['confidence'])
+            && array_key_exists('line_count', $result)
+            && is_numeric($result['line_count'])
+            && (int) $result['line_count'] >= 0;
+    }
+
     /**
-     * Transcribe with automatic fallback to Transkribus cloud API.
+     * Transcribe with explicitly requested, policy-admitted Transkribus fallback.
      *
      * Flow: Local TrOCR → (if confidence < threshold) → Transkribus metagrapho API
      *
@@ -475,12 +749,18 @@ class HtrTranscriptionService
     public function transcribeWithFallback(string $imagePath, array $options = []): ?array
     {
         $threshold = $options['confidence_threshold'] ?? 0.70;
-        $tryTranskribus = $options['try_transkribus'] ?? true;
+        $tryTranskribus = ($options['try_transkribus'] ?? false) === true;
 
         // Try local TrOCR first
-        $localResult = $this->transcribe($imagePath);
+        $localResult = $this->transcribe($imagePath, $options);
 
-        if ($localResult && ($localResult['confidence'] ?? 0) >= $threshold) {
+        // Null can hide a dispatched timeout or uncertain worker outcome.
+        // Only a proven complete local result permits a new cloud request.
+        if (! self::isCompleteTranscriptResult($localResult)) {
+            return null;
+        }
+
+        if (($localResult['confidence'] ?? 0) >= $threshold) {
             $localResult['source'] = 'trocr_local';
 
             return $localResult;
@@ -488,12 +768,10 @@ class HtrTranscriptionService
 
         // Fallback to Transkribus if enabled and configured
         if ($tryTranskribus) {
-            $cloudResult = $this->transcribeViaTranskribus($imagePath);
+            $cloudResult = $this->transcribeViaTranskribus($imagePath, $options);
             if ($cloudResult) {
                 $cloudResult['source'] = 'transkribus';
-                $cloudResult['fallback_reason'] = $localResult
-                    ? 'low_local_confidence_'.round(($localResult['confidence'] ?? 0) * 100)
-                    : 'local_unavailable';
+                $cloudResult['fallback_reason'] = 'low_local_confidence_'.round(($localResult['confidence'] ?? 0) * 100);
 
                 Log::info('HtrTranscription: Used Transkribus fallback', [
                     'path' => basename($imagePath),
@@ -524,8 +802,46 @@ class HtrTranscriptionService
      * @param  string  $imagePath  Local image file path
      * @return array|null ['text', 'confidence', 'lines', 'model', 'source']
      */
-    public function transcribeViaTranskribus(string $imagePath): ?array
+    public function transcribeViaTranskribus(string $imagePath, array $options = []): ?array
     {
+        // Configured credentials do not authorize exporting local private data.
+        if (($options['try_transkribus'] ?? false) !== true
+            || ($options['sensitive_data'] ?? true) !== false
+            || (isset($options['required_instance_id']) && $options['required_instance_id'] !== '')) {
+            return null;
+        }
+        foreach (['local_only', 'disable_external_fallback', 'disable_cascade', 'no_fallback', 'ollama_required_no_fallback'] as $flag) {
+            if (array_key_exists($flag, $options) && RuntimeBoolean::parse($options[$flag]) !== false) {
+                return null;
+            }
+        }
+
+        $baseUrl = 'https://app.transkribus.org/metagrapho/api';
+        try {
+            $policy = app(OfflinePolicyService::class);
+            if ($policy->isOfflineModeActive() || ! $policy->isInternetAccessEnabled()) {
+                return null;
+            }
+            $host = parse_url($baseUrl, PHP_URL_HOST);
+            $decisions = [
+                $policy->evaluateRemoteDomain($host),
+                $policy->evaluatePath($imagePath, 'read'),
+                $policy->evaluateProvider(['instance_id' => 'transkribus', 'instance_type' => 'custom', 'allows_private_data' => false]),
+                $policy->evaluateOperation('cloud_llm_call', ['remote_domain' => $host]),
+            ];
+            foreach ($decisions as $decision) {
+                if (! $decision->allowed || $decision->requiresConfirmation) {
+                    return null;
+                }
+            }
+        } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+
+            return null;
+        }
+
         $apiKey = config('services.transkribus.api_key');
 
         if (! $apiKey) {
@@ -538,11 +854,9 @@ class HtrTranscriptionService
             return null;
         }
 
-        $baseUrl = 'https://app.transkribus.org/metagrapho/api';
-
         try {
             // Step 1: Upload image and start recognition
-            $response = \Illuminate\Support\Facades\Http::connectTimeout(5)->timeout(60)
+            $response = Http::connectTimeout(5)->timeout(60)
                 ->withHeaders(['Authorization' => "Bearer {$apiKey}"])
                 ->attach('file', file_get_contents($imagePath), basename($imagePath))
                 ->post("{$baseUrl}/processes", [
@@ -556,7 +870,7 @@ class HtrTranscriptionService
             if (! $response->successful()) {
                 Log::warning('HtrTranscription: Transkribus upload failed', [
                     'status' => $response->status(),
-                    'error' => substr($response->body(), 0, 200),
+                    'error_kind' => 'http_status',
                 ]);
 
                 return null;
@@ -574,7 +888,7 @@ class HtrTranscriptionService
             for ($i = 0; $i < $maxAttempts; $i++) {
                 sleep(3);
 
-                $statusResponse = \Illuminate\Support\Facades\Http::connectTimeout(5)->timeout(15)
+                $statusResponse = Http::connectTimeout(5)->timeout(15)
                     ->withHeaders(['Authorization' => "Bearer {$apiKey}"])
                     ->get("{$baseUrl}/processes/{$processId}");
 
@@ -634,7 +948,10 @@ class HtrTranscriptionService
             ];
 
         } catch (\Exception $e) {
-            Log::error('HtrTranscription: Transkribus error', ['error' => $e->getMessage()]);
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+            Log::error('HtrTranscription: Transkribus error', ['exception_kind' => $e::class]);
 
             return null;
         }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\AgentOutputQualityGateService;
 use App\Services\Genealogy\Support\TemporalProximityChecker;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -47,6 +48,7 @@ class ProposalValidatorService
      * @param  string  $proposedValue  raw string (not JSON-decoded)
      * @param  array<int,string>  $evidenceSources
      * @param  string|null  $agentId  null/empty = operator-emitted
+     * @param  array<string, mixed>  $proposalContext
      * @return array{ok: bool, reason?: string, gate?: string, severity?: string}
      */
     public function validate(
@@ -56,7 +58,8 @@ class ProposalValidatorService
         string $proposedValue,
         string $evidenceSummary,
         array $evidenceSources,
-        ?string $agentId
+        ?string $agentId,
+        array $proposalContext = []
     ): array {
         if ($agentId === null || $agentId === '') {
             return ['ok' => true];
@@ -88,7 +91,26 @@ class ProposalValidatorService
             ];
         }
 
-        // Gate 3: temporal proximity (GPS Element 3 — analysis &
+        // Gate 3: broad source-search hits are leads until the record text
+        // bridges the target identity beyond a shared name. Reuse the Review
+        // quality gate classifier so queue creation and review cannot drift.
+        $personName = $this->personName($personId);
+        $sourceProposal = array_merge($proposalContext, [
+            'change_type' => $changeType,
+            'proposed_value' => $proposedValue,
+            'evidence_summary' => $evidenceSummary,
+            'evidence_sources' => $cleanSources,
+        ]);
+        if ($personName !== null && app(AgentOutputQualityGateService::class)
+            ->isLowQualityGenealogySourceSearchProposal($sourceProposal, $personName)) {
+            return [
+                'ok' => false,
+                'gate' => 'genealogy_identity_bridge',
+                'reason' => 'Broad same-name source-search hit lacks a record-text date, place, relative/FAN, occupation, or source-chain identity bridge',
+            ];
+        }
+
+        // Gate 4: temporal proximity (GPS Element 3 — analysis &
         // correlation of evidence). Person's lifetime must overlap
         // with the source's referenced years within the
         // birth-50/death+100 margin. Skipped for change_types where
@@ -125,7 +147,8 @@ class ProposalValidatorService
         string $proposedValue,
         string $evidenceSummary,
         array $evidenceSources,
-        ?string $agentId
+        ?string $agentId,
+        array $proposalContext = []
     ): array {
         $result = $this->validate(
             $personId,
@@ -134,7 +157,8 @@ class ProposalValidatorService
             $proposedValue,
             $evidenceSummary,
             $evidenceSources,
-            $agentId
+            $agentId,
+            $proposalContext
         );
         if ($result['ok'] === false) {
             Log::warning('ProposalValidator: REJECTED at creation time', [
@@ -149,6 +173,26 @@ class ProposalValidatorService
         }
 
         return $result;
+    }
+
+    private function personName(int $personId): ?string
+    {
+        try {
+            $row = DB::selectOne(
+                'SELECT given_name, surname FROM genealogy_persons WHERE id = ?',
+                [$personId]
+            );
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if (! $row) {
+            return null;
+        }
+
+        $name = trim((string) ($row->given_name ?? '').' '.(string) ($row->surname ?? ''));
+
+        return $name !== '' ? $name : null;
     }
 
     /**

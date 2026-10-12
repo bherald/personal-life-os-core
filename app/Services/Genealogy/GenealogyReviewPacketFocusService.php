@@ -28,7 +28,7 @@ class GenealogyReviewPacketFocusService
      * @param  array<string, mixed>  $details
      * @return array<string, mixed>
      */
-    public function fromPersistedDetails(array $details): array
+    public function fromPersistedDetails(array $details, array $mediaRefs = []): array
     {
         $applyPreview = is_array($details['apply_preview'] ?? null) ? $details['apply_preview'] : [];
         $applyPreviewMeta = [
@@ -39,7 +39,7 @@ class GenealogyReviewPacketFocusService
         ];
         $validation = is_array($details['validation'] ?? null) ? $details['validation'] : [];
 
-        return $this->build($details, $applyPreview, $applyPreviewMeta, $validation, null, []);
+        return $this->build($details, $applyPreview, $applyPreviewMeta, $validation, null, $mediaRefs);
     }
 
     /**
@@ -67,19 +67,48 @@ class GenealogyReviewPacketFocusService
         $sourceLocator = $this->firstSourceLocator($details, $sourceLocators, $sources);
         $previewOnly = $this->previewIsPreviewOnly($applyPreview);
         $persistedPreview = ($applyPreviewMeta['persisted'] ?? false) === true;
+        $candidateReviewability = $this->facePhotoReviewability($details);
         $approvalReady = $persistedPreview
             && $previewOnly === true
-            && $this->validationAllowsApproval($validation);
-        $approvalBlockers = $approvalReady ? [] : $this->approvalBlockers(
+            && $this->validationAllowsApproval($validation)
+            && ($candidateReviewability['ready'] ?? true);
+        $approvalBlockers = $this->approvalBlockers(
             $persistedPreview,
             $previewOnly,
             $applyPreview,
             $validation
         );
+        if (($candidateReviewability['applicable'] ?? false) && ! ($candidateReviewability['ready'] ?? false)) {
+            $approvalBlockers[] = [
+                'code' => (string) ($candidateReviewability['blocker_code'] ?? 'candidate_comparison_missing'),
+                'label' => (string) ($candidateReviewability['blocker_label'] ?? 'Candidate comparison evidence is incomplete'),
+            ];
+        }
+        $claimCount = count(array_filter($claims, 'is_array'));
+        $mediaRefCount = $this->mediaRefCount($details, $mediaRefs);
+        $resolvedMediaCount = $this->resolvedMediaCount($details, $mediaRefs);
+        $missingMediaCount = $this->missingMediaCount($details, $mediaRefs);
+        $sourceVisibility = $this->sourceVisibility($details, $sourceLocators, $sources);
+        $mediaVisibility = $this->mediaVisibility($mediaRefs);
+        $operatorVetable = $approvalReady
+            && $claimCount > 0
+            && ($sourceVisibility['visible_source_count'] + $mediaVisibility['viewable_media_count']) > 0;
+        $operatorBlocker = $this->operatorBlocker(
+            $approvalReady,
+            $claimCount,
+            $sourceVisibility['visible_source_count'],
+            $mediaVisibility['viewable_media_count'],
+        );
+        if (($candidateReviewability['applicable'] ?? false) && ! ($candidateReviewability['ready'] ?? false)) {
+            $operatorBlocker = [
+                'code' => (string) ($candidateReviewability['blocker_code'] ?? 'candidate_comparison_missing'),
+                'label' => (string) ($candidateReviewability['blocker_label'] ?? 'Candidate comparison evidence is incomplete'),
+            ];
+        }
 
         return [
             'review_mode' => 'single_packet',
-            'source_backed' => count(array_filter($claims, 'is_array')) > 0 && $sourceLocator !== null,
+            'source_backed' => $claimCount > 0 && $sourceLocator !== null,
             'person_id' => $personId,
             'person_label' => $this->personLabel($person, $personId),
             'boundary_label' => $this->boundaryLabel($details),
@@ -87,10 +116,25 @@ class GenealogyReviewPacketFocusService
             'source_label' => $this->firstSourceLabel($sources),
             'source_access_class' => $this->firstSourceAccessClass($details, $sources),
             'source_count' => $this->sourceCount($sourceLocators, $sources),
-            'claim_count' => count(array_filter($claims, 'is_array')),
-            'media_ref_count' => $this->mediaRefCount($details, $mediaRefs),
-            'resolved_media_count' => $this->resolvedMediaCount($details, $mediaRefs),
-            'missing_media_count' => $this->missingMediaCount($details, $mediaRefs),
+            'claim_count' => $claimCount,
+            'media_ref_count' => $mediaRefCount,
+            'resolved_media_count' => $resolvedMediaCount,
+            'missing_media_count' => $missingMediaCount,
+            'visible_source_count' => $sourceVisibility['visible_source_count'],
+            'external_source_count' => $sourceVisibility['external_source_count'],
+            'private_source_count' => $sourceVisibility['private_source_count'],
+            'viewable_media_count' => $mediaVisibility['viewable_media_count'],
+            'unavailable_media_count' => $mediaVisibility['unavailable_media_count'],
+            'visible_evidence_count' => $sourceVisibility['visible_source_count'] + $mediaVisibility['viewable_media_count'],
+            'operator_vetable' => $operatorVetable,
+            'operator_review_surface' => $operatorVetable ? 'preview' : 'diagnostic',
+            'operator_blocker_code' => $operatorBlocker['code'],
+            'operator_blocker_label' => $operatorBlocker['label'],
+            'operator_action_label' => $operatorVetable
+                ? 'Inspect the visible evidence; marking reviewed records this preview only and does not apply the claim.'
+                : (($candidateReviewability['applicable'] ?? false)
+                    ? 'Diagnostics only until each photo candidate includes both person names and candidate-specific media.'
+                    : 'Diagnostics only until visible evidence is attached.'),
             'claim_summary' => $firstClaim !== null ? $this->claimSummary($firstClaim) : null,
             'claim_field' => $firstClaim !== null ? $this->firstScalarText($firstClaim, ['field_name']) : null,
             'claim_change_type' => $firstClaim !== null ? $this->firstScalarText($firstClaim, ['change_type', 'relationship_type']) : null,
@@ -101,7 +145,94 @@ class GenealogyReviewPacketFocusService
             'canonical_mutation' => $persistedPreview ? $this->previewHasCanonicalMutation($applyPreview) : null,
             'approval_ready' => $approvalReady,
             'approval_blockers' => $approvalBlockers,
+            'candidate_reviewability' => $candidateReviewability,
             'review_readiness' => $this->reviewReadiness($approvalReady, $approvalBlockers),
+        ];
+    }
+
+    /**
+     * Face/photo repair packets are only human-reviewable when every row names
+     * both sides of the claimed conflict and points to its specific media.
+     *
+     * @param  array<string, mixed>  $details
+     * @return array<string, mixed>
+     */
+    public function facePhotoReviewability(array $details, bool $assumeApplicable = false): array
+    {
+        $packet = is_array($details['packet'] ?? null) ? $details['packet'] : [];
+        $metadata = is_array($packet['metadata'] ?? null) ? $packet['metadata'] : [];
+        $findingType = $this->firstScalarText($metadata, ['finding_type', 'origin'])
+            ?: $this->firstScalarText($packet, ['finding_type', 'packet_identity_scope'])
+            ?: $this->firstScalarText($details, ['finding_type']);
+        $applicable = $assumeApplicable || in_array($findingType, [
+            'face_person_source_repair_plan',
+            'face_photo_provenance_repair',
+            'ops:face-person-source-repair-plan',
+        ], true);
+
+        if (! $applicable) {
+            return ['applicable' => false, 'ready' => true];
+        }
+
+        $plans = is_array($metadata['plans'] ?? null) ? $metadata['plans'] : [];
+        $missingComparison = 0;
+        $missingMediaReference = 0;
+        $readyCandidates = 0;
+
+        foreach ($plans as $plan) {
+            if (! is_array($plan)) {
+                $missingComparison++;
+
+                continue;
+            }
+
+            $evidence = is_array($plan['evidence'] ?? null) ? $plan['evidence'] : [];
+            $selector = is_array($plan['selector'] ?? null) ? $plan['selector'] : [];
+            $linkedName = $this->firstScalarText($evidence, ['linked_canonical_name', 'person_name']);
+            $comparisonName = $this->firstScalarText($evidence, ['matched_export_name', 'matched_variant_name']);
+            $mediaIds = is_array($selector['media_ids'] ?? null) ? $selector['media_ids'] : [];
+            $hasMediaReference = array_filter($mediaIds, fn (mixed $id): bool => $this->positiveInt($id) !== null) !== [];
+            $hasDecidableComparison = $linkedName !== null
+                && $comparisonName !== null
+                && strcasecmp($linkedName, $comparisonName) !== 0;
+
+            if (! $hasDecidableComparison) {
+                $missingComparison++;
+            }
+            if (! $hasMediaReference) {
+                $missingMediaReference++;
+            }
+            if ($hasDecidableComparison && $hasMediaReference) {
+                $readyCandidates++;
+            }
+        }
+
+        $candidateCount = count(array_filter($plans, 'is_array'));
+        $ready = $candidateCount > 0
+            && $missingComparison === 0
+            && $missingMediaReference === 0;
+        $blockerCode = null;
+        $blockerLabel = null;
+        if ($candidateCount === 0) {
+            $blockerCode = 'candidate_rows_missing';
+            $blockerLabel = 'No face/photo candidates are attached';
+        } elseif ($missingComparison > 0) {
+            $blockerCode = 'candidate_comparison_missing';
+            $blockerLabel = "{$missingComparison} of {$candidateCount} candidates do not name both people being compared";
+        } elseif ($missingMediaReference > 0) {
+            $blockerCode = 'candidate_media_missing';
+            $blockerLabel = "{$missingMediaReference} of {$candidateCount} candidates do not identify their photo";
+        }
+
+        return [
+            'applicable' => true,
+            'ready' => $ready,
+            'candidate_count' => $candidateCount,
+            'ready_candidate_count' => $readyCandidates,
+            'missing_comparison_count' => $missingComparison,
+            'missing_media_reference_count' => $missingMediaReference,
+            'blocker_code' => $blockerCode,
+            'blocker_label' => $blockerLabel,
         ];
     }
 
@@ -401,10 +532,117 @@ class GenealogyReviewPacketFocusService
     private function missingMediaCount(array $details, array $mediaRefs): ?int
     {
         if ($mediaRefs !== []) {
-            return count(array_filter($mediaRefs, fn (array $media): bool => ($media['file_exists'] ?? null) === false));
+            return count(array_filter(
+                $mediaRefs,
+                fn (array $media): bool => ($media['file_available'] ?? $media['file_exists'] ?? null) === false
+            ));
         }
 
         return $this->nonNegativeIntOrNull($details['missing_media_count'] ?? null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $details
+     * @param  array<int, mixed>  $sourceLocators
+     * @param  array<int, mixed>  $sources
+     * @return array{visible_source_count: int, external_source_count: int, private_source_count: int}
+     */
+    private function sourceVisibility(array $details, array $sourceLocators, array $sources): array
+    {
+        $external = 0;
+        $private = 0;
+
+        $locators = [];
+        foreach ([$details['source_locator'] ?? null, ...$sourceLocators] as $locator) {
+            if (is_scalar($locator) && trim((string) $locator) !== '') {
+                $locators[] = trim((string) $locator);
+            }
+        }
+        foreach ($sources as $source) {
+            if (! is_array($source)) {
+                continue;
+            }
+            foreach (['locator', 'source_locator', 'url', 'uri', 'path', 'citation'] as $key) {
+                $locator = $source[$key] ?? null;
+                if (is_scalar($locator) && trim((string) $locator) !== '') {
+                    $locators[] = trim((string) $locator);
+                }
+            }
+        }
+
+        foreach (array_unique($locators) as $locator) {
+            if (preg_match('~^https?://~i', $locator) === 1) {
+                $external++;
+            } else {
+                $private++;
+            }
+        }
+
+        return [
+            'visible_source_count' => $external,
+            'external_source_count' => $external,
+            'private_source_count' => $private,
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $mediaRefs
+     * @return array{viewable_media_count: int, unavailable_media_count: int}
+     */
+    private function mediaVisibility(array $mediaRefs): array
+    {
+        $viewable = 0;
+        $unavailable = 0;
+        foreach ($mediaRefs as $media) {
+            $hasView = is_scalar($media['view_url'] ?? null) && trim((string) $media['view_url']) !== '';
+            $available = ($media['file_available'] ?? null) === true || (($media['file_exists'] ?? null) === true && $hasView);
+            if ($available && $hasView) {
+                $viewable++;
+            } elseif (($media['file_available'] ?? $media['file_exists'] ?? null) === false) {
+                $unavailable++;
+            }
+        }
+
+        return [
+            'viewable_media_count' => $viewable,
+            'unavailable_media_count' => $unavailable,
+        ];
+    }
+
+    /**
+     * @return array{code: string|null, label: string|null}
+     */
+    private function operatorBlocker(
+        bool $approvalReady,
+        int $claimCount,
+        int $visibleSourceCount,
+        int $viewableMediaCount
+    ): array {
+        if (! $approvalReady) {
+            return [
+                'code' => 'packet_not_approval_ready',
+                'label' => 'Packet is not ready for operator review.',
+            ];
+        }
+
+        if ($claimCount <= 0) {
+            return [
+                'code' => 'no_claim_to_review',
+                'label' => 'No concrete claim is available for operator review.',
+            ];
+        }
+
+        if (($visibleSourceCount + $viewableMediaCount) <= 0) {
+            return [
+                'code' => 'no_visible_evidence',
+                'label' => 'No viewable source image, document, or external source link is attached.',
+            ];
+        }
+
+        return [
+            'code' => null,
+            'label' => null,
+        ];
     }
 
     /**

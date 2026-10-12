@@ -119,7 +119,7 @@ class LLMDiscoverProviders extends Command
             SELECT instance_id, instance_name, base_url, api_key, api_key_env, config
             FROM llm_instances
             WHERE is_active = 1
-              AND instance_type NOT IN ('ollama', 'claude_cli')
+              AND instance_type NOT IN ('ollama', 'claude_cli', 'anthropic_api')
         ");
 
         $results = [];
@@ -224,18 +224,7 @@ class LLMDiscoverProviders extends Command
                     $this->line('  ... and '.($freeModels->count() - 20).' more');
                 }
 
-                // Check if we have models that aren't in our supported_models list
-                $existing = DB::selectOne("SELECT supported_models FROM llm_instances WHERE instance_id = 'openrouter_free'");
-                if ($existing) {
-                    $currentModels = json_decode($existing->supported_models ?? '[]', true);
-                    $newFree = $freeModels->pluck('id')->diff(collect($currentModels))->values();
-                    if ($newFree->isNotEmpty()) {
-                        $this->warn("\nNew free models not in our config:");
-                        foreach ($newFree->take(10) as $m) {
-                            $this->line("  + {$m}");
-                        }
-                    }
-                }
+                $this->line('Discovery is informational; retired provider rows are not recreated.');
             }
         } catch (\Exception $e) {
             $this->error("OpenRouter API error: {$e->getMessage()}");

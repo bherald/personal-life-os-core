@@ -57,6 +57,7 @@ class RAGDedupCommand extends Command
         }
 
         $this->info('Usage: rag:dedup --stats|--scan|--backfill-hashes|--find-duplicates|--remove-duplicates');
+
         return 0;
     }
 
@@ -64,30 +65,30 @@ class RAGDedupCommand extends Command
     {
         $stats = $service->getStats();
 
-        $this->info("RAG Dedup Statistics");
+        $this->info('RAG Dedup Statistics');
         $this->line("Total documents: {$stats['total_documents']}");
         $this->line("With content hash: {$stats['hash_coverage']}");
-        $this->line("Missing hash: " . ($stats['total_documents'] - $stats['hash_coverage']));
+        $this->line('Missing hash: '.($stats['total_documents'] - $stats['hash_coverage']));
 
-        if (!empty($stats['by_dedup_status'])) {
+        if (! empty($stats['by_dedup_status'])) {
             $this->newLine();
-            $this->info("By Dedup Status:");
+            $this->info('By Dedup Status:');
             foreach ($stats['by_dedup_status'] as $status => $count) {
                 $this->line("  {$status}: {$count}");
             }
         }
 
-        if (!empty($stats['log_by_strategy'])) {
+        if (! empty($stats['log_by_strategy'])) {
             $this->newLine();
-            $this->info("Log by Strategy:");
+            $this->info('Log by Strategy:');
             foreach ($stats['log_by_strategy'] as $strategy => $count) {
                 $this->line("  {$strategy}: {$count}");
             }
         }
 
-        if (!empty($stats['log_by_action'])) {
+        if (! empty($stats['log_by_action'])) {
             $this->newLine();
-            $this->info("Log by Action:");
+            $this->info('Log by Action:');
             foreach ($stats['log_by_action'] as $action => $count) {
                 $this->line("  {$action}: {$count}");
             }
@@ -103,7 +104,7 @@ class RAGDedupCommand extends Command
         $totalProcessed = 0;
         $totalErrors = 0;
 
-        $this->info("Backfilling content hashes" . ($type ? " for type: {$type}" : ""));
+        $this->info('Backfilling content hashes'.($type ? " for type: {$type}" : ''));
 
         do {
             $result = $service->backfillHashes($batchSize, $type);
@@ -116,6 +117,7 @@ class RAGDedupCommand extends Command
         } while ($result['processed'] >= $batchSize);
 
         $this->info("Done. Total processed: {$totalProcessed}, errors: {$totalErrors}");
+
         return 0;
     }
 
@@ -127,7 +129,7 @@ class RAGDedupCommand extends Command
         $totalScanned = 0;
         $totalDuplicates = 0;
 
-        $this->info("Scanning for duplicates" . ($type ? " (type: {$type})" : "") . ($dryRun ? " [DRY RUN]" : ""));
+        $this->info('Scanning for duplicates'.($type ? " (type: {$type})" : '').($dryRun ? ' [DRY RUN]' : ''));
 
         do {
             $result = $service->scanExistingDocuments($batchSize, $type);
@@ -140,18 +142,20 @@ class RAGDedupCommand extends Command
         } while ($result['scanned'] >= $batchSize);
 
         $this->info("Done. Scanned: {$totalScanned}, duplicates found: {$totalDuplicates}");
+
         return 0;
     }
 
     private function findDuplicates(SemDeDupService $service): int
     {
         $type = $this->option('type');
-        $this->info("Finding duplicate groups" . ($type ? " for type: {$type}" : ""));
+        $this->info('Finding duplicate groups'.($type ? " for type: {$type}" : ''));
 
         $duplicates = $service->findDuplicates($type);
 
         if (empty($duplicates)) {
-            $this->info("No duplicates found.");
+            $this->info('No duplicates found.');
+
             return 0;
         }
 
@@ -160,7 +164,7 @@ class RAGDedupCommand extends Command
 
         foreach ($duplicates as $group) {
             $rows[] = [
-                substr($group['content_hash'], 0, 12) . '...',
+                substr($group['content_hash'], 0, 12).'...',
                 $group['count'],
                 $group['first_id'],
                 is_string($group['all_ids']) ? substr($group['all_ids'], 0, 40) : implode(',', $group['all_ids']),
@@ -169,7 +173,8 @@ class RAGDedupCommand extends Command
         }
 
         $this->table($headers, $rows);
-        $this->info("Found " . count($duplicates) . " duplicate groups.");
+        $this->info('Found '.count($duplicates).' duplicate groups.');
+
         return 0;
     }
 
@@ -178,8 +183,15 @@ class RAGDedupCommand extends Command
         $dryRun = $this->option('dry-run');
         $type = $this->option('type');
 
-        $label = $dryRun ? "[DRY RUN] " : "";
-        $this->info("{$label}Removing duplicate documents" . ($type ? " (type: {$type})" : ""));
+        if (! $dryRun) {
+            $this->error('Blind content-hash deletion is disabled because it can orphan or discard RAG/KG dependencies.');
+            $this->line('Use rag:source-identity-dedup for dry-run-first exact-content source consolidation.');
+
+            return self::FAILURE;
+        }
+
+        $label = $dryRun ? '[DRY RUN] ' : '';
+        $this->info("{$label}Removing duplicate documents".($type ? " (type: {$type})" : ''));
 
         $removed = $service->removeDuplicates($dryRun, $type);
 

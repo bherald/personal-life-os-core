@@ -56,4 +56,46 @@ class MetadataWritebackSafetyTest extends TestCase
         $this->assertFalse($result);
         Process::assertNothingRan();
     }
+
+    public function test_face_writeback_sql_requires_trusted_visible_ft_link(): void
+    {
+        $sql = app(ExifWritebackService::class)->faceWritebackEligibilitySql('frf', 'fip');
+
+        $this->assertStringContainsString('frf.genealogy_person_id IS NOT NULL', $sql);
+        $this->assertStringContainsString('COALESCE(frf.hidden, 0) = 0', $sql);
+        $this->assertStringContainsString('COALESCE(frf.verified, 0) = 1', $sql);
+        $this->assertStringContainsString('fip.status IN', $sql);
+        $this->assertStringContainsString('export_variant_supported', $sql);
+    }
+
+    public function test_face_writeback_preserves_existing_person_metadata_before_merge(): void
+    {
+        $source = file_get_contents(app_path('Services/ExifWritebackService.php'));
+
+        $this->assertStringNotContainsString("'-XMP-iptcExt:PersonInImage='", $source);
+        $this->assertStringNotContainsString("'-XMP-mwg-rs:all='", $source);
+        $this->assertStringContainsString('facesForWriteback', $source);
+    }
+
+    public function test_location_writeback_uses_valid_iptc_country_tag(): void
+    {
+        $source = file_get_contents(app_path('Services/ExifWritebackService.php'));
+
+        $this->assertStringContainsString('IPTC:Country-PrimaryLocationName', $source);
+        $this->assertStringNotContainsString('IPTC:Country-PrimaryLocation=', $source);
+    }
+
+    public function test_write_all_skips_low_confidence_dates(): void
+    {
+        $source = file_get_contents(app_path('Services/ExifWritebackService.php'));
+
+        $this->assertStringContainsString('(float) ($file->date_taken_confidence ?? 0) >= 0.3', $source);
+    }
+
+    public function test_scan_writeback_treats_unix_epoch_as_an_unknown_digitization_date(): void
+    {
+        $source = file_get_contents(app_path('Services/ExifWritebackService.php'));
+
+        $this->assertStringContainsString("! str_starts_with(\$scanDate, '1970-01-01')", $source);
+    }
 }

@@ -44,11 +44,12 @@ class RagRetrievalEvidenceCommandTest extends TestCase
         $this->assertStringNotContainsString('family photos', $output);
         $this->assertStringNotContainsString('scheduler evidence', $output);
         $this->assertSame('observe_ok', $payload['status']);
-        $this->assertSame(1, $payload['evidence_contract']['version']);
+        $this->assertSame(2, $payload['evidence_contract']['version']);
         $this->assertSame('observe_only', $payload['evidence_contract']['mode']);
         $this->assertSame('ordered_query_hashes_and_type_filters', $payload['evidence_contract']['query_set_hash_basis']);
         $this->assertSame('redacted_by_default', $payload['evidence_contract']['query_text']);
         $this->assertSame('redacted_by_default', $payload['evidence_contract']['results']);
+        $this->assertSame('hashed_content_free_summary_always', $payload['evidence_contract']['source_references']);
         $this->assertSame('enabled_default', $payload['evidence_contract']['query_traces']);
         $this->assertSame($this->querySetHash([
             ['query' => 'family photos', 'type' => null],
@@ -58,6 +59,10 @@ class RagRetrievalEvidenceCommandTest extends TestCase
         $this->assertSame(2, $payload['successful_count']);
         $this->assertSame(1, $payload['empty_count']);
         $this->assertSame(0, $payload['failed_count']);
+        $this->assertSame(2, $payload['source_evidence_summary']['result_count']);
+        $this->assertSame(0, $payload['source_evidence_summary']['citation_ready_count']);
+        $this->assertEquals(0.0, $payload['source_evidence_summary']['citation_ready_rate']);
+        $this->assertSame(2, $payload['source_evidence_summary']['document_only_count']);
         $this->assertSame(3, $payload['limit']);
         $this->assertSame(0.8, $payload['score_summary']['top_similarity_min']);
         $this->assertSame(0.8, $payload['score_summary']['top_similarity_max']);
@@ -196,6 +201,9 @@ class RagRetrievalEvidenceCommandTest extends TestCase
                         'document_type' => 'genealogy_person',
                         'created_at' => '2026-05-02 18:55:00',
                         'content' => str_repeat('evidence ', 25),
+                        'source_type' => 'genealogy_source',
+                        'source_id' => 'private-source-77',
+                        'metadata' => ['workspace_id' => 'private-workspace'],
                     ],
                     'similarity' => 0.91234,
                 ],
@@ -225,6 +233,10 @@ class RagRetrievalEvidenceCommandTest extends TestCase
         $this->assertSame('Research Note', $payload['queries'][0]['results'][0]['title']);
         $this->assertSame('2026-05-02 18:55:00', $payload['queries'][0]['results'][0]['created_at']);
         $this->assertStringEndsWith('...', $payload['queries'][0]['results'][0]['preview']);
+        $this->assertSame('source_bound', $payload['queries'][0]['results'][0]['source']['citation_status']);
+        $this->assertSame('workspace', $payload['queries'][0]['results'][0]['source']['scope']);
+        $this->assertStringNotContainsString('private-source-77', json_encode($payload, JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString('private-workspace', json_encode($payload, JSON_THROW_ON_ERROR));
     }
 
     public function test_search_failures_return_warning_without_exposing_query_or_error_message(): void
@@ -279,10 +291,12 @@ class RagRetrievalEvidenceCommandTest extends TestCase
             ['query' => 'private family query', 'type' => 'genealogy_person'],
         ]).'`', $output);
         $this->assertStringContainsString('## Latency Summary', $output);
+        $this->assertStringContainsString('## Source Evidence Summary', $output);
         $this->assertStringContainsString('## Evidence Contract', $output);
         $this->assertStringContainsString('Query set hash basis: `ordered_query_hashes_and_type_filters`', $output);
         $this->assertStringContainsString('Query text: `redacted_by_default`', $output);
         $this->assertStringContainsString('Results: `redacted_by_default`', $output);
+        $this->assertStringContainsString('citation_ready_rate', $output);
         $this->assertStringContainsString('Query traces: `enabled_default`', $output);
         $this->assertStringContainsString('query_duration_p95_ms', $output);
         $this->assertStringContainsString('| Label | Query Hash | Type | Status | Results |', $output);

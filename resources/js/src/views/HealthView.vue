@@ -6,7 +6,7 @@
       <!-- Coming Soon Notice -->
       <div class="bg-gradient-to-br from-[#e74c3c] to-[#c0392b] border border-[#e74c3c] rounded-lg p-6 mb-6 shadow-lg">
         <div class="flex items-start gap-4">
-          <svg class="w-12 h-12 text-white flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg class="w-12 h-12 text-white shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
           </svg>
           <div class="flex-1">

@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\Log;
  * N116: Vision-Based Screenshot Scraper
  *
  * Generic tool: screenshot any URL via Puppeteer MCP, then extract
- * text/data via LLaVA (Ollama) or Claude vision. Available as an
+ * text/data via the configured vision model. Available as an
  * agent tool for genealogy research, data collection, or general scraping.
  *
  * Flow: URL → Puppeteer screenshot → save temp file → vision LLM → structured text

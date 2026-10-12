@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\AgentBenchmarkService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Str;
 
 class AgentBenchmarkCommand extends Command
 {
@@ -12,7 +13,7 @@ class AgentBenchmarkCommand extends Command
         {--task= : Run single task key only (e.g., health_assessment)}
         {--mode= : Run single mode only (agentic, hybrid, deterministic)}
         {--analyze= : Analyze results for a run ID}
-        {--score= : Auto-score results for a run ID using LLM}
+        {--score= : Add advisory LLM scores for a run ID; does not make results promotion-eligible}
         {--runs : List all benchmark runs}
         {--model= : Override LLM model for benchmark}
         {--max-iterations=10 : Max iterations per run}';
@@ -39,7 +40,7 @@ class AgentBenchmarkCommand extends Command
         $agentId = $this->argument('agent');
 
         // No agent specified: list benchmarkable agents
-        if (!$agentId) {
+        if (! $agentId) {
             return $this->listAgents($benchmarkService);
         }
 
@@ -53,6 +54,7 @@ class AgentBenchmarkCommand extends Command
 
         if (empty($agents)) {
             $this->warn('No benchmarkable agents found (need tool_phases defined in SKILL.md).');
+
             return self::SUCCESS;
         }
 
@@ -89,9 +91,10 @@ class AgentBenchmarkCommand extends Command
         $tasks = $benchmarkService->getTestTasks($agentId);
 
         if ($taskFilter) {
-            if (!isset($tasks[$taskFilter])) {
+            if (! isset($tasks[$taskFilter])) {
                 $this->error("Unknown task key: {$taskFilter}");
-                $this->line('Available: ' . implode(', ', array_keys($tasks)));
+                $this->line('Available: '.implode(', ', array_keys($tasks)));
+
                 return self::FAILURE;
             }
             $tasks = [$taskFilter => $tasks[$taskFilter]];
@@ -99,15 +102,16 @@ class AgentBenchmarkCommand extends Command
 
         $modes = ['agentic', 'hybrid', 'deterministic'];
         if ($modeFilter) {
-            if (!in_array($modeFilter, $modes)) {
+            if (! in_array($modeFilter, $modes)) {
                 $this->error("Invalid mode: {$modeFilter}. Use: agentic, hybrid, deterministic");
+
                 return self::FAILURE;
             }
             $modes = [$modeFilter];
         }
 
         $totalRuns = count($tasks) * count($modes);
-        $this->info("Benchmarking '{$agentId}': {$totalRuns} runs (" . count($tasks) . " tasks × " . count($modes) . " modes)");
+        $this->info("Benchmarking '{$agentId}': {$totalRuns} runs (".count($tasks).' tasks × '.count($modes).' modes)');
         if ($model) {
             $this->line("  Model override: {$model}");
         }
@@ -118,7 +122,7 @@ class AgentBenchmarkCommand extends Command
             $options['model'] = $model;
         }
 
-        $runId = 'bench_' . \Illuminate\Support\Str::random(12);
+        $runId = 'bench_'.Str::random(12);
         $results = [];
         $current = 0;
 
@@ -134,7 +138,11 @@ class AgentBenchmarkCommand extends Command
                     $results[] = $result;
 
                     $status = $result['success'] ? '<fg=green>OK</>' : '<fg=red>FAIL</>';
-                    $this->line("  {$status} | tokens={$result['tokens_used']} | {$result['duration_ms']}ms | tools={$result['tool_calls_count']} | iter={$result['iterations']}");
+                    $trajectory = $result['trajectory_assessment']['outcome'] ?? 'unassessed';
+                    $patterns = (array) data_get($result, 'trajectory_assessment.trajectory_diagnostics.anti_patterns', []);
+                    $diagnostics = $patterns === [] ? 'none' : implode(',', $patterns);
+                    $recovery = data_get($result, 'trajectory_assessment.recovery_guidance.guidance.action_code', 'none') ?: 'none';
+                    $this->line("  {$status} | tokens={$result['tokens_used']} | {$result['duration_ms']}ms | tools={$result['tool_calls_count']} | iter={$result['iterations']} | trajectory={$trajectory} | diagnostics={$diagnostics} | recovery={$recovery}");
                 } catch (\Throwable $e) {
                     $this->error("  EXCEPTION: {$e->getMessage()}");
                     $results[] = ['success' => false, 'error' => $e->getMessage()];
@@ -144,7 +152,7 @@ class AgentBenchmarkCommand extends Command
 
         $this->newLine();
         $this->info("Run complete: {$runId}");
-        $this->line("  Total: {$totalRuns} | Successes: " . count(array_filter($results, fn($r) => $r['success'] ?? false)));
+        $this->line("  Total: {$totalRuns} | Successes: ".count(array_filter($results, fn ($r) => $r['success'] ?? false)));
         $this->newLine();
         $this->line("Analyze: php artisan agent:benchmark --analyze={$runId}");
         $this->line("Score:   php artisan agent:benchmark --score={$runId}");
@@ -159,10 +167,12 @@ class AgentBenchmarkCommand extends Command
 
         if (empty($analysis['mode_summary'])) {
             $this->warn("No results found for run: {$runId}");
+
             return self::SUCCESS;
         }
 
         $this->info("Benchmark Analysis: {$runId}");
+        $this->warn('Execution success and advisory LLM scores are observational. Only formally verified trajectory results are promotion-eligible.');
         $this->newLine();
 
         // Mode summary table
@@ -175,21 +185,22 @@ class AgentBenchmarkCommand extends Command
                 $m->runs,
                 "{$successRate}%",
                 number_format($m->avg_tokens, 0),
-                number_format($m->avg_duration_ms, 0) . 'ms',
+                number_format($m->avg_duration_ms, 0).'ms',
                 number_format($m->avg_iterations, 1),
                 number_format($m->avg_tool_calls, 1),
+                (int) $m->promotion_eligible_runs,
                 $m->avg_accuracy ? number_format($m->avg_accuracy, 1) : '-',
                 $m->avg_completeness ? number_format($m->avg_completeness, 1) : '-',
                 $m->avg_relevance ? number_format($m->avg_relevance, 1) : '-',
             ];
         }
         $this->table(
-            ['Mode', 'Runs', 'Success', 'Avg Tokens', 'Avg Duration', 'Avg Iter', 'Avg Tools', 'Accuracy', 'Complete', 'Relevant'],
+            ['Mode', 'Runs', 'Success', 'Avg Tokens', 'Avg Duration', 'Avg Iter', 'Avg Tools', 'Verified', 'Accuracy', 'Complete', 'Relevant'],
             $rows
         );
 
         // Per-task breakdown
-        if (!empty($analysis['task_comparison'])) {
+        if (! empty($analysis['task_comparison'])) {
             $this->newLine();
             $this->info('Per-Task Breakdown:');
 
@@ -201,7 +212,12 @@ class AgentBenchmarkCommand extends Command
                     if ($data->accuracy_score) {
                         $scores = " | scores={$data->accuracy_score}/{$data->completeness_score}/{$data->relevance_score}";
                     }
-                    $this->line("    {$mode}: tokens={$data->tokens_used} | {$data->duration_ms}ms | iter={$data->iterations} | tools={$data->tool_calls_count} | {$status}{$scores}");
+                    $trajectory = $data->trajectory_assessment['outcome'] ?? 'legacy_unverified';
+                    $patterns = (array) data_get($data->trajectory_assessment, 'trajectory_diagnostics.anti_patterns', []);
+                    $diagnostics = $patterns === [] ? 'none' : implode(',', $patterns);
+                    $recovery = data_get($data->trajectory_assessment, 'recovery_guidance.guidance.action_code', 'none') ?: 'none';
+                    $eligible = $data->promotion_eligible ? 'yes' : 'no';
+                    $this->line("    {$mode}: tokens={$data->tokens_used} | {$data->duration_ms}ms | iter={$data->iterations} | tools={$data->tool_calls_count} | {$status}{$scores} | trajectory={$trajectory} | diagnostics={$diagnostics} | recovery={$recovery} | promotion={$eligible}");
                 }
             }
         }
@@ -212,11 +228,11 @@ class AgentBenchmarkCommand extends Command
     private function scoreResults(AgentBenchmarkService $benchmarkService): int
     {
         $runId = $this->option('score');
-        $this->info("Auto-scoring results for: {$runId}");
+        $this->info("Adding advisory LLM scores for: {$runId}");
 
         $scored = $benchmarkService->autoScore($runId);
 
-        $this->info("Scored {$scored} benchmark results.");
+        $this->info("Scored {$scored} benchmark results. Formal trajectory verification is still required for promotion eligibility.");
         if ($scored > 0) {
             $this->line("View: php artisan agent:benchmark --analyze={$runId}");
         }
@@ -230,6 +246,7 @@ class AgentBenchmarkCommand extends Command
 
         if (empty($runs)) {
             $this->warn('No benchmark runs found.');
+
             return self::SUCCESS;
         }
 
@@ -240,16 +257,17 @@ class AgentBenchmarkCommand extends Command
                 $run->run_id,
                 $run->agent_id,
                 $run->total_runs,
-                $run->successes . '/' . $run->total_runs,
+                $run->successes.'/'.$run->total_runs,
                 $run->modes_tested,
                 $run->tasks_tested,
                 number_format($run->avg_tokens, 0),
-                number_format($run->avg_duration_ms, 0) . 'ms',
+                number_format($run->avg_duration_ms, 0).'ms',
+                (int) $run->promotion_eligible_runs,
                 $run->started_at,
             ];
         }
         $this->table(
-            ['Run ID', 'Agent', 'Runs', 'Success', 'Modes', 'Tasks', 'Avg Tokens', 'Avg Duration', 'Started'],
+            ['Run ID', 'Agent', 'Runs', 'Success', 'Modes', 'Tasks', 'Avg Tokens', 'Avg Duration', 'Verified', 'Started'],
             $rows
         );
 

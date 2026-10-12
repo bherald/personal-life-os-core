@@ -2,19 +2,59 @@
 
 namespace App\Services;
 
+use App\Services\Ops\AgentTrajectoryDiagnosticService;
+use App\Support\SensitiveTextTelemetry;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
+use JsonException;
+use Opis\JsonSchema\CompliantValidator;
+use Opis\JsonSchema\Exceptions\SchemaException;
 use RuntimeException;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 use Symfony\Component\Process\Process;
 
 class CodexExecConnectorService
 {
+    public const EXECUTION_GUARD = 'plos.codex_exec_execution_guard';
+
     private const PROVIDER_ID = 'codex_exec';
 
     private const DEFAULT_SUPPORTED_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+
+    private const MAX_TRAJECTORY_TOOL_CALLS = 500;
+
+    private static ?\Closure $outputObserver = null;
+
+    private static bool $manualCompactionOnly = false;
+
+    public static function withManualCompactionOnly(\Closure $operation): mixed
+    {
+        $previous = self::$manualCompactionOnly;
+        self::$manualCompactionOnly = true;
+        try {
+            return $operation();
+        } finally {
+            self::$manualCompactionOnly = $previous;
+        }
+    }
+
+    /** Retain raw process output only in the calling CLI's private artifact scope. */
+    public static function withOutputObserver(\Closure $operation, \Closure $observer): mixed
+    {
+        $previous = self::$outputObserver;
+        self::$outputObserver = $observer;
+        try {
+            return $operation();
+        } finally {
+            self::$outputObserver = $previous;
+        }
+    }
+
+    public function __construct(
+        private readonly AgentTrajectoryDiagnosticService $trajectoryDiagnostics
+    ) {}
 
     /**
      * @return array<string, mixed>
@@ -56,6 +96,7 @@ class CodexExecConnectorService
                 'success' => true,
                 'dry_run' => true,
                 'provider' => self::PROVIDER_ID,
+                'profile' => $resolved['profile'],
                 'model' => $resolved['model'],
                 'reasoning_effort' => $resolved['reasoning_effort'],
                 'sandbox' => $resolved['sandbox'],
@@ -67,7 +108,23 @@ class CodexExecConnectorService
 
         $slotId = null;
         $outputPath = null;
+        $process = null;
+        $processInput = $prompt;
+        $timedOut = false;
         $started = microtime(true);
+
+        try {
+            if (app()->bound(self::EXECUTION_GUARD)) {
+                $guard = app(self::EXECUTION_GUARD);
+                if (! is_callable($guard)) {
+                    throw new RuntimeException('The caller Codex execution policy is unavailable.');
+                }
+                $guard();
+            }
+        } catch (\Throwable $error) {
+            return ['success' => false, 'provider' => self::PROVIDER_ID, 'model' => $resolved['model'],
+                'error_type' => 'policy', 'error' => $error->getMessage()];
+        }
 
         try {
             $slot = $this->acquireExecutionSlot($row, $resolved);
@@ -75,6 +132,7 @@ class CodexExecConnectorService
                 return [
                     'success' => false,
                     'provider' => self::PROVIDER_ID,
+                    'profile' => $resolved['profile'],
                     'model' => $resolved['model'],
                     'reasoning_effort' => $resolved['reasoning_effort'],
                     'error_type' => $slot['error_type'] ?? 'capacity',
@@ -87,45 +145,105 @@ class CodexExecConnectorService
             $outputPath = $this->newOutputPath();
             $command = $this->buildCommand($resolved, $outputPath);
 
-            $process = new Process($command, $resolved['cwd'], null, $prompt, $resolved['timeout_seconds']);
-            $process->setTimeout($resolved['timeout_seconds']);
+            if ($resolved['native_turn']) {
+                $processInput = json_encode([
+                    'executable' => $resolved['native_executable'],
+                    'args' => $resolved['strict_config'] ? ['--strict-config'] : [],
+                    'cwd' => $resolved['cwd'], 'profile' => $resolved['profile'],
+                    'model' => $resolved['model'], 'effort' => $resolved['reasoning_effort'],
+                    'sandbox' => $resolved['sandbox'], 'ephemeral' => $resolved['ephemeral'],
+                    'prompt' => $prompt, 'developerInstructions' => $resolved['caller_instructions'],
+                    'timeoutMs' => $resolved['timeout_seconds'] * 1000, 'outputPath' => $outputPath,
+                    ...($resolved['output_schema'] === null ? [] : ['outputSchema' => json_decode(file_get_contents($resolved['output_schema']), false, 512, JSON_THROW_ON_ERROR)]),
+                ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            }
+            $process = new Process($command, $resolved['cwd'], null, $processInput, $resolved['process_timeout_seconds']);
             $process->run();
+            if ($resolved['native_turn'] && $process->getExitCode() === 124) {
+                throw new ProcessTimedOutException($process, ProcessTimedOutException::TYPE_GENERAL);
+            }
 
             $response = is_file($outputPath)
-                ? trim((string) file_get_contents($outputPath))
-                : trim($process->getOutput());
+                ? (string) file_get_contents($outputPath)
+                : $process->getOutput();
+            $diagnostics = $this->summarizeCodexCliOutput(
+                $process->getOutput(),
+                $process->getErrorOutput(),
+                $response,
+            );
+
+            if (! mb_check_encoding($response, 'UTF-8')) {
+                return ['success' => false, 'provider' => self::PROVIDER_ID, 'model' => $resolved['model'],
+                    'error_type' => 'invalid_response_encoding', 'error' => 'Codex returned non-UTF-8 response bytes.',
+                    'exit_code' => $process->getExitCode(), 'diagnostics' => $diagnostics];
+            }
 
             if (! $process->isSuccessful()) {
-                $error = $this->shortError($process->getErrorOutput() ?: $process->getOutput() ?: 'codex exec failed');
+                $nativeError = null;
+                if ($resolved['native_turn']) {
+                    $lines = explode("\n", rtrim($process->getOutput(), "\r\n"));
+                    $last = json_decode(end($lines), true);
+                    if (is_array($last) && ($last['type'] ?? null) === 'plos.native.turn.result'
+                        && ($last['success'] ?? null) === false && is_string($last['error'] ?? null)) {
+                        $nativeError = $last['error'];
+                    }
+                }
+                $error = $this->shortError($nativeError ?? ($process->getErrorOutput() ?: $process->getOutput() ?: 'codex exec failed'));
 
                 return [
                     'success' => false,
                     'provider' => self::PROVIDER_ID,
+                    'profile' => $resolved['profile'],
                     'model' => $resolved['model'],
                     'reasoning_effort' => $resolved['reasoning_effort'],
                     'error_type' => $this->classifyError($error),
                     'error' => $error,
+                    'response' => $response !== '' ? $response : null,
                     'exit_code' => $process->getExitCode(),
                     'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                    'diagnostics' => $diagnostics,
                 ];
             }
 
-            if ($response === '') {
+            if (trim($response) === '') {
                 return [
                     'success' => false,
                     'provider' => self::PROVIDER_ID,
+                    'profile' => $resolved['profile'],
                     'model' => $resolved['model'],
                     'reasoning_effort' => $resolved['reasoning_effort'],
                     'error_type' => 'empty_response',
                     'error' => 'codex exec returned empty response',
                     'exit_code' => $process->getExitCode(),
                     'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                    'diagnostics' => $diagnostics,
                 ];
+            }
+
+            if ($resolved['output_schema'] !== null) {
+                $validation = $this->validateStructuredResponse($response, $resolved['output_schema']);
+                $diagnostics['structured_output'] = $validation['diagnostics'];
+
+                if (! $validation['valid']) {
+                    return [
+                        'success' => false,
+                        'provider' => self::PROVIDER_ID,
+                        'profile' => $resolved['profile'],
+                        'model' => $resolved['model'],
+                        'reasoning_effort' => $resolved['reasoning_effort'],
+                        'error_type' => $validation['error_type'],
+                        'error' => $validation['error'],
+                        'exit_code' => $process->getExitCode(),
+                        'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                        'diagnostics' => $diagnostics,
+                    ];
+                }
             }
 
             return [
                 'success' => true,
                 'provider' => self::PROVIDER_ID,
+                'profile' => $resolved['profile'],
                 'model' => $resolved['model'],
                 'reasoning_effort' => $resolved['reasoning_effort'],
                 'sandbox' => $resolved['sandbox'],
@@ -133,15 +251,24 @@ class CodexExecConnectorService
                 'response' => $response,
                 'exit_code' => $process->getExitCode(),
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
+                'diagnostics' => $diagnostics,
             ];
         } catch (ProcessTimedOutException) {
+            $timedOut = true;
+            $response = $this->availableResponse($process, $outputPath);
+
             return [
                 'success' => false,
                 'provider' => self::PROVIDER_ID,
+                'profile' => $resolved['profile'],
                 'model' => $resolved['model'],
                 'reasoning_effort' => $resolved['reasoning_effort'],
                 'error_type' => 'timeout',
                 'error' => "codex exec timed out after {$resolved['timeout_seconds']}s",
+                'response' => $response,
+                'partial_content_preserved' => $response !== null && $response !== '',
+                'exit_code' => $process?->getExitCode(),
+                'diagnostics' => $this->summarizeCodexCliOutput($process?->getOutput() ?? '', $process?->getErrorOutput() ?? '', $response ?? ''),
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
             ];
         } catch (\Throwable $e) {
@@ -152,21 +279,48 @@ class CodexExecConnectorService
             return [
                 'success' => false,
                 'provider' => self::PROVIDER_ID,
+                'profile' => $resolved['profile'],
                 'model' => $resolved['model'],
                 'reasoning_effort' => $resolved['reasoning_effort'],
                 'error_type' => $this->classifyError($e->getMessage()),
                 'error' => $this->shortError($e->getMessage()),
+                'response' => $this->availableResponse($process, $outputPath),
                 'duration_ms' => (int) ((microtime(true) - $started) * 1000),
             ];
         } finally {
-            if ($slotId !== null) {
-                $this->releaseExecutionSlot($slotId, $resolved);
-            }
-
-            if (isset($outputPath) && is_file($outputPath)) {
-                @unlink($outputPath);
+            try {
+                if (self::$outputObserver !== null && $process !== null && $process->isStarted()) {
+                    $lastMessage = $outputPath !== null && is_file($outputPath) ? file_get_contents($outputPath) : false;
+                    (self::$outputObserver)([
+                        'instance_id' => self::PROVIDER_ID, 'success' => ! $timedOut && $process->isSuccessful(),
+                        'timed_out' => $timedOut, 'exit_code' => $process->getExitCode(),
+                        'error' => $timedOut ? 'timeout' : ($process->isSuccessful() ? null : 'process_exit_'.$process->getExitCode()),
+                        'stdin_base64' => base64_encode($processInput), 'stdout_base64' => base64_encode($process->getOutput()),
+                        'stderr_base64' => base64_encode($process->getErrorOutput()),
+                        'last_message_available' => $lastMessage !== false,
+                        'last_message_base64' => base64_encode($lastMessage === false ? '' : $lastMessage),
+                    ]);
+                }
+            } finally {
+                try {
+                    if ($slotId !== null) {
+                        $this->releaseExecutionSlot($slotId, $resolved);
+                    }
+                } finally {
+                    if ($outputPath !== null && is_file($outputPath)) {
+                        @unlink($outputPath);
+                    }
+                }
             }
         }
+    }
+
+    private function availableResponse(?Process $process, ?string $outputPath): ?string
+    {
+        $response = $outputPath !== null && is_file($outputPath) ? file_get_contents($outputPath)
+            : ($process !== null && $process->isStarted() ? $process->getOutput() : null);
+
+        return is_string($response) && mb_check_encoding($response, 'UTF-8') ? $response : null;
     }
 
     /**
@@ -178,9 +332,10 @@ class CodexExecConnectorService
         $role = $this->stringValue($config['model_role'] ?? null, 'standard');
         $models = $this->stringMap($providerConfig['models'] ?? []);
         $supportedModels = $this->stringList($row->supported_models ?? []);
+        $explicitModel = $this->stringValue($config['model_override'] ?? null)
+            ?? $this->stringValue($config['codex_model'] ?? null);
         $defaultModel = $this->stringValue($providerConfig['default_model'] ?? null);
-        $model = $this->stringValue($config['model_override'] ?? null)
-            ?? $this->stringValue($config['codex_model'] ?? null)
+        $model = $explicitModel
             ?? ($models[$role] ?? null)
             ?? ($models['standard'] ?? null)
             ?? $defaultModel
@@ -190,7 +345,9 @@ class CodexExecConnectorService
             throw new RuntimeException('No Codex model configured for requested role.');
         }
 
-        if ($supportedModels !== [] && ! in_array($model, $supportedModels, true)) {
+        $allowLiveExtraModel = $explicitModel !== null
+            && (bool) ($providerConfig['allow_live_extra_models'] ?? false);
+        if ($supportedModels !== [] && ! in_array($model, $supportedModels, true) && ! $allowLiveExtraModel) {
             throw new InvalidArgumentException("Codex model '{$model}' is not in llm_instances.supported_models.");
         }
 
@@ -239,14 +396,26 @@ class CodexExecConnectorService
             throw new InvalidArgumentException("Codex timeout must be between {$timeoutMin} and {$timeoutMax} seconds.");
         }
 
+        $instructions = $config['system_prompt'] ?? $config['system'] ?? '';
+        if (! is_string($instructions) || ! mb_check_encoding($instructions, 'UTF-8')) {
+            throw new InvalidArgumentException('Codex caller instructions must be a UTF-8 string.');
+        }
+        $nativeTurn = self::$manualCompactionOnly || $instructions !== '';
+        $processTimeout = $timeout + ($nativeTurn ? 4 : 0);
         $maxPromptBytes = $this->requiredPositiveInt($providerConfig['max_prompt_bytes'] ?? null, 'max_prompt_bytes');
-        if (strlen($this->stringValue($config['prompt_preview'] ?? null, '') ?? '') > $maxPromptBytes) {
+        if (strlen((string) ($config['prompt_preview'] ?? '')) + strlen($instructions) > $maxPromptBytes) {
             throw new InvalidArgumentException('Codex prompt exceeds configured max_prompt_bytes.');
         }
 
         $cwd = $this->resolveCwd($providerConfig, $config);
         $schema = $this->resolveOutputSchema($providerConfig, $config);
-        $slotPolicy = $this->resolveSlotPolicy($providerConfig, $timeout);
+        $slotPolicy = $this->resolveSlotPolicy($providerConfig, $processTimeout);
+        $nativeExecutable = $this->stringValue($providerConfig['native_executable'] ?? null)
+            ?? $this->stringValue($providerConfig['executable'] ?? null, 'codex');
+        // Explicit ./ paths are application-relative, independent of workflow cwd.
+        if (str_starts_with($nativeExecutable, './')) {
+            $nativeExecutable = base_path(substr($nativeExecutable, 2));
+        }
 
         return [
             'executable' => $this->stringValue($providerConfig['executable'] ?? null, 'codex'),
@@ -257,7 +426,13 @@ class CodexExecConnectorService
             'sandbox' => $sandbox,
             'approval_policy' => $approvalPolicy,
             'timeout_seconds' => $timeout,
+            'process_timeout_seconds' => $processTimeout,
+            'native_turn' => $nativeTurn,
+            'caller_instructions' => $instructions,
+            'native_executable' => $nativeExecutable,
+            'node_executable' => $this->stringValue($runtimePolicy['node_executable'] ?? null, 'node'),
             'cwd' => $cwd,
+            'strict_config' => (bool) ($providerConfig['strict_config'] ?? false),
             'ephemeral' => (bool) ($providerConfig['ephemeral'] ?? true),
             'json_events' => (bool) ($providerConfig['json_events'] ?? true),
             'skip_git_repo_check' => (bool) ($providerConfig['skip_git_repo_check'] ?? false),
@@ -368,12 +543,20 @@ class CodexExecConnectorService
      */
     public function buildCommand(array $resolved, string $outputPath): array
     {
+        if (! empty($resolved['native_turn'])) {
+            return [(string) $resolved['node_executable'], base_path('scripts/plos-cli/native-turn-worker.mjs')];
+        }
         $command = [
             (string) $resolved['executable'],
             'exec',
-            '-C',
-            (string) $resolved['cwd'],
         ];
+
+        if (! empty($resolved['strict_config'])) {
+            $command[] = '--strict-config';
+        }
+
+        $command[] = '-C';
+        $command[] = (string) $resolved['cwd'];
 
         if (! empty($resolved['skip_git_repo_check'])) {
             $command[] = '--skip-git-repo-check';
@@ -480,12 +663,41 @@ class CodexExecConnectorService
             return null;
         }
 
+        $policy = $this->decodeAssoc($providerConfig['structured_output'] ?? null);
+        if (! ($policy['enabled'] ?? false)) {
+            throw new InvalidArgumentException('Codex structured output is disabled by provider policy.');
+        }
+        if (! ($policy['local_validation'] ?? false) || ! ($policy['fail_closed'] ?? false)) {
+            throw new InvalidArgumentException('Codex structured output requires fail-closed local validation.');
+        }
+
         $real = realpath($schema);
         if ($real === false || ! is_file($real)) {
             throw new InvalidArgumentException('Codex output schema does not exist.');
         }
 
-        $roots = (array) data_get($providerConfig, 'structured_output.schema_file_roots', []);
+        $maxSchemaBytes = $this->requiredPositiveInt($policy['max_schema_bytes'] ?? null, 'structured_output.max_schema_bytes');
+        $schemaBytes = filesize($real);
+        if ($schemaBytes === false || $schemaBytes > $maxSchemaBytes) {
+            throw new InvalidArgumentException("Codex output schema exceeds configured {$maxSchemaBytes}-byte limit.");
+        }
+
+        $schemaJson = file_get_contents($real);
+        if ($schemaJson === false) {
+            throw new InvalidArgumentException('Codex output schema could not be read.');
+        }
+
+        try {
+            $decodedSchema = json_decode($schemaJson, false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new InvalidArgumentException('Codex output schema is not valid JSON.');
+        }
+
+        if (! is_object($decodedSchema) && ! is_bool($decodedSchema)) {
+            throw new InvalidArgumentException('Codex output schema must be a JSON object or boolean schema.');
+        }
+
+        $roots = (array) ($policy['schema_file_roots'] ?? []);
         foreach ($roots as $root) {
             if (! is_string($root) || trim($root) === '') {
                 continue;
@@ -498,6 +710,77 @@ class CodexExecConnectorService
         }
 
         throw new InvalidArgumentException('Codex output schema is outside configured schema roots.');
+    }
+
+    /**
+     * @return array{valid:bool,error_type:?string,error:?string,diagnostics:array<string, mixed>}
+     */
+    public function validateStructuredResponse(string $response, string $schemaPath): array
+    {
+        $diagnostics = [
+            'requested' => true,
+            'validator' => 'opis/json-schema',
+            'validation' => 'failed',
+        ];
+
+        try {
+            $data = json_decode($response, false, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            $diagnostics['failure'] = 'invalid_json';
+
+            return [
+                'valid' => false,
+                'error_type' => 'structured_output_invalid_json',
+                'error' => 'Codex final structured response is not valid JSON.',
+                'diagnostics' => $diagnostics,
+            ];
+        }
+
+        $schemaJson = file_get_contents($schemaPath);
+        if ($schemaJson === false) {
+            $diagnostics['failure'] = 'schema_unreadable';
+
+            return [
+                'valid' => false,
+                'error_type' => 'structured_output_schema_invalid',
+                'error' => 'Codex output schema could not be read for local validation.',
+                'diagnostics' => $diagnostics,
+            ];
+        }
+
+        try {
+            $schema = json_decode($schemaJson, false, 512, JSON_THROW_ON_ERROR);
+            $result = (new CompliantValidator)->validate($data, $schema);
+        } catch (JsonException|SchemaException) {
+            $diagnostics['failure'] = 'schema_invalid';
+
+            return [
+                'valid' => false,
+                'error_type' => 'structured_output_schema_invalid',
+                'error' => 'Codex output schema is invalid for local validation.',
+                'diagnostics' => $diagnostics,
+            ];
+        }
+
+        if (! $result->isValid()) {
+            $diagnostics['failure'] = 'schema_mismatch';
+
+            return [
+                'valid' => false,
+                'error_type' => 'structured_output_schema_mismatch',
+                'error' => 'Codex final response failed local JSON Schema validation.',
+                'diagnostics' => $diagnostics,
+            ];
+        }
+
+        $diagnostics['validation'] = 'passed';
+
+        return [
+            'valid' => true,
+            'error_type' => null,
+            'error' => null,
+            'diagnostics' => $diagnostics,
+        ];
     }
 
     /**
@@ -589,6 +872,122 @@ class CodexExecConnectorService
         }
 
         return 'execution_failed';
+    }
+
+    /**
+     * Summarize Codex CLI output without retaining raw prompt, repository, or model text.
+     *
+     * @return array<string,mixed>
+     */
+    public function summarizeCodexCliOutput(string $stdout, string $stderr, string $response = ''): array
+    {
+        $combined = $stdout."\n".$stderr."\n".$response;
+        $events = $this->summarizeJsonEvents($stdout);
+
+        return [
+            'stdout_event_count' => $events['event_count'],
+            'agent_message_count' => $events['agent_message_count'],
+            'command_execution_count' => $events['command_execution_count'],
+            'trajectory_tool_calls' => $events['trajectory_tool_calls'],
+            'tool_sequence_truncated' => $events['tool_sequence_truncated'],
+            'turn_completed_count' => $events['turn_completed_count'],
+            'usage' => $events['usage'],
+            'stderr_nonempty' => trim($stderr) !== '',
+            'apply_patch_incompatible_payload_count' => substr_count($combined, 'tool apply_patch invoked with incompatible payload'),
+            'model_metadata_missing_warning' => str_contains($combined, 'Model metadata for'),
+            'path_alias_warning' => str_contains($combined, 'could not create PATH aliases'),
+            'skill_context_budget_warning' => str_contains($combined, 'Skill descriptions were shortened'),
+        ];
+    }
+
+    /**
+     * @return array{event_count:int,agent_message_count:int,command_execution_count:int,trajectory_tool_calls:list<array<string,mixed>>,tool_sequence_truncated:bool,turn_completed_count:int,usage:array<string,mixed>|null}
+     */
+    private function summarizeJsonEvents(string $stdout): array
+    {
+        $summary = [
+            'event_count' => 0,
+            'agent_message_count' => 0,
+            'command_execution_count' => 0,
+            'trajectory_tool_calls' => [],
+            'tool_sequence_truncated' => false,
+            'turn_completed_count' => 0,
+            'usage' => null,
+        ];
+
+        foreach (preg_split('/\R/', $stdout) ?: [] as $line) {
+            $line = trim((string) $line);
+            if ($line === '' || ! str_starts_with($line, '{')) {
+                continue;
+            }
+
+            $event = json_decode($line, true);
+            if (! is_array($event)) {
+                continue;
+            }
+
+            $summary['event_count']++;
+            $type = is_string($event['type'] ?? null) ? $event['type'] : null;
+
+            if ($type === 'turn.completed') {
+                $summary['turn_completed_count']++;
+                $usage = $event['usage'] ?? null;
+                $summary['usage'] = is_array($usage) ? $usage : null;
+            }
+
+            $item = $event['item'] ?? null;
+            if (! is_array($item)) {
+                continue;
+            }
+
+            if ($type !== 'item.completed') {
+                continue;
+            }
+
+            if (($item['type'] ?? null) === 'agent_message') {
+                $summary['agent_message_count']++;
+            }
+
+            if (($item['type'] ?? null) === 'command_execution') {
+                $summary['command_execution_count']++;
+                if (count($summary['trajectory_tool_calls']) < self::MAX_TRAJECTORY_TOOL_CALLS) {
+                    $summary['trajectory_tool_calls'][] = $this->trajectoryToolCall($item);
+                } else {
+                    $summary['tool_sequence_truncated'] = true;
+                }
+            }
+        }
+
+        return $summary;
+    }
+
+    /** @return array{tool:string,canonical_action:string,success:bool,action_fingerprint:?string,pair_fingerprint:string} */
+    private function trajectoryToolCall(array $item): array
+    {
+        $command = is_string($item['command'] ?? null) ? $item['command'] : '';
+        $output = is_string($item['aggregated_output'] ?? null) ? $item['aggregated_output'] : '';
+        $status = is_string($item['status'] ?? null) ? $item['status'] : 'unknown';
+        $exitCode = filter_var($item['exit_code'] ?? null, FILTER_VALIDATE_INT);
+
+        return [
+            'tool' => 'codex_command_execution',
+            'canonical_action' => $this->trajectoryDiagnostics->canonicalAction(
+                'command_execution',
+                ['command' => $command]
+            ),
+            'success' => $status === 'completed' && $exitCode === 0,
+            'action_fingerprint' => SensitiveTextTelemetry::content(
+                $command,
+                'codex_exec_trajectory_action',
+                'command'
+            )['private_text_fingerprint'],
+            'pair_fingerprint' => hash('sha256', implode("\0", [
+                $command,
+                $output,
+                $status,
+                $exitCode === false ? 'invalid' : (string) $exitCode,
+            ])),
+        ];
     }
 
     /**

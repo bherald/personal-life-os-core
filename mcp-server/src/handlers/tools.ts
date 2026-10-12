@@ -12,6 +12,26 @@ export class ToolHandlers {
     this.genealogy = new GenealogyService(db);
   }
 
+  async handleReviewLookup(args: { reference: string }) {
+    const result = await this.artisan.executeCommand('review:lookup', ['--', args.reference]);
+    if (result.exitCode !== 0) {
+      throw new Error('Review lookup failed');
+    }
+
+    let lookup: unknown;
+    try {
+      lookup = JSON.parse(result.stdout);
+      if (lookup !== null && (typeof lookup !== 'object' || Array.isArray(lookup))) {
+        throw new Error('Invalid lookup response');
+      }
+    } catch {
+      throw new Error('Review lookup failed');
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify(lookup) }],
+    };
+  }
+
   // Tool: workflow_list
   async handleWorkflowList(args: { active_only?: boolean }) {
     const workflows = await this.db.getWorkflows(args.active_only || false);

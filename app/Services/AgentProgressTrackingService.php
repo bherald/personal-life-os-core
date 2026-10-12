@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 
 /**
  * AG-12: Progress Tracking + Mid-Task Replanning — Magentic-One pattern (MS Research)
@@ -15,7 +14,10 @@ use Illuminate\Support\Facades\Log;
 class AgentProgressTrackingService
 {
     /** Minimum iterations before stall detection kicks in */
-    private const STALL_CHECK_AFTER = 5;
+    private const STALL_CHECK_AFTER = 3;
+
+    /** Empty history gets a longer grace window than repeated evidence. */
+    private const NO_CALL_STALL_CHECK_AFTER = 5;
 
     /** If no new tools used in N iterations, consider stalled */
     private const STALL_THRESHOLD = 3;
@@ -23,12 +25,12 @@ class AgentProgressTrackingService
     /**
      * Calculate progress metrics for current agent run.
      *
-     * @param string $agentId Agent ID
-     * @param int $iteration Current iteration
-     * @param int $maxIterations Max allowed iterations
-     * @param array $toolCalls All tool calls made so far
-     * @param array $phaseNames Phase names (if hybrid workflow)
-     * @param int $currentPhaseIdx Current phase index
+     * @param  string  $agentId  Agent ID
+     * @param  int  $iteration  Current iteration
+     * @param  int  $maxIterations  Max allowed iterations
+     * @param  array  $toolCalls  All tool calls made so far
+     * @param  array  $phaseNames  Phase names (if hybrid workflow)
+     * @param  int  $currentPhaseIdx  Current phase index
      * @return array Progress metrics
      */
     public function calculateProgress(
@@ -43,18 +45,18 @@ class AgentProgressTrackingService
             ? round(($iteration / $maxIterations) * 100, 1)
             : 0;
 
-        $phasePct = !empty($phaseNames)
+        $phasePct = ! empty($phaseNames)
             ? round((($currentPhaseIdx + 1) / count($phaseNames)) * 100, 1)
             : 100;
 
         // Weighted: 40% iteration progress + 60% phase progress (phases matter more)
-        $overallPct = !empty($phaseNames)
+        $overallPct = ! empty($phaseNames)
             ? round($iterationPct * 0.4 + $phasePct * 0.6, 1)
             : $iterationPct;
 
         $uniqueTools = count(array_unique(array_column($toolCalls, 'tool')));
         $successRate = count($toolCalls) > 0
-            ? round(count(array_filter($toolCalls, fn($c) => $c['success'] ?? false)) / count($toolCalls) * 100, 1)
+            ? round(count(array_filter($toolCalls, fn ($c) => $c['success'] ?? false)) / count($toolCalls) * 100, 1)
             : 0;
 
         return [
@@ -74,8 +76,8 @@ class AgentProgressTrackingService
     /**
      * Detect if the agent is stalled (not making progress).
      *
-     * @param int $iteration Current iteration
-     * @param array $toolCalls All tool calls
+     * @param  int  $iteration  Current iteration
+     * @param  array  $toolCalls  All tool calls
      * @return array Stall detection result with 'stalled' bool and 'reason'
      */
     public function detectStall(int $iteration, array $toolCalls): array
@@ -84,9 +86,13 @@ class AgentProgressTrackingService
             return ['stalled' => false, 'reason' => null];
         }
 
+        if ($toolCalls === [] && $iteration < self::NO_CALL_STALL_CHECK_AFTER) {
+            return ['stalled' => false, 'reason' => null];
+        }
+
         // Check if any new tools used in last N iterations
-        $recentCalls = array_filter($toolCalls, fn($c) => ($c['iteration'] ?? 0) > $iteration - self::STALL_THRESHOLD);
-        $allCalls = array_filter($toolCalls, fn($c) => ($c['iteration'] ?? 0) <= $iteration - self::STALL_THRESHOLD);
+        $recentCalls = array_filter($toolCalls, fn ($c) => ($c['iteration'] ?? 0) > $iteration - self::STALL_THRESHOLD);
+        $allCalls = array_filter($toolCalls, fn ($c) => ($c['iteration'] ?? 0) <= $iteration - self::STALL_THRESHOLD);
 
         $recentTools = array_unique(array_column($recentCalls, 'tool'));
         $priorTools = array_unique(array_column($allCalls, 'tool'));
@@ -96,26 +102,32 @@ class AgentProgressTrackingService
         if (empty($recentCalls)) {
             return [
                 'stalled' => true,
-                'reason' => "No tool calls in last {self::STALL_THRESHOLD} iterations",
+                'reason' => 'No tool calls in last '.self::STALL_THRESHOLD.' iterations',
             ];
         }
 
         // Check for repeated failures
-        $recentFailures = array_filter($recentCalls, fn($c) => !($c['success'] ?? false));
+        $recentFailures = array_filter($recentCalls, fn ($c) => ! ($c['success'] ?? false));
         if (count($recentFailures) >= self::STALL_THRESHOLD) {
             return [
                 'stalled' => true,
-                'reason' => 'Consecutive tool failures (' . count($recentFailures) . " in last " . self::STALL_THRESHOLD . " iterations)",
+                'reason' => 'Consecutive tool failures ('.count($recentFailures).' in last '.self::STALL_THRESHOLD.' iterations)',
             ];
         }
 
-        // Check for tool thrashing (same tool called 3+ times in a row)
-        if (count($recentCalls) >= 3) {
-            $lastThree = array_slice(array_column(array_values($recentCalls), 'tool'), -3);
-            if (count(array_unique($lastThree)) === 1) {
+        // Replan before the terminal detector fires, but only when the complete
+        // action-observation pair repeats. Reusing one tool with new parameters
+        // or new results is productive work, not thrashing.
+        $repeatPairThreshold = max(2, min(10, (int) config('agents.stuck_detection.repeat_pair_replan_threshold', 3)));
+        if (count($recentCalls) >= $repeatPairThreshold) {
+            $recentPairs = array_slice(array_values(array_filter(
+                array_column(array_values($recentCalls), 'pair_fingerprint'),
+                static fn (mixed $fingerprint): bool => is_string($fingerprint) && $fingerprint !== ''
+            )), -$repeatPairThreshold);
+            if (count($recentPairs) === $repeatPairThreshold && count(array_unique($recentPairs)) === 1) {
                 return [
                     'stalled' => true,
-                    'reason' => "Tool thrashing: '{$lastThree[0]}' called 3+ times consecutively",
+                    'reason' => "Identical action-observation pair repeated {$repeatPairThreshold} times",
                 ];
             }
         }
@@ -126,9 +138,9 @@ class AgentProgressTrackingService
     /**
      * Build a replanning prompt when stall is detected.
      *
-     * @param array $progress Current progress metrics
-     * @param array $stallInfo Stall detection result
-     * @param array $availableTools Tools the agent can use
+     * @param  array  $progress  Current progress metrics
+     * @param  array  $stallInfo  Stall detection result
+     * @param  array  $availableTools  Tools the agent can use
      * @return string Replanning instruction
      */
     public function buildReplanPrompt(array $progress, array $stallInfo, array $availableTools): string
@@ -137,19 +149,19 @@ class AgentProgressTrackingService
         $totalTools = count($availableTools);
         $unusedTools = array_diff(array_keys($availableTools), []);
 
-        return "PROGRESS CHECK: You are at {$progress['overall_pct']}% completion " .
-            "(iteration {$progress['iteration']}/{$progress['max_iterations']}). " .
-            "STALL DETECTED: {$stallInfo['reason']}. " .
-            "You have used {$usedTools}/{$totalTools} available tools. " .
-            "REPLAN: Consider a different approach. Try an unused tool or change your parameters. " .
-            "Available tools: " . implode(', ', array_keys($availableTools));
+        return "PROGRESS CHECK: You are at {$progress['overall_pct']}% completion ".
+            "(iteration {$progress['iteration']}/{$progress['max_iterations']}). ".
+            "STALL DETECTED: {$stallInfo['reason']}. ".
+            "You have used {$usedTools}/{$totalTools} available tools. ".
+            'REPLAN: Consider a different approach. Try an unused tool or change your parameters. '.
+            'Available tools: '.implode(', ', array_keys($availableTools));
     }
 
     /**
      * Save checkpoint for potential resume.
      *
-     * @param string $sessionId Agent session ID
-     * @param array $state Checkpoint state
+     * @param  string  $sessionId  Agent session ID
+     * @param  array  $state  Checkpoint state
      */
     public function saveCheckpoint(string $sessionId, array $state): void
     {
@@ -163,7 +175,7 @@ class AgentProgressTrackingService
     /**
      * Load checkpoint if available.
      *
-     * @param string $sessionId Agent session ID
+     * @param  string  $sessionId  Agent session ID
      * @return array|null Checkpoint state or null
      */
     public function loadCheckpoint(string $sessionId): ?array

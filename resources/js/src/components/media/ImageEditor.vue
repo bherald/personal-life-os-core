@@ -169,7 +169,13 @@
                 <div>v{{ v.version_number }}</div>
                 <div class="text-gray-500">{{ v.change_description }}</div>
               </div>
-              <button @click="restoreVersion(v.id)" class="text-blue-400 hover:text-blue-300 text-xs">Restore</button>
+              <button
+                @click="restoreVersion(v.id)"
+                :disabled="restoringVersionId !== null"
+                class="text-blue-400 hover:text-blue-300 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {{ restoringVersionId === v.id ? 'Restoring...' : 'Restore' }}
+              </button>
             </div>
           </div>
         </div>
@@ -216,11 +222,12 @@ const saving = ref(false)
 
 // Version history
 const versions = ref(null)
+const restoringVersionId = ref(null)
 
 // Initial preview load
 onMounted(() => {
   loadPreview()
-  document.addEventListener('keydown', onKeydown)
+  document.removeEventListener('keydown', onKeydown)
 })
 
 onUnmounted(() => {
@@ -347,7 +354,9 @@ async function loadVersions() {
 }
 
 async function restoreVersion(versionId) {
+  if (restoringVersionId.value !== null) return
   if (!confirm('Restore this version? Current state will be saved as a new version first.')) return
+  restoringVersionId.value = versionId
   try {
     const response = await fetch(`/api/media/${props.uuid}/versions/${versionId}/restore`, {
       method: 'POST',
@@ -356,13 +365,15 @@ async function restoreVersion(versionId) {
     const data = await response.json()
     if (data.success) {
       operations.value = []
-      loadPreview()
-      loadVersions()
+      await Promise.all([loadPreview(), loadVersions()])
+      emit('saved')
     } else {
       alert('Restore failed: ' + (data.error || 'Unknown error'))
     }
   } catch (e) {
     alert('Restore failed: ' + e.message)
+  } finally {
+    restoringVersionId.value = null
   }
 }
 

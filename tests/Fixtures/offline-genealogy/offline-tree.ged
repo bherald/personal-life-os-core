@@ -1,0 +1,43 @@
+0 HEAD
+1 GEDC
+2 VERS 5.5.1
+1 CHAR UTF-8
+1 FILE offline-tree.ged
+0 @I101@ INDI
+1 NAME Alex /Rowan/
+1 SEX M
+1 BIRT
+2 DATE 26 AUG 1950
+2 PLAC Example City
+1 FAMS @F101@
+0 @I102@ INDI
+1 NAME Morgan /Rowan/
+1 SEX M
+1 BIRT
+2 DATE 14 JUL 1980
+2 PLAC Example Town
+1 DEAT
+2 DATE 23 MAR 2020
+2 PLAC Example District
+1 FAMC @F101@
+1 SOUR @S101@
+0 @I103@ INDI
+1 NAME Private /Rowan/
+1 BIRT
+2 DATE 1 JAN 2000
+1 FAMC @F101@
+0 @F101@ FAM
+1 HUSB @I101@
+1 CHIL @I102@
+1 CHIL @I103@
+1 MARR
+2 DATE 1 JAN 1978
+2 PLAC Example County
+0 @S101@ SOUR
+1 TITL Rowan family register
+1 AUTH Example Archive
+0 @M101@ OBJE
+1 FILE C:\Private\Rowan portrait.jpg
+1 TITL Rowan portrait
+1 FORM jpg
+0 TRLR

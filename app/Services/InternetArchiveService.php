@@ -232,7 +232,7 @@ class InternetArchiveService
     /**
      * Get metadata for a specific item.
      *
-     * @param  string  $identifier  Item identifier (e.g., 'heraldgenealogy00smith')
+     * @param  string  $identifier  Item identifier (e.g., 'samplehistory00author')
      * @return array Item metadata
      */
     public function getMetadata(string $identifier): array
@@ -500,7 +500,7 @@ class InternetArchiveService
             );
             $nextcloudPath = $treeRoot.'/'.$this->normalizeTreeSubfolder($subfolder).'/'.$filename;
 
-            $nextcloudApi = app(\App\Services\NextcloudFileApiService::class);
+            $nextcloudApi = app(NextcloudFileApiService::class);
             $nextcloudApi->ensureDirectoryExists(dirname($nextcloudPath));
 
             $content = file_get_contents($fullPath);

@@ -2,10 +2,24 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Services\Compute\ComputeExecutionCustodyService;
+use App\Services\Compute\ComputeTerminalProcessResult;
+use App\Services\Ops\JetsonTegrastatsParserService;
+use Carbon\CarbonInterface;
+use Illuminate\Cache\ArrayLock;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\DatabaseLock;
+use Illuminate\Cache\DatabaseStore;
+use Illuminate\Cache\Lock;
+use Illuminate\Cache\RedisLock;
+use Illuminate\Contracts\Process\ProcessResult;
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Str;
 
 /**
  * N106 — Dynamic Compute Routing Service
@@ -19,15 +33,98 @@ use Illuminate\Support\Facades\Process;
  * acquires locks, executes (local shell_exec or remote SSH), records metrics.
  *
  * Circuit breaker: same open/half_open/closed state machine as LLMPoolManagerService.
- * GPU locks: per-instance via `compute_gpu_lock:{id}`. Transition compatibility
+ * Owned GPU locks use `compute_gpu_lock:{id}[:slot]:owned`; legacy PID markers stay holds.
+ * Transition compatibility
  * on the primary local GPU role checks legacy whisper_gpu_lock and
  * ollama_busy_lock before granting.
  */
 class ComputeRouterService
 {
+    /** Legacy public API owns at most one handle per instance; execution handles are invocation-local. */
+    private array $publicGpuLocks = [];
+
+    private static ?string $requiredInstance = null;
+
+    private static bool $workflowScopeActive = false;
+
+    private static ?\Closure $workflowOutputObserver = null;
+
+    /** Scope an operator selection to one synchronous workflow, retaining table admission. */
+    public static function withRequiredInstance(string $selection, \Closure $operation, ?\Closure $outputObserver = null): mixed
+    {
+        if ($selection === '' || trim($selection) !== $selection || strlen($selection) > 191
+            || preg_match('/[\x00-\x1f\x7f]/', $selection)) {
+            throw new \InvalidArgumentException('Choose auto or an exact registered compute instance.');
+        }
+        $previous = self::$requiredInstance;
+        $previousScope = self::$workflowScopeActive;
+        $previousObserver = self::$workflowOutputObserver;
+        self::$requiredInstance = $selection === 'auto' ? null : $selection;
+        self::$workflowScopeActive = true;
+        self::$workflowOutputObserver = $outputObserver ?? $previousObserver;
+        try {
+            return $operation();
+        } finally {
+            self::$requiredInstance = $previous;
+            self::$workflowScopeActive = $previousScope;
+            self::$workflowOutputObserver = $previousObserver;
+        }
+    }
+
+    /** Manual selection reads the current target row rather than the shared inventory cache. */
+    private function routingInstances(): array
+    {
+        if (self::$requiredInstance === null) {
+            return array_map($this->executionInstance(...), $this->getInstances(false));
+        }
+        $instance = $this->getInstance(self::$requiredInstance);
+
+        return $instance !== null && (bool) $instance->is_active ? [$this->executionInstance($instance)] : [];
+    }
+
+    /** Production's synced local flag is relative to production, not a dev workflow worker. */
+    private function executionInstance(object $instance): object
+    {
+        if (! self::$workflowScopeActive || empty($instance->is_local)) {
+            return $instance;
+        }
+        $localHosts = ['localhost', gethostname()];
+        foreach (net_get_interfaces() ?: [] as $interface) {
+            foreach ($interface['unicast'] ?? [] as $address) {
+                if (isset($address['address'])) {
+                    $localHosts[] = $address['address'];
+                }
+            }
+        }
+        if (in_array($instance->host ?? null, $localHosts, true)) {
+            return $instance;
+        }
+        $resolved = clone $instance;
+        $resolved->is_local = false;
+
+        return $resolved;
+    }
+
+    private const SHARED_RESOURCE_ADMISSION_HOLD = 'shared_resource_admission_unqualified';
+
+    /** A group string cannot establish atomic cross-surface physical resource custody. */
+    private function sharedResourceAdmissionReason(object $instance): ?string
+    {
+        return ! empty($instance->shares_gpu_with_llm) ? self::SHARED_RESOURCE_ADMISSION_HOLD : null;
+    }
+
     private const CACHE_KEY_ALL = 'compute_instances_all';
 
     private const CACHE_KEY_HEALTHY = 'compute_instances_healthy';
+
+    private readonly ComputeExecutionCustodyService $executionCustody;
+
+    private array $ownedLockSlots = [];
+
+    public function __construct(private readonly ComputeRouterRuntimePolicyService $runtimePolicy, ?ComputeExecutionCustodyService $executionCustody = null)
+    {
+        $this->executionCustody = $executionCustody ?? app(ComputeExecutionCustodyService::class);
+    }
 
     /**
      * Get all active compute instances, optionally filtered to healthy only.
@@ -37,7 +134,7 @@ class ComputeRouterService
     public function getInstances(bool $onlyHealthy = false): array
     {
         $cacheKey = $onlyHealthy ? self::CACHE_KEY_HEALTHY : self::CACHE_KEY_ALL;
-        $ttl = config('compute.cache_ttl', 300);
+        $ttl = $this->runtimePolicy->cacheTtlSeconds();
 
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
@@ -67,8 +164,8 @@ class ComputeRouterService
     /**
      * Route to the best available instance for a given capability.
      *
-     * Filters by capability, circuit state, VRAM requirements.
-     * Scores by weighted formula: priority 40%, health 30%, speed 30%.
+     * Filters by capability, fresh health, circuit state, and VRAM requirements.
+     * Scores priority, health, observed speed, and available slot headroom.
      *
      * @param  string  $capability  e.g. 'htr', 'nlp', 'face_detection'
      * @param  array  $requirements  Optional: ['min_vram_mb' => 4096]
@@ -76,7 +173,7 @@ class ComputeRouterService
      */
     public function route(string $capability, array $requirements = []): ?object
     {
-        $instances = $this->getInstances(false);
+        $instances = $this->routingInstances();
         $candidates = [];
 
         foreach ($instances as $instance) {
@@ -86,8 +183,16 @@ class ComputeRouterService
                 continue;
             }
 
+            if (! (bool) $instance->is_healthy || ! $this->isHealthFresh($instance)) {
+                continue;
+            }
+
             // Check circuit state
             if (! $this->isCircuitClosed($instance)) {
+                continue;
+            }
+
+            if ($this->sharedResourceAdmissionReason($instance) !== null) {
                 continue;
             }
 
@@ -117,6 +222,117 @@ class ComputeRouterService
     }
 
     /**
+     * Return bounded routing evidence for one exact compute capability.
+     *
+     * @return array{capability:string,state:string,registered:int,healthy:int,fresh:int,circuit_closed:int,available:int,busy:int,admission_held:int,reason_code:?string}
+     */
+    public function getCapabilityStatus(string $capability): array
+    {
+        $capability = trim($capability);
+        $summary = [
+            'capability' => $capability,
+            'state' => 'unregistered',
+            'registered' => 0,
+            'healthy' => 0,
+            'fresh' => 0,
+            'circuit_closed' => 0,
+            'available' => 0,
+            'busy' => 0,
+            'admission_held' => 0,
+            'reason_code' => null,
+        ];
+
+        if ($capability === '') {
+            return $summary;
+        }
+
+        foreach ($this->routingInstances() as $instance) {
+            $capabilities = json_decode($instance->capabilities ?? '[]', true) ?: [];
+            if (! in_array($capability, $capabilities, true)) {
+                continue;
+            }
+
+            $summary['registered']++;
+            if (! (bool) $instance->is_healthy) {
+                continue;
+            }
+
+            $summary['healthy']++;
+            if (! $this->isHealthFresh($instance)) {
+                continue;
+            }
+
+            $summary['fresh']++;
+            if (($reason = $this->sharedResourceAdmissionReason($instance)) !== null) {
+                $summary['admission_held']++;
+                $summary['reason_code'] = $reason;
+
+                continue;
+            }
+            if ($instance->circuit_state !== 'closed') {
+                continue;
+            }
+
+            $summary['circuit_closed']++;
+            if ($this->isInstanceBusy($instance)) {
+                $summary['busy']++;
+
+                continue;
+            }
+
+            $summary['available']++;
+        }
+
+        $summary['state'] = match (true) {
+            $summary['available'] > 0 => 'available',
+            $summary['registered'] === 0 => 'unregistered',
+            $summary['healthy'] === 0 => 'unhealthy',
+            $summary['fresh'] === 0 => 'health_stale',
+            $summary['admission_held'] > 0 => self::SHARED_RESOURCE_ADMISSION_HOLD,
+            $summary['circuit_closed'] === 0 => 'circuit_open',
+            $summary['busy'] > 0 => 'capacity_busy',
+            default => 'unavailable',
+        };
+
+        return $summary;
+    }
+
+    /**
+     * Recheck only stale, unhealthy, or open-circuit workers for a capability.
+     *
+     * @return array{capability:string,state:string,registered:int,healthy:int,fresh:int,circuit_closed:int,available:int,busy:int,recovery_attempted:int,recovered:bool}
+     */
+    public function recoverCapability(string $capability): array
+    {
+        $before = $this->getCapabilityStatus($capability);
+        $attempted = 0;
+
+        if ($before['state'] !== 'available' && $before['registered'] > 0) {
+            foreach ($this->routingInstances() as $instance) {
+                $capabilities = json_decode($instance->capabilities ?? '[]', true) ?: [];
+                if (! in_array($capability, $capabilities, true)) {
+                    continue;
+                }
+
+                if ((bool) $instance->is_healthy
+                    && $this->isHealthFresh($instance)
+                    && $instance->circuit_state === 'closed') {
+                    continue;
+                }
+
+                $this->healthCheckInstance($instance);
+                $attempted++;
+            }
+        }
+
+        $after = $this->getCapabilityStatus($capability);
+        $after['recovery_attempted'] = $attempted;
+        $after['recovered'] = $before['state'] !== 'available' && $after['state'] === 'available';
+
+        return $after;
+    }
+
+    /**
      * Route + execute a Python script on the best available instance.
      *
      * @param  string  $capability  Capability to route for
@@ -130,19 +346,26 @@ class ComputeRouterService
     {
         $instance = $this->route($capability, $requirements);
         if (! $instance) {
+            $status = $this->getCapabilityStatus($capability);
+            if (($status['reason_code'] ?? null) === self::SHARED_RESOURCE_ADMISSION_HOLD) {
+                throw new InferenceAdmissionException(self::SHARED_RESOURCE_ADMISSION_HOLD, 0, null, ['dispatched' => false]);
+            }
+
             return [
                 'success' => false,
                 'output' => null,
                 'instance_id' => null,
                 'duration_ms' => 0,
-                'error' => "No available compute instance for capability: {$capability}",
+                'error' => self::$requiredInstance === null
+                    ? "No available compute instance for capability: {$capability}"
+                    : 'Selected compute instance '.self::$requiredInstance." is unavailable for {$capability}; no alternate host was selected.",
             ];
         }
 
         $scriptPath = $this->resolveScriptPath($instance, $scriptName);
-        $cmd = $this->buildScriptCommand($instance, $scriptPath, $args, $timeout);
+        $cmd = $this->buildScriptCommand($instance, $scriptPath, $timeout);
 
-        return $this->execute($instance, $cmd, $timeout);
+        return $this->executeWithInput($instance, $cmd, $args, $timeout);
     }
 
     /**
@@ -153,10 +376,30 @@ class ComputeRouterService
      */
     public function execute(object $instance, string $command, ?int $timeout = null): array
     {
+        return $this->executeWithInput($instance, $command, '', $timeout);
+    }
+
+    /**
+     * Execute a command while streaming sensitive payloads over stdin.
+     *
+     * @return array ['success'=>bool, 'output'=>string|null, 'instance_id'=>string, 'duration_ms'=>int, 'error'=>string|null]
+     */
+    private function executeWithInput(object $instance, string $command, string $input = '', ?int $timeout = null): array
+    {
+        $instance = $this->executionInstance($instance);
         $instanceId = $instance->instance_id;
+        if (self::$requiredInstance !== null && $instanceId !== self::$requiredInstance) {
+            return ['success' => false, 'output' => null, 'instance_id' => $instanceId, 'duration_ms' => 0,
+                'error' => 'Compute command targets a different host from the operator selection; execution was refused.'];
+        }
+
+        if (($reason = $this->sharedResourceAdmissionReason($instance)) !== null) {
+            throw new InferenceAdmissionException($reason, 0, null, ['dispatched' => false]);
+        }
 
         // Acquire lock
-        if (! $this->acquireGpuLock($instance)) {
+        $gpuLock = $this->acquireOwnedGpuLock($instance);
+        if ($gpuLock === null) {
             return [
                 'success' => false,
                 'output' => null,
@@ -167,45 +410,72 @@ class ComputeRouterService
         }
 
         $startMs = microtime(true) * 1000;
+        $result = null;
+        $failureCode = null;
+        $custody = null;
+        $dispatched = false;
+        $terminal = false;
 
         try {
-            if ($instance->is_local) {
-                $procTimeout = $timeout ?? config('compute.ssh_timeout', 30);
-                $result = Process::timeout($procTimeout)->run(['bash', '-lc', $command.' 2>/dev/null']);
-                if ($result->failed()) {
-                    $durationMs = (int) (microtime(true) * 1000 - $startMs);
-                    $errorMsg = mb_substr($result->errorOutput() ?: $result->output(), 0, 500);
-                    Log::warning('ComputeRouterService: local command failed', [
-                        'instance' => $instanceId,
-                        'exitCode' => $result->exitCode(),
-                        'error' => $errorMsg,
-                    ]);
-                    $this->recordFailure($instanceId, "Exit code {$result->exitCode()}: {$errorMsg}");
-
-                    return [
-                        'success' => false,
-                        'output' => null,
-                        'instance_id' => $instanceId,
-                        'duration_ms' => $durationMs,
-                        'error' => "Command failed (exit {$result->exitCode()}): {$errorMsg}",
-                    ];
-                }
-                $output = $result->output();
-            } else {
-                $output = $this->executeRemote($instance, $command, $timeout);
+            $procTimeout = $timeout ?? $this->runtimePolicy->executionTimeoutSeconds();
+            $captureLimits = $this->runtimePolicy->captureLimits(strlen($input), self::$workflowOutputObserver !== null);
+            $ownerToken = (string) Str::uuid();
+            $supervisedCommand = $this->supervisedCommand($instance, $command, $ownerToken, $procTimeout, $captureLimits['raw_bytes']);
+            $custody = $this->executionCustody->acquire($instanceId, $this->ownedLockSlots[spl_object_id($gpuLock)],
+                $ownerToken, $gpuLock->owner(), $this->runtimePolicy->custodyTimeoutSeconds($procTimeout));
+            if ($custody === null) {
+                throw new InferenceAdmissionException('Compute persisted slot custody is unavailable; dispatch held.');
             }
+            $this->executionCustody->dispatching($custody);
+            if (app()->isDownForMaintenance()) {
+                try {
+                    $this->executionCustody->noDispatch($custody);
+                } catch (\Throwable $error) {
+                    throw new InferenceAdmissionException('Compute no-dispatch terminal publication is unproven; hold retained.', 0, $error);
+                }
+                $terminal = true;
+                $failureCode = 'compute_maintenance_no_dispatch';
+                throw new InferenceAdmissionException('Compute entered maintenance before runner dispatch; no command started.');
+            }
+            // Persist dispatch intent before run: process startup itself may fork before throwing.
+            $dispatched = true;
+            $transportArguments = $instance->is_local ? $supervisedCommand
+                : $this->buildSshArguments($instance, implode(' ', array_map(escapeshellarg(...), $supervisedCommand)));
+            $result = $this->runBoundedTransport($transportArguments, $input, $procTimeout, $captureLimits, $result);
+            [$result, $receipt] = $this->terminalResult($result, $ownerToken, $command, $captureLimits);
+            $this->executionCustody->terminal($custody, $receipt);
+            $terminal = true;
+            if (! $receipt['dispatched']) {
+                $failureCode = 'compute_supervisor_unavailable';
+
+                return ['success' => false, 'output' => null, 'instance_id' => $instanceId,
+                    'duration_ms' => (int) (microtime(true) * 1000 - $startMs), 'error' => $failureCode];
+            }
+            if ($result->failed()) {
+                $durationMs = (int) (microtime(true) * 1000 - $startMs);
+                $failureCode = 'process_exit_'.max(0, (int) $result->exitCode());
+                $this->recordFailure($instanceId, $failureCode);
+                Log::warning('ComputeRouterService: command failed', [
+                    'instance' => $instanceId, 'exitCode' => $result->exitCode(), 'duration_ms' => $durationMs,
+                ]);
+
+                return ['success' => false, 'output' => null, 'instance_id' => $instanceId,
+                    'duration_ms' => $durationMs, 'error' => $failureCode];
+            }
+            $output = $result->output();
 
             $durationMs = (int) (microtime(true) * 1000 - $startMs);
 
             if ($output === null || $output === false || $output === '') {
-                $this->recordFailure($instanceId, 'Empty output from command');
+                $failureCode = 'empty_output';
+                $this->recordFailure($instanceId, $failureCode);
 
                 return [
                     'success' => false,
                     'output' => null,
                     'instance_id' => $instanceId,
                     'duration_ms' => $durationMs,
-                    'error' => 'Command returned empty output',
+                    'error' => 'empty_output',
                 ];
             }
 
@@ -218,80 +488,234 @@ class ComputeRouterService
                 'duration_ms' => $durationMs,
                 'error' => null,
             ];
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            if ($dispatched) {
+                $failureCode = $terminal ? 'compute_accounting_unknown' : 'compute_terminal_unknown';
+                $terminal = false;
+                if ($custody !== null) {
+                    try {
+                        $this->executionCustody->unknown($custody, 'terminal_unproven');
+                    } catch (\Throwable) {
+                        // The unreleased exact row survives; expiry still cannot release it.
+                    }
+                }
+                throw new InferenceAdmissionException('Compute execution state UNKNOWN; persisted hold retained and execution must not be replayed.', 0, $e);
+            }
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+            if ($e instanceof ProcessTimedOutException) {
+                $result = $e->result;
+            }
             $durationMs = (int) (microtime(true) * 1000 - $startMs);
-            $this->recordFailure($instanceId, $e->getMessage());
+            $failureCode = $e instanceof ProcessTimedOutException
+                ? 'process_timeout'
+                : 'execution_exception';
+            $this->recordFailure($instanceId, $failureCode);
+            Log::warning('ComputeRouterService: execution exception', [
+                'instance' => $instanceId,
+                'failure_code' => $failureCode,
+                'exception_class' => $e::class,
+                'duration_ms' => $durationMs,
+            ]);
 
             return [
                 'success' => false,
                 'output' => null,
                 'instance_id' => $instanceId,
                 'duration_ms' => $durationMs,
-                'error' => $e->getMessage(),
+                'error' => $failureCode,
             ];
         } finally {
-            $this->releaseGpuLock($instance);
+            try {
+                if (self::$workflowOutputObserver !== null) {
+                    (self::$workflowOutputObserver)([
+                        'instance_id' => $instanceId,
+                        'success' => $failureCode === null && $result !== null && $result->successful(),
+                        'exit_code' => $result?->exitCode(), 'error' => $failureCode,
+                        'stdin_base64' => base64_encode($input),
+                        'stdout_base64' => base64_encode($result?->output() ?? ''),
+                        'stderr_base64' => base64_encode($result?->errorOutput() ?? ''),
+                    ]);
+                }
+            } catch (\Throwable $observerError) {
+                if ($dispatched) {
+                    $terminal = false;
+                    try {
+                        $this->executionCustody->unknown($custody, 'observer_unproven');
+                    } catch (\Throwable) {
+                    }
+                    throw new InferenceAdmissionException('Compute output accounting failed; persisted hold retained and execution must not be replayed.', 0, $observerError);
+                }
+                throw $observerError;
+            } finally {
+                if (! $dispatched || $terminal) {
+                    $this->releaseOwnedGpuLock($gpuLock);
+                    if ($custody !== null && $terminal) {
+                        try {
+                            $this->executionCustody->release($custody, $failureCode === null);
+                        } catch (\Throwable $error) {
+                            try {
+                                $this->executionCustody->unknown($custody, 'release_unproven');
+                            } catch (\Throwable) {
+                            }
+                            throw new InferenceAdmissionException('Compute terminal custody release is unproven; hold retained.', 0, $error);
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    /** Child output is captured by the supervisor and cannot become an outer receipt. */
+    private function supervisedCommand(object $instance, string $command, string $ownerToken, int $timeout, int $rawLimit): array
+    {
+        $source = file_get_contents(config('compute.execution_supervisor'));
+        if (! is_string($source) || $source === '') {
+            throw new InferenceAdmissionException('Compute supervisor source is unavailable; dispatch held.');
+        }
+
+        $arguments = [$instance->python_path ?? 'python3', '-c', $source, '--owner-token', $ownerToken,
+            '--timeout', (string) $timeout, '--cleanup-grace', (string) $this->runtimePolicy->cleanupGraceSeconds(),
+            '--output-max-bytes', (string) $rawLimit, '--command', $command];
+        $scope = $this->runtimePolicy->executionScopeLimits($instance);
+        if ($scope !== null) {
+            array_push($arguments, '--scope-limits', json_encode($scope, JSON_THROW_ON_ERROR));
+        }
+
+        return $arguments;
+    }
+
+    /** Bare transport exit, partial output, or foreign receipts never prove physical completion. */
+    private function terminalResult(ProcessResult $transport, string $ownerToken, string $command, array $limits): array
+    {
+        if ($transport->exitCode() !== 0) {
+            throw new InferenceAdmissionException('Compute transport ended without proven terminal cleanup.');
+        }
+        if (strlen($transport->output()) + strlen($transport->errorOutput()) > $limits['transport_bytes']) {
+            throw new InferenceAdmissionException('Compute terminal envelope exceeds its capture bound; hold retained.');
+        }
+        // The helper emits sorted keys on every supported Python version. Check
+        // this fixed scalar/string wire shape before json_decode: bounded bytes
+        // alone do not bound PHP allocation for adversarial arrays or objects.
+        $base64Token = '"[A-Za-z0-9+/=\\x5c]*"';
+        $wireFields = [
+            '"cleanup_verified"\\s*:\\s*true',
+            '"command_sha256"\\s*:\\s*"'.hash('sha256', $command).'"',
+            '"dispatched"\\s*:\\s*(?:true|false)',
+            '"exit_code"\\s*:\\s*(?:0|[1-9][0-9]{0,2})',
+            '"owner_token"\\s*:\\s*'.preg_quote(json_encode($ownerToken, JSON_THROW_ON_ERROR), '~'),
+            '"schema"\\s*:\\s*"plos\\.compute_terminal\\.v1"',
+            '"stderr_base64"\\s*:\\s*'.$base64Token,
+            '"stdout_base64"\\s*:\\s*'.$base64Token,
+        ];
+        if (preg_match('~\\A\\s*\\{\\s*'.implode('\\s*,\\s*', $wireFields).'\\s*\\}\\s*\\z~D', $transport->output()) !== 1) {
+            throw new InferenceAdmissionException('Compute terminal wire shape is invalid; hold retained.');
+        }
+        $this->runtimePolicy->assertDecodeMemory($limits['raw_bytes']);
+        $receipt = json_decode($transport->output(), true, 512, JSON_THROW_ON_ERROR);
+        $fields = ['schema', 'owner_token', 'command_sha256', 'cleanup_verified', 'dispatched', 'exit_code', 'stdout_base64', 'stderr_base64'];
+        if (! is_array($receipt) || count($receipt) !== count($fields) || array_diff(array_keys($receipt), $fields) !== []
+            || ($receipt['schema'] ?? null) !== 'plos.compute_terminal.v1'
+            || ($receipt['owner_token'] ?? null) !== $ownerToken
+            || ($receipt['command_sha256'] ?? null) !== hash('sha256', $command)
+            || ($receipt['cleanup_verified'] ?? null) !== true || ! is_bool($receipt['dispatched'] ?? null)
+            || ! is_int($receipt['exit_code'] ?? null) || $receipt['exit_code'] < 0 || $receipt['exit_code'] > 255
+            || (! $receipt['dispatched'] && ($receipt['exit_code'] !== 125
+                || ($receipt['stdout_base64'] ?? null) !== '' || ($receipt['stderr_base64'] ?? null) !== ''))
+            || ! is_string($receipt['stdout_base64'] ?? null) || ! is_string($receipt['stderr_base64'] ?? null)) {
+            throw new InferenceAdmissionException('Compute terminal receipt is invalid; hold retained.');
+        }
+        $decodedBytes = 0;
+        foreach (['stdout_base64', 'stderr_base64'] as $field) {
+            $value = $receipt[$field];
+            $decodedBytes += (int) floor(strlen($value) / 4) * 3 - (strlen($value) - strlen(rtrim($value, '=')));
+        }
+        if ($decodedBytes < 0 || $decodedBytes > $limits['raw_bytes']) {
+            throw new InferenceAdmissionException('Compute terminal streams exceed their decoded capture bound; hold retained.');
+        }
+        $this->runtimePolicy->assertDecodeMemory($decodedBytes);
+        $stdout = base64_decode($receipt['stdout_base64'], true);
+        $stderr = base64_decode($receipt['stderr_base64'], true);
+        if ($stdout === false || $stderr === false || strlen($stdout) + strlen($stderr) > $limits['raw_bytes'] || base64_encode($stdout) !== $receipt['stdout_base64']
+            || base64_encode($stderr) !== $receipt['stderr_base64']) {
+            throw new InferenceAdmissionException('Compute terminal streams are invalid; hold retained.');
+        }
+
+        return [new ComputeTerminalProcessResult($transport, $receipt, $stdout, $stderr), $receipt];
     }
 
     /**
      * Execute a command on a remote instance via SSH.
      */
-    private function executeRemote(object $instance, string $command, ?int $timeout = null): ?string
+    private function executeRemote(object $instance, string $command, string $input = '', ?int $timeout = null): ProcessResult
     {
-        $sshTimeout = $timeout ?? config('compute.ssh_timeout', 30);
-        $sshUser = $instance->ssh_user ?? config('compute.ssh_user_default', 'plos');
-        $host = $instance->host;
+        $capture = null;
 
-        $sshArgs = [
-            'ssh',
-            '-o', 'ConnectTimeout=5',
-            '-o', 'StrictHostKeyChecking=no',
-            "{$sshUser}@{$host}",
-            $command,
-        ];
+        return $this->runBoundedTransport($this->buildSshArguments($instance, $command), $input,
+            $timeout ?? $this->runtimePolicy->executionTimeoutSeconds(), $this->runtimePolicy->captureLimits(), $capture);
+    }
 
-        try {
-            $result = Process::timeout($sshTimeout)->run($sshArgs);
-
-            if ($result->failed()) {
-                Log::warning('ComputeRouterService: SSH command failed', [
-                    'host' => $host,
-                    'exitCode' => $result->exitCode(),
-                    'error' => mb_substr($result->errorOutput(), 0, 300),
-                ]);
-
-                return null;
-            }
-
-            return $result->output();
-        } catch (\Exception $e) {
-            Log::warning('ComputeRouterService: SSH exception', [
-                'host' => $host,
-                'error' => $e->getMessage(),
-            ]);
-
-            return null;
+    /** Trusted local relay bounds remote bursts before Symfony's pipe aggregation; no disk spool. */
+    private function runBoundedTransport(array $arguments, string $input, int $timeout, array $limits, ?ProcessResult &$capture): ProcessResult
+    {
+        $source = file_get_contents(config('compute.execution_supervisor'));
+        $relay = [config('compute.execution_transport_python'), '-c', $source,
+            '--transport-argv', json_encode($arguments, JSON_THROW_ON_ERROR), '--timeout', (string) $this->runtimePolicy->relayTimeoutSeconds($timeout),
+            '--cleanup-grace', (string) $this->runtimePolicy->cleanupGraceSeconds(), '--output-max-bytes', (string) $limits['transport_bytes']];
+        $buffers = ['out' => '', 'err' => ''];
+        $received = 0;
+        $process = Process::timeout($this->runtimePolicy->transportTimeoutSeconds($timeout))->quietly();
+        if ($input !== '') {
+            $process->input($input);
         }
+        try {
+            $transport = $process->run($relay, function (string $type, string $bytes) use (&$buffers, &$received, $limits): bool {
+                if (! array_key_exists($type, $buffers) || strlen($bytes) > $limits['transport_bytes'] - $received) {
+                    throw new InferenceAdmissionException('Compute transport capture overflow; hold retained.');
+                }
+                $received += strlen($bytes);
+                $buffers[$type] .= $bytes;
+
+                return false;
+            });
+        } catch (\Throwable $error) {
+            $capture = new ComputeTerminalProcessResult(null, ['exit_code' => null], $buffers['out'], $buffers['err']);
+            throw $error;
+        }
+        // A quiet Symfony result has no readable output buffer: only our bounded
+        // callback owns bytes, including the transport's diagnostic stderr.
+        $capture = new ComputeTerminalProcessResult($transport, ['exit_code' => $transport->exitCode()], $buffers['out'], $buffers['err']);
+
+        return $capture;
     }
 
     /**
      * Build the full command to execute a Python script on an instance.
      */
-    private function buildScriptCommand(object $instance, string $scriptPath, string $args, ?int $timeout = null): string
+    private function buildScriptCommand(object $instance, string $scriptPath, ?int $timeout = null): string
     {
         $python = $instance->python_path ?? 'python3';
-        $timeoutSec = $timeout ?? config('compute.ssh_timeout', 30);
+        $timeoutSec = $timeout ?? $this->runtimePolicy->executionTimeoutSeconds();
 
-        $cmd = sprintf('timeout %d %s %s', $timeoutSec, escapeshellarg($python), escapeshellarg($scriptPath));
+        return sprintf('timeout %d %s %s', $timeoutSec, escapeshellarg($python), escapeshellarg($scriptPath));
+    }
 
-        if ($args !== '') {
-            // Use printf instead of echo so escaped JSON newlines stay escaped
-            // when document content is piped to Python scripts.
-            $cmd = sprintf('printf %%s %s | %s', escapeshellarg($args), $cmd);
-        }
+    /** @return list<string> */
+    private function buildSshArguments(object $instance, string $command): array
+    {
+        $sshUser = $instance->ssh_user ?? config('compute.ssh_user_default', 'plos');
 
-        return $cmd;
+        return [
+            'ssh',
+            '-o', 'BatchMode=yes',
+            '-o', 'PasswordAuthentication=no',
+            '-o', 'KbdInteractiveAuthentication=no',
+            '-o', 'StrictHostKeyChecking=yes',
+            '-o', 'ConnectTimeout='.$this->runtimePolicy->sshConnectTimeoutSeconds(),
+            "{$sshUser}@{$instance->host}",
+            $command,
+        ];
     }
 
     /**
@@ -340,15 +764,16 @@ class ComputeRouterService
             return;
         }
 
-        $healthDelta = config('compute.health_delta_success', 5);
-        $maxScore = config('health_thresholds.compute.score_max', 100);
+        $healthDelta = $this->runtimePolicy->healthSuccessDelta();
+        $maxScore = 100;
         $newHealth = min($maxScore, $instance->health_score + $healthDelta);
         $newTotal = $instance->total_executions + 1;
         $newRate = $newTotal > 0 ? round((($newTotal - $instance->total_failures) / $newTotal) * 100, 2) : 100;
 
         // Exponential moving average for execution time
+        $alpha = $this->runtimePolicy->latencyEmaAlpha();
         $newAvg = $instance->avg_execution_ms
-            ? round(($instance->avg_execution_ms * 0.8) + ($durationMs * 0.2), 2)
+            ? round(($instance->avg_execution_ms * (1 - $alpha)) + ($durationMs * $alpha), 2)
             : $durationMs;
 
         DB::update('
@@ -380,10 +805,11 @@ class ComputeRouterService
         if (! $instance) {
             return;
         }
+        $reason = $this->contentFreeFailureCode($reason);
 
-        $healthDelta = config('compute.health_delta_failure', 10);
-        $minScore = config('health_thresholds.compute.score_min', 0);
-        $unhealthyThreshold = config('health_thresholds.compute.unhealthy_threshold', 30);
+        $healthDelta = $this->runtimePolicy->healthFailureDelta();
+        $minScore = 0;
+        $unhealthyThreshold = $this->runtimePolicy->unhealthyThreshold();
         $newHealth = max($minScore, $instance->health_score - $healthDelta);
         $newConsecutive = $instance->consecutive_failures + 1;
         $newTotal = $instance->total_executions + 1;
@@ -409,7 +835,7 @@ class ComputeRouterService
         ]);
 
         // Open circuit if threshold hit
-        $threshold = config('compute.circuit_breaker.failure_threshold', 5);
+        $threshold = $this->runtimePolicy->circuitFailureThreshold();
         if ($newConsecutive >= $threshold) {
             $this->openCircuit($instanceId, $reason);
         }
@@ -428,7 +854,8 @@ class ComputeRouterService
      */
     public function openCircuit(string $instanceId, string $reason = ''): void
     {
-        $cooldown = config('compute.circuit_breaker.cooldown_seconds', 60);
+        $reason = $this->contentFreeFailureCode($reason);
+        $cooldown = $this->runtimePolicy->circuitCooldownSeconds();
         $retryAt = date('Y-m-d H:i:s', time() + $cooldown);
 
         DB::update("
@@ -448,6 +875,15 @@ class ComputeRouterService
             'retry_at' => $retryAt,
             'reason' => mb_substr($reason, 0, 200),
         ]);
+    }
+
+    private function contentFreeFailureCode(string $reason): string
+    {
+        $reason = strtolower(trim($reason));
+
+        return preg_match('/^[a-z0-9][a-z0-9_.:-]{0,79}$/', $reason) === 1
+            ? $reason
+            : 'compute_execution_failed';
     }
 
     /**
@@ -477,22 +913,44 @@ class ComputeRouterService
      */
     public function isInstanceBusy(object $instance): bool
     {
-        $maxConcurrent = $instance->max_concurrent ?? 1;
+        $slots = $this->slotState($instance);
+
+        return $slots['available'] === 0;
+    }
+
+    /** @return array{total: int, active: int, available: int, utilization_pct: float} */
+    private function slotState(object $instance): array
+    {
+        $total = max(1, (int) ($instance->max_concurrent ?? 1));
         $lockKey = "compute_gpu_lock:{$instance->instance_id}";
+        $active = 0;
 
-        if ($maxConcurrent <= 1) {
-            return Cache::has($lockKey);
-        }
-
-        // Multi-slot: count active locks
-        $activeSlots = 0;
-        for ($i = 0; $i < $maxConcurrent; $i++) {
-            if (Cache::has("{$lockKey}:{$i}")) {
-                $activeSlots++;
+        if ($total === 1) {
+            $active = ($this->slotOccupied($lockKey) || $this->persistedSlotOccupied((string) $instance->instance_id, 0)) ? 1 : 0;
+        } else {
+            for ($i = 0; $i < $total; $i++) {
+                if ($this->slotOccupied("{$lockKey}:{$i}") || $this->persistedSlotOccupied((string) $instance->instance_id, $i)) {
+                    $active++;
+                }
             }
         }
 
-        return $activeSlots >= $maxConcurrent;
+        return [
+            'total' => $total,
+            'active' => $active,
+            'available' => max(0, $total - $active),
+            'utilization_pct' => round(($active / $total) * 100, 2),
+        ];
+    }
+
+    /** Missing custody metadata cannot turn a physical slot into available capacity. */
+    private function persistedSlotOccupied(string $instanceId, int $slot): bool
+    {
+        try {
+            return $this->executionCustody->occupied($instanceId, $slot);
+        } catch (\Throwable) {
+            return true;
+        }
     }
 
     /**
@@ -502,69 +960,132 @@ class ComputeRouterService
      */
     public function acquireGpuLock(object $instance): bool
     {
-        $instanceId = $instance->instance_id;
-        $isGpu = ($instance->gpu_vram_mb ?? 0) > 0;
-        $lockTtl = $isGpu
-            ? config('lock_ttls.compute_gpu', 300)
-            : config('lock_ttls.compute_cpu', 120);
-
-        // If this instance shares its GPU with Ollama/Whisper, check their locks
-        if (! empty($instance->shares_gpu_with_llm)) {
-            if (Cache::has('whisper_gpu_lock') || Cache::has('ollama_busy_lock')) {
-                return false;
-            }
+        $id = (string) $instance->instance_id;
+        if (isset($this->publicGpuLocks[$id])) {
+            return false;
         }
-
-        $lockKey = "compute_gpu_lock:{$instanceId}";
-        $maxConcurrent = $instance->max_concurrent ?? 1;
-
-        if ($maxConcurrent <= 1) {
-            return Cache::add($lockKey, getmypid(), $lockTtl);
+        $lock = $this->acquireOwnedGpuLock($instance);
+        if ($lock === null) {
+            return false;
         }
+        $this->publicGpuLocks[$id] = $lock;
 
-        // Multi-slot: find and acquire first free slot
-        for ($i = 0; $i < $maxConcurrent; $i++) {
-            if (Cache::add("{$lockKey}:{$i}", getmypid(), $lockTtl)) {
-                return true;
-            }
-        }
-
-        return false;
+        return true;
     }
 
-    /**
-     * Release the GPU/compute lock for an instance.
-     */
+    private function acquireOwnedGpuLock(object $instance): ?Lock
+    {
+        $id = (string) $instance->instance_id;
+        if (app()->isDownForMaintenance()) {
+            return null;
+        }
+        $ttl = (int) config(($instance->gpu_vram_mb ?? 0) > 0 ? 'lock_ttls.compute_gpu' : 'lock_ttls.compute_cpu');
+        if ($ttl < 1) {
+            return null;
+        }
+        try {
+            if (! empty($instance->shares_gpu_with_llm)
+                && (Cache::has('whisper_gpu_lock') || Cache::has('ollama_busy_lock'))) {
+                return null;
+            }
+            $total = max(1, (int) ($instance->max_concurrent ?? 1));
+            for ($slot = 0; $slot < $total; $slot++) {
+                $legacyKey = "compute_gpu_lock:{$id}".($total === 1 ? '' : ":{$slot}");
+                if (Cache::has($legacyKey) || $this->executionCustody->occupied($id, $slot)) {
+                    continue;
+                }
+                $lock = $this->atomicSlotLock($legacyKey, $ttl);
+                if ($lock->get()) {
+                    $this->ownedLockSlots[spl_object_id($lock)] = $slot;
+
+                    return $lock;
+                }
+            }
+        } catch (\Throwable $error) {
+            Log::warning('Compute lock admission unavailable; dispatch held', ['exception_class' => get_class($error)]);
+        }
+
+        return null;
+    }
+
+    /** Read current lock presence without acquiring it; legacy values remain conservative holds. */
+    private function slotOccupied(string $legacyKey): bool
+    {
+        try {
+            if (Cache::has($legacyKey)) {
+                return true;
+            }
+            $lock = $this->atomicSlotLock($legacyKey, 0);
+            $store = Cache::getStore();
+            if ($lock instanceof DatabaseLock) {
+                $table = config('cache.stores.'.Cache::getDefaultDriver().'.lock_table');
+                if (! $store instanceof DatabaseStore || ! is_string($table) || $table === '') {
+                    return true;
+                }
+                $row = ($store->getLockConnection() ?? $store->getConnection())->table($table)
+                    ->where('key', $store->getPrefix().$legacyKey.':owned')->first(['owner', 'expiration']);
+                if ($row === null) {
+                    return false;
+                }
+                if (! is_string($row->owner) || $row->owner === ''
+                    || ! preg_match('/\A[0-9]+\z/', (string) $row->expiration)) {
+                    return true;
+                }
+
+                return (int) $row->expiration > now()->getTimestamp();
+            }
+            if ($lock instanceof ArrayLock && $store instanceof ArrayStore) {
+                $entry = $store->locks[$legacyKey.':owned'] ?? null;
+                if ($entry === null) {
+                    return false;
+                }
+
+                return ! ($entry['expiresAt'] ?? null) instanceof CarbonInterface
+                    || $entry['expiresAt']->isFuture();
+            }
+
+            return ! $lock->isOwnedBy(null);
+        } catch (\Throwable) {
+            return true;
+        }
+    }
+
+    private function atomicSlotLock(string $legacyKey, int $ttl): Lock
+    {
+        $lock = Cache::lock($legacyKey.':owned', $ttl);
+        if ($lock instanceof DatabaseLock
+            && (! is_string(config('cache.stores.'.Cache::getDefaultDriver().'.lock_table'))
+                || config('cache.stores.'.Cache::getDefaultDriver().'.lock_table') === '')) {
+            throw new InferenceAdmissionException('Compute database lock metadata is unavailable; dispatch held.');
+        }
+        if (! $lock instanceof RedisLock && ! $lock instanceof DatabaseLock
+            && ! ($lock instanceof ArrayLock && app()->environment('testing'))) {
+            throw new InferenceAdmissionException('Compute cache backend does not prove atomic owner release; dispatch held.');
+        }
+
+        return $lock;
+    }
+
     public function releaseGpuLock(object $instance): void
     {
-        $lockKey = "compute_gpu_lock:{$instance->instance_id}";
-        $maxConcurrent = $instance->max_concurrent ?? 1;
-
-        if ($maxConcurrent <= 1) {
-            Cache::forget($lockKey);
-
+        $id = (string) $instance->instance_id;
+        $lock = $this->publicGpuLocks[$id] ?? null;
+        if ($lock === null) {
             return;
         }
+        $this->releaseOwnedGpuLock($lock);
+        unset($this->publicGpuLocks[$id]);
+    }
 
-        // Multi-slot: release the slot held by this PID
-        $pid = getmypid();
-        for ($i = 0; $i < $maxConcurrent; $i++) {
-            $slotKey = "{$lockKey}:{$i}";
-            if (Cache::get($slotKey) == $pid) {
-                Cache::forget($slotKey);
-
-                return;
-            }
-        }
-
-        // Fallback: release any slot (shouldn't reach here normally)
-        for ($i = 0; $i < $maxConcurrent; $i++) {
-            $slotKey = "{$lockKey}:{$i}";
-            if (Cache::has($slotKey)) {
-                Cache::forget($slotKey);
-
-                return;
-            }
+    private function releaseOwnedGpuLock(Lock $lock): void
+    {
+        try {
+            // Redis Lua and database owner predicates make check+release atomic.
+            // Only this exact handle may release; never search for another slot.
+            $lock->release();
+            unset($this->ownedLockSlots[spl_object_id($lock)]);
+        } catch (\Throwable $error) {
+            throw new InferenceAdmissionException('Compute lock release is unproven; hold retained and execution must not be replayed.', 0, $error);
         }
     }
 
@@ -583,7 +1104,17 @@ class ComputeRouterService
         $results = [];
 
         foreach ($instances as $instance) {
-            $results[$instance->instance_id] = $this->healthCheckInstance($instance);
+            $check = $this->healthCheckInstance($instance);
+            $updated = $this->getInstance($instance->instance_id);
+            if (
+                ($check['healthy'] ?? false)
+                && (bool) ($updated->is_healthy ?? false)
+                && $instance->circuit_state !== 'closed'
+            ) {
+                $this->setCircuitState($instance->instance_id, 'closed');
+                $check['circuit_reset'] = true;
+            }
+            $results[$instance->instance_id] = $check;
         }
 
         return $results;
@@ -657,8 +1188,9 @@ class ComputeRouterService
     private function healthCheckLocal(object $instance, bool $hasGpu): array
     {
         if ($hasGpu) {
+            $nvidiaError = 'nvidia-smi failed or not available';
             try {
-                $result = Process::timeout(10)->run([
+                $result = Process::timeout($this->runtimePolicy->localGpuProbeTimeoutSeconds())->run([
                     'nvidia-smi',
                     '--query-gpu=name,memory.total,memory.free,utilization.gpu',
                     '--format=csv,noheader,nounits',
@@ -671,26 +1203,44 @@ class ComputeRouterService
                         'error' => mb_substr($result->errorOutput(), 0, 200),
                     ]);
 
-                    return ['healthy' => false, 'error' => 'nvidia-smi failed or not available'];
-                }
+                } else {
+                    $parts = array_map('trim', explode(',', trim($result->output())));
 
-                $parts = array_map('trim', explode(',', trim($result->output())));
+                    return [
+                        'healthy' => true,
+                        'telemetry_source' => 'nvidia_smi',
+                        'memory_model' => 'dedicated_gpu',
+                        'gpu_name' => $parts[0] ?? 'unknown',
+                        'memory_total_mb' => (int) ($parts[1] ?? 0),
+                        'memory_free_mb' => (int) ($parts[2] ?? 0),
+                        'gpu_utilization' => (int) ($parts[3] ?? 0),
+                    ];
+                }
             } catch (\Exception $e) {
+                $nvidiaError = 'nvidia-smi exception: '.$e->getMessage();
                 Log::debug('ComputeRouterService: local nvidia-smi exception', [
                     'instance' => $instance->instance_id,
                     'error' => $e->getMessage(),
                 ]);
 
-                return ['healthy' => false, 'error' => 'nvidia-smi exception: '.$e->getMessage()];
             }
 
-            return [
-                'healthy' => true,
-                'gpu_name' => $parts[0] ?? 'unknown',
-                'memory_total_mb' => (int) ($parts[1] ?? 0),
-                'memory_free_mb' => (int) ($parts[2] ?? 0),
-                'gpu_utilization' => (int) ($parts[3] ?? 0),
-            ];
+            try {
+                $tegrastats = Process::timeout($this->runtimePolicy->localJetsonProbeTimeoutSeconds())->run([
+                    'bash', '-lc', JetsonTegrastatsParserService::SAMPLE_COMMAND,
+                ]);
+                $jetsonHealth = $this->jetsonHealth($tegrastats->successful() ? $tegrastats->output() : null);
+                if ($jetsonHealth !== null) {
+                    return $jetsonHealth;
+                }
+            } catch (\Exception $e) {
+                Log::debug('ComputeRouterService: local tegrastats exception', [
+                    'instance' => $instance->instance_id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+
+            return ['healthy' => false, 'error' => $nvidiaError.'; tegrastats unavailable'];
         }
 
         // CPU instance — just verify scripts_path exists
@@ -703,57 +1253,91 @@ class ComputeRouterService
 
     private function healthCheckRemote(object $instance, bool $hasGpu): array
     {
-        $sshUser = $instance->ssh_user ?? config('compute.ssh_user_default', 'plos');
         $host = $instance->host;
 
-        $remoteCmd = $hasGpu
-            ? 'nvidia-smi --query-gpu=name,memory.total,memory.free,utilization.gpu --format=csv,noheader,nounits'
-            : 'echo ok';
+        if ($hasGpu) {
+            $nvidia = $this->runRemoteHealthCommand(
+                $instance,
+                'nvidia-smi --query-gpu=name,memory.total,memory.free,utilization.gpu --format=csv,noheader,nounits'
+            );
+            if ($nvidia !== null) {
+                $parts = array_map('trim', explode(',', trim($nvidia)));
 
-        $sshArgs = [
-            'ssh',
-            '-o', 'ConnectTimeout=5',
-            '-o', 'StrictHostKeyChecking=no',
-            "{$sshUser}@{$host}",
-            $remoteCmd,
-        ];
-
-        try {
-            $result = Process::timeout(15)->run($sshArgs);
-
-            if ($result->failed() || empty($result->output())) {
-                Log::debug('ComputeRouterService: remote health check failed', [
-                    'host' => $host,
-                    'exitCode' => $result->exitCode(),
-                    'error' => mb_substr($result->errorOutput(), 0, 200),
-                ]);
-
-                return ['healthy' => false, 'error' => "SSH to {$host} failed or GPU unavailable"];
+                return [
+                    'healthy' => true,
+                    'telemetry_source' => 'nvidia_smi',
+                    'memory_model' => 'dedicated_gpu',
+                    'gpu_name' => $parts[0] ?? 'unknown',
+                    'memory_total_mb' => (int) ($parts[1] ?? 0),
+                    'memory_free_mb' => (int) ($parts[2] ?? 0),
+                    'gpu_utilization' => (int) ($parts[3] ?? 0),
+                ];
             }
 
-            $output = $result->output();
+            $jetsonHealth = $this->jetsonHealth(
+                $this->runRemoteHealthCommand($instance, JetsonTegrastatsParserService::SAMPLE_COMMAND)
+            );
+            if ($jetsonHealth !== null) {
+                return $jetsonHealth;
+            }
+
+            return ['healthy' => false, 'error' => "SSH to {$host} failed or GPU telemetry unavailable"];
+        }
+
+        $output = $this->runRemoteHealthCommand($instance, 'echo ok');
+
+        return ['healthy' => trim((string) $output) === 'ok', 'type' => 'cpu'];
+    }
+
+    private function runRemoteHealthCommand(object $instance, string $remoteCommand): ?string
+    {
+        $host = $instance->host;
+
+        try {
+            $result = Process::timeout($this->runtimePolicy->remoteHealthTimeoutSeconds())
+                ->run($this->buildSshArguments($instance, $remoteCommand));
+
+            if ($result->successful() && trim($result->output()) !== '') {
+                return $result->output();
+            }
+
+            Log::debug('ComputeRouterService: remote health command failed', [
+                'host' => $host,
+                'exitCode' => $result->exitCode(),
+                'error' => mb_substr($result->errorOutput(), 0, 200),
+            ]);
         } catch (\Exception $e) {
-            Log::debug('ComputeRouterService: remote health check exception', [
+            Log::debug('ComputeRouterService: remote health command exception', [
                 'host' => $host,
                 'error' => $e->getMessage(),
             ]);
-
-            return ['healthy' => false, 'error' => "SSH to {$host} exception: ".$e->getMessage()];
         }
 
-        if ($hasGpu) {
-            $parts = array_map('trim', explode(',', trim($output)));
+        return null;
+    }
 
-            return [
-                'healthy' => true,
-                'gpu_name' => $parts[0] ?? 'unknown',
-                'memory_total_mb' => (int) ($parts[1] ?? 0),
-                'memory_free_mb' => (int) ($parts[2] ?? 0),
-                'gpu_utilization' => (int) ($parts[3] ?? 0),
-            ];
+    /** @return array<string,mixed>|null */
+    private function jetsonHealth(?string $output): ?array
+    {
+        $sample = app(JetsonTegrastatsParserService::class)->parse($output);
+        if ($sample === null) {
+            return null;
         }
 
-        return ['healthy' => trim($output) === 'ok', 'type' => 'cpu'];
+        return [
+            'healthy' => true,
+            'telemetry_source' => 'tegrastats',
+            'memory_model' => 'unified_system',
+            'gpu_name' => 'NVIDIA Jetson integrated GPU',
+            'memory_total_mb' => $sample['memory_total_mb'],
+            'memory_free_mb' => $sample['memory_available_mb'],
+            'largest_free_block_mb' => $sample['largest_free_block_mb'],
+            'gpu_utilization' => $sample['gpu_utilization_percent'],
+            'gpu_frequency_mhz' => $sample['gpu_frequency_mhz'],
+            'emc_utilization_percent' => $sample['emc_utilization_percent'],
+            'emc_frequency_mhz' => $sample['emc_frequency_mhz'],
+            'temperature_c' => $sample['gpu_temperature_c'] ?? $sample['max_temperature_c'],
+        ];
     }
 
     /**
@@ -767,12 +1351,12 @@ class ComputeRouterService
         }
 
         $delta = $healthy
-            ? config('compute.health_delta_success', 5)
-            : config('compute.health_delta_failure', 10);
+            ? $this->runtimePolicy->healthSuccessDelta()
+            : $this->runtimePolicy->healthFailureDelta();
 
-        $maxScore = config('health_thresholds.compute.score_max', 100);
-        $minScore = config('health_thresholds.compute.score_min', 0);
-        $unhealthyThreshold = config('health_thresholds.compute.unhealthy_threshold', 30);
+        $maxScore = 100;
+        $minScore = 0;
+        $unhealthyThreshold = $this->runtimePolicy->unhealthyThreshold();
 
         $newHealth = $healthy
             ? min($maxScore, $instance->health_score + $delta)
@@ -794,6 +1378,27 @@ class ComputeRouterService
         $this->clearInstanceCache();
     }
 
+    public function isHealthFresh(object $instance): bool
+    {
+        $checkedAt = isset($instance->last_health_check)
+            ? strtotime((string) $instance->last_health_check)
+            : false;
+        if ($checkedAt === false) {
+            return false;
+        }
+
+        return max(0, time() - $checkedAt) <= $this->runtimePolicy->healthFreshnessSeconds();
+    }
+
+    private function healthAgeSeconds(object $instance): ?int
+    {
+        $checkedAt = isset($instance->last_health_check)
+            ? strtotime((string) $instance->last_health_check)
+            : false;
+
+        return $checkedAt === false ? null : max(0, time() - $checkedAt);
+    }
+
     // ──────────────────────────────────────────────
     // Status / Monitoring
     // ──────────────────────────────────────────────
@@ -808,6 +1413,8 @@ class ComputeRouterService
 
         foreach ($instances as $instance) {
             $caps = json_decode($instance->capabilities ?? '[]', true) ?: [];
+            $slots = $this->slotState($instance);
+            $healthFresh = $this->isHealthFresh($instance);
             $status[] = [
                 'instance_id' => $instance->instance_id,
                 'host' => $instance->host,
@@ -819,7 +1426,14 @@ class ComputeRouterService
                 'health_score' => $instance->health_score,
                 'circuit_state' => $instance->circuit_state,
                 'is_healthy' => (bool) $instance->is_healthy,
-                'is_busy' => $this->isInstanceBusy($instance),
+                'health_fresh' => $healthFresh,
+                'health_age_seconds' => $this->healthAgeSeconds($instance),
+                'is_busy' => $slots['available'] === 0,
+                'is_routable' => (bool) $instance->is_healthy
+                    && $healthFresh
+                    && $instance->circuit_state === 'closed'
+                    && $slots['available'] > 0,
+                'slots' => $slots,
                 'avg_execution_ms' => $instance->avg_execution_ms,
                 'success_rate' => $instance->success_rate,
                 'total_executions' => $instance->total_executions,
@@ -832,7 +1446,13 @@ class ComputeRouterService
             'instances' => $status,
             'total' => count($status),
             'healthy' => count(array_filter($status, fn ($s) => $s['is_healthy'])),
+            'routable' => count(array_filter($status, fn ($s) => $s['is_routable'])),
+            'stale_health' => count(array_filter($status, fn ($s) => ! $s['health_fresh'])),
             'open_circuits' => count(array_filter($status, fn ($s) => $s['circuit_state'] !== 'closed')),
+            'policy_source' => 'system_configs.'.ComputeRouterRuntimePolicyService::CONFIG_KEY,
+            'health_freshness_seconds' => $this->runtimePolicy->healthFreshnessSeconds(),
+            'routing_weights' => $this->runtimePolicy->routingWeights(),
+            'remote_host_key_policy' => 'strict_known_hosts_required',
         ];
     }
 
@@ -849,34 +1469,37 @@ class ComputeRouterService
     // ──────────────────────────────────────────────
 
     /**
-     * Calculate routing score for an instance.
-     * Weighted: priority 40%, health 30%, speed 30%.
+     * Calculate the table-owned routing score for an instance.
      */
     private function calculateScore(object $instance): float
     {
-        $wPriority = config('health_thresholds.compute.weight_priority', 0.40);
-        $wHealth = config('health_thresholds.compute.weight_health', 0.30);
-        $wSpeed = config('health_thresholds.compute.weight_speed', 0.30);
+        $weights = $this->runtimePolicy->routingWeights();
+        $priorityReference = $this->runtimePolicy->priorityReference();
+        $speedReference = $this->runtimePolicy->speedReferenceMs();
+        $slots = $this->slotState($instance);
 
-        // Priority: lower = better → invert (50 - priority) / 50 gives higher score for lower priority
-        $priorityScore = max(0, (50 - $instance->priority) / 50) * 100;
+        $priorityScore = max(0, min(100, (($priorityReference - $instance->priority) / $priorityReference) * 100));
+        $healthScore = max(0, min(100, (float) $instance->health_score));
+        $avgMs = $instance->avg_execution_ms ?? $this->runtimePolicy->unknownLatencyMs();
+        $speedScore = max(0, min(100, 100 - (((float) $avgMs / $speedReference) * 100)));
+        $loadScore = ($slots['available'] / $slots['total']) * 100;
 
-        // Health: direct mapping 0-100
-        $healthScore = $instance->health_score;
-
-        // Speed: inverse of avg_execution_ms, capped
-        $avgMs = $instance->avg_execution_ms ?? 5000; // default 5s if no data
-        $speedScore = max(0, min(100, 100 - ($avgMs / 200))); // 0ms=100, 20000ms=0
-
-        return ($priorityScore * $wPriority) + ($healthScore * $wHealth) + ($speedScore * $wSpeed);
+        return ($priorityScore * $weights['priority'])
+            + ($healthScore * $weights['health'])
+            + ($speedScore * $weights['speed'])
+            + ($loadScore * $weights['load']);
     }
 
     /**
      * Clear the instance cache.
      */
-    private function clearInstanceCache(): void
+    public static function clearInstanceCache(bool $strict = false): void
     {
-        Cache::forget(self::CACHE_KEY_ALL);
-        Cache::forget(self::CACHE_KEY_HEALTHY);
+        foreach ([self::CACHE_KEY_ALL, self::CACHE_KEY_HEALTHY] as $key) {
+            Cache::forget($key);
+            if ($strict && Cache::has($key)) {
+                throw new \RuntimeException('Provider inventory cache invalidation unavailable.');
+            }
+        }
     }
 }

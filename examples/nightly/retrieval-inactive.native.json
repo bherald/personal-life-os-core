@@ -1,0 +1,54 @@
+{
+  "schema": "plos.portable_workflow.v2",
+  "dsl_version": "2.0",
+  "source": {
+    "product": "PLOS",
+    "format": "native-portable-workflow"
+  },
+  "workflow": {
+    "name": "Public demo retrieval stage",
+    "description": "PLOS v2.1 inactive synthetic retrieval stage; no Joplin writes or notifications; complete nightly delivery design is a separate planning example.",
+    "schedule": null,
+    "active": false,
+    "current_version": 1,
+    "error_handling": "stop",
+    "retry": null,
+    "defaults": [],
+    "nodes": [
+      {
+        "node_type": "RAGSearch",
+        "node_order": 0,
+        "timeout_seconds": 60,
+        "compensation_handler": null,
+        "compensation_config": null,
+        "configs": [
+          {
+            "key": "query",
+            "value": "Compare the fictional workshop notices.",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "document_type",
+            "value": "public_demo",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "limit",
+            "value": "2",
+            "requires_runtime_value": false
+          }
+        ]
+      }
+    ]
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "workflow_sha256": "15cd45cf2c4f79ba852739f27c8e588c352d7168a83a7545d0e2093d67780778"
+  },
+  "warnings": [],
+  "posture": {
+    "secrets_included": false,
+    "imported_active": false,
+    "import_requires_execute_and_confirm": true
+  }
+}

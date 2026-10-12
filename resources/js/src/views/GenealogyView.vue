@@ -11,7 +11,7 @@
           <!-- Tree Selector -->
           <select
             v-model="selectedTreeId"
-            class="px-4 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+            class="px-4 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
             @change="onTreeChange"
           >
             <option :value="null">Select a Family Tree</option>
@@ -52,6 +52,10 @@
             Add Family
           </button>
         </div>
+      </div>
+
+      <div v-if="intakeRunDeepLinkError && !selectedTreeId" role="alert" class="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
+        {{ intakeRunDeepLinkError }}
       </div>
 
       <!-- Loading State -->
@@ -95,6 +99,54 @@
           </div>
         </div>
 
+        <div class="border-y border-accent/30 bg-theme-secondary px-4 py-3">
+          <div class="flex flex-col gap-3 lg:flex-row lg:items-center">
+            <div class="min-w-0 lg:mr-auto">
+              <div class="text-xs font-semibold uppercase text-accent">Genealogy Review</div>
+              <div class="text-sm text-theme-secondary">People and facts are reviewed separately from picture identity.</div>
+            </div>
+            <a
+              :href="genealogyFactReviewUrl"
+              class="btn-primary flex min-h-10 items-center justify-center gap-2 whitespace-nowrap"
+              title="Review proposed people, relationships, facts, sources, and media changes"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M15 7a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+              Review People &amp; Facts
+              <span class="min-w-5 rounded bg-black/25 px-1.5 py-0.5 text-center text-xs font-bold">
+                {{ pendingGenealogyDecisionCount > 0 ? (pendingGenealogyDecisionCount > 999 ? '999+' : pendingGenealogyDecisionCount) : 'None waiting' }}
+              </span>
+            </a>
+            <a
+              :href="pictureMatchReviewUrl"
+              class="btn-secondary flex min-h-10 items-center justify-center gap-2 whitespace-nowrap"
+              title="Review picture matches and confirm or reject the suggested person link"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+              </svg>
+              Review Picture Matches
+              <span class="min-w-5 rounded bg-black/20 px-1.5 py-0.5 text-center text-xs font-bold">
+                {{ pendingFaceMatchCount > 0 ? (pendingFaceMatchCount > 999 ? '999+' : pendingFaceMatchCount) : 'None waiting' }}
+              </span>
+            </a>
+            <a
+              v-if="pendingPicturePacketCount > 0"
+              :href="picturePacketReviewUrl"
+              class="flex min-h-10 items-center justify-center gap-2 whitespace-nowrap px-2 text-xs text-theme-secondary underline hover:text-theme-primary"
+              title="Inspect preview-only picture source and provenance packets"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414A1 1 0 0117 7.414V19a2 2 0 01-2 2z"/>
+              </svg>
+              Photo diagnostics
+              <span>{{ pendingPicturePacketCount > 999 ? '999+' : pendingPicturePacketCount }}</span>
+              <span class="opacity-75">{{ picturePacketPressureLabel }}</span>
+            </a>
+          </div>
+        </div>
+
         <!-- Tabs -->
         <div class="card">
           <div class="flex border-b border-theme mb-4">
@@ -130,7 +182,7 @@
                 <select
                   v-model="homePersonId"
                   @change="onHomePersonChange"
-                  class="px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent min-w-[300px]"
+                  class="px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent min-w-[300px]"
                 >
                   <option :value="null">Select a person to start...</option>
                   <option v-for="person in sortedPersons" :key="person.id" :value="person.id">
@@ -167,7 +219,7 @@
                   min="1"
                   max="20"
                   step="1"
-                  class="w-16 px-2 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary text-center focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-16 px-2 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary text-center focus:outline-hidden focus:ring-2 focus:ring-accent"
                   title="Number of generations to display (1-20). Higher values may affect performance."
                 />
               </div>
@@ -176,7 +228,7 @@
               <select
                 v-model="rendererMode"
                 @change="renderTree"
-                class="px-2 py-1 bg-theme-tertiary border border-theme rounded text-theme-primary text-sm focus:outline-none focus:ring-2 focus:ring-accent"
+                class="px-2 py-1 bg-theme-tertiary border border-theme rounded text-theme-primary text-sm focus:outline-hidden focus:ring-2 focus:ring-accent"
                 title="Card display style"
               >
                 <option value="detailed">Detailed</option>
@@ -258,18 +310,18 @@
             <!-- Person Quick Info Panel (floating) -->
             <div v-if="hoveredPerson" class="fixed z-50 bg-theme-secondary border border-theme rounded-lg shadow-xl p-4 max-w-xs" :style="hoverPanelStyle">
               <div class="flex items-start gap-3">
-                <div v-if="hoveredPerson.photo" class="w-12 h-12 rounded-full overflow-hidden bg-theme-tertiary flex-shrink-0">
+                <div v-if="hoveredPerson.photo" class="w-12 h-12 rounded-full overflow-hidden bg-theme-tertiary shrink-0">
                   <img :src="hoveredPerson.photo" class="w-full h-full object-cover" />
                 </div>
-                <div v-else class="w-12 h-12 rounded-full bg-theme-tertiary flex-shrink-0 flex items-center justify-center">
+                <div v-else class="w-12 h-12 rounded-full bg-theme-tertiary shrink-0 flex items-center justify-center">
                   <span class="text-lg font-bold text-theme-secondary">{{ getInitials(hoveredPerson) }}</span>
                 </div>
                 <div class="flex-1 min-w-0">
                   <h4 class="font-semibold text-theme-primary truncate">
                     {{ hoveredPerson.given_name }} {{ hoveredPerson.surname }}
                   </h4>
-                  <p v-if="hoveredPerson.birth_date || hoveredPerson.death_date" class="text-sm text-theme-secondary">
-                    {{ hoveredPerson.birth_date }} - {{ hoveredPerson.death_date || 'Living' }}
+                  <p class="text-sm text-theme-secondary">
+                    {{ hoveredPerson.birth_date || '?' }} - {{ deathStatusLabel(hoveredPerson) }}
                   </p>
                   <p v-if="hoveredPerson.birth_place" class="text-xs text-theme-secondary truncate mt-1">
                     {{ hoveredPerson.birth_place }}
@@ -342,7 +394,7 @@
                   v-model="searchQuery"
                   type="text"
                   placeholder="Search by name (type 2+ chars)..."
-                  class="flex-1 px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="flex-1 px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   @keyup.enter="searchPersons"
                 />
                 <button @click="searchPersons" class="btn-primary" :disabled="loading">
@@ -361,7 +413,7 @@
                 >
                   <div class="flex gap-3">
                     <!-- Thumbnail Photo -->
-                    <div class="flex-shrink-0">
+                    <div class="shrink-0">
                       <div v-if="person.primary_photo_url" class="w-12 h-12 rounded-full overflow-hidden border border-theme-border">
                         <img :src="person.primary_photo_url" :alt="person.given_name" class="w-full h-full object-cover" />
                       </div>
@@ -380,7 +432,7 @@
                           </span>
                           <span v-if="person.suffix" class="text-theme-secondary ml-1">{{ person.suffix }}</span>
                         </div>
-                        <span class="text-xs px-2 py-1 rounded flex-shrink-0" :class="person.sex === 'M' ? 'bg-blue-500/20 text-blue-400' : person.sex === 'F' ? 'bg-pink-500/20 text-pink-400' : 'bg-gray-500/20 text-gray-400'">
+                        <span class="text-xs px-2 py-1 rounded shrink-0" :class="person.sex === 'M' ? 'bg-blue-500/20 text-blue-400' : person.sex === 'F' ? 'bg-pink-500/20 text-pink-400' : 'bg-gray-500/20 text-gray-400'">
                           {{ person.sex === 'M' ? 'Male' : person.sex === 'F' ? 'Female' : 'Unknown' }}
                         </span>
                       </div>
@@ -416,7 +468,7 @@
                   v-model="nlSearchQuery"
                   type="text"
                   placeholder="Ask a question about your family history..."
-                  class="flex-1 px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="flex-1 px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   @keyup.enter="naturalLanguageSearch"
                   @input="hasNlSearched = false"
                 />
@@ -467,41 +519,14 @@
             </div>
           </div>
 
-          <!-- Surnames Tab -->
-          <div v-if="activeTab === 'surnames'" class="space-y-4">
-            <div class="grid grid-cols-4 gap-2">
-              <button
-                v-for="surname in surnames"
-                :key="surname.surname"
-                @click="loadSurname(surname.surname)"
-                :class="[
-                  'px-3 py-2 rounded text-left transition-colors',
-                  selectedSurname === surname.surname
-                    ? 'selected-item'
-                    : 'bg-theme-tertiary text-theme-primary hover:bg-theme-secondary'
-                ]"
-              >
-                <span class="font-medium">{{ surname.surname }}</span>
-                <span class="text-xs ml-2 opacity-75">({{ surname.person_count }})</span>
-              </button>
-            </div>
-
-            <!-- Persons by Surname -->
-            <div v-if="surnamePersons.length > 0" class="mt-4 space-y-2">
-              <h4 class="font-semibold text-theme-primary mb-2">{{ selectedSurname }} Family ({{ surnamePersons.length }})</h4>
-              <div
-                v-for="person in surnamePersons"
-                :key="person.id"
-                @click="selectPerson(person)"
-                class="p-3 bg-theme-tertiary rounded-lg cursor-pointer hover:bg-theme-secondary transition-colors"
-              >
-                <span class="font-medium text-theme-primary">{{ person.given_name }}</span>
-                <span class="text-theme-secondary ml-2">
-                  {{ person.birth_date ? `(${extractYear(person.birth_date)}` : '' }}{{ person.death_date ? ` - ${extractYear(person.death_date)})` : person.birth_date ? ')' : '' }}
-                </span>
-              </div>
-            </div>
-          </div>
+          <SurnamesTab
+            v-if="activeTab === 'surnames'"
+            :surnames="surnames"
+            :selected-surname="selectedSurname"
+            :persons="surnamePersons"
+            @select-surname="loadSurname"
+            @select-person="selectPerson"
+          />
 
           <!-- Timeline Tab -->
           <div v-if="activeTab === 'timeline'" class="space-y-4">
@@ -596,7 +621,7 @@
                       {{ timelineTabData.person?.given_name }} {{ timelineTabData.person?.surname }}
                     </h3>
                     <p class="text-theme-secondary">
-                      {{ timelineTabData.person?.birth_date || '?' }} - {{ timelineTabData.person?.death_date || (timelineTabData.person?.sex ? 'Living?' : '?') }}
+                      {{ timelineTabData.person?.birth_date || '?' }} - {{ deathStatusLabel(timelineTabData.person) }}
                     </p>
                   </div>
                   <div class="ml-auto text-right">
@@ -723,7 +748,7 @@
                 @keyup.enter="searchSources"
                 type="text"
                 placeholder="Search sources..."
-                class="flex-1 px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="flex-1 px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               />
               <button @click="searchSources" class="btn-secondary" :disabled="!sourceSearchQuery">
                 Search
@@ -780,7 +805,7 @@
                         <span v-if="source.url" class="text-xs text-green-400">Has URL</span>
                       </div>
                     </div>
-                    <div class="flex gap-1 flex-shrink-0">
+                    <div class="flex gap-1 shrink-0">
                       <button @click.stop="openEditSource(source)" class="text-theme-secondary hover:text-accent p-1">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
@@ -2275,23 +2300,7 @@
             </div>
           </div>
 
-          <!-- Recent Tab -->
-          <div v-if="activeTab === 'recent'" class="space-y-2">
-            <div
-              v-for="item in recentAdditions"
-              :key="`${item.type}-${item.id}`"
-              class="flex items-center gap-4 p-3 bg-theme-tertiary rounded-lg"
-            >
-              <span :class="[
-                'px-2 py-1 rounded text-xs font-medium',
-                item.type === 'person' ? 'bg-blue-500/20 text-blue-400' : 'bg-purple-500/20 text-purple-400'
-              ]">
-                {{ item.type }}
-              </span>
-              <span class="text-theme-primary flex-1">{{ item.name }}</span>
-              <span class="text-theme-secondary text-sm">{{ formatDate(item.created_at) }}</span>
-            </div>
-          </div>
+          <RecentTab v-if="activeTab === 'recent'" :items="recentAdditions" />
 
           <!-- N98: Research History Tab -->
           <div v-if="activeTab === 'research-history'" class="space-y-4">
@@ -2315,7 +2324,16 @@
                   <option value="0">Positive only</option>
                   <option value="1">Negative only</option>
                 </select>
-                <button @click="exportResearchLogsCsv" class="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm">CSV Export</button>
+                <button
+                  @click="exportResearchLogsCsv"
+                  class="flex min-h-8 items-center gap-1.5 rounded bg-blue-600 px-3 py-1 text-sm text-white hover:bg-blue-700"
+                  title="Download the visible person or tree research history as a spreadsheet-safe CSV"
+                >
+                  <svg class="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/>
+                  </svg>
+                  Export CSV
+                </button>
               </div>
             </div>
 
@@ -2339,7 +2357,7 @@
               <div v-for="log in filteredResearchLogs" :key="log.id"
                    class="flex items-start gap-3 p-3 bg-theme-tertiary rounded-lg">
                 <span :class="[
-                  'mt-0.5 px-2 py-0.5 rounded text-xs font-medium flex-shrink-0',
+                  'mt-0.5 px-2 py-0.5 rounded text-xs font-medium shrink-0',
                   log.negative_result ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'
                 ]">{{ log.negative_result ? 'Negative' : 'Found' }}</span>
                 <div class="flex-1 min-w-0">
@@ -2347,7 +2365,7 @@
                   <div class="text-xs text-theme-secondary truncate">{{ log.search_terms }}</div>
                   <div v-if="log.results_summary" class="text-xs text-theme-tertiary mt-1">{{ log.results_summary }}</div>
                 </div>
-                <div class="text-xs text-theme-tertiary flex-shrink-0">{{ formatDate(log.searched_at) }}</div>
+                <div class="text-xs text-theme-tertiary shrink-0">{{ formatDate(log.searched_at) }}</div>
               </div>
               <div v-if="!filteredResearchLogs.length" class="text-center py-8 text-theme-secondary text-sm">
                 No research logs found{{ researchLogFilter ? ' for ' + researchLogFilter : '' }}.
@@ -2363,7 +2381,7 @@
             <!-- Header with description -->
             <div class="bg-theme-tertiary rounded-lg p-4">
               <div class="flex items-start gap-4">
-                <div class="w-12 h-12 bg-amber-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <div class="w-12 h-12 bg-amber-500/20 rounded-lg flex items-center justify-center shrink-0">
                   <svg class="w-6 h-6 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
                   </svg>
@@ -2823,12 +2841,12 @@
                 <div v-for="co in fanCooccurrences" :key="co.cooccurring_name + co.source_type"
                      class="flex items-center justify-between px-3 py-2 bg-theme-secondary rounded hover:bg-theme-hover">
                   <div class="flex items-center gap-2 flex-1 min-w-0">
-                    <span v-if="co.occurrence_count >= 2" class="flex-shrink-0 px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded text-xs font-medium">×{{ co.occurrence_count }}</span>
-                    <span v-else class="flex-shrink-0 px-1.5 py-0.5 bg-theme-tertiary text-theme-secondary rounded text-xs">×1</span>
+                    <span v-if="co.occurrence_count >= 2" class="shrink-0 px-1.5 py-0.5 bg-amber-500/20 text-amber-400 rounded text-xs font-medium">×{{ co.occurrence_count }}</span>
+                    <span v-else class="shrink-0 px-1.5 py-0.5 bg-theme-tertiary text-theme-secondary rounded text-xs">×1</span>
                     <span class="font-medium text-theme-primary truncate">{{ co.cooccurring_name }}</span>
                     <span v-if="co.source_location" class="text-xs text-theme-secondary truncate hidden md:block">{{ co.source_location }}</span>
                   </div>
-                  <div class="flex items-center gap-2 flex-shrink-0">
+                  <div class="flex items-center gap-2 shrink-0">
                     <span class="text-xs text-theme-tertiary px-1.5 py-0.5 bg-theme-tertiary rounded">{{ co.source_type }}</span>
                     <span class="text-xs text-theme-tertiary w-8 text-right">{{ (co.confidence * 100).toFixed(0) }}%</span>
                   </div>
@@ -2957,7 +2975,7 @@
           <div class="shrink-0 p-4 border-b border-theme bg-theme-secondary">
             <div class="flex justify-between items-start">
               <div class="flex items-start gap-4">
-                <div class="flex-shrink-0">
+                <div class="shrink-0">
                   <div v-if="selectedPerson.primary_photo_url" class="w-20 h-20 rounded-full overflow-hidden border-2 border-accent shadow-lg">
                     <img :src="selectedPerson.primary_photo_url" :alt="`${selectedPerson.given_name} ${selectedPerson.surname}`" class="w-full h-full object-cover" />
                   </div>
@@ -3053,14 +3071,14 @@
               </button>
               <div v-show="panelSections.biographical" class="px-4 pb-4">
                 <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                  <div class="flex"><span class="text-theme-secondary w-28 flex-shrink-0">Occupation:</span><span class="text-theme-primary">{{ selectedPerson.occupation || '&#8212;' }}</span></div>
-                  <div class="flex"><span class="text-theme-secondary w-28 flex-shrink-0">Education:</span><span class="text-theme-primary">{{ selectedPerson.education || '&#8212;' }}</span></div>
-                  <div class="flex"><span class="text-theme-secondary w-28 flex-shrink-0">Religion:</span><span class="text-theme-primary">{{ selectedPerson.religion || '&#8212;' }}</span></div>
-                  <div class="flex"><span class="text-theme-secondary w-28 flex-shrink-0">Nationality:</span><span class="text-theme-primary">{{ selectedPerson.nationality || '&#8212;' }}</span></div>
-                  <div v-if="selectedPerson.ssn" class="flex"><span class="text-theme-secondary w-28 flex-shrink-0">SSN:</span><span class="text-theme-primary">{{ selectedPerson.ssn }}</span></div>
-                  <div v-if="selectedPerson.id_number" class="flex"><span class="text-theme-secondary w-28 flex-shrink-0">ID Number:</span><span class="text-theme-primary">{{ selectedPerson.id_number }}</span></div>
-                  <div v-if="selectedPerson.physical_description" class="flex col-span-2"><span class="text-theme-secondary w-28 flex-shrink-0">Physical:</span><span class="text-theme-primary">{{ selectedPerson.physical_description }}</span></div>
-                  <div v-if="selectedPerson.property" class="flex col-span-2"><span class="text-theme-secondary w-28 flex-shrink-0">Property:</span><span class="text-theme-primary">{{ selectedPerson.property }}</span></div>
+                  <div class="flex"><span class="text-theme-secondary w-28 shrink-0">Occupation:</span><span class="text-theme-primary">{{ selectedPerson.occupation || '&#8212;' }}</span></div>
+                  <div class="flex"><span class="text-theme-secondary w-28 shrink-0">Education:</span><span class="text-theme-primary">{{ selectedPerson.education || '&#8212;' }}</span></div>
+                  <div class="flex"><span class="text-theme-secondary w-28 shrink-0">Religion:</span><span class="text-theme-primary">{{ selectedPerson.religion || '&#8212;' }}</span></div>
+                  <div class="flex"><span class="text-theme-secondary w-28 shrink-0">Nationality:</span><span class="text-theme-primary">{{ selectedPerson.nationality || '&#8212;' }}</span></div>
+                  <div v-if="selectedPerson.ssn" class="flex"><span class="text-theme-secondary w-28 shrink-0">SSN:</span><span class="text-theme-primary">{{ selectedPerson.ssn }}</span></div>
+                  <div v-if="selectedPerson.id_number" class="flex"><span class="text-theme-secondary w-28 shrink-0">ID Number:</span><span class="text-theme-primary">{{ selectedPerson.id_number }}</span></div>
+                  <div v-if="selectedPerson.physical_description" class="flex col-span-2"><span class="text-theme-secondary w-28 shrink-0">Physical:</span><span class="text-theme-primary">{{ selectedPerson.physical_description }}</span></div>
+                  <div v-if="selectedPerson.property" class="flex col-span-2"><span class="text-theme-secondary w-28 shrink-0">Property:</span><span class="text-theme-primary">{{ selectedPerson.property }}</span></div>
                 </div>
               </div>
             </div>
@@ -3184,7 +3202,7 @@
               <div v-show="panelSections.residences" class="px-4 pb-4">
                 <div v-if="selectedPerson.residences?.length > 0" class="space-y-2">
                   <div v-for="res in selectedPerson.residences" :key="res.id" class="flex items-start gap-3 p-2 bg-theme-tertiary rounded text-sm">
-                    <div class="text-theme-secondary w-24 flex-shrink-0">{{ res.residence_date || 'Unknown' }}</div>
+                    <div class="text-theme-secondary w-24 shrink-0">{{ res.residence_date || 'Unknown' }}</div>
                     <div class="text-theme-primary flex-1">{{ res.place || 'Unknown place' }}</div>
                   </div>
                 </div>
@@ -3402,7 +3420,7 @@
             <span class="text-white text-sm font-medium truncate max-w-[80%]">{{ enlargedImage.title }}</span>
             <button
               @click="closeImageModal"
-              class="text-white hover:text-red-400 transition-colors flex-shrink-0 ml-2"
+              class="text-white hover:text-red-400 transition-colors shrink-0 ml-2"
               title="Close (Esc)"
             >
               <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3460,7 +3478,7 @@
                   <select
                     v-model="editingEvent.event_type"
                     required
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option value="">Select event type...</option>
                     <optgroup label="Religious">
@@ -3504,7 +3522,7 @@
                   <input
                     v-model="editingEvent.event_date"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., 15 Jun 1920, ABT 1915, BEF 1900"
                   />
                   <p class="text-xs text-theme-secondary mt-1">GEDCOM format: exact date, ABT (about), BEF (before), AFT (after)</p>
@@ -3518,7 +3536,7 @@
                     @input="searchPlacesForEvent"
                     @focus="showEventPlaceResults = true"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="City, County, State, Country"
                     autocomplete="off"
                   />
@@ -3550,7 +3568,7 @@
                   <textarea
                     v-model="editingEvent.description"
                     rows="2"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Additional details about this event..."
                   ></textarea>
                 </div>
@@ -3627,7 +3645,7 @@
                   <select
                     v-model="editingFamilyEvent.event_type"
                     required
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option value="">Select event type...</option>
                     <optgroup label="Pre-Marriage">
@@ -3653,7 +3671,7 @@
                   <input
                     v-model="editingFamilyEvent.event_date"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., 15 Jun 1920, ABT 1915, BEF 1900"
                   />
                   <p class="text-xs text-theme-secondary mt-1">GEDCOM format: exact date, ABT (about), BEF (before), AFT (after)</p>
@@ -3667,7 +3685,7 @@
                     @input="searchPlacesForFamilyEvent"
                     @focus="showFamilyEventPlaceResults = true"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="City, County, State, Country"
                     autocomplete="off"
                   />
@@ -3699,7 +3717,7 @@
                   <textarea
                     v-model="editingFamilyEvent.description"
                     rows="2"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Additional details about this event..."
                   ></textarea>
                 </div>
@@ -3777,7 +3795,7 @@
                     v-model="editingSource.title"
                     type="text"
                     required
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., 1920 US Federal Census"
                   />
                 </div>
@@ -3788,7 +3806,7 @@
                   <input
                     v-model="editingSource.author"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., Bureau of the Census"
                   />
                 </div>
@@ -3799,7 +3817,7 @@
                   <input
                     v-model="editingSource.publication_info"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Publisher, location, date"
                   />
                 </div>
@@ -3810,7 +3828,7 @@
                   <input
                     v-model="editingSource.repository_ref"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., National Archives, FamilySearch"
                   />
                 </div>
@@ -3821,7 +3839,7 @@
                   <input
                     v-model="editingSource.call_number"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., T625, Roll 123"
                   />
                 </div>
@@ -3832,7 +3850,7 @@
                   <textarea
                     v-model="editingSource.source_text"
                     rows="3"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Transcription or notes about this source..."
                   ></textarea>
                 </div>
@@ -3911,7 +3929,7 @@
                   <select
                     v-model="editingCitation.source_id"
                     required
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option :value="null">Select a source...</option>
                     <option v-for="source in sources" :key="source.id" :value="source.id">
@@ -3925,7 +3943,7 @@
                   <label class="block text-sm text-theme-secondary mb-1">Fact Being Cited</label>
                   <select
                     v-model="editingCitation.fact_type"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option value="">Select fact type...</option>
                     <optgroup label="Vital Events">
@@ -3982,7 +4000,7 @@
                   <input
                     v-model="editingCitation.page"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., Page 42, Line 15"
                   />
                 </div>
@@ -3992,7 +4010,7 @@
                   <label class="block text-sm text-theme-secondary mb-1">Data Quality</label>
                   <select
                     v-model="editingCitation.quality"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option :value="null">Not specified</option>
                     <option :value="3">3 - Direct & primary evidence</option>
@@ -4008,7 +4026,7 @@
                   <textarea
                     v-model="editingCitation.text"
                     rows="3"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Exact transcription or notes from the source..."
                   ></textarea>
                 </div>
@@ -4085,7 +4103,7 @@
                     v-model="editingRepository.name"
                     type="text"
                     required
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., National Archives, FamilySearch Library"
                   />
                 </div>
@@ -4096,7 +4114,7 @@
                   <textarea
                     v-model="editingRepository.address"
                     rows="2"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Street, City, State, Country"
                   ></textarea>
                 </div>
@@ -4107,7 +4125,7 @@
                   <input
                     v-model="editingRepository.phone"
                     type="tel"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="+1 (555) 123-4567"
                   />
                 </div>
@@ -4118,7 +4136,7 @@
                   <input
                     v-model="editingRepository.email"
                     type="email"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="contact@archive.org"
                   />
                 </div>
@@ -4129,7 +4147,7 @@
                   <input
                     v-model="editingRepository.url"
                     type="url"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="https://www.archive.org"
                   />
                 </div>
@@ -4140,7 +4158,7 @@
                   <textarea
                     v-model="editingRepository.notes"
                     rows="2"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Additional notes about this repository..."
                   ></textarea>
                 </div>
@@ -4254,7 +4272,7 @@
                   <input
                     v-model="mediaUploadData.title"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Photo title or description..."
                   />
                 </div>
@@ -4265,7 +4283,7 @@
                   <input
                     v-model="mediaUploadData.date"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="e.g., 25 Dec 1950 or ABT 1920"
                   />
                 </div>
@@ -4276,7 +4294,7 @@
                   <textarea
                     v-model="mediaUploadData.description"
                     rows="2"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Additional details about this media..."
                   ></textarea>
                 </div>
@@ -4286,7 +4304,7 @@
                   <label class="block text-sm text-theme-secondary mb-1">Link to Person (optional)</label>
                   <select
                     v-model="mediaUploadData.person_id"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option :value="null">-- Select Person --</option>
                     <option v-for="p in sortedPersons" :key="p.id" :value="p.id">
@@ -4455,7 +4473,7 @@
                   <select
                     :value="selectedMedia.media_type || 'photo'"
                     @change="updateMediaType(selectedMedia.id, $event.target.value)"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option v-for="cat in mediaCategories.filter(c => c.id !== 'all')" :key="cat.id" :value="cat.id">
                       {{ cat.icon }} {{ cat.label }}
@@ -4492,7 +4510,7 @@
                     <textarea
                       v-model="transcriptionText"
                       rows="6"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="Enter transcription of the document..."
                     ></textarea>
                     <div class="flex justify-end gap-2 mt-2">
@@ -4897,10 +4915,10 @@
               >
                 <div class="flex items-center gap-3">
                   <!-- Thumbnail -->
-                  <div class="w-12 h-12 bg-theme-secondary rounded flex-shrink-0 flex items-center justify-center overflow-hidden">
+                  <div class="w-12 h-12 bg-theme-secondary rounded shrink-0 flex items-center justify-center overflow-hidden">
                     <img
                       v-if="isImage(item.format)"
-                      :src="`/api/genealogy/media/${item.id}/thumbnail`"
+                      :src="`/api/genealogy/media/${item.id}/thumbnail?tree_id=${selectedTreeId}`"
                       :alt="item.title || item.filename"
                       class="w-full h-full object-cover"
                       @error="$event.target.style.display='none'"
@@ -4922,7 +4940,7 @@
                   </div>
 
                   <!-- Action Arrow -->
-                  <svg class="w-5 h-5 text-accent flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg class="w-5 h-5 text-accent shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
                   </svg>
                 </div>
@@ -4966,6 +4984,10 @@
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                 </svg>
               </button>
+            </div>
+
+            <div v-if="intakeRunDeepLinkError" role="alert" class="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
+              {{ intakeRunDeepLinkError }}
             </div>
 
             <div class="rounded-lg border border-fuchsia-500/20 bg-fuchsia-500/5 p-4 mb-4 space-y-3">
@@ -7670,7 +7692,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <div class="space-y-2">
                   <div v-for="ancestor in gen.ancestors" :key="ancestor.ahnentafel_number"
                        class="flex items-start gap-3 p-2 bg-theme-tertiary rounded-lg">
-                    <div class="flex-shrink-0 w-8 h-8 bg-purple-500/20 rounded-full flex items-center justify-center">
+                    <div class="shrink-0 w-8 h-8 bg-purple-500/20 rounded-full flex items-center justify-center">
                       <span class="text-sm font-bold text-purple-400">{{ ancestor.ahnentafel_number }}</span>
                     </div>
                     <div class="flex-1">
@@ -8389,7 +8411,7 @@ Large packets can take time on the first pass while the packet preview is prepar
       <!-- Phase 8: Research Hints Modal -->
       <div v-if="showResearchHintsModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showResearchHintsModal = false">
         <div class="bg-theme-secondary rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[85vh] flex flex-col">
-          <div class="p-6 border-b border-theme flex-shrink-0">
+          <div class="p-6 border-b border-theme shrink-0">
             <div class="flex justify-between items-center">
               <h3 class="text-xl font-bold text-theme-primary">Research Hints</h3>
               <button @click="showResearchHintsModal = false" class="text-theme-secondary hover:text-theme-primary">
@@ -8490,7 +8512,7 @@ Large packets can take time on the first pass while the packet preview is prepar
       <!-- AI Research Modal (Sprint 1: A.1) -->
       <div v-if="showAIResearchModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showAIResearchModal = false">
         <div class="bg-theme-secondary rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] flex flex-col">
-          <div class="p-6 border-b border-theme flex-shrink-0">
+          <div class="p-6 border-b border-theme shrink-0">
             <div class="flex justify-between items-center">
               <h3 class="text-xl font-bold text-theme-primary flex items-center gap-2">
                 <span class="text-2xl">🤖</span>
@@ -8721,7 +8743,7 @@ Large packets can take time on the first pass while the packet preview is prepar
       <!-- Phase 8: Name Variations Modal -->
       <div v-if="showNameVariationsModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showNameVariationsModal = false">
         <div class="bg-theme-secondary rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[85vh] flex flex-col">
-          <div class="p-6 border-b border-theme flex-shrink-0">
+          <div class="p-6 border-b border-theme shrink-0">
             <div class="flex justify-between items-center">
               <h3 class="text-xl font-bold text-theme-primary">Name Variations</h3>
               <button @click="showNameVariationsModal = false" class="text-theme-secondary hover:text-theme-primary">
@@ -8815,31 +8837,78 @@ Large packets can take time on the first pass while the packet preview is prepar
 
       <!-- Phase 8: Research Tasks Modal -->
       <div v-if="showResearchTasksModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showResearchTasksModal = false">
-        <div class="bg-theme-secondary rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[85vh] flex flex-col">
-          <div class="p-6 border-b border-theme flex-shrink-0">
-            <div class="flex justify-between items-center">
-              <h3 class="text-xl font-bold text-theme-primary">Research Tasks</h3>
-              <button @click="showResearchTasksModal = false" class="text-theme-secondary hover:text-theme-primary">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                </svg>
+        <div class="bg-theme-secondary rounded-lg shadow-xl max-w-5xl w-full mx-4 max-h-[88vh] flex flex-col">
+          <div class="p-5 border-b border-theme shrink-0 space-y-4">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="text-xl font-bold text-theme-primary">Research Tasks</h3>
+                  <span class="rounded bg-blue-500/15 px-2 py-1 text-xs font-medium text-blue-300">
+                    {{ researchTaskActiveCount }} active
+                  </span>
+                  <span v-if="researchTaskStatusCounts.failed > 0" class="rounded bg-red-500/15 px-2 py-1 text-xs font-medium text-red-300">
+                    {{ researchTaskStatusCounts.failed }} need attention
+                  </span>
+                </div>
+                <p class="mt-1 text-sm text-theme-secondary">
+                  {{ researchTaskWindowLabel }}
+                </p>
+              </div>
+              <div class="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  type="button"
+                  class="btn-secondary min-h-9 px-3 text-sm"
+                  :disabled="loadingResearchTasks"
+                  @click="refreshResearchTasks"
+                >
+                  {{ loadingResearchTasks ? 'Refreshing...' : 'Refresh' }}
+                </button>
+                <button @click="showResearchTasksModal = false" class="p-2 text-theme-secondary hover:text-theme-primary" title="Close research tasks">
+                  <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div class="flex gap-1 overflow-x-auto" role="group" aria-label="Filter research tasks by status">
+              <button
+                v-for="filter in researchTaskFilters"
+                :key="filter.id"
+                type="button"
+                :aria-pressed="researchTaskFilter === filter.id"
+                :class="[
+                  'min-h-9 whitespace-nowrap rounded px-3 text-sm font-medium transition-colors',
+                  researchTaskFilter === filter.id
+                    ? 'bg-accent text-white'
+                    : 'bg-theme-tertiary text-theme-secondary hover:text-theme-primary'
+                ]"
+                @click="setResearchTaskFilter(filter.id)"
+              >
+                {{ filter.label }}
+                <span class="ml-1 opacity-75">{{ filter.count }}</span>
               </button>
             </div>
           </div>
 
-          <div class="p-6 overflow-y-auto flex-1">
+          <div class="p-5 overflow-y-auto flex-1">
+            <div v-if="researchTasksError" class="mb-4 flex flex-col gap-3 border border-red-500/40 bg-red-500/10 p-3 sm:flex-row sm:items-center sm:justify-between">
+              <p class="text-sm text-red-300">{{ researchTasksError }}</p>
+              <button type="button" class="btn-secondary min-h-9 px-3 text-sm" @click="refreshResearchTasks">Try again</button>
+            </div>
+
             <div v-if="loadingResearchTasks" class="flex items-center justify-center py-8">
               <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-accent"></div>
             </div>
 
             <div v-else-if="researchTasks.length === 0" class="text-center py-8 text-theme-secondary">
-              No research tasks queued.
+              No {{ researchTaskFilterLabel.toLowerCase() }} research tasks.
             </div>
 
             <div v-else class="space-y-3">
-              <div v-for="task in researchTasks" :key="task.id" class="bg-theme-tertiary rounded-lg p-4">
-                <div class="flex items-start justify-between">
-                  <div>
+              <article v-for="task in researchTasks" :key="task.id" class="bg-theme-tertiary rounded-lg p-4">
+                <div class="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                  <div class="min-w-0">
                     <div class="flex items-center gap-2">
                       <span :class="['px-2 py-1 rounded text-xs text-white', getTaskStatusColor(task.status)]">
                         {{ task.status }}
@@ -8847,21 +8916,80 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <span class="px-2 py-1 rounded text-xs bg-theme-secondary text-theme-primary">
                         {{ task.priority }}
                       </span>
+                      <span v-if="task.status === 'processing'" class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-blue-300 border-t-transparent" aria-label="Task is processing"></span>
                     </div>
-                    <h4 class="font-medium text-theme-primary mt-2">{{ getTaskTypeLabel(task.task_type) }}</h4>
+                    <h4 class="mt-2 break-words font-medium text-theme-primary">
+                      {{ task.research_question || getTaskTypeLabel(task.task_type) }}
+                    </h4>
+                    <p v-if="task.research_question" class="mt-1 text-xs font-medium uppercase text-theme-secondary">
+                      {{ getTaskTypeLabel(task.task_type) }}
+                    </p>
                     <p v-if="task.person_name" class="text-sm text-theme-secondary">
                       Person: {{ task.person_name }}
                     </p>
                   </div>
-                  <div class="text-right text-sm text-theme-secondary">
+                  <div class="text-sm text-theme-secondary md:text-right">
                     <div>Created: {{ formatDate(task.created_at) }}</div>
+                    <div v-if="task.started_at">Started: {{ formatDate(task.started_at) }}</div>
                     <div v-if="task.completed_at">Completed: {{ formatDate(task.completed_at) }}</div>
                   </div>
                 </div>
                 <div v-if="task.error_message" class="mt-2 p-2 bg-red-500/10 rounded text-sm text-red-400">
                   {{ task.error_message }}
                 </div>
-              </div>
+
+                <div class="mt-3 flex flex-wrap items-center gap-2 text-xs text-theme-secondary">
+                  <span v-if="researchTaskReferenceCount(task.sources_checked)" class="rounded bg-theme-secondary px-2 py-1">
+                    {{ researchTaskReferenceCount(task.sources_checked) }} sources checked
+                  </span>
+                  <span v-if="researchTaskReferenceCount(task.related_people_used)" class="rounded bg-theme-secondary px-2 py-1">
+                    {{ researchTaskReferenceCount(task.related_people_used) }} related people
+                  </span>
+                  <span v-if="task.outcome_state" class="rounded bg-theme-secondary px-2 py-1">
+                    Outcome: {{ task.outcome_state }}
+                  </span>
+                  <button
+                    v-if="hasResearchTaskDetails(task)"
+                    type="button"
+                    class="ml-auto min-h-8 rounded px-2 text-sm font-medium text-accent hover:bg-accent/10"
+                    :aria-expanded="isResearchTaskExpanded(task.id)"
+                    @click="toggleResearchTaskDetails(task.id)"
+                  >
+                    {{ isResearchTaskExpanded(task.id) ? 'Hide details' : 'View details' }}
+                  </button>
+                </div>
+
+                <div v-if="isResearchTaskExpanded(task.id)" class="mt-4 grid gap-4 border-t border-theme pt-4 md:grid-cols-2">
+                  <div v-if="task.selection_reason">
+                    <div class="text-xs font-semibold uppercase text-theme-secondary">Selection reason</div>
+                    <p class="mt-1 whitespace-pre-wrap break-words text-sm text-theme-primary">{{ task.selection_reason }}</p>
+                  </div>
+                  <div v-if="task.scope_reason">
+                    <div class="text-xs font-semibold uppercase text-theme-secondary">Research scope</div>
+                    <p class="mt-1 whitespace-pre-wrap break-words text-sm text-theme-primary">{{ task.scope_reason }}</p>
+                  </div>
+                  <div v-if="task.evidence_summary" class="md:col-span-2">
+                    <div class="text-xs font-semibold uppercase text-theme-secondary">Evidence summary</div>
+                    <p class="mt-1 whitespace-pre-wrap break-words text-sm text-theme-primary">{{ task.evidence_summary }}</p>
+                  </div>
+                  <div v-if="task.conflicts_found" class="md:col-span-2 border-l-2 border-amber-400 pl-3">
+                    <div class="text-xs font-semibold uppercase text-amber-300">Conflicts found</div>
+                    <p class="mt-1 whitespace-pre-wrap break-words text-sm text-theme-primary">{{ task.conflicts_found }}</p>
+                  </div>
+                  <div v-if="task.outcome_reason" class="md:col-span-2">
+                    <div class="text-xs font-semibold uppercase text-theme-secondary">Outcome</div>
+                    <p class="mt-1 whitespace-pre-wrap break-words text-sm text-theme-primary">{{ task.outcome_reason }}</p>
+                  </div>
+                  <div v-if="researchTaskReferenceCount(task.sources_checked)">
+                    <div class="text-xs font-semibold uppercase text-theme-secondary">Sources checked</div>
+                    <p class="mt-1 break-words text-sm text-theme-primary">{{ formatResearchTaskReferences(task.sources_checked, 'Source') }}</p>
+                  </div>
+                  <div v-if="researchTaskReferenceCount(task.related_people_used)">
+                    <div class="text-xs font-semibold uppercase text-theme-secondary">Related people used</div>
+                    <p class="mt-1 break-words text-sm text-theme-primary">{{ formatResearchTaskReferences(task.related_people_used, 'Person') }}</p>
+                  </div>
+                </div>
+              </article>
             </div>
           </div>
         </div>
@@ -8990,7 +9118,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <label class="block text-sm text-theme-secondary mb-1">Service</label>
                   <select
                     v-model="newConnection.service_type"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     :disabled="editingConnection !== null"
                   >
                     <option value="findmypast">FindMyPast</option>
@@ -9005,7 +9133,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <input
                     v-model="newConnection.service_user_id"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Your ID on the service"
                   />
                 </div>
@@ -9014,7 +9142,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <input
                     v-model="newConnection.access_token"
                     type="password"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="API access token"
                   />
                 </div>
@@ -9023,7 +9151,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <input
                     v-model="newConnection.refresh_token"
                     type="password"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="API refresh token (optional)"
                   />
                 </div>
@@ -9219,7 +9347,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <label class="block text-sm text-theme-secondary mb-1">Service</label>
                   <select
                     v-model="newPersonLink.service_type"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option value="familysearch">FamilySearch</option>
                     <option value="ancestry">Ancestry</option>
@@ -9235,7 +9363,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <input
                     v-model="newPersonLink.external_person_id"
                     type="text"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Person ID on external service"
                   />
                 </div>
@@ -9243,7 +9371,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <label class="block text-sm text-theme-secondary mb-1">Link Type</label>
                   <select
                     v-model="newPersonLink.link_type"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   >
                     <option value="confirmed">Confirmed</option>
                     <option value="suggested">Suggested</option>
@@ -9544,25 +9672,25 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Given Name(s)</label>
                       <input v-model="editingPerson.given_name" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="First and middle names" />
                     </div>
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Surname</label>
                       <input v-model="editingPerson.surname" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Family name" />
                     </div>
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Nickname</label>
                       <input v-model="editingPerson.nickname" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Known as" />
                     </div>
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Suffix</label>
                       <input v-model="editingPerson.suffix" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Jr., Sr., III" />
                     </div>
                   </div>
@@ -9572,7 +9700,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Sex</label>
                       <select v-model="editingPerson.sex"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent">
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent">
                         <option value="M">Male</option>
                         <option value="F">Female</option>
                         <option value="U">Unknown</option>
@@ -9581,7 +9709,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Title</label>
                       <input v-model="editingPerson.title" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Dr., Rev., Prof." />
                     </div>
                     <div class="flex items-center pt-6">
@@ -9600,13 +9728,13 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <div>
                         <label class="block text-xs text-theme-secondary mb-1">Date</label>
                         <input v-model="editingPerson.birth_date" type="text"
-                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                           placeholder="e.g., 15 MAR 1850" />
                       </div>
                       <div>
                         <label class="block text-xs text-theme-secondary mb-1">Place</label>
                         <input v-model="editingPerson.birth_place" type="text"
-                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                           placeholder="City, County, State, Country" />
                       </div>
                     </div>
@@ -9619,20 +9747,20 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <div>
                         <label class="block text-xs text-theme-secondary mb-1">Date</label>
                         <input v-model="editingPerson.death_date" type="text"
-                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                           placeholder="e.g., 20 OCT 1920" />
                       </div>
                       <div>
                         <label class="block text-xs text-theme-secondary mb-1">Place</label>
                         <input v-model="editingPerson.death_place" type="text"
-                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                           placeholder="City, County, State, Country" />
                       </div>
                     </div>
                     <div class="mt-3">
                       <label class="block text-xs text-theme-secondary mb-1">Cause of Death</label>
                       <input v-model="editingPerson.cause_of_death" type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="Medical cause of death" />
                     </div>
                   </div>
@@ -9644,13 +9772,13 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <div>
                         <label class="block text-xs text-theme-secondary mb-1">Date</label>
                         <input v-model="editingPerson.burial_date" type="text"
-                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                           placeholder="e.g., 22 OCT 1920" />
                       </div>
                       <div>
                         <label class="block text-xs text-theme-secondary mb-1">Place</label>
                         <input v-model="editingPerson.burial_place" type="text"
-                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                          class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                           placeholder="Cemetery name, City, State" />
                       </div>
                     </div>
@@ -9661,13 +9789,13 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Occupation</label>
                       <input v-model="editingPerson.occupation" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Primary occupation" />
                     </div>
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Education</label>
                       <input v-model="editingPerson.education" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Schools, degrees" />
                     </div>
                   </div>
@@ -9676,13 +9804,13 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Religion</label>
                       <input v-model="editingPerson.religion" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Religious affiliation" />
                     </div>
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">Nationality</label>
                       <input v-model="editingPerson.nationality" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Country of origin" />
                     </div>
                   </div>
@@ -9691,13 +9819,13 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">SSN</label>
                       <input v-model="editingPerson.ssn" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="XXX-XX-XXXX" />
                     </div>
                     <div>
                       <label class="block text-sm text-theme-secondary mb-1">ID Number</label>
                       <input v-model="editingPerson.id_number" type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                         placeholder="Other ID" />
                     </div>
                   </div>
@@ -9705,14 +9833,14 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div>
                     <label class="block text-sm text-theme-secondary mb-1">Physical Description</label>
                     <textarea v-model="editingPerson.physical_description" rows="2"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="Height, weight, hair color, etc."></textarea>
                   </div>
 
                   <div>
                     <label class="block text-sm text-theme-secondary mb-1">Notes</label>
                     <textarea v-model="editingPerson.notes" rows="3"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="Additional information"></textarea>
                   </div>
                 </div>
@@ -9740,7 +9868,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div>
                     <label class="block text-xs text-theme-secondary mb-1">Event Type</label>
                     <select v-model="editingPersonEvent.event_type"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm">
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm">
                       <option value="">-- Select Type --</option>
                       <option value="BIRT">Birth</option>
                       <option value="DEAT">Death</option>
@@ -9764,20 +9892,20 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div>
                     <label class="block text-xs text-theme-secondary mb-1">Date</label>
                     <input v-model="editingPersonEvent.event_date" type="text"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="e.g., 15 MAR 1850" />
                   </div>
                 </div>
                 <div class="mt-3">
                   <label class="block text-xs text-theme-secondary mb-1">Place</label>
                   <input v-model="editingPersonEvent.place" type="text"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                     placeholder="City, County, State, Country" />
                 </div>
                 <div class="mt-3">
                   <label class="block text-xs text-theme-secondary mb-1">Description</label>
                   <textarea v-model="editingPersonEvent.description" rows="2"
-                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                    class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                     placeholder="Event details"></textarea>
                 </div>
                 <div class="flex justify-end gap-2 mt-4">
@@ -9823,13 +9951,13 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div>
                     <label class="block text-xs text-theme-secondary mb-1">Date/Period</label>
                     <input v-model="editingResidence.residence_date" type="text"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="e.g., 1850 or BET 1850 AND 1860" />
                   </div>
                   <div>
                     <label class="block text-xs text-theme-secondary mb-1">Place</label>
                     <input v-model="editingResidence.place" type="text"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="Address, City, State, Country" />
                   </div>
                 </div>
@@ -9837,13 +9965,13 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div>
                     <label class="block text-xs text-theme-secondary mb-1">Latitude</label>
                     <input v-model="editingResidence.latitude" type="number" step="any"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="e.g., 40.7128" />
                   </div>
                   <div>
                     <label class="block text-xs text-theme-secondary mb-1">Longitude</label>
                     <input v-model="editingResidence.longitude" type="number" step="any"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="e.g., -74.0060" />
                   </div>
                 </div>
@@ -10061,7 +10189,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       </div>
                     </div>
                     <button @click.stop="unlinkSourceInEditModal(source.id)"
-                      class="text-red-500 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      class="text-red-500 hover:text-red-400 p-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                       title="Unlink source from person">
                       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -10162,7 +10290,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <h4 class="text-sm font-medium text-theme-secondary mb-2">Husband</h4>
                     <select
                       v-model="editingFamily.husband_id"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                     >
                       <option :value="null">-- Select Person --</option>
                       <option v-for="person in sortedMalePersons" :key="person.id" :value="person.id">
@@ -10174,7 +10302,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <h4 class="text-sm font-medium text-theme-secondary mb-2">Wife</h4>
                     <select
                       v-model="editingFamily.wife_id"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                     >
                       <option :value="null">-- Select Person --</option>
                       <option v-for="person in sortedFemalePersons" :key="person.id" :value="person.id">
@@ -10193,7 +10321,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="editingFamily.marriage_date"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="e.g., 15 JUN 1875"
                       />
                     </div>
@@ -10202,7 +10330,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="editingFamily.marriage_place"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="City, County, State, Country"
                       />
                     </div>
@@ -10218,7 +10346,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="editingFamily.divorce_date"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="e.g., 10 DEC 1890"
                       />
                     </div>
@@ -10227,7 +10355,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="editingFamily.divorce_place"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="City, County, State, Country"
                       />
                     </div>
@@ -10249,7 +10377,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <div class="flex gap-2">
                     <select
                       v-model="newChildId"
-                      class="flex-1 px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="flex-1 px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                     >
                       <option :value="null">-- Add Child --</option>
                       <option v-for="person in availableChildren" :key="person.id" :value="person.id">
@@ -10295,7 +10423,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <textarea
                     v-model="editingFamily.notes"
                     rows="3"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Additional information about this family"
                   ></textarea>
                 </div>
@@ -10457,7 +10585,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   v-model="newTree.name"
                   type="text"
                   required
-                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   placeholder="e.g., Smith Family Tree"
                 />
               </div>
@@ -10465,7 +10593,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <label class="block text-sm text-theme-secondary mb-1">Description (optional)</label>
                 <textarea
                   v-model="newTree.description"
-                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   rows="3"
                   placeholder="Notes about this family tree..."
                 ></textarea>
@@ -10491,14 +10619,14 @@ Large packets can take time on the first pass while the packet preview is prepar
                   type="file"
                   accept=".ged,.GED"
                   @change="onFileSelect"
-                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 />
               </div>
               <div>
                 <label class="block text-sm text-theme-secondary mb-1">Import Into</label>
                 <select
                   v-model="importTarget"
-                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 >
                   <option value="new">Create New Tree</option>
                   <option v-for="tree in trees" :key="tree.id" :value="tree.id">
@@ -10511,7 +10639,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <input
                   v-model="importTreeName"
                   type="text"
-                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-4 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                   placeholder="Leave blank to use filename"
                 />
               </div>
@@ -10570,7 +10698,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       v-model="creatingPerson.given_name"
                       type="text"
                       required
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="First and middle names"
                     />
                   </div>
@@ -10580,7 +10708,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       v-model="creatingPerson.surname"
                       type="text"
                       required
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="Family name"
                     />
                   </div>
@@ -10589,7 +10717,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <input
                       v-model="creatingPerson.suffix"
                       type="text"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="Jr., Sr., III"
                     />
                   </div>
@@ -10602,7 +10730,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <input
                       v-model="creatingPerson.nickname"
                       type="text"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="Known as..."
                     />
                   </div>
@@ -10611,7 +10739,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <select
                       v-model="creatingPerson.sex"
                       required
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     >
                       <option value="M">Male</option>
                       <option value="F">Female</option>
@@ -10629,7 +10757,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.birth_date"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="e.g., 15 MAR 1850 or ABT 1850"
                       />
                     </div>
@@ -10638,7 +10766,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.birth_place"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="City, County, State, Country"
                       />
                     </div>
@@ -10654,7 +10782,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.death_date"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="e.g., 20 OCT 1920"
                       />
                     </div>
@@ -10663,7 +10791,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.death_place"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="City, County, State, Country"
                       />
                     </div>
@@ -10679,7 +10807,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.burial_date"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="e.g., 22 OCT 1920"
                       />
                     </div>
@@ -10688,7 +10816,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.burial_place"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="Cemetery, City, State"
                       />
                     </div>
@@ -10702,7 +10830,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <input
                       v-model="creatingPerson.occupation"
                       type="text"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="Farmer, Teacher..."
                     />
                   </div>
@@ -10711,7 +10839,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <input
                       v-model="creatingPerson.education"
                       type="text"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="High School, College..."
                     />
                   </div>
@@ -10720,7 +10848,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <input
                       v-model="creatingPerson.religion"
                       type="text"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                       placeholder="Baptist, Catholic..."
                     />
                   </div>
@@ -10737,7 +10865,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.title"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="Dr., Rev., Prof., etc."
                       />
                     </div>
@@ -10748,7 +10876,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.nationality"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="Country of origin"
                       />
                     </div>
@@ -10761,7 +10889,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.ssn"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="XXX-XX-XXXX"
                       />
                     </div>
@@ -10772,7 +10900,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingPerson.id_number"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="Other identification number"
                       />
                     </div>
@@ -10784,7 +10912,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <textarea
                       v-model="creatingPerson.physical_description"
                       rows="2"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="Height, weight, hair color, eye color, etc."
                     ></textarea>
                   </div>
@@ -10795,7 +10923,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <textarea
                       v-model="creatingPerson.property"
                       rows="2"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="Notable property or possessions"
                     ></textarea>
                   </div>
@@ -10806,7 +10934,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <input
                       v-model="creatingPerson.cause_of_death"
                       type="text"
-                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                       placeholder="Medical cause of death"
                     />
                   </div>
@@ -10818,7 +10946,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <textarea
                     v-model="creatingPerson.notes"
                     rows="3"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Additional information about this person..."
                   ></textarea>
                 </div>
@@ -10839,7 +10967,7 @@ Large packets can take time on the first pass while the packet preview is prepar
       <div v-if="showDeletePersonModal && deletingPerson" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="closeDeletePerson">
         <div class="bg-theme-secondary rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
           <div class="flex items-center gap-3 mb-4">
-            <div class="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0">
+            <div class="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
               <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
               </svg>
@@ -10893,7 +11021,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <h4 class="text-sm font-medium text-theme-secondary mb-2">Husband</h4>
                     <select
                       v-model="creatingFamily.husband_id"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                     >
                       <option :value="null">-- Select Person --</option>
                       <option v-for="person in sortedMalePersons" :key="person.id" :value="person.id">
@@ -10905,7 +11033,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                     <h4 class="text-sm font-medium text-theme-secondary mb-2">Wife</h4>
                     <select
                       v-model="creatingFamily.wife_id"
-                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                      class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                     >
                       <option :value="null">-- Select Person --</option>
                       <option v-for="person in sortedFemalePersons" :key="person.id" :value="person.id">
@@ -10924,7 +11052,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingFamily.marriage_date"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="e.g., 15 JUN 1875"
                       />
                     </div>
@@ -10933,7 +11061,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                       <input
                         v-model="creatingFamily.marriage_place"
                         type="text"
-                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent text-sm"
+                        class="w-full px-3 py-2 bg-theme-secondary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent text-sm"
                         placeholder="City, County, State, Country"
                       />
                     </div>
@@ -10946,7 +11074,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                   <textarea
                     v-model="creatingFamily.notes"
                     rows="2"
-                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                    class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                     placeholder="Additional notes about this family..."
                   ></textarea>
                 </div>
@@ -10967,7 +11095,7 @@ Large packets can take time on the first pass while the packet preview is prepar
       <div v-if="showDeleteFamilyModal && deletingFamily" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="closeDeleteFamily">
         <div class="bg-theme-secondary rounded-lg shadow-xl max-w-md w-full mx-4 p-6">
           <div class="flex items-center gap-3 mb-4">
-            <div class="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0">
+            <div class="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
               <svg class="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
               </svg>
@@ -11019,7 +11147,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 v-model="newFanCluster.name"
                 type="text"
                 required
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="e.g., Lancaster County 1850s Neighbors"
               />
             </div>
@@ -11029,7 +11157,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <input
                 v-model="newFanCluster.research_period"
                 type="text"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="e.g., 1840-1860"
               />
             </div>
@@ -11039,7 +11167,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <input
                 v-model="newFanCluster.location"
                 type="text"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="e.g., Lancaster County, Pennsylvania"
               />
             </div>
@@ -11049,7 +11177,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <textarea
                 v-model="newFanCluster.notes"
                 rows="3"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="Research notes and context..."
               ></textarea>
             </div>
@@ -11083,7 +11211,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 v-model="newFanMember.member_name"
                 type="text"
                 required
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="Full name of the person"
               />
             </div>
@@ -11092,7 +11220,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <label class="block text-sm text-theme-secondary mb-1">Link to Person in Tree</label>
               <select
                 v-model="newFanMember.member_person_id"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               >
                 <option :value="null">Not linked (unknown person)</option>
                 <option v-for="person in sortedPersons" :key="person.id" :value="person.id">
@@ -11107,7 +11235,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <select
                   v-model="newFanMember.relationship_type"
                   required
-                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 >
                   <option v-for="(label, key) in fanRelationshipTypes" :key="key" :value="key">
                     {{ label.split(' - ')[0] }}
@@ -11120,7 +11248,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <select
                   v-model="newFanMember.confidence"
                   required
-                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 >
                   <option v-for="(label, key) in fanConfidenceLevels" :key="key" :value="key">
                     {{ label.split(' - ')[0] }}
@@ -11134,7 +11262,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <select
                 v-model="newFanMember.source_record_type"
                 required
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               >
                 <option v-for="(label, key) in fanSourceRecordTypes" :key="key" :value="key">
                   {{ label }}
@@ -11147,7 +11275,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <input
                 v-model="newFanMember.source_citation"
                 type="text"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="e.g., 1850 Census, Lancaster County, PA, page 42"
               />
             </div>
@@ -11157,7 +11285,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <input
                 v-model="newFanMember.interaction_date"
                 type="text"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="e.g., 1850 or 15 Jun 1850"
               />
             </div>
@@ -11167,7 +11295,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <textarea
                 v-model="newFanMember.interaction_description"
                 rows="2"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 placeholder="How this person was connected..."
               ></textarea>
             </div>
@@ -11201,7 +11329,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 v-model="editingFanMember.member_name"
                 type="text"
                 required
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               />
             </div>
 
@@ -11209,7 +11337,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <label class="block text-sm text-theme-secondary mb-1">Link to Person in Tree</label>
               <select
                 v-model="editingFanMember.member_person_id"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               >
                 <option :value="null">Not linked (unknown person)</option>
                 <option v-for="person in sortedPersons" :key="person.id" :value="person.id">
@@ -11224,7 +11352,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <select
                   v-model="editingFanMember.relationship_type"
                   required
-                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 >
                   <option v-for="(label, key) in fanRelationshipTypes" :key="key" :value="key">
                     {{ label.split(' - ')[0] }}
@@ -11237,7 +11365,7 @@ Large packets can take time on the first pass while the packet preview is prepar
                 <select
                   v-model="editingFanMember.confidence"
                   required
-                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                  class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
                 >
                   <option v-for="(label, key) in fanConfidenceLevels" :key="key" :value="key">
                     {{ label.split(' - ')[0] }}
@@ -11251,7 +11379,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <select
                 v-model="editingFanMember.source_record_type"
                 required
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               >
                 <option v-for="(label, key) in fanSourceRecordTypes" :key="key" :value="key">
                   {{ label }}
@@ -11264,7 +11392,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <input
                 v-model="editingFanMember.source_citation"
                 type="text"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               />
             </div>
 
@@ -11273,7 +11401,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <input
                 v-model="editingFanMember.interaction_date"
                 type="text"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               />
             </div>
 
@@ -11282,7 +11410,7 @@ Large packets can take time on the first pass while the packet preview is prepar
               <textarea
                 v-model="editingFanMember.interaction_description"
                 rows="2"
-                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-accent"
+                class="w-full px-3 py-2 bg-theme-tertiary border border-theme rounded-lg text-theme-primary focus:outline-hidden focus:ring-2 focus:ring-accent"
               ></textarea>
             </div>
 
@@ -11302,9 +11430,13 @@ Large packets can take time on the first pass while the packet preview is prepar
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue';
 import axios from 'axios';
+import { useRoute } from 'vue-router';
 import * as d3 from 'd3';
 import { HourglassChart, AncestorChart, DescendantChart, KinshipChart, RelativesChart, FancyChart, DetailedRenderer, SimpleRenderer, CircleRenderer, ExpanderDirection } from 'topola';
 import { CompactFamilyRenderer } from '@/components/CompactFamilyRenderer.js';
+import RecentTab from '@/components/genealogy/tabs/RecentTab.vue';
+import SurnamesTab from '@/components/genealogy/tabs/SurnamesTab.vue';
+import { deathStatusLabel, normalizeLivingStatus } from '@/utils/genealogyLivingStatus.js';
 
 /**
  * WiderDetailedRenderer - Extends DetailedRenderer with wider cards
@@ -11339,8 +11471,21 @@ class WiderDetailedRenderer extends DetailedRenderer {
 const loading = ref(false);
 const trees = ref([]);
 const selectedTreeId = ref(null);
+const genealogyTreeScopeInterceptor = axios.interceptors.request.use((config) => {
+  if (config.url?.startsWith('/api/genealogy/') && selectedTreeId.value) {
+    config.headers = config.headers || {};
+    config.headers['X-Genealogy-Tree-Id'] = String(selectedTreeId.value);
+  }
+  return config;
+});
+onUnmounted(() => axios.interceptors.request.eject(genealogyTreeScopeInterceptor));
 const selectedTree = ref(null);
 const stats = ref({});
+const pendingGenealogyDecisionCount = ref(0);
+const pendingFaceMatchCount = ref(0);
+const pendingPicturePacketCount = ref(0);
+const stalePicturePacketCount = ref(0);
+const oldestPicturePacketAgeDays = ref(null);
 const activeTab = ref('tree');
 const searchQuery = ref('');
 const searchResults = ref([]);
@@ -11641,6 +11786,12 @@ const transcriptionQueue = ref([]);
 const showTranscriptionQueueModal = ref(false);
 const intakeRuns = ref([]);
 const showIntakeRunsModal = ref(false);
+const intakeRunDeepLinkError = ref('');
+const intakeDeepLinkReadOnly = ref(false);
+const route = useRoute();
+let intakeRunDeepLinkRequest = 0;
+let intakeRunListRequest = 0;
+let intakeDeepLinkReady = false;
 const createDefaultIntakeRunStageForm = () => ({
   tree_id: selectedTreeId.value || null,
   root_path: '/Library/FamilyTree',
@@ -11821,6 +11972,17 @@ const showResearchStatsModal = ref(false);
 const researchHints = ref([]);
 const nameVariations = ref([]);
 const researchTasks = ref([]);
+const researchTaskStatusCounts = ref({
+  total: 0,
+  queued: 0,
+  processing: 0,
+  failed: 0,
+  completed: 0,
+  cancelled: 0
+});
+const researchTaskFilter = ref('all');
+const researchTasksError = ref('');
+const expandedResearchTaskIds = ref(new Set());
 const researchStats = ref(null);
 const loadingResearchHints = ref(false);
 const loadingNameVariations = ref(false);
@@ -11833,6 +11995,31 @@ const newVariationType = ref('surname');
 const newVariationValue = ref('');
 const suggestedVariations = ref([]);
 const loadingSuggestions = ref(false);
+
+const researchTaskFilters = computed(() => [
+  { id: 'all', label: 'All', count: researchTaskStatusCounts.value.total },
+  { id: 'queued', label: 'Queued', count: researchTaskStatusCounts.value.queued },
+  { id: 'processing', label: 'Processing', count: researchTaskStatusCounts.value.processing },
+  { id: 'failed', label: 'Failed', count: researchTaskStatusCounts.value.failed },
+  { id: 'completed', label: 'Completed', count: researchTaskStatusCounts.value.completed },
+  { id: 'cancelled', label: 'Cancelled', count: researchTaskStatusCounts.value.cancelled }
+]);
+const researchTaskActiveCount = computed(
+  () => researchTaskStatusCounts.value.queued + researchTaskStatusCounts.value.processing
+);
+const researchTaskFilterLabel = computed(
+  () => researchTaskFilters.value.find(filter => filter.id === researchTaskFilter.value)?.label || 'All'
+);
+const researchTaskWindowLabel = computed(() => {
+  const total = researchTaskFilter.value === 'all'
+    ? researchTaskStatusCounts.value.total
+    : researchTaskStatusCounts.value[researchTaskFilter.value] || 0;
+  const returned = researchTasks.value.length;
+
+  return total > returned
+    ? `Showing ${returned} of ${total} ${researchTaskFilterLabel.value.toLowerCase()} tasks`
+    : `${total} ${researchTaskFilterLabel.value.toLowerCase()} tasks`;
+});
 
 // AI Research Modal state (Sprint 1: A.1)
 const showAIResearchModal = ref(false);
@@ -11993,6 +12180,21 @@ const savingFaceRegion = ref(false);
 const confirmingFaceTag = ref(false);
 const unconfirmedFaces = ref([]);
 const unconfirmedFaceCount = ref(0);
+const genealogyFactReviewUrl = computed(() => '/knowledge?source=review&category=genealogy');
+const pictureMatchReviewUrl = computed(() => {
+  const treeId = Number(selectedTreeId.value) || 4;
+  return `/knowledge?source=review&type=face&picture_review=matches&tree_id=${treeId}`;
+});
+const picturePacketReviewUrl = computed(() => {
+  const treeId = Number(selectedTreeId.value) || 4;
+  return `/knowledge?source=review&type=genealogy_review_packet&picture_review=packets&tree_id=${treeId}`;
+});
+const picturePacketPressureLabel = computed(() => {
+  if (pendingPicturePacketCount.value <= 0) return 'Preview only';
+  if (stalePicturePacketCount.value <= 0) return 'Pending review';
+  if (oldestPicturePacketAgeDays.value === null) return `${stalePicturePacketCount.value} stale`;
+  return `${stalePicturePacketCount.value} stale | oldest ${oldestPicturePacketAgeDays.value}d`;
+});
 
 // GEDCOM Event Types mapping
 const eventTypes = {
@@ -12353,6 +12555,14 @@ const openPersonDeepLink = async () => {
   if (!personId) return;
 
   try {
+    const queryTreeId = normalizePositiveInt(new URLSearchParams(window.location.search).get('tree_id'));
+    if (queryTreeId && trees.value.some(tree => tree.id === queryTreeId) && selectedTreeId.value !== queryTreeId) {
+      selectedTreeId.value = queryTreeId;
+      localStorage.setItem('genealogy_selected_tree', queryTreeId);
+      await loadTreeData();
+    }
+    if (!selectedTreeId.value) return;
+
     const response = await axios.get(`/api/genealogy/persons/${personId}`);
     const person = response.data.data.person;
     if (!person?.id) return;
@@ -14516,6 +14726,42 @@ const loadUnconfirmedFaceCount = async () => {
   }
 };
 
+const loadPictureReviewCount = async () => {
+  if (!selectedTreeId.value) return;
+
+  try {
+    const [queueResponse, reviewResponse] = await Promise.all([
+      axios.get(`/api/genealogy/trees/${selectedTreeId.value}/face-match-queue/stats`),
+      axios.get('/api/research-hub/stats'),
+    ]);
+    const visibleReviews = reviewResponse.data?.visible_reviews || {};
+    pendingGenealogyDecisionCount.value = [
+      'proposal',
+      'genealogy_finding',
+      'genealogy_merge',
+      'genealogy_evidence_asset_capture',
+      'change_proposal',
+    ].reduce((total, type) => total + Math.max(0, Number(visibleReviews[type]?.total || 0)), 0);
+    pendingFaceMatchCount.value = Math.max(0, Number(visibleReviews.face?.total || 0));
+    const sourcePacketReview = queueResponse.data?.data?.source_packet_review || {};
+    pendingPicturePacketCount.value = Math.max(0, Number(sourcePacketReview.pending_total || 0));
+    stalePicturePacketCount.value = Math.max(0, Number(sourcePacketReview.stale_pending || 0));
+    const oldestPacketAge = sourcePacketReview.oldest_pending_age_days;
+    oldestPicturePacketAgeDays.value = oldestPacketAge !== null
+      && oldestPacketAge !== undefined
+      && Number.isFinite(Number(oldestPacketAge))
+      ? Math.max(0, Number(oldestPacketAge))
+      : null;
+  } catch (error) {
+    console.error('Failed to load genealogy review counts:', error);
+    pendingGenealogyDecisionCount.value = 0;
+    pendingFaceMatchCount.value = 0;
+    pendingPicturePacketCount.value = 0;
+    stalePicturePacketCount.value = 0;
+    oldestPicturePacketAgeDays.value = null;
+  }
+};
+
 // Media Category Methods (Phase 3.6)
 const filterMediaByCategory = async (category) => {
   selectedMediaCategory.value = category;
@@ -14609,12 +14855,16 @@ const loadTranscriptionQueue = async () => {
 
 const loadIntakeRuns = async () => {
   if (!selectedTreeId.value) return;
+  const treeId = Number(selectedTreeId.value);
+  const requestNumber = ++intakeRunListRequest;
 
   try {
     const response = await axios.get('/api/genealogy/intake-runs', {
-      params: { tree_id: selectedTreeId.value, limit: 50 }
+      params: { tree_id: treeId, limit: 50 }
     });
-    intakeRuns.value = response.data.data.runs || [];
+    if (requestNumber === intakeRunListRequest && Number(selectedTreeId.value) === treeId) {
+      intakeRuns.value = response.data.data.runs || [];
+    }
   } catch (error) {
     console.error('Failed to load intake runs:', error);
   }
@@ -14628,6 +14878,12 @@ const stageIntakeRun = async () => {
   intakeRunStageError.value = '';
 
   try {
+    if (Number(selectedTreeId.value) !== Number(treeId)) {
+      selectedTreeId.value = Number(treeId);
+      localStorage.setItem('genealogy_selected_tree', String(treeId));
+      await loadTreeData();
+    }
+
     const response = await axios.post('/api/genealogy/intake-runs/stage', {
       tree_id: treeId,
       root_path: `${intakeRunStageForm.value.root_path || ''}`.trim(),
@@ -15421,8 +15677,9 @@ const selectedIntakeRunPriorityPreview = computed(() => {
   };
 });
 
-const selectIntakeRun = async (runKey, previewPacket = null) => {
-  if (!runKey) return;
+const selectIntakeRun = async (runKey, previewPacket = null, linkedRequest = null) => {
+  if (!runKey) return false;
+  if (!linkedRequest) intakeDeepLinkReadOnly.value = false;
 
   loadingIntakeRunPreview.value = true;
   try {
@@ -15434,10 +15691,25 @@ const selectIntakeRun = async (runKey, previewPacket = null) => {
     const response = await axios.get(`/api/genealogy/intake-runs/${encodeURIComponent(runKey)}`, {
       params,
     });
+    if (linkedRequest && !linkedRequest()) return false;
+    const run = response.data?.data?.run;
+    if (!run || run.run_key !== runKey) throw new Error('The requested intake run was not returned.');
+    if (linkedRequest) {
+      const treeId = Number(run.tree_id);
+      if (!Number.isSafeInteger(treeId) || treeId < 1 || !trees.value.some(tree => Number(tree.id) === treeId)) {
+        throw new Error('The intake run tree is not available.');
+      }
+      if (Number(selectedTreeId.value) !== treeId) {
+        throw new Error('The intake run is not in the selected tree.');
+      }
+      if (!linkedRequest()) return false;
+      await loadIntakeRuns();
+    }
     const [workspaceResponse, proposalDraftResponse] = await Promise.all([
       axios.get(`/api/genealogy/intake-runs/${encodeURIComponent(runKey)}/workspace`),
       axios.get(`/api/genealogy/intake-runs/${encodeURIComponent(runKey)}/proposal-draft`),
     ]);
+    if (linkedRequest && !linkedRequest()) return false;
     selectedIntakeRun.value = response.data.data.run || null;
     selectedIntakeRunPreview.value = response.data.data.packet_preview || null;
     selectedIntakeRunSelectedPacket.value = response.data.data.selected_packet || null;
@@ -15449,8 +15721,16 @@ const selectIntakeRun = async (runKey, previewPacket = null) => {
     selectedIntakeRunPacketLabel.value = selectedIntakeRunPreview.value?.packet_label
       || intakeRunPacketOptions.value[0]?.value
       || '';
+    return true;
   } catch (error) {
+    if (linkedRequest && !linkedRequest()) return false;
     console.error('Failed to load intake run preview:', error);
+    if (linkedRequest) {
+      const reason = error.response?.data?.error?.message || error.message;
+      intakeRunDeepLinkError.value = error.response?.status === 404 || reason === 'run_not_found'
+        ? 'The requested intake run was not found.'
+        : (reason || 'Failed to load the requested intake run.');
+    }
     selectedIntakeRun.value = null;
     selectedIntakeRunPreview.value = null;
     selectedIntakeRunSelectedPacket.value = null;
@@ -15460,8 +15740,9 @@ const selectIntakeRun = async (runKey, previewPacket = null) => {
     intakeApprovalDraftPreviewError.value = '';
     selectedIntakeRunPacketLabel.value = '';
     intakeRunDecisionNotes.value = '';
+    return false;
   } finally {
-    loadingIntakeRunPreview.value = false;
+    if (!linkedRequest || linkedRequest()) loadingIntakeRunPreview.value = false;
   }
 };
 
@@ -15720,6 +16001,11 @@ const scheduleApprovalDraftPreview = () => {
     clearTimeout(intakeApprovalDraftPreviewTimer);
   }
 
+  if (intakeDeepLinkReadOnly.value) {
+    selectedIntakeRunApprovalDraftPreview.value = null;
+    return;
+  }
+
   if (!selectedIntakeRun.value?.run_key || !selectedIntakeRunPacket.value || !selectedIntakeRunProposalPreview.value || !selectedIntakeRunDraftInput.value) {
     selectedIntakeRunApprovalDraftPreview.value = null;
     intakeApprovalDraftPreviewError.value = '';
@@ -15732,8 +16018,14 @@ const scheduleApprovalDraftPreview = () => {
 };
 
 const openIntakeRunsModal = async () => {
+  if (route.query.intake_run !== undefined) {
+    await openIntakeRunDeepLink(route.query.intake_run);
+    return;
+  }
   showIntakeRunsModal.value = true;
+  intakeDeepLinkReadOnly.value = false;
   intakeRunStageError.value = '';
+  intakeRunDeepLinkError.value = '';
   if (!intakeRunStageForm.value.tree_id && selectedTreeId.value) {
     intakeRunStageForm.value.tree_id = selectedTreeId.value;
   }
@@ -15749,6 +16041,58 @@ const openIntakeRunsModal = async () => {
     selectedIntakeRunPacketLabel.value = '';
   }
 };
+
+const openIntakeRunDeepLink = async (rawRunKey) => {
+  const requestNumber = ++intakeRunDeepLinkRequest;
+  if (rawRunKey === undefined) return;
+  showIntakeRunsModal.value = true;
+  intakeDeepLinkReadOnly.value = true;
+  if (intakeApprovalDraftPreviewTimer) clearTimeout(intakeApprovalDraftPreviewTimer);
+  intakeRunDeepLinkError.value = '';
+  selectedIntakeRun.value = null;
+  selectedIntakeRunPreview.value = null;
+  selectedIntakeRunSelectedPacket.value = null;
+  selectedIntakeRunWorkspace.value = null;
+  selectedIntakeRunProposalDraft.value = null;
+  selectedIntakeRunApprovalDraftPreview.value = null;
+  if (typeof rawRunKey !== 'string' || !/^intake:[a-f0-9]{12}$/i.test(rawRunKey)) {
+    intakeRunDeepLinkError.value = 'Invalid intake run link.';
+    return;
+  }
+  const linkedTreeValue = route.query.tree_id;
+  const linkedTreeId = typeof linkedTreeValue === 'string' && /^[1-9]\d*$/.test(linkedTreeValue)
+    ? Number(linkedTreeValue)
+    : null;
+  if (linkedTreeValue !== undefined && (!Number.isSafeInteger(linkedTreeId) || linkedTreeId < 1)) {
+    intakeRunDeepLinkError.value = 'Invalid genealogy tree in intake run link.';
+    return;
+  }
+  if (linkedTreeId && !trees.value.some(tree => Number(tree.id) === linkedTreeId)) {
+    intakeRunDeepLinkError.value = 'The intake run tree is not available.';
+    return;
+  }
+  if (linkedTreeId && Number(selectedTreeId.value) !== linkedTreeId) {
+    selectedTreeId.value = linkedTreeId;
+    localStorage.setItem('genealogy_selected_tree', String(linkedTreeId));
+    await loadTreeData();
+    if (requestNumber !== intakeRunDeepLinkRequest) return;
+  }
+  if (!selectedTreeId.value) {
+    intakeRunDeepLinkError.value = 'Select a genealogy tree before opening this intake run.';
+    return;
+  }
+  await selectIntakeRun(rawRunKey, null, () => requestNumber === intakeRunDeepLinkRequest);
+};
+
+watch(() => [route.query.intake_run, route.query.tree_id], ([runKey]) => {
+  if (runKey === undefined) {
+    ++intakeRunDeepLinkRequest;
+    if (intakeDeepLinkReadOnly.value) showIntakeRunsModal.value = false;
+    intakeDeepLinkReadOnly.value = false;
+    return;
+  }
+  if (intakeDeepLinkReady) void openIntakeRunDeepLink(runKey);
+});
 
 watch(
   () => {
@@ -16544,13 +16888,16 @@ const getMediaThumbnailUrl = (media, size = 'medium') => {
   if (!media) return null;
   if (media.thumbnail_url) {
     const sizedUrl = media.thumbnail_url.replace(/\/thumbnail\/(small|medium|large)(\?|$)/, `/thumbnail/${size}$2`);
-    if (sizedUrl.includes('size=')) {
-      return sizedUrl.replace(/([?&]size=)(small|medium|large)/, `$1${encodeURIComponent(size)}`);
+    const scopedUrl = sizedUrl.startsWith('/api/genealogy/media/') && !sizedUrl.includes('tree_id=')
+      ? `${sizedUrl}${sizedUrl.includes('?') ? '&' : '?'}tree_id=${media.tree_id || selectedTreeId.value}`
+      : sizedUrl;
+    if (scopedUrl.includes('size=')) {
+      return scopedUrl.replace(/([?&]size=)(small|medium|large)/, `$1${encodeURIComponent(size)}`);
     }
-    return sizedUrl;
+    return scopedUrl;
   }
   if (media.id) {
-    return `/api/genealogy/media/${media.id}/thumbnail?size=${encodeURIComponent(size)}`;
+    return `/api/genealogy/media/${media.id}/thumbnail?size=${encodeURIComponent(size)}&tree_id=${media.tree_id || selectedTreeId.value}`;
   }
   if (media.asset_uuid) {
     return `/api/media/${media.asset_uuid}/thumbnail/${encodeURIComponent(size)}`;
@@ -16727,6 +17074,7 @@ const loadTreeData = async () => {
       loadMissingDataTypes(),
       loadMediaStatus(),
       loadUnconfirmedFaceCount(),
+      loadPictureReviewCount(),
     ]);
 
     if (resolvedHomePersonId) {
@@ -16933,13 +17281,10 @@ const createDataProvider = () => {
           return null;
         },
         getDeathPlace: () => {
-          // Show "Living" if no death date
-          if (!person.death_date && person.living !== false) {
-            return 'Living';
-          }
-          return null;
+          if (person.death_date) return null;
+          return deathStatusLabel(person);
         },
-        isConfirmedDeath: () => !!person.death_date,
+        isConfirmedDeath: () => !!person.death_date || normalizeLivingStatus(person.living) === false,
         getSex: () => person.sex || 'U',
         getImageUrl: () => person.photo || null,
         getImages: () => person.photo ? [{ url: person.photo }] : null,
@@ -17954,6 +18299,9 @@ const deleteNameVariation = async (variation) => {
 
 const openResearchTasksModal = async () => {
   if (!selectedTreeId.value) return;
+  researchTaskFilter.value = 'all';
+  researchTasksError.value = '';
+  expandedResearchTaskIds.value = new Set();
   showResearchTasksModal.value = true;
   await loadResearchTasks();
 };
@@ -17961,17 +18309,91 @@ const openResearchTasksModal = async () => {
 const loadResearchTasks = async () => {
   if (!selectedTreeId.value) return;
   loadingResearchTasks.value = true;
+  researchTasksError.value = '';
 
   try {
-    const response = await axios.get(`/api/genealogy/trees/${selectedTreeId.value}/research-tasks`);
+    const params = { limit: 100 };
+    if (researchTaskFilter.value !== 'all') {
+      params.status = researchTaskFilter.value;
+    }
+    const response = await axios.get(`/api/genealogy/trees/${selectedTreeId.value}/research-tasks`, { params });
     if (response.data.success) {
       researchTasks.value = response.data.data || [];
+      researchTaskStatusCounts.value = {
+        ...researchTaskStatusCounts.value,
+        ...(response.data.meta?.status_counts || {})
+      };
     }
   } catch (error) {
     console.error('Failed to load research tasks:', error);
+    researchTasksError.value = error.response?.data?.error?.message || 'Research tasks could not be loaded.';
   } finally {
     loadingResearchTasks.value = false;
   }
+};
+
+const refreshResearchTasks = () => loadResearchTasks();
+
+const setResearchTaskFilter = async (status) => {
+  if (researchTaskFilter.value === status || loadingResearchTasks.value) return;
+  researchTaskFilter.value = status;
+  expandedResearchTaskIds.value = new Set();
+  await loadResearchTasks();
+};
+
+const hasResearchTaskDetails = (task) => Boolean(
+  task.selection_reason ||
+  task.scope_reason ||
+  task.evidence_summary ||
+  task.conflicts_found ||
+  task.outcome_reason ||
+  task.sources_checked?.length ||
+  task.related_people_used?.length
+);
+
+const isResearchTaskExpanded = (taskId) => expandedResearchTaskIds.value.has(taskId);
+
+const toggleResearchTaskDetails = (taskId) => {
+  const next = new Set(expandedResearchTaskIds.value);
+  if (next.has(taskId)) {
+    next.delete(taskId);
+  } else {
+    next.add(taskId);
+  }
+  expandedResearchTaskIds.value = next;
+};
+
+const formatResearchTaskReference = (reference, prefix) => {
+  if (typeof reference === 'number' || /^\d+$/.test(String(reference))) {
+    return `${prefix} #${reference}`;
+  }
+  if (reference && typeof reference === 'object') {
+    const label = reference.title || reference.name || reference.label || reference.id;
+    return label ? String(label) : prefix;
+  }
+
+  const value = String(reference || '').trim();
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      return new URL(value).hostname;
+    } catch {
+      return prefix;
+    }
+  }
+
+  return value || prefix;
+};
+
+const researchTaskReferenceCount = (references) => Array.isArray(references) ? references.length : 0;
+
+const formatResearchTaskReferences = (references, prefix) => {
+  const items = Array.isArray(references) ? references : [];
+  const bounded = items.slice(0, 8).map(reference => formatResearchTaskReference(reference, prefix));
+  if (items.length > bounded.length) {
+    bounded.push(`+${items.length - bounded.length} more`);
+  }
+
+  return bounded.join(', ');
 };
 
 const getTaskTypeLabel = (type) => {
@@ -18672,6 +19094,8 @@ watch(treeViewMode, () => {
 onMounted(async () => {
   await loadTrees();
   await openPersonDeepLink();
+  intakeDeepLinkReady = true;
+  if (route.query.intake_run !== undefined) await openIntakeRunDeepLink(route.query.intake_run);
 });
 </script>
 
@@ -18735,7 +19159,7 @@ onMounted(async () => {
    ============================================ */
 
 .tree-container {
-  background-color: #f8f9fa;
+  background-color: var(--color-bg-tertiary);
 }
 
 /* Fullscreen tree mode */
@@ -18963,7 +19387,7 @@ onMounted(async () => {
 
   /* Cards have visible borders for print */
   .card {
-    border: 1px solid #ccc;
+    border: 1px solid var(--color-border);
     background: white;
   }
 }

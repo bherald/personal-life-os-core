@@ -53,6 +53,7 @@ class WorkflowOpsService
             ];
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getHealthSummary failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -66,6 +67,7 @@ class WorkflowOpsService
             return app(WorkflowDiagnosticsService::class)->getFailingWorkflows($threshold);
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getFailingWorkflows failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -79,6 +81,7 @@ class WorkflowOpsService
             return app(WorkflowMetricsService::class)->getDashboard();
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getMetricsDashboard failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -92,6 +95,7 @@ class WorkflowOpsService
             return app(CompensationService::class)->getStats();
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getCompensationStats failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -113,9 +117,11 @@ class WorkflowOpsService
             ");
 
             $stats['workflow_jobs'] = $workflowJobs;
+
             return $stats;
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getJobStats failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -129,6 +135,7 @@ class WorkflowOpsService
             return app(WorkflowService::class)->getExecutionHistory($workflow_id, $limit);
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getExecutionHistory failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -140,7 +147,7 @@ class WorkflowOpsService
     public function getWebhookStats(): array
     {
         try {
-            $triggers = DB::select("SELECT * FROM webhook_triggers ORDER BY workflow_id");
+            $triggers = DB::select('SELECT * FROM webhook_triggers ORDER BY workflow_id');
 
             $results = [];
             $triggerService = app(WebhookTriggerService::class);
@@ -168,12 +175,13 @@ class WorkflowOpsService
                 'triggers' => $results,
                 'summary' => [
                     'total' => count($results),
-                    'active' => count(array_filter($results, fn($t) => $t['active'] ?? false)),
-                    'with_errors' => count(array_filter($results, fn($t) => isset($t['error']))),
+                    'active' => count(array_filter($results, fn ($t) => $t['active'] ?? false)),
+                    'with_errors' => count(array_filter($results, fn ($t) => isset($t['error']))),
                 ],
             ];
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getWebhookStats failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -184,14 +192,14 @@ class WorkflowOpsService
     public function getErrorPatterns(string $period = '7d'): array
     {
         try {
-            $workflows = DB::select("SELECT id, name FROM workflows WHERE active = 1");
+            $workflows = DB::select('SELECT id, name FROM workflows WHERE active = 1');
             $patterns = [];
             $diag = app(WorkflowDiagnosticsService::class);
 
             foreach ($workflows as $wf) {
                 try {
                     $ep = $diag->getErrorPatterns($wf->id, $period);
-                    if (!empty($ep)) {
+                    if (! empty($ep)) {
                         $patterns[] = [
                             'workflow_id' => $wf->id,
                             'workflow_name' => $wf->name,
@@ -210,6 +218,7 @@ class WorkflowOpsService
             ];
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getErrorPatterns failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -223,6 +232,7 @@ class WorkflowOpsService
             return app(WorkflowMetricsService::class)->getSlowNodes($threshold_ms);
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::getSlowNodes failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -247,6 +257,7 @@ class WorkflowOpsService
             ];
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::analyzeWorkflow failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -259,6 +270,7 @@ class WorkflowOpsService
     {
         try {
             $fixed = app(ScheduledJobService::class)->fixStuckJobs();
+
             return [
                 'fixed_count' => $fixed,
                 'message' => $fixed > 0
@@ -267,6 +279,7 @@ class WorkflowOpsService
             ];
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::fixStuckJobs failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -279,6 +292,7 @@ class WorkflowOpsService
     {
         try {
             $results = app(WorkflowDiagnosticsService::class)->updateAllDiagnostics($period);
+
             return [
                 'updated' => count($results),
                 'period' => $period,
@@ -286,6 +300,7 @@ class WorkflowOpsService
             ];
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::refreshDiagnostics failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }
@@ -294,23 +309,37 @@ class WorkflowOpsService
      * Resume a failed workflow execution from its last checkpoint.
      * SUBMIT FOR REVIEW FIRST for production workflows.
      */
-    public function resumeExecution(string $execution_id): array
+    public function resumeExecution(string $execution_id, string $execution_intent): array
     {
+        if ($execution_intent !== 'resume_live') {
+            return [
+                'error' => 'Explicit execution_intent=resume_live is required',
+                'execution_id' => $execution_id,
+                'execution_intent_accepted' => false,
+            ];
+        }
+
         try {
             // Verify it can be resumed
             $canResume = app(WorkflowService::class)->canResumeExecution($execution_id);
-            if (!$canResume) {
+            if (! $canResume) {
                 return ['error' => 'Execution cannot be resumed', 'execution_id' => $execution_id];
             }
 
             $result = app(WorkflowService::class)->resumeWorkflow($execution_id);
+
             return [
                 'execution_id' => $execution_id,
-                'resumed' => true,
+                'execution_intent' => 'resume_live',
+                'execution_intent_accepted' => true,
+                'resumed' => (bool) ($result['resumed'] ?? false),
+                'skipped' => (bool) ($result['skipped'] ?? false),
+                'reason' => $result['reason'] ?? null,
                 'result' => $result,
             ];
         } catch (\Exception $e) {
             Log::error('WorkflowOpsService::resumeExecution failed', ['error' => $e->getMessage()]);
+
             return ['error' => $e->getMessage()];
         }
     }

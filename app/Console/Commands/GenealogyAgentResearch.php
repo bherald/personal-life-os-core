@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\AgentLoopService;
+use App\Services\Genealogy\GenealogyService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -116,6 +117,10 @@ class GenealogyAgentResearch extends Command
         }
 
         $result = $agentLoop->execute('genealogy-researcher', $task, $options);
+
+        if ($personId && is_numeric($personId)) {
+            app(GenealogyService::class)->markPersonAgentWorked($treeId, (int) $personId);
+        }
 
         if ($result['success']) {
             $this->info('Agent completed in '.round($result['duration_ms'] / 1000, 1).'s');

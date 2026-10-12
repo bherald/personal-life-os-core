@@ -13,5 +13,6 @@ final readonly class TrustEnvelope
         public string $trustLevel = 'low',
         public string $payload = '',
         public int $maxChars = 10000,
+        public bool $preservePayload = false,
     ) {}
 }

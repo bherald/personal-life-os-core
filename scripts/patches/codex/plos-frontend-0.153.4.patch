@@ -1,0 +1,2180 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index e217b70..ca93c94 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -394,7 +394,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
+ 
+ [[package]]
+ name = "app_test_support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -1897,7 +1897,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-core",
+@@ -1909,7 +1909,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-graph-store"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-state",
+@@ -1924,7 +1924,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-identity"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -1944,7 +1944,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-agent-roles"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "codex-file-system",
+@@ -1957,7 +1957,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-analytics"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-app-server-protocol",
+  "codex-git-utils",
+@@ -1978,7 +1978,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-ansi-escape"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "ansi-to-tui",
+  "ratatui",
+@@ -1987,7 +1987,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-api"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_matches",
+@@ -2022,7 +2022,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -2124,7 +2124,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-app-server",
+  "codex-app-server-protocol",
+@@ -2151,7 +2151,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-daemon"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-app-server-protocol",
+@@ -2172,7 +2172,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-app-server-protocol-noop-macros",
+@@ -2206,11 +2206,11 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-protocol-noop-macros"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-app-server-test-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -2232,7 +2232,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-app-server-transport"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -2274,7 +2274,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-apply-patch"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_cmd",
+@@ -2294,7 +2294,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-arg0"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-apply-patch",
+@@ -2316,7 +2316,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-async-utils"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "tokio",
+@@ -2325,7 +2325,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-aws-auth"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "aws-config",
+  "aws-credential-types",
+@@ -2340,7 +2340,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-backend-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-api",
+@@ -2360,7 +2360,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-backend-openapi-models"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "serde",
+  "serde_json",
+@@ -2369,7 +2369,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-build-info"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-install-context",
+  "pretty_assertions",
+@@ -2381,7 +2381,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-bwrap"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "cc",
+  "libc",
+@@ -2390,7 +2390,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-chatgpt"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -2412,7 +2412,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cli"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -2502,7 +2502,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-http-client",
+  "eventsource-stream",
+@@ -2515,7 +2515,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-config"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "chrono",
+@@ -2540,7 +2540,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-tasks"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -2573,7 +2573,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-tasks-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -2588,7 +2588,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-cloud-tasks-mock-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-cloud-tasks-client",
+@@ -2597,7 +2597,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-code-mode-protocol",
+  "codex-http-client",
+@@ -2620,7 +2620,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode-host"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -2648,7 +2648,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "glob",
+@@ -2666,7 +2666,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-code-mode-runtime"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-code-mode-protocol",
+@@ -2684,11 +2684,11 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-collaboration-mode-templates"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-config"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -2737,7 +2737,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-config-schema"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -2746,7 +2746,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-connectors"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -2768,7 +2768,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-connectors-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-connectors",
+  "codex-core-plugins",
+@@ -2782,7 +2782,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-context-fragments"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-utils-string",
+@@ -2790,7 +2790,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-core"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -2924,7 +2924,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-core-api"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-analytics",
+  "codex-app-server-protocol",
+@@ -2947,7 +2947,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-core-plugins"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3003,7 +3003,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-diagnostics"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "libc",
+  "pretty_assertions",
+@@ -3011,7 +3011,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_cmd",
+@@ -3060,7 +3060,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec-server"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -3119,7 +3119,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec-server-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-file-system",
+@@ -3134,7 +3134,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-exec-server-test-support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-exec-server",
+@@ -3149,7 +3149,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-execpolicy"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -3167,7 +3167,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-experimental-api-macros"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "proc-macro2",
+  "quote",
+@@ -3176,7 +3176,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-extension-api"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "codex-context-fragments",
+@@ -3193,7 +3193,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-extension-items"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "pretty_assertions",
+@@ -3205,7 +3205,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-external-agent-migration"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-analytics",
+@@ -3235,7 +3235,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-features"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-otel",
+  "codex-protocol",
+@@ -3248,7 +3248,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-feedback"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "bytes",
+@@ -3270,7 +3270,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-file-search"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -3286,7 +3286,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-file-system"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "bytes",
+  "codex-protocol",
+@@ -3298,7 +3298,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-file-watcher"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "notify",
+  "pretty_assertions",
+@@ -3309,7 +3309,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-git-attribution"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-backend-client",
+  "codex-extension-api",
+@@ -3322,7 +3322,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-git-utils"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3348,7 +3348,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-goal-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3372,7 +3372,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-guardian-context"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "pretty_assertions",
+@@ -3381,7 +3381,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-guardian-v2"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-analytics",
+@@ -3411,7 +3411,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-history"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-protocol",
+@@ -3423,7 +3423,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-history-notes-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-api",
+  "codex-client",
+@@ -3447,7 +3447,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-home"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-extension-api",
+  "codex-utils-absolute-path",
+@@ -3458,7 +3458,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-hooks"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "async-channel",
+@@ -3484,7 +3484,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-http-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "bytes",
+  "codex-utils-cargo-bin",
+@@ -3516,7 +3516,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-image-generation-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-api",
+@@ -3543,7 +3543,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-install-context"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "codex-utils-home-dir",
+@@ -3556,7 +3556,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-keyring-store"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "keyring",
+  "tracing",
+@@ -3564,7 +3564,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-linux-sandbox"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "clap",
+  "codex-core",
+@@ -3591,7 +3591,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-lmstudio"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-core",
+  "codex-http-client",
+@@ -3605,7 +3605,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-login"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -3648,7 +3648,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-mcp"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "arc-swap",
+@@ -3688,7 +3688,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-mcp-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -3719,7 +3719,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-mcp-server"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -3758,7 +3758,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-memories-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-core",
+  "codex-extension-api",
+@@ -3779,7 +3779,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-memories-read"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-shell-command",
+@@ -3789,7 +3789,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-memories-write"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -3826,7 +3826,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-message-history"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "memchr",
+@@ -3840,7 +3840,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-model-provider"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-agent-identity",
+  "codex-api",
+@@ -3864,7 +3864,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-model-provider-info"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-api",
+  "codex-protocol",
+@@ -3881,7 +3881,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-models-manager"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-collaboration-mode-templates",
+@@ -3901,7 +3901,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-network-proxy"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -3939,7 +3939,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-ollama"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_matches",
+  "async-stream",
+@@ -3959,7 +3959,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-otel"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-api",
+@@ -3992,7 +3992,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-otel-trace-websocket"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -4003,7 +4003,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-plugin"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-config",
+  "codex-protocol",
+@@ -4017,7 +4017,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-process-hardening"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "libc",
+  "pretty_assertions",
+@@ -4025,7 +4025,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-prompts"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-context-fragments",
+@@ -4039,7 +4039,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-protocol"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chardetng",
+@@ -4083,7 +4083,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-queue-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-core",
+@@ -4104,7 +4104,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-realtime-webrtc"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-install-context",
+@@ -4117,7 +4117,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-response-debug-context"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-api",
+@@ -4128,7 +4128,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-responses-api-proxy"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -4145,7 +4145,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-rmcp-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "axum",
+@@ -4191,7 +4191,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-rollout"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -4218,7 +4218,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-rollout-trace"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-code-mode",
+@@ -4234,7 +4234,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-sandboxing"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "appcontainer_common",
+@@ -4261,7 +4261,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-secrets"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "age",
+  "anyhow",
+@@ -4282,7 +4282,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-shell-command"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -4305,7 +4305,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-shell-escalation"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -4325,7 +4325,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-skills"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-shell-command",
+@@ -4342,7 +4342,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-skills-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_matches",
+  "codex-analytics",
+@@ -4379,7 +4379,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-state"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "chrono",
+@@ -4403,7 +4403,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-stdio-to-uds"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-uds",
+@@ -4415,7 +4415,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-terminal-detection"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "tracing",
+@@ -4423,7 +4423,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-test-binary-support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-arg0",
+  "tempfile",
+@@ -4431,7 +4431,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-thread-manager-sample"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "clap",
+@@ -4442,7 +4442,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-thread-store"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "chrono",
+  "codex-app-server-protocol",
+@@ -4472,7 +4472,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-tools"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "bitflags 2.13.1",
+  "codex-code-mode",
+@@ -4497,7 +4497,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-tui"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "app_test_support",
+@@ -4610,7 +4610,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-uds"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "async-io",
+  "pretty_assertions",
+@@ -4622,7 +4622,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-absolute-path"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "dirs",
+  "dunce",
+@@ -4636,14 +4636,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-approval-presets"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+ ]
+ 
+ [[package]]
+ name = "codex-utils-audio"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-protocol",
+@@ -4657,7 +4657,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-cache"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "lru",
+  "sha1 0.10.6",
+@@ -4666,7 +4666,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-cargo-bin"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_cmd",
+  "runfiles",
+@@ -4675,7 +4675,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-cli"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "clap",
+  "codex-protocol",
+@@ -4687,15 +4687,15 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-elapsed"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-utils-fuzzy-match"
+-version = "0.0.0"
++version = "0.153.4"
+ 
+ [[package]]
+ name = "codex-utils-git-discovery"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-git-utils",
+  "codex-utils-absolute-path",
+@@ -4708,7 +4708,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-home-dir"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "dirs",
+@@ -4718,7 +4718,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-image"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-utils-cache",
+@@ -4731,7 +4731,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-json-to-toml"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "serde_json",
+@@ -4740,7 +4740,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-oss"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-core",
+  "codex-lmstudio",
+@@ -4750,7 +4750,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-output-truncation"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-utils-string",
+@@ -4759,7 +4759,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-path"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-utils-absolute-path",
+  "dunce",
+@@ -4769,7 +4769,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-path-uri"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "base64 0.22.1",
+  "codex-utils-absolute-path",
+@@ -4785,7 +4785,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-plugins"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-exec-server",
+  "codex-exec-server-protocol",
+@@ -4799,7 +4799,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-pty"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "filedescriptor",
+@@ -4815,7 +4815,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-readiness"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "assert_matches",
+  "thiserror 2.0.18",
+@@ -4825,7 +4825,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-redacted-string"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "schemars 0.8.22",
+  "serde",
+@@ -4833,14 +4833,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-rustls-provider"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "rustls",
+ ]
+ 
+ [[package]]
+ name = "codex-utils-sandbox-summary"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-protocol",
+  "codex-utils-absolute-path",
+@@ -4849,7 +4849,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-sleep-inhibitor"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "core-foundation 0.9.4",
+  "libc",
+@@ -4859,14 +4859,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-stream-parser"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+ ]
+ 
+ [[package]]
+ name = "codex-utils-string"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "regex-lite",
+@@ -4876,14 +4876,14 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-utils-template"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+ ]
+ 
+ [[package]]
+ name = "codex-v8-poc"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "pretty_assertions",
+  "v8",
+@@ -4891,7 +4891,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-voice-host"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-install-context",
+@@ -4905,7 +4905,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-web-search-extension"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-api",
+  "codex-core",
+@@ -4926,7 +4926,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-websocket-client"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-http-client",
+  "codex-utils-rustls-provider",
+@@ -4942,7 +4942,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-windows-sandbox"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "base64 0.22.1",
+@@ -4968,7 +4968,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-workload-identity"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "codex-http-client",
+  "pretty_assertions",
+@@ -4983,7 +4983,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "codex-worktree"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-git-utils",
+@@ -5222,7 +5222,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "core_test_support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "assert_cmd",
+@@ -9520,7 +9520,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "mcp_test_support"
+-version = "0.0.0"
++version = "0.153.4"
+ dependencies = [
+  "anyhow",
+  "codex-login",
+diff --git a/codex-rs/cli/src/main.rs b/codex-rs/cli/src/main.rs
+index 71d0323..4301682 100644
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -1054,6 +1054,12 @@ async fn cli_main(
+         mut interactive,
+         subcommand,
+     } = MultitoolCli::parse();
++    if codex_tui::PLOS_FRONTEND
++        && (remote.remote.is_none()
++            || !matches!(&subcommand, None | Some(Subcommand::Resume(_))))
++    {
++        anyhow::bail!("The PLOS frontend requires its app-server endpoint. Start it through the plos launcher.");
++    }
+     // Fold --enable/--disable into config overrides so they flow to all subcommands.
+     let toggle_overrides = feature_toggles.to_overrides()?;
+     root_config_overrides.raw_overrides.extend(toggle_overrides);
+diff --git a/codex-rs/tui/Cargo.toml b/codex-rs/tui/Cargo.toml
+index 7de0ba5..4743b68 100644
+--- a/codex-rs/tui/Cargo.toml
++++ b/codex-rs/tui/Cargo.toml
+@@ -5,6 +5,9 @@ edition.workspace = true
+ license.workspace = true
+ autobins = false
+ 
++[features]
++plos = []
++
+ [[bin]]
+ name = "codex-tui"
+ path = "src/main.rs"
+diff --git a/codex-rs/tui/src/app.rs b/codex-rs/tui/src/app.rs
+index a8650e7..f210616 100644
+--- a/codex-rs/tui/src/app.rs
++++ b/codex-rs/tui/src/app.rs
+@@ -883,7 +883,11 @@ impl App {
+                     // each pasted line break becomes one LF and existing LFs stay unchanged.
+                     // [tui-textarea]: https://github.com/rhysd/tui-textarea/blob/4d18622eeac13b309e0ff6a55a46ac6706da68cf/src/textarea.rs#L782-L783
+                     // [iTerm2]: https://github.com/gnachman/iTerm2/blob/5d0c0d9f68523cbd0494dad5422998964a2ecd8d/sources/iTermPasteHelper.m#L206-L216
+-                    let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
++                    let pasted = if crate::PLOS_FRONTEND {
++                        pasted
++                    } else {
++                        pasted.replace("\r\n", "\n").replace('\r', "\n")
++                    };
+                     self.chat_widget.handle_paste(pasted);
+                     if self.reconnect.offline
+                         && self.reconnect.presentation
+diff --git a/codex-rs/tui/src/app/event_dispatch.rs b/codex-rs/tui/src/app/event_dispatch.rs
+index d2ea7c5..e7bafef 100644
+--- a/codex-rs/tui/src/app/event_dispatch.rs
++++ b/codex-rs/tui/src/app/event_dispatch.rs
+@@ -567,6 +567,56 @@ impl App {
+             AppEvent::BeginThreadSwitchHistoryReplayBuffer => {
+                 self.begin_thread_switch_history_replay_buffer();
+             }
++            AppEvent::PlosCommandsRequest { thread_id } => {
++                if self.chat_widget.thread_id() == Some(thread_id) {
++                    let generation = crate::bottom_pane::slash_commands::begin_plos_command_refresh();
++                    let request_id = app_server.next_request_id();
++                    if let codex_app_server_client::AppServerRequestHandle::Remote(handle) = app_server.request_handle() {
++                        let tx = self.app_event_tx.clone();
++                        tokio::spawn(async move {
++                            let request = codex_app_server_protocol::JSONRPCRequest { id: request_id,
++                                method: "plos/commands".to_string(), trace: None,
++                                params: Some(serde_json::json!({"threadId": thread_id.to_string()})) };
++                            let commands = match handle.request_json_rpc(request).await {
++                                Ok(Ok(value)) => serde_json::from_value(value["commands"].clone()).unwrap_or_default(),
++                                _ => Vec::new(),
++                            };
++                            tx.send(AppEvent::PlosCommandsResult { thread_id, generation, commands });
++                        });
++                    }
++                }
++            }
++            AppEvent::PlosCommandsResult { thread_id, generation, commands } => {
++                if self.chat_widget.thread_id() == Some(thread_id) {
++                    crate::bottom_pane::slash_commands::set_plos_commands(generation, commands);
++                }
++            }
++            AppEvent::PlosProcessControl { thread_id, command } => {
++                let request_id = app_server.next_request_id();
++                if let codex_app_server_client::AppServerRequestHandle::Remote(handle) = app_server.request_handle() {
++                    let tx = self.app_event_tx.clone();
++                    tokio::spawn(async move {
++                        let request = codex_app_server_protocol::JSONRPCRequest {
++                            id: request_id,
++                            method: "plos/process".to_string(),
++                            params: Some(serde_json::json!({"threadId": thread_id.to_string(), "command": command})),
++                            trace: None,
++                        };
++                        let message = match handle.request_json_rpc(request).await {
++                            Ok(Ok(value)) => serde_json::to_string_pretty(&value).unwrap_or_else(|error| error.to_string()),
++                            Ok(Err(error)) => error.message,
++                            Err(error) => format!("Process control outcome unavailable: {error}. No action was replayed."),
++                        };
++                        tx.send(AppEvent::PlosProcessResult { thread_id, message });
++                    });
++                } else {
++                    self.chat_widget.add_error_message("PLOS process controls require the PLOS remote backend.".to_string());
++                }
++            }
++            AppEvent::PlosProcessResult { thread_id, message } => {
++                let text = format!("PLOS process control — session {thread_id}\n{message}");
++                self.insert_history_cell(tui, Box::new(history_cell::new_info_event(text, None)));
++            }
+             AppEvent::InsertHistoryCell(cell) => {
+                 self.insert_history_cell(tui, cell);
+             }
+@@ -1542,6 +1592,10 @@ impl App {
+                     .await;
+             }
+             AppEvent::UpdateModel(model) => {
++                if crate::PLOS_FRONTEND {
++                    self.chat_widget.plos_select_model(model);
++                    return Ok(AppRunControl::Continue);
++                }
+                 let model_changed = self.chat_widget.current_model() != model
+                     || self.chat_widget.current_collaboration_mode().model() != model;
+                 if model_changed {
+@@ -2159,6 +2213,13 @@ impl App {
+                 }
+             }
+             AppEvent::PersistModelSelection { model, effort } => {
++                if crate::PLOS_FRONTEND {
++                    self.chat_widget.add_info_message(
++                        "Model selection applies to this PLOS session. Use /save-default cli.model to save it.".to_string(),
++                        None,
++                    );
++                    return Ok(AppRunControl::Continue);
++                }
+                 match crate::config_update::write_config_batch(
+                     app_server.request_handle(),
+                     crate::config_update::build_model_selection_edits(
+diff --git a/codex-rs/tui/src/app/exit_summary.rs b/codex-rs/tui/src/app/exit_summary.rs
+index 39b0238..af8dd67 100644
+--- a/codex-rs/tui/src/app/exit_summary.rs
++++ b/codex-rs/tui/src/app/exit_summary.rs
+@@ -88,6 +88,11 @@ impl AppExitInfo {
+             }
+         };
+         let mut lines = Vec::new();
++        if crate::PLOS_FRONTEND {
++            lines.push("PLOS terminal closed. Start PLOS again and choose /resume to reopen saved history.".to_string());
++            lines.push("Review interrupted command outcomes before retrying; reopening history does not replay actions.".to_string());
++            return lines;
++        }
+         if let Some(disconnect) = self.disconnect_info
+             && let Some(thread_id) = self.thread_id
+         {
+diff --git a/codex-rs/tui/src/app_event.rs b/codex-rs/tui/src/app_event.rs
+index 1592aef..20f1d4b 100644
+--- a/codex-rs/tui/src/app_event.rs
++++ b/codex-rs/tui/src/app_event.rs
+@@ -222,6 +222,10 @@ pub(crate) struct AgentsOverviewThreadRefresh {
+ #[allow(clippy::large_enum_variant)]
+ #[derive(Debug, IntoStaticStr)]
+ pub(crate) enum AppEvent {
++    PlosCommandsRequest { thread_id: ThreadId },
++    PlosCommandsResult { thread_id: ThreadId, generation: u64, commands: Vec<crate::bottom_pane::slash_commands::PlosCommand> },
++    PlosProcessControl { thread_id: ThreadId, command: String },
++    PlosProcessResult { thread_id: ThreadId, message: String },
+     /// Open the daemon-wide overview of recent and locally retained root sessions.
+     OpenAgentsOverview,
+     /// Update the daemon-wide overview after a background thread listing finishes.
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer.rs b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+index 953f2e9..81d8d94 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+@@ -1215,8 +1215,12 @@ impl ChatComposer {
+     /// In all cases, clears any paste-burst Enter suppression state so a real paste cannot affect
+     /// the next user Enter key, then syncs popup state.
+     pub fn handle_paste(&mut self, pasted: String) -> bool {
+-        let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
+-        let pasted = sanitize_user_text(pasted.into());
++        let pasted = if crate::PLOS_FRONTEND {
++            std::borrow::Cow::Owned(pasted)
++        } else {
++            let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
++            sanitize_user_text(pasted.into())
++        };
+         if let Some(query) = self.draft.textarea.vim_query_mut() {
+             query.editor.insert_str(&pasted);
+             return true;
+@@ -3066,10 +3070,12 @@ impl ChatComposer {
+         let expanded_input = text.clone();
+ 
+         // If there is neither text nor attachments, suppress submission entirely.
+-        text = text.trim().to_string();
+-        text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
++        if !crate::PLOS_FRONTEND {
++            text = text.trim().to_string();
++            text_elements = Self::trim_text_elements(&expanded_input, &text, text_elements);
++        }
+ 
+-        if slash_validation == SlashValidation::Immediate
++        if !crate::PLOS_FRONTEND && slash_validation == SlashValidation::Immediate
+             && let SubmissionValidation::UnknownCommand(name) = self
+                 .slash_input()
+                 .validate_submission(&text, input_starts_with_space)
+@@ -3215,6 +3221,49 @@ impl ChatComposer {
+         if let Some(result) = self.handle_parent_owned_submission() {
+             return result;
+         }
++        // PLOS owns slash commands, including model, engine and policy changes.
++        // Pass exact submitted text to its server instead of expanding prompts.
++        if crate::PLOS_FRONTEND {
++            if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
++                self.handle_paste(pasted);
++            }
++            if let Some((text, text_elements)) = self.prepare_submission_text(true) {
++                if text == "/quit" || text == "/exit" {
++                    return (InputResult::Command(SlashCommand::Quit), true);
++                }
++                let native_session_command = match text.as_str() {
++                    "/new" => Some(SlashCommand::New),
++                    "/clear" => Some(SlashCommand::Clear),
++                    "/resume" => Some(SlashCommand::Resume),
++                    "/skills" => Some(SlashCommand::Skills),
++                    "/model" => Some(SlashCommand::Model),
++                    "/process" => Some(SlashCommand::Process),
++                    "/mcp" => Some(SlashCommand::Mcp),
++                    _ => None,
++                };
++                if let Some(command) = native_session_command {
++                    return (InputResult::Command(command), true);
++                }
++                if text == "/mcp verbose" {
++                    return (InputResult::CommandWithArgs(SlashCommand::Mcp, "verbose".to_string(), Vec::new()), true);
++                }
++                for (prefix, command) in [("/new ", SlashCommand::New), ("/clear ", SlashCommand::Clear), ("/process ", SlashCommand::Process)] {
++                    if let Some(name) = text.strip_prefix(prefix) {
++                        return (InputResult::CommandWithArgs(command, name.to_string(), Vec::new()), true);
++                    }
++                }
++                return (if should_queue {
++                    InputResult::Queued {
++                        text, text_elements,
++                        action: QueuedInputAction::Literal,
++                        pending_pastes: Vec::new(),
++                    }
++                } else {
++                    InputResult::Submitted { text, text_elements }
++                }, true);
++            }
++            return (InputResult::None, true);
++        }
+         if should_queue {
+             if let Some(pasted) = self.draft.paste_burst.flush_before_modified_input() {
+                 self.handle_paste(pasted);
+@@ -9472,6 +9521,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "model")
+                 }
++                Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected model command, got service tier {command:?}")
+                 }
+@@ -9554,6 +9604,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "resume")
+                 }
++                Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected resume command, got service tier {command:?}")
+                 }
+@@ -9608,6 +9659,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "pets")
+                 }
++                Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected pets command, got service tier {command:?}")
+                 }
+@@ -9662,6 +9714,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "btw")
+                 }
++                Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected btw command, got service tier {command:?}")
+                 }
+@@ -9716,6 +9769,7 @@ mod tests {
+                 Some(CommandItem::Builtin(cmd)) => {
+                     assert_eq!(cmd.command(), "side")
+                 }
++                Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+                 Some(CommandItem::ServiceTier(command)) => {
+                     panic!("expected side command, got service tier {command:?}")
+                 }
+diff --git a/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs b/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
+index 81734f2..39e7c34 100644
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
+@@ -343,6 +343,18 @@ impl ChatComposer {
+                 ..
+             } => {
+                 if let Some(sel) = popup.selected_item() {
++                    if let CommandItem::Plos(command) = &sel {
++                        if command.disabled {
++                            self.app_event_tx.send(crate::app_event::AppEvent::InsertHistoryCell(Box::new(crate::history_cell::new_error_event(command.detail.clone()))));
++                            return (InputResult::None, true);
++                        }
++                        let original = self.draft.textarea.text().to_string();
++                        let head_end = original.find(char::is_whitespace).unwrap_or(original.len());
++                        let completed = format!("/{}{}", command.name, &original[head_end..]);
++                        self.draft.textarea.set_text_clearing_elements(&completed);
++                        self.draft.textarea.set_cursor(completed.len());
++                        return self.handle_key_event_without_popup(key_event);
++                    }
+                     if self.blocks_direct_input {
+                         let command_is_allowed = match &sel {
+                             CommandItem::Builtin(cmd) => {
+@@ -350,7 +362,7 @@ impl ChatComposer {
+                                     |(_, args, _)| parent_owned_command_is_allowed(*cmd, args),
+                                 )
+                             }
+-                            CommandItem::ServiceTier(_) => false,
++                            CommandItem::ServiceTier(_) | CommandItem::Plos(_) => false,
+                         };
+                         if !command_is_allowed {
+                             return (InputResult::ParentOwnedInputBlocked, true);
+@@ -374,6 +386,7 @@ impl ChatComposer {
+                             CommandItem::ServiceTier(command) => {
+                                 InputResult::ServiceTierCommand(command)
+                             }
++                            CommandItem::Plos(_) => unreachable!("PLOS selection handled above"),
+                         },
+                         true,
+                     );
+diff --git a/codex-rs/tui/src/bottom_pane/command_popup.rs b/codex-rs/tui/src/bottom_pane/command_popup.rs
+index f613e5e..994e145 100644
+--- a/codex-rs/tui/src/bottom_pane/command_popup.rs
++++ b/codex-rs/tui/src/bottom_pane/command_popup.rs
+@@ -31,6 +31,7 @@ const COMMAND_COLUMN_WIDTH: ColumnWidthConfig = ColumnWidthConfig::new(
+ pub(crate) enum CommandItem {
+     Builtin(SlashCommand),
+     ServiceTier(ServiceTierCommand),
++    Plos(super::slash_commands::PlosCommand),
+ }
+ 
+ pub(crate) struct CommandPopup {
+@@ -74,7 +75,7 @@ impl CommandPopup {
+         service_tier_commands: Vec<ServiceTierCommand>,
+     ) -> Self {
+         // Keep built-in availability in sync with the composer.
+-        let commands = commands_for_input(flags.into(), &service_tier_commands)
++        let mut commands: Vec<CommandItem> = commands_for_input(flags.into(), &service_tier_commands)
+             .into_iter()
+             .filter_map(|command| match command {
+                 SlashCommandItem::Builtin(cmd) => (!cmd.command().starts_with("debug")
+@@ -83,6 +84,7 @@ impl CommandPopup {
+                 SlashCommandItem::ServiceTier(command) => Some(CommandItem::ServiceTier(command)),
+             })
+             .collect();
++        if crate::PLOS_FRONTEND { commands = super::slash_commands::plos_commands().into_iter().map(CommandItem::Plos).collect(); }
+         Self {
+             command_filter: String::new(),
+             commands,
+@@ -95,6 +97,7 @@ impl CommandPopup {
+     /// *first* '/' on the *first* line becomes the active filter that is used
+     /// to narrow down the list of available commands.
+     pub(crate) fn on_composer_text_change(&mut self, text: String) {
++        if crate::PLOS_FRONTEND { self.commands = super::slash_commands::plos_commands().into_iter().map(CommandItem::Plos).collect(); }
+         let first_line = text.lines().next().unwrap_or("");
+         let previous_filter = self.command_filter.clone();
+ 
+@@ -214,8 +217,8 @@ impl CommandPopup {
+                     description: Some(description),
+                     category_tag: None,
+                     wrap_indent: None,
+-                    is_disabled: false,
+-                    disabled_reason: None,
++                    is_disabled: matches!(&item, CommandItem::Plos(command) if command.disabled),
++                    disabled_reason: match &item { CommandItem::Plos(command) if command.disabled => Some(command.detail.clone()), _ => None },
+                 }
+             })
+             .collect()
+@@ -250,6 +253,7 @@ impl CommandItem {
+         match self {
+             Self::Builtin(cmd) => cmd.command(),
+             Self::ServiceTier(command) => &command.name,
++            Self::Plos(command) => &command.name,
+         }
+     }
+ 
+@@ -257,6 +261,7 @@ impl CommandItem {
+         match self {
+             Self::Builtin(cmd) => cmd.description(),
+             Self::ServiceTier(command) => &command.description,
++            Self::Plos(command) => &command.description,
+         }
+     }
+ }
+@@ -295,7 +300,7 @@ mod tests {
+         let matches = popup.filtered_items();
+         let has_init = matches.iter().any(|item| match item {
+             CommandItem::Builtin(cmd) => cmd.command() == "init",
+-            CommandItem::ServiceTier(_) => false,
++            CommandItem::ServiceTier(_) | CommandItem::Plos(_) => false,
+         });
+         assert!(
+             has_init,
+@@ -313,6 +318,7 @@ mod tests {
+         let selected = popup.selected_item();
+         match selected {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "init"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected init command, got service tier {command:?}")
+             }
+@@ -327,6 +333,7 @@ mod tests {
+         let matches = popup.filtered_items();
+         match matches.first() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "model"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected model command, got service tier {command:?}")
+             }
+@@ -350,6 +357,7 @@ mod tests {
+         popup.on_composer_text_change("/fa".to_string());
+ 
+         match popup.selected_item() {
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => assert_eq!(
+                 command,
+                 ServiceTierCommand {
+@@ -378,6 +386,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert_eq!(
+@@ -441,6 +450,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert!(
+@@ -516,6 +526,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert!(
+@@ -544,6 +555,7 @@ mod tests {
+ 
+         match popup.selected_item() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "plan"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected plan command, got service tier {command:?}")
+             }
+@@ -575,6 +587,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+         assert!(
+@@ -603,6 +616,7 @@ mod tests {
+ 
+         match popup.selected_item() {
+             Some(CommandItem::Builtin(cmd)) => assert_eq!(cmd.command(), "personality"),
++            Some(CommandItem::Plos(_)) => panic!("Unexpected PLOS command in stock command test"),
+             Some(CommandItem::ServiceTier(command)) => {
+                 panic!("expected personality command, got service tier {command:?}")
+             }
+@@ -619,6 +633,7 @@ mod tests {
+             .map(|item| match item {
+                 CommandItem::Builtin(cmd) => cmd.command().to_string(),
+                 CommandItem::ServiceTier(command) => command.name,
++                CommandItem::Plos(command) => command.name,
+             })
+             .collect();
+ 
+diff --git a/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs b/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs
+index e3146db..e04e6d1 100644
+--- a/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs
++++ b/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs
+@@ -65,7 +65,11 @@ impl SkillsToggleView {
+         let mut header = ColumnRenderable::new();
+         header.push(Line::from("Enable/Disable Skills".bold()));
+         header.push(Line::from(
+-            "Turn skills on or off. Your changes are saved automatically.".dim(),
++            (if crate::PLOS_FRONTEND {
++                "Turn skills on or off for this session. Saving startup defaults is optional."
++            } else {
++                "Turn skills on or off. Your changes are saved automatically."
++            }).dim(),
+         ));
+ 
+         let mut view = Self {
+diff --git a/codex-rs/tui/src/bottom_pane/slash_commands.rs b/codex-rs/tui/src/bottom_pane/slash_commands.rs
+index 52b980e..af897a4 100644
+--- a/codex-rs/tui/src/bottom_pane/slash_commands.rs
++++ b/codex-rs/tui/src/bottom_pane/slash_commands.rs
+@@ -10,6 +10,39 @@ use codex_utils_fuzzy_match::fuzzy_match;
+ use crate::slash_command::SlashCommand;
+ use crate::slash_command::built_in_slash_commands;
+ 
++#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
++pub(crate) struct PlosCommand {
++    pub name: String,
++    pub description: String,
++    pub usage: String,
++    pub detail: String,
++    #[serde(default)]
++    pub disabled: bool,
++}
++
++static PLOS_COMMANDS: std::sync::RwLock<(u64, Vec<PlosCommand>)> = std::sync::RwLock::new((0, Vec::new()));
++pub(crate) fn begin_plos_command_refresh() -> u64 {
++    let mut state = PLOS_COMMANDS.write().unwrap_or_else(|e| e.into_inner());
++    state.0 += 1;
++    state.1.clear();
++    state.0
++}
++pub(crate) fn set_plos_commands(generation: u64, commands: Vec<PlosCommand>) {
++    let mut state = PLOS_COMMANDS.write().unwrap_or_else(|e| e.into_inner());
++    if state.0 == generation { state.1 = commands; }
++}
++pub(crate) fn plos_commands() -> Vec<PlosCommand> {
++    let mut commands = PLOS_COMMANDS.read().unwrap_or_else(|e| e.into_inner()).1.clone();
++    for (name, _) in built_in_slash_commands() {
++        if !commands.iter().any(|command| command.name == name) {
++            commands.push(PlosCommand { name: name.to_string(), usage: String::new(), disabled: true,
++                description: "Unavailable: no PLOS command binding loaded".to_string(),
++                detail: "This native command has no PLOS binding in the current catalog. Use /help for implemented commands.".to_string() });
++        }
++    }
++    commands
++}
++
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(crate) struct ServiceTierCommand {
+     pub(crate) id: String,
+@@ -151,6 +184,9 @@ pub(crate) fn has_slash_command_prefix(
+     flags: BuiltinCommandFlags,
+     service_tier_commands: &[ServiceTierCommand],
+ ) -> bool {
++    if crate::PLOS_FRONTEND {
++        return plos_commands().iter().any(|command| fuzzy_match(&command.name, name).is_some());
++    }
+     commands_for_input(flags, service_tier_commands)
+         .into_iter()
+         .any(|command| fuzzy_match(command.command(), name).is_some())
+diff --git a/codex-rs/tui/src/chatwidget/input_submission.rs b/codex-rs/tui/src/chatwidget/input_submission.rs
+index 8a4133e..3d717bf 100644
+--- a/codex-rs/tui/src/chatwidget/input_submission.rs
++++ b/codex-rs/tui/src/chatwidget/input_submission.rs
+@@ -178,7 +178,7 @@ impl ChatWidget {
+         let mut items: Vec<UserInput> = Vec::new();
+ 
+         // Special-case: "!cmd" executes a local shell command instead of sending to the model.
+-        if shell_escape_policy == ShellEscapePolicy::Allow
++        if !crate::PLOS_FRONTEND && shell_escape_policy == ShellEscapePolicy::Allow
+             && let Some(stripped) = text.strip_prefix('!')
+         {
+             let app_command = match self.submit_shell_command_with_history(stripped, &text) {
+diff --git a/codex-rs/tui/src/chatwidget/model_popups.rs b/codex-rs/tui/src/chatwidget/model_popups.rs
+index 0210428..a8880e7 100644
+--- a/codex-rs/tui/src/chatwidget/model_popups.rs
++++ b/codex-rs/tui/src/chatwidget/model_popups.rs
+@@ -220,16 +220,25 @@ impl ChatWidget {
+             let description =
+                 (!preset.description.is_empty()).then_some(preset.description.to_string());
+             let is_current = preset.model.as_str() == self.current_model();
+-            let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
++            let single_supported_effort = crate::PLOS_FRONTEND || preset.supported_reasoning_efforts.len() == 1;
+             let preset_for_action = preset.clone();
+             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
++                if crate::PLOS_FRONTEND {
++                    tx.send(AppEvent::UpdateModel(preset_for_action.model.clone()));
++                    tx.send(AppEvent::PersistModelSelection {
++                        model: preset_for_action.model.clone(),
++                        effort: None,
++                    });
++                    return;
++                }
+                 let preset_for_event = preset_for_action.clone();
+                 tx.send(AppEvent::OpenReasoningPopup {
+                     model: preset_for_event,
+                 });
+             })];
+             items.push(SelectionItem {
+-                name: preset.model.clone(),
++                name: if crate::PLOS_FRONTEND { preset.display_name.clone() } else { preset.model.clone() },
++                search_value: Some(format!("{} {} {}", preset.model, preset.display_name, preset.description)),
+                 description,
+                 is_current,
+                 is_default: preset.is_default,
+@@ -241,11 +250,14 @@ impl ChatWidget {
+         }
+ 
+         let header = self.model_menu_header(
+-            "Select Model and Effort",
+-            "Access legacy models by running codex -m <model_name> or in your config.toml",
++            if crate::PLOS_FRONTEND { "Select PLOS Model" } else { "Select Model and Effort" },
++            if crate::PLOS_FRONTEND { "Search model, host or capability. Runtime readiness is checked before use." }
++            else { "Access legacy models by running codex -m <model_name> or in your config.toml" },
+         );
+         self.show_model_selection_view(SelectionViewParams {
+             view_id: Some(view_id),
++            is_searchable: crate::PLOS_FRONTEND,
++            search_placeholder: if crate::PLOS_FRONTEND { Some("Search models".to_string()) } else { None },
+             footer_hint: Some(self.bottom_pane.standard_popup_hint_line()),
+             items,
+             header,
+diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
+index 48083eb..c6ec9a5 100644
+--- a/codex-rs/tui/src/chatwidget/protocol.rs
++++ b/codex-rs/tui/src/chatwidget/protocol.rs
+@@ -67,6 +67,9 @@ impl ChatWidget {
+                 }
+             }
+             ServerNotification::TurnCompleted(notification) => {
++                if crate::PLOS_FRONTEND && replay_kind.is_none() && let Some(thread_id) = self.thread_id() {
++                    self.app_event_tx.send(AppEvent::PlosCommandsRequest { thread_id });
++                }
+                 self.handle_turn_completed_notification(notification, replay_kind);
+             }
+             ServerNotification::ItemStarted(notification) => {
+diff --git a/codex-rs/tui/src/chatwidget/session_flow.rs b/codex-rs/tui/src/chatwidget/session_flow.rs
+index ce996c7..793d6c7 100644
+--- a/codex-rs/tui/src/chatwidget/session_flow.rs
++++ b/codex-rs/tui/src/chatwidget/session_flow.rs
+@@ -22,6 +22,7 @@ impl ChatWidget {
+         let connector_scope_changed = previous_thread_id != Some(session.thread_id)
+             || self.config.cwd.as_path() != session.cwd.as_path();
+         self.thread_id = Some(session.thread_id);
++        if crate::PLOS_FRONTEND { self.app_event_tx.send(AppEvent::PlosCommandsRequest { thread_id: session.thread_id }); }
+         self.bottom_pane
+             .set_queue_submissions(/*queue_submissions*/ false);
+         if previous_thread_id != self.thread_id {
+diff --git a/codex-rs/tui/src/chatwidget/skills.rs b/codex-rs/tui/src/chatwidget/skills.rs
+index 77fa911..55cbb5e 100644
+--- a/codex-rs/tui/src/chatwidget/skills.rs
++++ b/codex-rs/tui/src/chatwidget/skills.rs
+@@ -50,7 +50,11 @@ impl ChatWidget {
+ 
+         self.bottom_pane.show_selection_view(SelectionViewParams {
+             title: Some("Skills".to_string()),
+-            subtitle: Some("Choose an action".to_string()),
++            subtitle: Some(if crate::PLOS_FRONTEND {
++                "Session settings; inspect /config and optionally /save-default KEY".to_string()
++            } else {
++                "Choose an action".to_string()
++            }),
+             footer_hint: Some(standard_popup_hint_line()),
+             items,
+             ..Default::default()
+diff --git a/codex-rs/tui/src/chatwidget/slash_dispatch.rs b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+index 7f2028f..463436b 100644
+--- a/codex-rs/tui/src/chatwidget/slash_dispatch.rs
++++ b/codex-rs/tui/src/chatwidget/slash_dispatch.rs
+@@ -144,7 +144,27 @@ impl ChatWidget {
+             || (cmd == SlashCommand::Export && self.input_queue.suppress_queue_autosend)
+     }
+ 
++    fn plos_process_control(&mut self, command: String) {
++        if let Some(thread_id) = self.thread_id() {
++            self.app_event_tx.send(AppEvent::PlosProcessControl { thread_id, command });
++        } else {
++            self.add_error_message("Start or resume a PLOS session first.".to_string());
++        }
++    }
++
++    pub(crate) fn plos_select_model(&mut self, model: String) {
++        self.submit_user_message(format!("/model {model}").into());
++    }
++
+     pub(super) fn dispatch_command(&mut self, cmd: SlashCommand) {
++        if crate::PLOS_FRONTEND && cmd == SlashCommand::Process {
++            self.plos_process_control("help".to_string());
++            return;
++        }
++        if crate::PLOS_FRONTEND && !matches!(cmd, SlashCommand::Quit | SlashCommand::Exit | SlashCommand::New | SlashCommand::Clear | SlashCommand::Resume | SlashCommand::Skills | SlashCommand::Mcp | SlashCommand::Model) {
++            self.submit_user_message(format!("/{}", cmd.command()).into());
++            return;
++        }
+         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
+             return;
+         }
+@@ -506,6 +526,7 @@ impl ChatWidget {
+             SlashCommand::Pets => {
+                 self.open_pets_picker();
+             }
++            SlashCommand::Process => {}
+             SlashCommand::Ps => {
+                 self.add_ps_output();
+             }
+@@ -585,6 +606,15 @@ impl ChatWidget {
+         args: String,
+         text_elements: Vec<TextElement>,
+     ) {
++        if crate::PLOS_FRONTEND && cmd == SlashCommand::Process {
++            self.plos_process_control(args);
++            return;
++        }
++        if crate::PLOS_FRONTEND && !matches!(cmd, SlashCommand::New | SlashCommand::Clear)
++            && !(matches!(cmd, SlashCommand::Mcp) && args == "verbose") {
++            self.submit_user_message(format!("/{} {}", cmd.command(), args).into());
++            return;
++        }
+         if !self.ensure_slash_command_allowed_in_side_conversation(cmd) {
+             return;
+         }
+@@ -1138,6 +1168,7 @@ impl ChatWidget {
+             | SlashCommand::Usage
+             | SlashCommand::DebugConfig
+             | SlashCommand::Ps
++            | SlashCommand::Process
+             | SlashCommand::Stop
+             | SlashCommand::MemoryDrop
+             | SlashCommand::MemoryUpdate
+diff --git a/codex-rs/tui/src/chatwidget/streaming.rs b/codex-rs/tui/src/chatwidget/streaming.rs
+index b596ac3..b53e2a3 100644
+--- a/codex-rs/tui/src/chatwidget/streaming.rs
++++ b/codex-rs/tui/src/chatwidget/streaming.rs
+@@ -129,6 +129,35 @@ impl ChatWidget {
+             && let Some(message) = message
+             && !message.is_empty()
+         {
++            if crate::PLOS_FRONTEND {
++                // PLOS returns buffered, authoritative answers. Insert their
++                // source-backed Markdown once, without manufacturing a stream
++                // whose provisional tail forces a full scrollback rebuild.
++                self.mark_safety_buffering_agent_message_started();
++                self.flush_unified_exec_wait_streak();
++                self.flush_active_cell();
++                if self.transcript.needs_final_message_separator
++                    && self.transcript.had_work_activity
++                {
++                    self.add_to_history(history_cell::FinalMessageSeparator::new(None, None));
++                }
++                self.transcript.needs_final_message_separator = false;
++                let context = self.thread_id.and_then(|thread_id| {
++                    crate::inline_visualization::InlineVisualizationContext::from_config(
++                        &self.config,
++                        thread_id,
++                    )
++                });
++                self.add_to_history(history_cell::AgentMarkdownCell::new_with_inline_visualizations(
++                    message.to_owned(),
++                    &self.config.cwd,
++                    context,
++                ));
++                self.bottom_pane.hide_status_indicator();
++                self.handle_stream_finished();
++                self.request_redraw();
++                return;
++            }
+             self.handle_streaming_delta(message.to_string());
+         }
+         // Item completion is authoritative. Use it for consolidation so any
+diff --git a/codex-rs/tui/src/history_cell/session.rs b/codex-rs/tui/src/history_cell/session.rs
+index 03df014..b60d7fc 100644
+--- a/codex-rs/tui/src/history_cell/session.rs
++++ b/codex-rs/tui/src/history_cell/session.rs
+@@ -179,6 +179,15 @@ pub(crate) fn new_session_info(
+             ]),
+         ];
+ 
++        let help_lines = if crate::PLOS_FRONTEND {
++            vec![
++                "  Describe a task or type / to browse PLOS commands.".dim().into(),
++                "  /help COMMAND shows full arguments and current requirements.".dim().into(),
++                "  /models searches registered models; /status shows this session.".dim().into(),
++            ]
++        } else {
++            help_lines
++        };
+         parts.push(Box::new(PlainHistoryCell { lines: help_lines }));
+     } else {
+         if config.show_tooltips
+diff --git a/codex-rs/tui/src/lib.rs b/codex-rs/tui/src/lib.rs
+index 36852ab..8e3fb2d 100644
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -22,6 +22,8 @@ use additional_dirs::add_dir_warning_message;
+ use app::App;
+ pub use app::AppExitInfo;
+ pub use app::DisconnectInfo;
++/// PLOS builds are presentation clients; the PLOS server owns all execution.
++pub const PLOS_FRONTEND: bool = cfg!(feature = "plos");
+ pub use app::ExitReason;
+ pub use app::ResumableThread;
+ use app_server_session::AppServerSession;
+@@ -890,6 +892,11 @@ async fn cloud_config_bundle_for_app_server_target(
+     bootstrap_config: &ConfigTomlLoadResult,
+     codex_home: &Path,
+ ) -> std::io::Result<CloudConfigBundleLoader> {
++    if PLOS_FRONTEND {
++        // PLOS owns its table-backed policy; startup must work with no internet
++        // and must not contact OpenAI using any credentials from the host.
++        return Ok(CloudConfigBundleLoader::default());
++    }
+     cloud_config_bundle_loader_for_storage(
+         app_server_target
+             .auth_config_for_cloud_loader(bootstrap_auth_config(codex_home, bootstrap_config)?),
+diff --git a/codex-rs/tui/src/slash_command.rs b/codex-rs/tui/src/slash_command.rs
+index aab133f..bcc5969 100644
+--- a/codex-rs/tui/src/slash_command.rs
++++ b/codex-rs/tui/src/slash_command.rs
+@@ -69,6 +69,7 @@ pub enum SlashCommand {
+     Feedback,
+     Rollout,
+     Ps,
++    Process,
+     #[strum(to_string = "stop", serialize = "clean")]
+     Stop,
+     Clear,
+@@ -119,6 +120,7 @@ impl SlashCommand {
+             SlashCommand::Theme => "choose a syntax highlighting theme",
+             SlashCommand::Pets => "choose or hide the terminal pet",
+             SlashCommand::Ps => "list background terminals",
++            SlashCommand::Process => "control PLOS processes: list, send, input, output, cancel, resize, confirm",
+             SlashCommand::Stop => "stop all background terminals",
+             SlashCommand::MemoryDrop => "DO NOT USE",
+             SlashCommand::MemoryUpdate => "DO NOT USE",
+@@ -163,7 +165,8 @@ impl SlashCommand {
+     pub fn supports_inline_args(self) -> bool {
+         matches!(
+             self,
+-            SlashCommand::Review
++            SlashCommand::Process
++                | SlashCommand::Review
+                 | SlashCommand::Rename
+                 | SlashCommand::New
+                 | SlashCommand::Clear
+@@ -244,6 +247,7 @@ impl SlashCommand {
+             | SlashCommand::Usage
+             | SlashCommand::DebugConfig
+             | SlashCommand::Ps
++            | SlashCommand::Process
+             | SlashCommand::Stop
+             | SlashCommand::App
+             | SlashCommand::Goal
+@@ -280,7 +284,7 @@ impl SlashCommand {
+ /// Return all built-in commands in a Vec paired with their command string.
+ pub fn built_in_slash_commands() -> Vec<(&'static str, SlashCommand)> {
+     SlashCommand::iter()
+-        .filter(|command| command.is_visible())
++        .filter(|command| command.is_visible() && (crate::PLOS_FRONTEND || *command != SlashCommand::Process))
+         .map(|c| (c.command(), c))
+         .collect()
+ }

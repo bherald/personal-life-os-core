@@ -7,9 +7,33 @@
       {{ config.description }}
     </p>
 
+    <!-- Secret Input -->
+    <div v-if="config.is_secret" class="space-y-2">
+      <input
+        :id="fieldId"
+        type="password"
+        :value="modelValue ?? ''"
+        :placeholder="config.is_configured ? 'Stored value is configured' : 'No value configured'"
+        :disabled="clearSecret"
+        autocomplete="new-password"
+        @input="handleInput"
+        :class="inputClasses"
+        class="form-input"
+      />
+      <label class="flex items-center gap-2 text-sm text-gray-300">
+        <input
+          type="checkbox"
+          :checked="clearSecret"
+          @change="handleClearSecret"
+          class="h-4 w-4 rounded border-gray-500 text-primary-600 focus:ring-primary-500"
+        />
+        Clear stored value
+      </label>
+    </div>
+
     <!-- String Input -->
     <input
-      v-if="config.data_type === 'string'"
+      v-else-if="config.data_type === 'string'"
       :id="fieldId"
       type="text"
       :value="modelValue"
@@ -81,20 +105,21 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(['update:modelValue']);
+const emit = defineEmits(['update:modelValue', 'clear-secret']);
 
 const jsonError = ref('');
 
 const fieldId = computed(() => `config-${props.config.id}`);
+const clearSecret = computed(() => props.config.clear_secret === true);
 
 const inputClasses = computed(() => {
-  return 'mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm';
+  return 'mt-1 block w-full rounded-md border-gray-300 shadow-xs focus:border-primary-500 focus:ring-primary-500 sm:text-sm';
 });
 
 const toggleClasses = computed(() => {
   return [
     props.modelValue ? 'bg-primary-600' : 'bg-gray-200',
-    'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2'
+    'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden focus:ring-2 focus:ring-primary-500 focus:ring-offset-2'
   ];
 });
 
@@ -125,6 +150,10 @@ function handleInput(event) {
   emit('update:modelValue', value);
 }
 
+function handleClearSecret(event) {
+  emit('clear-secret', event.target.checked);
+}
+
 function handleJsonInput(event) {
   const value = event.target.value;
   jsonError.value = '';
@@ -144,8 +173,9 @@ function toggleBoolean() {
 </script>
 
 <style scoped>
+@reference "../../../css/app.css";
 .form-input,
 .form-textarea {
-  @apply mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
+  @apply mt-1 block w-full rounded-md border-gray-300 shadow-xs focus:border-primary-500 focus:ring-primary-500 sm:text-sm;
 }
 </style>

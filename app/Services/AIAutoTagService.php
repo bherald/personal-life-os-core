@@ -3,9 +3,12 @@
 namespace App\Services;
 
 use App\DTOs\TrustEnvelope;
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Services\Files\PhotoReviewEvidenceService;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * AI Auto-Tagging Service
@@ -116,13 +119,13 @@ class AIAutoTagService
      * @param  bool  $forceRefresh  Re-analyze even if already done
      * @return array Analysis result with tags, description, etc.
      */
-    public function analyzeFile(int $fileRegistryId, bool $forceRefresh = false): array
+    public function analyzeFile(int $fileRegistryId, bool $forceRefresh = false, ?string $workerId = null): array
     {
         $file = DB::selectOne('
-            SELECT id, asset_uuid, current_path, filename, extension, mime_type,
-                   ai_analyzed_at, ai_analysis_version, status
-            FROM file_registry
-            WHERE id = ?
+            SELECT fr.*, p.metadata AS extraction_metadata
+            FROM file_registry fr
+            LEFT JOIN file_content_extraction_provenance p ON p.file_registry_id = fr.id
+            WHERE fr.id = ?
         ', [$fileRegistryId]);
 
         if (! $file) {
@@ -133,8 +136,19 @@ class AIAutoTagService
             return ['success' => false, 'error' => "File status is '{$file->status}', not active"];
         }
 
+        if ($workerId !== null && (($file->claim_worker ?? null) !== $workerId
+            || ! $this->hasCurrentProcessingLease($file))) {
+            return ['success' => false, 'error' => 'AI processing claim is no longer current'];
+        }
+        if ($workerId === null && ($this->isProcessingVersion($file->ai_analysis_version ?? null)
+            || (($file->claim_worker ?? null) !== null && (($file->claim_expires_at ?? null) === null
+                || $file->claim_expires_at >= now()->format('Y-m-d H:i:s'))))) {
+            return ['success' => false, 'error' => 'File is claimed by another worker'];
+        }
+
         // Skip if already analyzed (unless force refresh)
-        if (! $forceRefresh && $file->ai_analyzed_at && $file->ai_analysis_version === self::ANALYSIS_VERSION) {
+        $isImage = in_array(strtolower($file->extension ?? ''), config('file_types.image'));
+        if (! $isImage && ! $forceRefresh && $file->ai_analyzed_at && $file->ai_analysis_version === self::ANALYSIS_VERSION) {
             return [
                 'success' => true,
                 'skipped' => true,
@@ -149,7 +163,7 @@ class AIAutoTagService
 
         if (! $isImage && ! $isDocument) {
             // Permanent skip — mark so file is never re-selected
-            $this->markSkipped($fileRegistryId, "unsupported_type:{$extension}");
+            $this->markSkipped($fileRegistryId, "unsupported_type:{$extension}", $file);
 
             return [
                 'success' => false,
@@ -161,13 +175,49 @@ class AIAutoTagService
         // Download file from Nextcloud to temp
         $tempPath = $this->downloadToTemp($file->current_path);
         if (! $tempPath) {
+            if ($isImage) {
+                $this->markAnalysisStale($file);
+            }
             // Track download failures — permanent skip after 3 attempts
-            $this->trackFailure($fileRegistryId, 'download_failed', 3);
+            $this->trackFailure($fileRegistryId, 'download_failed', 3, $file);
 
             return ['success' => false, 'error' => 'Failed to download file from Nextcloud'];
         }
 
         try {
+            $sourceHash = $isImage ? hash_file('sha256', $tempPath) : null;
+            if ($isImage && ! is_string($sourceHash)) {
+                $this->markAnalysisStale($file);
+
+                return ['success' => false, 'error' => 'Source image hash unavailable'];
+            }
+            $provenance = (new ContentExtractionProvenanceService)->decode($file->extraction_metadata ?? null);
+            if ($isImage && ! $forceRefresh
+                && ($provenance['ai_analysis']['version'] ?? null) === self::ANALYSIS_VERSION
+                && ($provenance['ai_analysis']['source_sha256'] ?? null) === $sourceHash
+                && (in_array($file->ai_analysis_version ?? null, [self::ANALYSIS_VERSION, 'stale'], true)
+                    || $this->isProcessingVersion($file->ai_analysis_version ?? null))
+            ) {
+                if (! $this->reuseImageAnalysis($file, $sourceHash)) {
+                    $this->markAnalysisStale($file);
+
+                    return ['success' => false, 'error' => 'Source image changed before reuse'];
+                }
+
+                return ['success' => true, 'skipped' => true, 'reason' => 'Current analysis matches source bytes'];
+            }
+            if ($isImage) {
+                // Keep old content visible as evidence, but never mark it fresh during a retry.
+                $file->previous_ai_analysis_version = $this->isProcessingVersion($file->ai_analysis_version ?? null)
+                    ? ($provenance['ai_analysis']['version'] ?? null)
+                    : ($file->ai_analysis_version ?? null);
+                if (! $this->markAnalysisStale($file)) {
+                    return ['success' => false, 'error' => 'Source registry changed before analysis'];
+                }
+                if (! $this->isProcessingVersion($file->ai_analysis_version ?? null)) {
+                    $file->ai_analysis_version = 'stale';
+                }
+            }
             // FM-1: Pass folder path for hierarchical context in AI analysis
             $folderPath = $file->current_path ? dirname($file->current_path) : null;
 
@@ -177,13 +227,18 @@ class AIAutoTagService
 
             if (! $result['success']) {
                 // Track AI analysis failures — permanent skip after 5 attempts
-                $this->trackFailure($fileRegistryId, $result['error'] ?? 'analysis_failed', 5);
+                $this->trackFailure($fileRegistryId, $result['error'] ?? 'analysis_failed', 5, $file);
 
                 return $result;
             }
 
             // Update file registry with analysis results
-            $this->updateFileWithAnalysis($fileRegistryId, $result);
+            $stored = $isImage
+                ? $this->publishImageAnalysis($file, $result, $sourceHash)
+                : $this->publishDocumentAnalysis($file, $result);
+            if (! $stored) {
+                return ['success' => false, 'error' => 'Analysis was not published; source changed or result was invalid'];
+            }
 
             // Invalidate RAG index so backfill job re-indexes with new AI data
             DB::update('UPDATE file_registry SET rag_indexed_at = NULL WHERE id = ?', [$fileRegistryId]);
@@ -231,7 +286,7 @@ class AIAutoTagService
         // Build comprehensive analysis prompt (FM-1: includes folder context)
         $prompt = $this->buildImageAnalysisPrompt($filename, $folderPath);
 
-        // Process with vision AI (auto-routes: Ollama if free, Claude if Ollama busy)
+        // Process with vision AI under the configured routing policy.
         $visionResult = $this->aiService->processImage($imageContent, $prompt, [
             'suppressAlert' => true,
             'skip_if_busy' => true,
@@ -241,6 +296,7 @@ class AIAutoTagService
             return [
                 'success' => false,
                 'error' => 'Vision analysis failed: '.($visionResult['error'] ?? 'unknown'),
+                'failure_diagnostic' => self::analysisFailureDiagnostic($visionResult),
             ];
         }
 
@@ -260,6 +316,7 @@ class AIAutoTagService
             'confidence' => $parsed['confidence'] ?? 'medium',
             'provider' => $visionResult['provider'] ?? 'unknown',
             'analysis_version' => self::ANALYSIS_VERSION,
+            'input_source_sha256' => hash('sha256', $imageContent),
         ];
     }
 
@@ -292,6 +349,7 @@ class AIAutoTagService
                 'success' => false,
                 'error' => 'No text could be extracted from document',
                 'extraction_method' => $extraction['method'] ?? 'unknown',
+                'extraction_provenance' => $extraction['provenance'] ?? null,
             ];
         }
 
@@ -315,6 +373,8 @@ class AIAutoTagService
                 'key_info' => [],
                 'analysis_partial' => true,
                 'ai_error' => $aiResult['error'] ?? 'AI analysis failed',
+                'extraction_method' => $extraction['method'] ?? 'unknown',
+                'extraction_provenance' => $extraction['provenance'] ?? null,
                 'analysis_version' => self::ANALYSIS_VERSION,
             ];
         }
@@ -333,6 +393,7 @@ class AIAutoTagService
             'summary' => $parsed['summary'] ?? '',
             'confidence' => $parsed['confidence'] ?? 'medium',
             'extraction_method' => $extraction['method'] ?? 'unknown',
+            'extraction_provenance' => $extraction['provenance'] ?? null,
             'provider' => $aiResult['provider'] ?? 'unknown',
             'analysis_version' => self::ANALYSIS_VERSION,
         ];
@@ -350,7 +411,7 @@ class AIAutoTagService
      * @param  bool  $forceRefresh  Re-analyze even if already done
      * @return array Batch results summary
      */
-    public function batchAnalyze(array $fileRegistryIds, int $batchSize = 10, bool $forceRefresh = false): array
+    public function batchAnalyze(array $fileRegistryIds, int $batchSize = 10, bool $forceRefresh = false, ?string $workerId = null): array
     {
         $results = [
             'total' => count($fileRegistryIds),
@@ -358,10 +419,13 @@ class AIAutoTagService
             'skipped' => 0,
             'failed' => 0,
             'errors' => [],
+            'failure_details' => [],
         ];
 
         // Recover files left in 'processing' state from crashed previous runs (SIGALRM poison pill fix)
         $this->recoverOrphanedProcessingFiles();
+        $ownsClaims = $workerId === null;
+        $workerId ??= Str::uuid()->toString();
 
         $chunks = array_chunk($fileRegistryIds, $batchSize);
         $perFileTimeoutSeconds = 90; // Hard cap per file — prevents pdftoppm/LLM hangs from consuming entire batch
@@ -397,30 +461,48 @@ class AIAutoTagService
                 }
 
                 $fileStart = microtime(true);
-                try {
-                    // Mark as 'processing' BEFORE analysis — if SIGALRM kills us,
-                    // the next run's recoverOrphanedProcessingFiles() will increment fail counter
-                    DB::update("UPDATE file_registry SET ai_analysis_version = 'processing', updated_at = NOW() WHERE id = ?", [$id]);
+                $processing = $this->beginProcessing((int) $id, $forceRefresh, $workerId);
+                if ($processing === null) {
+                    $results['skipped']++;
 
-                    $result = $this->analyzeFile($id, $forceRefresh);
+                    continue;
+                }
+                try {
+                    $result = $this->analyzeFile($id, $forceRefresh, $workerId);
 
                     if ($result['skipped'] ?? false) {
                         $results['skipped']++;
                     } elseif ($result['success']) {
                         $results['processed']++;
                     } else {
+                        $this->trackFailure($id, $result['error'] ?? 'analysis_failed', 5, $processing);
                         $results['failed']++;
                         $results['errors'][$id] = $result['error'] ?? 'Unknown error';
+                        if (count($results['failure_details']) < config('file_registry.ai_analysis.failure_receipt_limit', 50)) {
+                            $results['failure_details'][] = ['file_registry_id' => (int) $id]
+                                + self::analysisFailureDiagnostic($result['failure_diagnostic'] ?? $result);
+                        }
                     }
                 } catch (Exception $e) {
                     $results['failed']++;
                     $results['errors'][$id] = $e->getMessage();
-                    $this->trackFailure($id, 'exception:'.mb_substr($e->getMessage(), 0, 80), 5);
+                    if (count($results['failure_details']) < config('file_registry.ai_analysis.failure_receipt_limit', 50)) {
+                        $results['failure_details'][] = ['file_registry_id' => (int) $id]
+                            + self::analysisFailureDiagnostic([], $e);
+                    }
+                    $this->trackFailure($id, 'exception:'.mb_substr($e->getMessage(), 0, 80), 5, $processing);
 
                     Log::error('AIAutoTagService: Batch analysis failed for file', [
                         'file_registry_id' => $id,
                         'error' => $e->getMessage(),
                     ]);
+                } finally {
+                    if ($ownsClaims) {
+                        DB::update('UPDATE file_registry SET claim_worker = NULL, claim_expires_at = NULL
+                            WHERE id = ? AND claim_worker = ? AND claim_expires_at = ?', [
+                            $id, $workerId, $processing->claim_expires_at,
+                        ]);
+                    }
                 }
 
                 $elapsed = microtime(true) - $fileStart;
@@ -459,6 +541,66 @@ class AIAutoTagService
         return $results;
     }
 
+    /** Fixed cause codes only; raw provider errors, prompts and payloads stay out of run receipts. */
+    public static function analysisFailureDiagnostic(array $result, ?\Throwable $error = null): array
+    {
+        $controller = $error === null
+            ? InferenceAdmissionException::sanitizeControllerFailure((array) ($result['controller_failure'] ?? []))
+            : InferenceAdmissionException::controllerFailureFrom($error);
+        if ($controller !== []) {
+            return ['reason' => 'controller_refusal', 'controller_failure' => $controller];
+        }
+        $allowed = ['invalid_image_data', 'unsupported_image_format', 'image_decode_failed'];
+        if (in_array($result['error_code'] ?? $result['reason'] ?? null, $allowed, true)) {
+            return ['reason' => $result['error_code'] ?? $result['reason']];
+        }
+        $known = [
+            'Image file not found' => 'image_source_unavailable',
+            'Failed to read image file' => 'image_read_failed',
+            'Failed to download file from Nextcloud' => 'source_download_failed',
+            'Source image hash unavailable' => 'source_hash_unavailable',
+            'Source image changed before reuse' => 'source_changed',
+            'Source registry changed before analysis' => 'registry_changed',
+            'Analysis was not published; source changed or result was invalid' => 'publication_held',
+            'All vision providers failed' => 'vision_providers_unavailable_or_failed',
+            'No text could be extracted from document' => 'document_text_unavailable',
+        ];
+
+        $reason = $error !== null ? 'analysis_exception' : ($known[$result['error'] ?? ''] ?? 'analysis_failed');
+        if ($error === null && in_array($result['reason'] ?? null, array_values($known), true)) {
+            $reason = $result['reason'];
+        }
+
+        return ['reason' => $reason];
+    }
+
+    /** Shared candidate predicate for direct selection, worker claims and backlog reads. */
+    public static function pendingAnalysisPredicate(): array
+    {
+        $imagePlaceholders = implode(',', array_fill(0, count(config('file_types.image')), '?'));
+        $crashVersions = self::retryableCrashVersions();
+        $crashPlaceholders = $crashVersions === [] ? 'NULL' : implode(',', array_fill(0, count($crashVersions), '?'));
+
+        return [
+            'sql' => "(
+                  (ai_analyzed_at IS NULL AND (ai_analysis_version IS NULL OR (ai_analysis_version NOT IN ('skipped', 'processing', 'failed') AND ai_analysis_version NOT LIKE 'processing:%' AND ai_analysis_version NOT LIKE 'fail:%')))
+                  OR
+                  (ai_analyzed_at IS NOT NULL AND ai_analysis_version != ? AND ai_analysis_version NOT IN ('skipped', 'processing', 'failed') AND ai_analysis_version NOT LIKE 'processing:%' AND ai_analysis_version NOT LIKE 'fail:%')
+                  OR ai_analysis_version IN ({$crashPlaceholders})
+                  OR
+                  (extension IN ({$imagePlaceholders})
+                   AND ai_analysis_version = ?
+                   AND NOT EXISTS (
+                       SELECT 1 FROM file_content_extraction_provenance p
+                       WHERE p.file_registry_id = file_registry.id
+                         AND JSON_UNQUOTE(JSON_EXTRACT(p.metadata, '$.ai_analysis.source_sha256')) = file_registry.content_hash
+                         AND JSON_UNQUOTE(JSON_EXTRACT(p.metadata, '$.ai_analysis.version')) = ?
+                   ))
+              )",
+            'bindings' => [self::ANALYSIS_VERSION, ...$crashVersions, ...config('file_types.image'), self::ANALYSIS_VERSION, self::ANALYSIS_VERSION],
+        ];
+    }
+
     /**
      * Get files that haven't been analyzed yet
      *
@@ -470,20 +612,16 @@ class AIAutoTagService
     {
         $supportedExtensions = array_merge(config('file_types.image'), config('file_types.document'));
         $extensionPlaceholders = implode(',', array_fill(0, count($supportedExtensions), '?'));
-
+        $pending = self::pendingAnalysisPredicate();
         $sql = "
             SELECT id, asset_uuid, current_path, filename, extension, mime_type, file_size
             FROM file_registry
             WHERE status = 'active'
-              AND (
-                  (ai_analyzed_at IS NULL AND (ai_analysis_version IS NULL OR (ai_analysis_version NOT IN ('skipped', 'processing') AND ai_analysis_version NOT LIKE 'fail:%')))
-                  OR
-                  (ai_analyzed_at IS NOT NULL AND ai_analysis_version != ? AND ai_analysis_version != 'skipped' AND ai_analysis_version != 'processing' AND ai_analysis_version NOT LIKE 'fail:%')
-              )
+              AND {$pending['sql']}
               AND extension IN ({$extensionPlaceholders})
+              AND (claim_worker IS NULL OR claim_expires_at < CURRENT_TIMESTAMP)
         ";
-
-        $params = [self::ANALYSIS_VERSION, ...$supportedExtensions];
+        $params = [...$pending['bindings'], ...$supportedExtensions];
 
         if ($extensionFilter) {
             $sql .= ' AND extension = ?';
@@ -625,20 +763,49 @@ class AIAutoTagService
     }
 
     /**
-     * Get analysis statistics
-     *
-     * @return array Stats about analyzed files
+     * Cheap active-file counts. History includes legacy skip timestamps; image
+     * binding is stored catalog/provenance evidence, not a fresh physical audit.
+     * Document freshness here means current version only, without a source proof.
      */
-    public function getStats(): array
+    public static function getAnalysisCounts(): array
     {
+        $images = config('file_types.image');
+        $documents = config('file_types.document');
+        $supported = array_merge($images, $documents);
+        $imageSlots = implode(',', array_fill(0, count($images), '?'));
+        $documentSlots = implode(',', array_fill(0, count($documents), '?'));
+        $supportedSlots = implode(',', array_fill(0, count($supported), '?'));
+        $pending = self::pendingAnalysisPredicate();
         $stats = DB::selectOne("
-            SELECT
-                COUNT(*) as total_files,
-                SUM(CASE WHEN ai_analyzed_at IS NOT NULL THEN 1 ELSE 0 END) as analyzed_count,
-                SUM(CASE WHEN ai_analyzed_at IS NULL AND extension IN ('jpg','jpeg','png','gif','bmp','webp','tiff','tif','heic','heif','pdf','doc','docx','rtf','odt','txt','xls','xlsx','csv','ods','ppt','pptx','odp','html','htm','md') THEN 1 ELSE 0 END) as pending_count
+            SELECT COUNT(*) AS total_files,
+                SUM(CASE WHEN ai_analyzed_at IS NOT NULL THEN 1 ELSE 0 END) AS analyzed_count,
+                SUM(CASE WHEN ai_analyzed_at IS NOT NULL AND ai_analysis_version = ?
+                    AND extension IN ({$imageSlots}) AND LENGTH(content_hash) = 64 AND content_hash REGEXP '^[a-f0-9]{64}$'
+                    AND EXISTS (
+                        SELECT 1 FROM file_content_extraction_provenance p
+                        WHERE p.file_registry_id = file_registry.id
+                          AND JSON_UNQUOTE(JSON_EXTRACT(p.metadata, '$.ai_analysis.source_sha256')) = file_registry.content_hash
+                          AND JSON_UNQUOTE(JSON_EXTRACT(p.metadata, '$.ai_analysis.version')) = ?
+                    ) THEN 1 ELSE 0 END) AS source_bound_image_count,
+                SUM(CASE WHEN ai_analyzed_at IS NOT NULL AND ai_analysis_version = ?
+                    AND extension IN ({$documentSlots}) THEN 1 ELSE 0 END) AS current_version_document_count,
+                SUM(CASE WHEN extension IN ({$supportedSlots}) AND {$pending['sql']}
+                    THEN 1 ELSE 0 END) AS pending_count
             FROM file_registry
             WHERE status = 'active'
-        ");
+        ", [self::ANALYSIS_VERSION, ...$images, self::ANALYSIS_VERSION,
+            self::ANALYSIS_VERSION, ...$documents, ...$supported, ...$pending['bindings']]);
+
+        return ['total_files' => (int) $stats->total_files, 'analyzed_count' => (int) $stats->analyzed_count,
+            'source_bound_image_count' => (int) $stats->source_bound_image_count,
+            'current_version_document_count' => (int) $stats->current_version_document_count,
+            'pending_count' => (int) $stats->pending_count, 'analysis_version' => self::ANALYSIS_VERSION];
+    }
+
+    /** Analysis counts plus historical tag/type aggregates retained for existing callers. */
+    public function getStats(): array
+    {
+        $counts = self::getAnalysisCounts();
 
         $typeBreakdown = DB::select("
             SELECT ai_document_type, COUNT(*) as count
@@ -661,11 +828,7 @@ class AIAutoTagService
             LIMIT 20
         ");
 
-        return [
-            'total_files' => (int) $stats->total_files,
-            'analyzed_count' => (int) $stats->analyzed_count,
-            'pending_count' => (int) $stats->pending_count,
-            'analysis_version' => self::ANALYSIS_VERSION,
+        return [...$counts,
             'document_types' => array_map(fn ($r) => ['type' => $r->ai_document_type, 'count' => (int) $r->count], $typeBreakdown),
             'top_tags' => array_map(fn ($r) => ['tag' => $r->tag_name, 'count' => (int) $r->count], $topTags),
         ];
@@ -736,7 +899,197 @@ class AIAutoTagService
     /**
      * Update file registry with analysis results
      */
-    private function updateFileWithAnalysis(int $fileRegistryId, array $result): void
+    private function currentImageMatches(string $path, string $sourceHash): bool
+    {
+        try {
+            $current = $this->getNextcloudApi()->computeFileHash($path);
+
+            return ($current['success'] ?? false)
+                && is_string($current['hash'] ?? null)
+                && hash_equals($sourceHash, $current['hash']);
+        } catch (\Throwable $e) {
+            Log::warning('AIAutoTagService: Source verification failed', ['exception' => $e::class]);
+
+            return false;
+        }
+    }
+
+    private function markAnalysisStale(object $file): bool
+    {
+        // A crash must retain its attempt and owner until lease recovery proves abandonment.
+        if ($this->isProcessingVersion($file->ai_analysis_version ?? null)) {
+            return $this->hasCurrentProcessingLease($file);
+        }
+        if (($file->ai_analysis_version ?? null) === 'stale') {
+            return true;
+        }
+
+        $changed = DB::update("UPDATE file_registry SET ai_analysis_version = 'stale'
+            WHERE id = ? AND status = 'active' AND current_path = ?
+              AND COALESCE(ai_analysis_version, '') = ?
+              AND COALESCE(ai_analyzed_at, '') = ?
+              AND COALESCE(nextcloud_modified_at, '') = ?
+              AND COALESCE(content_hash, '') = ?
+              AND COALESCE(claim_worker, '') = ? AND COALESCE(claim_expires_at, '') = ?", [
+            $file->id, $file->current_path, $file->ai_analysis_version ?? '',
+            $file->ai_analyzed_at ?? '', $file->nextcloud_modified_at ?? '', $file->content_hash ?? '',
+            $file->claim_worker ?? '', $file->claim_expires_at ?? '',
+        ]) === 1;
+        if ($changed) {
+            $file->ai_analysis_version = 'stale';
+        }
+
+        return $changed;
+    }
+
+    private function reuseImageAnalysis(object $file, string $sourceHash): bool
+    {
+        return DB::transaction(function () use ($file, $sourceHash): bool {
+            $current = DB::selectOne('SELECT * FROM file_registry WHERE id = ? FOR UPDATE', [$file->id]);
+            if (! $current || $current->status !== 'active') {
+                return false;
+            }
+            foreach (['current_path', 'nextcloud_modified_at', 'content_hash', 'ai_analyzed_at', 'ai_analysis_version', 'claim_worker', 'claim_expires_at'] as $field) {
+                if (($current->$field ?? null) !== ($file->$field ?? null)) {
+                    return false;
+                }
+            }
+            if ($this->isProcessingVersion($current->ai_analysis_version ?? null) && ! $this->hasCurrentProcessingLease($current)) {
+                return false;
+            }
+            if (! $this->currentImageMatches($current->current_path, $sourceHash)) {
+                return false;
+            }
+            if ($current->ai_analysis_version !== self::ANALYSIS_VERSION) {
+                DB::update('UPDATE file_registry SET ai_analysis_version = ?, content_hash = ?, content_hash_verified_at = NOW() WHERE id = ?', [
+                    self::ANALYSIS_VERSION, $sourceHash, $file->id,
+                ]);
+            }
+
+            return true;
+        });
+    }
+
+    private function publishImageAnalysis(object $file, array $result, string $sourceHash): bool
+    {
+        return DB::transaction(function () use ($file, $result, $sourceHash): bool {
+            $consumedHash = $result['input_source_sha256'] ?? null;
+            if (! is_string($consumedHash) || ! preg_match('/^[a-f0-9]{64}$/D', $consumedHash)
+                || ! hash_equals($sourceHash, $consumedHash)) {
+                return false;
+            }
+
+            $current = DB::selectOne('SELECT * FROM file_registry WHERE id = ? FOR UPDATE', [$file->id]);
+            if (! $current || $current->status !== 'active') {
+                return false;
+            }
+            foreach (['current_path', 'nextcloud_modified_at', 'content_hash', 'ai_analyzed_at', 'ai_analysis_version', 'claim_worker', 'claim_expires_at'] as $field) {
+                if (($current->$field ?? null) !== ($file->$field ?? null)) {
+                    return false;
+                }
+            }
+            if ($this->isProcessingVersion($current->ai_analysis_version ?? null) && ! $this->hasCurrentProcessingLease($current)) {
+                return false;
+            }
+            if (! $this->currentImageMatches($current->current_path, $sourceHash)) {
+                return false;
+            }
+
+            $row = DB::selectOne('SELECT metadata FROM file_content_extraction_provenance WHERE file_registry_id = ? FOR UPDATE', [$file->id]);
+            $provenanceService = new ContentExtractionProvenanceService;
+            $previous = $provenanceService->decode($row->metadata ?? null);
+            if ($row && (($previous === null
+                && ! app(PhotoReviewEvidenceService::class)->isFieldReviewOnlyMetadata($row->metadata, $current))
+                || (isset($previous['ai_analysis_history']) && ! is_array($previous['ai_analysis_history'])))) {
+                return false;
+            }
+
+            $detectedText = $result['detected_text'] ?? null;
+            if (is_array($detectedText)) {
+                $detectedText = implode("\n", array_map(function ($value) {
+                    return is_array($value) || is_object($value) ? json_encode($value, JSON_UNESCAPED_UNICODE) : (string) $value;
+                }, $detectedText));
+            } elseif (is_object($detectedText)) {
+                $detectedText = json_encode($detectedText, JSON_UNESCAPED_UNICODE);
+            }
+            $detectedText = $detectedText !== null ? (string) $detectedText : null;
+            if ($detectedText !== null && strlen($detectedText) > 1000000) {
+                $detectedText = mb_substr($detectedText, 0, 1000000);
+            }
+            $result['detected_text'] = $detectedText;
+
+            // Each image analysis produces new OCR evidence. Never carry the prior
+            // output checksum or its input binding onto newly returned text.
+            $provenance = $provenanceService->build([
+                'text' => is_string($detectedText) ? $detectedText : '',
+                'method' => 'vision', 'pipeline' => 'aiservice',
+                'provider' => $result['provider'] ?? null,
+                'extraction_version' => $result['analysis_version'] ?? self::ANALYSIS_VERSION,
+                'input_source_sha256' => $consumedHash,
+            ], ['extension' => $file->extension]);
+            $history = is_array($previous['ai_analysis_history'] ?? null) ? $previous['ai_analysis_history'] : [];
+            $historyEntry = [];
+            if ($current->ai_analyzed_at ?? null) {
+                // Retain replaced machine evidence in the existing private provenance record.
+                $historyEntry = [
+                    'ai_analysis' => $previous['ai_analysis'] ?? null,
+                    'analysis_version' => $file->previous_ai_analysis_version ?? null,
+                    'analyzed_at' => $current->ai_analyzed_at,
+                    'description' => $current->ai_description ?? null,
+                    'detected_text' => $current->ai_detected_text ?? null,
+                    'tags' => $current->ai_tags ?? null,
+                    'document_type' => $current->ai_document_type ?? null,
+                ];
+            }
+            $priorContract = array_intersect_key($previous ?? [], array_flip([
+                'schema', 'contract', 'extractor', 'pipeline', 'pipeline_version', 'provider',
+                'contract_fingerprint', 'output_sha256', 'input_sha256', 'recorded_at',
+            ]));
+            if ($priorContract !== []) {
+                $historyEntry['extraction_provenance'] = $priorContract;
+            }
+            if ($historyEntry !== []) {
+                $history[] = $historyEntry;
+            }
+            $provenance['ai_analysis_history'] = $history;
+            $provenance['ai_analysis'] = [
+                'source_sha256' => $sourceHash, 'version' => self::ANALYSIS_VERSION,
+                'provider' => $result['provider'] ?? null,
+                'recorded_at' => now()->utc()->toIso8601String(),
+            ];
+            $result['extraction_provenance'] = $provenance;
+
+            if (! $this->updateFileWithAnalysis($file->id, $result)) {
+                return false;
+            }
+            DB::update('UPDATE file_registry SET content_hash = ?, content_hash_verified_at = NOW() WHERE id = ?', [$sourceHash, $file->id]);
+
+            return true;
+        });
+    }
+
+    private function publishDocumentAnalysis(object $file, array $result): bool
+    {
+        if (! $this->isProcessingVersion($file->ai_analysis_version ?? null)) {
+            return $this->updateFileWithAnalysis($file->id, $result);
+        }
+
+        return DB::transaction(function () use ($file, $result): bool {
+            $current = DB::selectOne('SELECT * FROM file_registry WHERE id = ? FOR UPDATE', [$file->id]);
+            if (! $current || $current->status !== 'active' || ! $this->hasCurrentProcessingLease($current)) {
+                return false;
+            }
+            foreach (['current_path', 'nextcloud_modified_at', 'content_hash', 'ai_analysis_version', 'claim_worker', 'claim_expires_at'] as $field) {
+                if (($current->$field ?? null) !== ($file->$field ?? null)) {
+                    return false;
+                }
+            }
+
+            return $this->updateFileWithAnalysis($file->id, $result);
+        });
+    }
+
+    private function updateFileWithAnalysis(int $fileRegistryId, array $result): bool
     {
         $tags = $result['tags'] ?? [];
 
@@ -763,7 +1116,7 @@ class AIAutoTagService
                 'response_preview' => mb_substr($description, 0, 200),
             ]);
 
-            return; // Don't overwrite existing data with error text
+            return false; // Don't overwrite existing data with error text
         }
 
         $detectedText = $result['detected_text'] ?? null;
@@ -795,6 +1148,17 @@ class AIAutoTagService
 
         // ai_analysis_version is VARCHAR(20) — truncate safety
         $analysisVersion = mb_substr(self::ANALYSIS_VERSION, 0, 20);
+        $extractionProvenance = (new ContentExtractionProvenanceService)->decode(
+            $result['extraction_provenance'] ?? null
+        );
+        // Operator receipts can only come from the retained database namespace.
+        // An analysis result must never manufacture or replace those decisions.
+        if ($extractionProvenance !== null) {
+            unset($extractionProvenance['_photo_field_reviews']);
+        }
+        $extractionProvenanceJson = $extractionProvenance === null
+            ? null
+            : json_encode($extractionProvenance, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 
         DB::update('
             UPDATE file_registry
@@ -814,80 +1178,174 @@ class AIAutoTagService
             $analysisVersion,
             $fileRegistryId,
         ]);
+
+        if ($extractionProvenanceJson !== null) {
+            $stored = DB::statement('INSERT INTO file_content_extraction_provenance
+                    (file_registry_id, metadata, created_at, updated_at)
+                VALUES (?, ?, NOW(), NOW())
+                ON DUPLICATE KEY UPDATE metadata = CASE
+                    WHEN JSON_VALID(metadata) THEN CASE
+                        WHEN JSON_CONTAINS_PATH(metadata, \'one\', \'$._face_comparison_advice\')
+                        THEN JSON_SET(CASE
+                            WHEN JSON_CONTAINS_PATH(metadata, \'one\', \'$._photo_field_reviews\')
+                            THEN JSON_SET(?, \'$._photo_field_reviews\', JSON_EXTRACT(metadata, \'$._photo_field_reviews\'))
+                            ELSE ? END, \'$._face_comparison_advice\', JSON_EXTRACT(metadata, \'$._face_comparison_advice\'))
+                        ELSE CASE
+                            WHEN JSON_CONTAINS_PATH(metadata, \'one\', \'$._photo_field_reviews\')
+                            THEN JSON_SET(?, \'$._photo_field_reviews\', JSON_EXTRACT(metadata, \'$._photo_field_reviews\'))
+                            ELSE ? END END
+                    ELSE metadata END,
+                    updated_at = NOW()', [
+                $fileRegistryId,
+                $extractionProvenanceJson,
+                $extractionProvenanceJson,
+                $extractionProvenanceJson,
+                $extractionProvenanceJson,
+                $extractionProvenanceJson,
+            ]);
+            if (! $stored) {
+                throw new \RuntimeException('AI analysis provenance was not stored');
+            }
+        }
+
+        return true;
     }
 
-    /**
-     * Recover files left in 'processing' state from crashed previous runs.
-     * When SIGALRM kills a process, trackFailure() never executes for the
-     * in-progress file. This method finds those orphans and increments their
-     * failure counter so they eventually get permanently skipped.
-     */
-    private function recoverOrphanedProcessingFiles(): void
+    private function isProcessingVersion(?string $version): bool
     {
-        $orphaned = DB::select("
-            SELECT id, filename FROM file_registry WHERE ai_analysis_version = 'processing'
-        ");
+        return $version === 'processing' || str_starts_with($version ?? '', 'processing:');
+    }
 
+    public static function retryableCrashVersions(): array
+    {
+        $maximum = min(999, max(1, (int) config('file_registry.ai_analysis.max_crash_attempts', 5)));
+
+        return $maximum > 1
+            ? array_map(fn (int $attempt): string => 'fail:crash:'.$attempt, range(1, $maximum - 1))
+            : [];
+    }
+
+    private function hasCurrentProcessingLease(object $file): bool
+    {
+        return ($file->claim_worker ?? null) !== null
+            && ($file->claim_expires_at ?? '') > now()->format('Y-m-d H:i:s');
+    }
+
+    private function beginProcessing(int $id, bool $forceRefresh, string $workerId): ?object
+    {
+        $file = DB::selectOne('SELECT * FROM file_registry WHERE id = ?', [$id]);
+        if (! $file || $file->status !== 'active' || $this->isProcessingVersion($file->ai_analysis_version ?? null)) {
+            return null;
+        }
+        $version = $file->ai_analysis_version ?? '';
+        $attempts = 0;
+        if (preg_match('/^fail:crash:([1-9][0-9]*)$/D', $version, $match)) {
+            $attempts = (int) $match[1];
+            if ($attempts >= config('file_registry.ai_analysis.max_crash_attempts', 5)) {
+                return null;
+            }
+        } elseif (! $forceRefresh && (str_starts_with($version, 'fail:') || in_array($version, ['skipped', 'failed'], true))) {
+            return null;
+        }
+        $expiry = now()->addMinutes(config('file_registry.ai_analysis.claim_minutes', 30))->format('Y-m-d H:i:s');
+        $processing = 'processing:'.($attempts + 1);
+        $changed = DB::update("UPDATE file_registry SET ai_analysis_version = ?, claim_worker = ?, claim_expires_at = ?, updated_at = NOW()
+            WHERE id = ? AND status = 'active'
+              AND COALESCE(ai_analysis_version, '') = ?
+              AND COALESCE(claim_worker, '') = ? AND COALESCE(claim_expires_at, '') = ?
+              AND (claim_worker IS NULL OR claim_expires_at < NOW()
+                   OR (claim_worker = ? AND claim_expires_at > NOW()))", [
+            $processing, $workerId, $expiry, $id, $version,
+            $file->claim_worker ?? '', $file->claim_expires_at ?? '', $workerId,
+        ]);
+        if ($changed !== 1) {
+            return null;
+        }
+        $file->ai_analysis_version = $processing;
+        $file->claim_worker = $workerId;
+        $file->claim_expires_at = $expiry;
+
+        return $file;
+    }
+
+    /** Recover only expired claims or old unclaimed processing, before intake selection. */
+    public function recoverOrphanedProcessingFiles(): int
+    {
+        $current = now()->format('Y-m-d H:i:s');
+        $cutoff = now()->subMinutes(config('file_registry.ai_analysis.unclaimed_processing_minutes', 30))->format('Y-m-d H:i:s');
+        $orphaned = DB::select("SELECT id, ai_analysis_version, claim_worker, claim_expires_at, updated_at
+            FROM file_registry WHERE status = 'active'
+              AND (ai_analysis_version = 'processing' OR ai_analysis_version LIKE 'processing:%')
+              AND ((claim_worker IS NOT NULL AND claim_expires_at < ?)
+                   OR (claim_worker IS NULL AND updated_at < ?))", [$current, $cutoff]);
+        $recovered = 0;
         foreach ($orphaned as $file) {
-            Log::warning('AIAutoTagService: Recovering orphaned processing file (likely SIGALRM crash)', [
-                'file_registry_id' => $file->id,
-                'filename' => $file->filename,
+            $attempts = $file->ai_analysis_version === 'processing' ? 1 : null;
+            if (preg_match('/^processing:([1-9][0-9]*)$/D', $file->ai_analysis_version, $match)) {
+                $attempts = (int) $match[1];
+            }
+            // Unknown markers do not establish an attempt count.
+            if ($attempts === null) {
+                continue;
+            }
+            $version = $attempts >= config('file_registry.ai_analysis.max_crash_attempts', 5)
+                ? 'skipped' : 'fail:crash:'.$attempts;
+            $recovered += DB::update("UPDATE file_registry SET ai_analysis_version = ?,
+                    claim_worker = NULL, claim_expires_at = NULL, updated_at = NOW()
+                WHERE id = ? AND status = 'active' AND ai_analysis_version = ?
+                  AND COALESCE(claim_worker, '') = ? AND COALESCE(claim_expires_at, '') = ?
+                  AND COALESCE(updated_at, '') = ?
+                  AND ((claim_worker IS NOT NULL AND claim_expires_at < ?)
+                       OR (claim_worker IS NULL AND updated_at < ?))", [
+                $version, $file->id, $file->ai_analysis_version,
+                $file->claim_worker ?? '', $file->claim_expires_at ?? '', $file->updated_at ?? '', $current, $cutoff,
             ]);
-            $this->trackFailure($file->id, 'timeout_crash', 5);
+        }
+        if ($recovered > 0) {
+            Log::info('AIAutoTagService: Recovered expired processing files', ['count' => $recovered]);
         }
 
-        if (count($orphaned) > 0) {
-            Log::info('AIAutoTagService: Recovered orphaned processing files', [
-                'count' => count($orphaned),
-            ]);
-        }
+        return $recovered;
     }
 
     /**
      * Mark a file as permanently skipped for AI analysis.
      * Sets ai_analyzed_at so it's excluded from future selection.
      */
-    private function markSkipped(int $fileRegistryId, string $reason): void
+    private function markSkipped(int $fileRegistryId, string $reason, ?object $snapshot = null): void
     {
+        $guard = '';
+        $bindings = ["[skipped] {$reason}", $fileRegistryId];
+        if ($snapshot && $this->isProcessingVersion($snapshot->ai_analysis_version ?? null)) {
+            $guard = ' AND ai_analysis_version = ? AND claim_worker = ? AND claim_expires_at = ?';
+            array_push($bindings, $snapshot->ai_analysis_version, $snapshot->claim_worker, $snapshot->claim_expires_at);
+        }
         DB::update("
             UPDATE file_registry
             SET ai_analyzed_at = NOW(),
                 ai_analysis_version = 'skipped',
-                ai_description = ?,
+                ai_description = COALESCE(ai_description, ?),
                 updated_at = NOW()
-            WHERE id = ?
-        ", ["[skipped] {$reason}", $fileRegistryId]);
+            WHERE id = ? {$guard}
+        ", $bindings);
     }
 
-    /**
-     * Track transient failures. After maxRetries, permanently skip the file.
-     * Uses ai_analysis_version as a lightweight retry counter (e.g., 'fail:3').
-     */
-    private function trackFailure(int $fileRegistryId, string $reason, int $maxRetries = 5): void
+    /** Hold non-crash failures; only proven expired processing is automatically retried. */
+    private function trackFailure(int $fileRegistryId, string $reason, int $maxRetries = 5, ?object $snapshot = null): void
     {
-        $file = DB::selectOne('SELECT ai_analysis_version FROM file_registry WHERE id = ?', [$fileRegistryId]);
-        $failCount = 0;
-
-        if ($file && $file->ai_analysis_version && str_starts_with($file->ai_analysis_version, 'fail:')) {
-            $failCount = (int) substr($file->ai_analysis_version, 5);
+        $file = $snapshot ?? DB::selectOne('SELECT ai_analysis_version FROM file_registry WHERE id = ?', [$fileRegistryId]);
+        $version = $file->ai_analysis_version ?? '';
+        $attempts = 1;
+        if (preg_match('/^(?:processing:|fail:(?:crash:)?)([1-9][0-9]*)$/D', $version, $match)) {
+            $attempts = (int) $match[1] + ($this->isProcessingVersion($version) ? 0 : 1);
         }
-
-        $failCount++;
-
-        if ($failCount >= $maxRetries) {
-            // Permanent skip
-            $this->markSkipped($fileRegistryId, "max_retries:{$reason}");
-            Log::warning('AIAutoTagService: Permanently skipping file after max retries', [
-                'file_registry_id' => $fileRegistryId,
-                'reason' => $reason,
-                'attempts' => $failCount,
-            ]);
-        } else {
-            // Increment counter but keep file eligible
-            DB::update('
-                UPDATE file_registry SET ai_analysis_version = ?, updated_at = NOW() WHERE id = ?
-            ', ["fail:{$failCount}", $fileRegistryId]);
-        }
+        $next = $attempts >= $maxRetries ? 'skipped' : 'fail:'.$attempts;
+        // Recheck ownership and the attempt marker. A late worker cannot change a successor's state.
+        DB::update("UPDATE file_registry SET ai_analysis_version = ?, updated_at = NOW()
+            WHERE id = ? AND COALESCE(ai_analysis_version, '') = ?
+              AND COALESCE(claim_worker, '') = ? AND COALESCE(claim_expires_at, '') = ?", [
+            $next, $fileRegistryId, $version, $file->claim_worker ?? '', $file->claim_expires_at ?? '',
+        ]);
     }
 
     /**

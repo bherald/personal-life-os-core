@@ -2,7 +2,9 @@
 
 namespace App\Console\Commands;
 
+use App\Services\SkillLoaderService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 
@@ -370,8 +372,8 @@ class ComplexityAuditCommand extends Command
         // Count routes
         $routeCount = 0;
         try {
-            \Illuminate\Support\Facades\Artisan::call('route:list', ['--json' => true]);
-            $routes = json_decode(\Illuminate\Support\Facades\Artisan::output(), true);
+            Artisan::call('route:list', ['--json' => true]);
+            $routes = json_decode(Artisan::output(), true);
             $routeCount = is_array($routes) ? count($routes) : 0;
         } catch (\Throwable) {
             // Non-critical
@@ -389,7 +391,7 @@ class ComplexityAuditCommand extends Command
         $skillsPath = base_path(config('agents.skills_path', 'resources/agents/skills'));
         $skillCount = 0;
         if (is_dir($skillsPath)) {
-            $dirs = File::directories($skillsPath);
+            $dirs = app(SkillLoaderService::class)->activeSkillDirectories();
             $skillCount = count($dirs);
         }
 

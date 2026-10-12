@@ -22,16 +22,16 @@ use Illuminate\Support\Str;
 class JoplinLockHandler
 {
     /** @var int Lock TTL in milliseconds (3 minutes) */
-    private const LOCK_TTL_MS = 180000;
+    public const LOCK_TTL_MS = 180000;
 
     /** @var int Lock refresh interval in milliseconds (1 minute) */
     private const REFRESH_INTERVAL_MS = 60000;
 
     /** @var string Locks directory in Joplin sync target */
-    private const LOCKS_DIR = '.sync/locks/';
+    private const LOCKS_DIR = 'locks/';
 
     /** @var string Client type identifier */
-    private const CLIENT_TYPE = 'php_framework';
+    private const CLIENT_TYPE = 3; // Joplin wire protocol: CLI client
 
     private string $baseUrl;
 
@@ -88,6 +88,27 @@ class JoplinLockHandler
 
         // 3. Save lock file to WebDAV
         $this->saveLock($lock);
+        try {
+            $active = $this->getAllLocks();
+            $ours = false;
+            foreach ($active as $candidate) {
+                if (! $this->lockIsActive($candidate)) {
+                    continue;
+                }
+                if ($candidate['type'] === 'exclusive') {
+                    throw new \RuntimeException('Exclusive lock appeared during sync acquisition');
+                }
+                if ($candidate['clientId'] === $lock['clientId'] && $candidate['type'] === 'sync') {
+                    $ours = true;
+                }
+            }
+            if (! $ours) {
+                throw new \RuntimeException('Sync lock could not be read back');
+            }
+        } catch (\Throwable $e) {
+            $this->releaseLock($lock);
+            throw $e;
+        }
 
         Log::info('Acquired SYNC lock', [
             'client_id' => $this->clientId(),
@@ -275,95 +296,39 @@ class JoplinLockHandler
      */
     private function getAllLocks(): array
     {
-        $locksDir = $this->joplinPath.'/'.self::LOCKS_DIR;
-        $url = $this->baseUrl.'/remote.php/dav/files/'.$this->username.$locksDir;
-
-        try {
-            // Use PROPFIND to list directory
-            $response = $this->http()
-                ->withHeaders(['Depth' => '1'])
-                ->withBody('<?xml version="1.0"?>
-                    <d:propfind xmlns:d="DAV:">
-                        <d:prop>
-                            <d:getlastmodified/>
-                        </d:prop>
-                    </d:propfind>', 'application/xml')
-                ->send('PROPFIND', $url);
-
-            if (! $response->successful()) {
-                Log::warning('Failed to list locks directory', [
-                    'status' => $response->status(),
-                ]);
-
-                return [];
-            }
-
-            // Parse WebDAV XML response
-            $xml = simplexml_load_string($response->body());
-            if (! $xml) {
-                return [];
-            }
-
-            $xml->registerXPathNamespace('d', 'DAV:');
-
-            $locks = [];
-            foreach ($xml->xpath('//d:response') as $item) {
-                $href = (string) $item->xpath('d:href')[0];
-
-                // Extract filename from href
-                if (preg_match('/\/([^\/]+\.json)$/', $href, $matches)) {
-                    $filename = $matches[1];
-
-                    // Fetch lock file content
-                    $lockContent = $this->getLockContent($filename);
-                    if ($lockContent) {
-                        $locks[] = $lockContent;
-                    }
-                }
-            }
-
-            return $locks;
-
-        } catch (\Exception $e) {
-            Log::error('Error fetching locks', [
-                'error' => $e->getMessage(),
-            ]);
-
-            return [];
+        $url = $this->baseUrl.'/remote.php/dav/files/'.$this->username.$this->joplinPath.'/'.self::LOCKS_DIR;
+        $response = $this->http()->withHeaders(['Depth' => '1'])
+            ->withBody('<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:getlastmodified/></d:prop></d:propfind>', 'application/xml')
+            ->send('PROPFIND', $url);
+        if (! $response->successful()) {
+            throw new \RuntimeException('Cannot establish Joplin lock state: HTTP '.$response->status());
         }
-    }
-
-    /**
-     * Get lock file content from WebDAV
-     *
-     * @param  string  $filename  Lock filename
-     * @return array|null Lock object or null if not found
-     */
-    private function getLockContent(string $filename): ?array
-    {
-        $path = $this->joplinPath.'/'.self::LOCKS_DIR.$filename;
-        $url = $this->baseUrl.'/remote.php/dav/files/'.$this->username.$path;
-
-        try {
-            $response = $this->http()
-                ->get($url);
-
-            if ($response->successful()) {
-                $lock = json_decode($response->body(), true);
-
-                // Validate lock structure
-                if (isset($lock['type'], $lock['clientId'], $lock['updatedTime'])) {
-                    return $lock;
-                }
+        $xml = simplexml_load_string($response->body(), \SimpleXMLElement::class, LIBXML_NONET);
+        if ($xml === false) {
+            throw new \RuntimeException('Invalid Joplin lock listing');
+        }
+        $xml->registerXPathNamespace('d', 'DAV:');
+        $locks = [];
+        foreach ($xml->xpath('//d:response') as $item) {
+            $item->registerXPathNamespace('d', 'DAV:');
+            $href = (string) ($item->xpath('d:href')[0] ?? '');
+            $filename = basename(rawurldecode($href));
+            if (! str_ends_with($filename, '.json')) {
+                continue;
             }
-        } catch (\Exception $e) {
-            Log::debug('Could not fetch lock file', [
-                'filename' => $filename,
-                'error' => $e->getMessage(),
-            ]);
+            if (! preg_match('/^(1|2|sync|exclusive)_(1|2|3|desktop|mobile|cli|php_framework)_([a-zA-Z0-9-]+)\.json$/D', $filename, $parts)) {
+                throw new \RuntimeException('Unrecognized Joplin lock filename');
+            }
+            $date = (string) ($item->xpath('d:propstat/d:prop/d:getlastmodified')[0] ?? '');
+            $timestamp = strtotime($date);
+            if ($timestamp === false) {
+                throw new \RuntimeException('Joplin lock timestamp unavailable');
+            }
+            $locks[] = ['type' => in_array($parts[1], ['1', 'sync'], true) ? 'sync' : 'exclusive',
+                'clientType' => $parts[2], 'clientId' => $parts[3], 'updatedTime' => $timestamp * 1000];
         }
 
-        return null;
+        return $locks;
     }
 
     /**
@@ -378,7 +343,7 @@ class JoplinLockHandler
         $url = $this->baseUrl.'/remote.php/dav/files/'.$this->username.$path;
 
         $response = $this->http()
-            ->withBody(json_encode($lock, JSON_PRETTY_PRINT), 'application/json')
+            ->withBody(json_encode(array_merge($lock, ['type' => $lock['type'] === 'sync' ? 1 : 2, 'clientType' => self::CLIENT_TYPE]), JSON_PRETTY_PRINT), 'application/json')
             ->put($url);
 
         if (! $response->successful()) {
@@ -398,8 +363,8 @@ class JoplinLockHandler
     private function lockFilename(array $lock): string
     {
         return sprintf('%s_%s_%s.json',
-            $lock['type'],
-            $lock['clientType'],
+            $lock['type'] === 'sync' ? 1 : 2,
+            self::CLIENT_TYPE,
             $lock['clientId']
         );
     }
@@ -520,16 +485,18 @@ class JoplinLockHandler
      */
     public function getLockStatus(): array
     {
-        $syncLocks = $this->getSyncLocks();
-        $exclusiveLocks = $this->getExclusiveLocks();
+        // One consistent DAV snapshot; repeated availability probes previously listed the same directory five times.
+        $active = array_values(array_filter($this->getAllLocks(), fn ($lock) => $this->lockIsActive($lock)));
+        $syncLocks = array_filter($active, fn ($lock) => $lock['type'] === 'sync');
+        $exclusiveLocks = array_filter($active, fn ($lock) => $lock['type'] === 'exclusive');
 
         return [
             'client_id' => $this->clientId(),
             'sync_locks' => count($syncLocks),
             'exclusive_locks' => count($exclusiveLocks),
-            'can_acquire_sync' => $this->canAcquireLock('sync'),
-            'can_acquire_exclusive' => $this->canAcquireLock('exclusive'),
-            'locks' => array_merge($syncLocks, $exclusiveLocks),
+            'can_acquire_sync' => count($exclusiveLocks) === 0,
+            'can_acquire_exclusive' => count($active) === 0,
+            'locks' => $active,
         ];
     }
 }

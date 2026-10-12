@@ -8,20 +8,24 @@ return [
     // Source-controlled agent skill definitions.
     'skills_path' => env('AGENT_SKILLS_PATH', 'resources/agents/skills'),
 
+    // Optional skill intake scanner. Static PLOS checks always run; the
+    // SkillSpector CLI is used only when present and enabled.
+    'skill_audit' => [
+        'allowed_roots' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('AGENT_SKILL_AUDIT_ALLOWED_ROOTS', ''))
+        ))),
+        'skillspector' => [
+            'enabled' => (bool) env('SKILLSPECTOR_ENABLED', true),
+            'command' => env('SKILLSPECTOR_COMMAND', 'skillspector'),
+            'use_llm_default' => (bool) env('SKILLSPECTOR_USE_LLM_DEFAULT', false),
+            'enforce_recommendation' => (bool) env('SKILLSPECTOR_ENFORCE_RECOMMENDATION', false),
+        ],
+    ],
+
     // Agent loop
     'max_loop_iterations' => env('AGENT_MAX_LOOP', 10),
     'context_max_tokens' => env('AGENT_CONTEXT_TOKENS', 4000),
-
-    // Claude CLI concurrency
-    'claude_default_max' => env('CLAUDE_DEFAULT_MAX', 10),
-    'claude_absolute_max' => env('CLAUDE_ABSOLUTE_MAX', 20),
-    'claude_min_concurrent' => env('CLAUDE_MIN_CONCURRENT', 3),
-    'claude_ollama_fallback_min' => env('CLAUDE_OLLAMA_FALLBACK_MIN', 8),
-
-    // Speculative execution
-    'max_speculative_queue' => env('SPECULATIVE_QUEUE_DEPTH', 2),
-    'speculative_variance_threshold' => env('SPECULATIVE_VARIANCE', 1.0),
-    'speculative_min_uplift' => env('SPECULATIVE_MIN_UPLIFT', 10.0),
 
     // Parallel tool execution
     'parallel_tool_max_concurrent' => env('PARALLEL_TOOL_MAX', 10),
@@ -32,21 +36,26 @@ return [
     'assess_tool_result_max_chars' => (int) env('AGENT_ASSESS_TOOL_MAX_CHARS', 3000), // N143: Per-tool output cap in assess phase prompt (prevents context overflow on large trees)
     'tool_result_max_chars' => (int) env('AGENT_TOOL_RESULT_MAX_CHARS', 2000), // Cap per-turn tool result context in agentic mode to avoid oversized follow-up prompts
 
-    // Framework B7 — log pre-compaction for log-shaped tool results. Applies
-    // to log_parse_errors / log_scan_errors / log_tail / log_read tool outputs
-    // before truncation. Savings flow through AIService to every provider in
-    // the fallback chain (Ollama local, Claude CLI, Groq, OpenRouter, etc.).
-    // Disable via env AGENT_LOG_PRECOMPACTION=false if compaction ever damages signal.
-    'enable_log_precompaction' => (bool) env('AGENT_LOG_PRECOMPACTION', true),
+    // Lossy agent log precompaction is operator-disabled. This is intentionally
+    // not env-overridable because collapsed log lines removed diagnostic detail
+    // before the resulting prompt reached every provider in the fallback chain.
+    'enable_log_precompaction' => false,
     'log_precompaction_threshold_bytes' => (int) env('AGENT_LOG_PRECOMPACTION_THRESHOLD', 1000),
 
     'ai_timeout_seconds' => (int) env('AGENT_AI_TIMEOUT_SECONDS', 45), // Bound each agent LLM call so scheduled runs fail fast instead of stalling for minutes
 
     // Safety guardrails (N87 — moved from hardcoded constants)
-    'max_nesting_depth' => env('AGENT_MAX_NESTING', 5),
-    'consecutive_tool_limit' => env('AGENT_CONSECUTIVE_TOOL_LIMIT', 3),
-    'consecutive_tool_limit_alt' => env('AGENT_CONSECUTIVE_FALLBACK', 2),
-    'auto_approve_confidence' => (float) env('AGENT_AUTO_APPROVE_CONFIDENCE', 1.00),
+    'max_nesting_depth' => env('AGENT_MAX_NESTING', 1),
+    'stuck_detection' => [
+        'history_limit' => (int) env('AGENT_STUCK_HISTORY_LIMIT', 20),
+        'canonical_json_max_bytes' => (int) env('AGENT_STUCK_CANONICAL_JSON_MAX_BYTES', 65536),
+        'repeat_pair_replan_threshold' => (int) env('AGENT_STUCK_REPLAN_THRESHOLD', 3),
+        'action_observation_threshold' => (int) env('AGENT_STUCK_ACTION_OBSERVATION_THRESHOLD', 4),
+        'action_error_threshold' => (int) env('AGENT_STUCK_ACTION_ERROR_THRESHOLD', 3),
+        'alternating_pattern_threshold' => (int) env('AGENT_STUCK_ALTERNATING_THRESHOLD', 6),
+        'periodic_pattern_max_period' => (int) env('AGENT_STUCK_PERIODIC_MAX_PERIOD', 5),
+        'periodic_pattern_repetitions' => (int) env('AGENT_STUCK_PERIODIC_REPETITIONS', 3),
+    ],
     'review_expiry_days' => (int) env('AGENT_REVIEW_EXPIRY_DAYS', 7),
     'pushover_emergency_timeout_sec' => (int) env('AGENT_PUSHOVER_TIMEOUT', 3600),
 
@@ -55,7 +64,7 @@ return [
     'hybrid_minutes_per_entity' => (float) env('AGENT_HYBRID_MIN_PER_ENTITY', 15),
     'hybrid_entity_floor' => (int) env('AGENT_HYBRID_ENTITY_FLOOR', 3),
     'hybrid_entity_ceil' => (int) env('AGENT_HYBRID_ENTITY_CEIL', 20),
-    'hybrid_default_timeout' => (int) env('AGENT_HYBRID_DEFAULT_TIMEOUT', 90),
+    'hybrid_default_timeout_minutes' => (int) env('AGENT_HYBRID_DEFAULT_TIMEOUT', 90),
     'hybrid_report_reserve_seconds' => (int) env('AGENT_REPORT_RESERVE_SEC', 300),  // Reserve 5min for report phase
 
     // Adaptive timeout — allows agents to extend deadline mid-run when productive
@@ -63,8 +72,8 @@ return [
 
     // HWR-003 DS/delegation governance marker defaults.
     'delegation_governance' => [
-        'max_depth' => (int) env('AGENT_DELEGATION_MAX_DEPTH', 2),
-        'max_sidecar_depth' => (int) env('AGENT_DELEGATION_MAX_SIDECAR_DEPTH', 1),
+        'max_depth' => (int) env('AGENT_DELEGATION_MAX_DEPTH', 1),
+        'max_sidecar_depth' => (int) env('AGENT_DELEGATION_MAX_SIDECAR_DEPTH', 0),
         'max_concurrent_sidecars' => (int) env('AGENT_DELEGATION_MAX_SIDECARS', 2),
         'runtime_budget_seconds' => (int) env('AGENT_DELEGATION_RUNTIME_BUDGET', 900),
         'max_runtime_budget_seconds' => (int) env('AGENT_DELEGATION_RUNTIME_BUDGET_MAX', 3600),
@@ -85,11 +94,4 @@ return [
         'max_reconcile_events_per_run' => (int) env('AGENT_CONTEXT_RECONCILE_MAX_EVENTS', 25),
     ],
 
-    // Claude CLI auto-scaling thresholds (N119c — per-core normalized load averages)
-    'claude_load_scale_up' => (float) env('CLAUDE_LOAD_SCALE_UP', 1.5),    // Scale up if per-core load < this
-    'claude_load_scale_down' => (float) env('CLAUDE_LOAD_SCALE_DOWN', 3.0),   // Scale down if per-core load > this
-    'claude_load_critical' => (float) env('CLAUDE_LOAD_CRITICAL', 5.0),     // Emergency minimum slots if per-core load > this
-    'claude_memory_min_free_mb' => (int) env('CLAUDE_MEMORY_MIN_FREE_MB', 512),
-    'claude_memory_critical_mb' => (int) env('CLAUDE_MEMORY_CRITICAL_MB', 256),
-    'claude_slots_per_core' => (int) env('CLAUDE_SLOTS_PER_CORE', 2),
 ];

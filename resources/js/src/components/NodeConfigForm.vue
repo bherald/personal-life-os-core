@@ -223,7 +223,7 @@ function formatJson() {
 <style scoped>
 .node-config-form {
   padding: 1rem;
-  background: #2d2d2d;
+  background: var(--color-bg-secondary);
   border-radius: 8px;
 }
 
@@ -233,18 +233,18 @@ function formatJson() {
   align-items: center;
   margin-bottom: 1rem;
   padding-bottom: 0.5rem;
-  border-bottom: 2px solid #3498db;
+  border-bottom: 2px solid var(--color-border);
 }
 
 .form-header h4, .json-header h4 {
-  color: #3498db;
+  color: var(--color-accent);
   margin: 0;
 }
 
 .btn-toggle {
   padding: 0.25rem 0.75rem;
-  background: #34495e;
-  color: #e0e0e0;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -254,11 +254,11 @@ function formatJson() {
 }
 
 .btn-toggle:hover {
-  background: #3498db;
+  background: var(--color-accent);
 }
 
 .json-hint {
-  color: #95a5a6;
+  color: var(--color-text-secondary);
   font-size: 0.85rem;
   margin: 0.5rem 0 0 0;
 }
@@ -276,23 +276,23 @@ function formatJson() {
 }
 
 .form-field label {
-  color: #95a5a6;
+  color: var(--color-text-secondary);
   font-size: 0.9rem;
   font-weight: 600;
 }
 
 .required {
-  color: #e74c3c;
+  color: var(--ops-danger);
   font-weight: bold;
 }
 
 .form-input, .form-textarea, .form-select, .json-textarea {
   width: 100%;
   padding: 0.5rem;
-  background: #1a1a1a;
-  border: 1px solid #444;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
   border-radius: 4px;
-  color: #e0e0e0;
+  color: var(--color-text-primary);
   font-family: 'Courier New', monospace;
   font-size: 0.9rem;
   transition: border-color 0.2s;
@@ -300,7 +300,7 @@ function formatJson() {
 
 .form-input:focus, .form-textarea:focus, .form-select:focus, .json-textarea:focus {
   outline: none;
-  border-color: #3498db;
+  border-color: var(--color-accent);
 }
 
 .form-textarea {
@@ -332,20 +332,20 @@ function formatJson() {
 }
 
 .checkbox-label {
-  color: #e0e0e0;
+  color: var(--color-text-primary);
   font-size: 0.9rem;
 }
 
 .validation-errors {
   margin-top: 1rem;
   padding: 0.75rem;
-  background: rgba(231, 76, 60, 0.1);
-  border: 1px solid #e74c3c;
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
+  border: 1px solid var(--ops-danger);
   border-radius: 4px;
 }
 
 .error-message {
-  color: #e74c3c;
+  color: var(--ops-danger);
   font-size: 0.85rem;
   margin: 0.25rem 0;
 }
@@ -358,7 +358,7 @@ function formatJson() {
 
 .btn-reset, .btn-format {
   padding: 0.5rem 1rem;
-  background: #95a5a6;
+  background: var(--color-bg-tertiary);
   color: white;
   border: none;
   border-radius: 4px;
@@ -368,6 +368,6 @@ function formatJson() {
 }
 
 .btn-reset:hover, .btn-format:hover {
-  background: #7f8c8d;
+  background: var(--color-bg-tertiary);
 }
 </style>

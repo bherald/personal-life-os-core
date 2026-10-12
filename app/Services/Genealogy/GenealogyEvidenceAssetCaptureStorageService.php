@@ -21,7 +21,7 @@ class GenealogyEvidenceAssetCaptureStorageService
 
     private const ALLOWED_EXTENSIONS = [
         'jpg', 'jpeg', 'jfif', 'png', 'gif', 'webp', 'tif', 'tiff', 'jp2', 'j2k', 'jpf', 'jpx',
-        'pdf', 'html', 'htm', 'txt', 'rtf',
+        'pdf', 'html', 'htm', 'json', 'txt', 'rtf',
         'mp3', 'wav', 'ogg', 'flac', 'm4a',
         'mp4', 'm4v', 'mov', 'webm',
     ];
@@ -34,6 +34,7 @@ class GenealogyEvidenceAssetCaptureStorageService
 
     private const ALLOWED_CONTENT_TYPES = [
         'application/pdf',
+        'application/json',
         'application/octet-stream',
         'application/rtf',
         'application/x-rtf',
@@ -42,7 +43,10 @@ class GenealogyEvidenceAssetCaptureStorageService
         'text/rtf',
     ];
 
-    public function __construct(private readonly GenealogyTreeRootResolver $rootResolver) {}
+    public function __construct(
+        private readonly GenealogyTreeRootResolver $rootResolver,
+        private readonly GenealogyEvidenceAssetIdentityService $identityService,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $reviewDetails
@@ -220,7 +224,7 @@ class GenealogyEvidenceAssetCaptureStorageService
         }
 
         if ($this->isBlockedRemoteHost($host)) {
-            return ['ok' => false, 'status' => 'blocked', 'blockers' => ['manual_or_paywalled_provider']];
+            return ['ok' => false, 'status' => 'blocked', 'blockers' => ['provider_specific_strict_or_blocked_host']];
         }
 
         if ($this->looksSensitive($locator)) {
@@ -636,7 +640,8 @@ class GenealogyEvidenceAssetCaptureStorageService
         }
 
         $sourceContext ??= [];
-        $sha1 = sha1($locator);
+        $identity = $this->identityService->fingerprint($locator, $asset, $sourceContext);
+        $sha1 = $identity['hash'];
         $path = (string) (parse_url($locator, PHP_URL_PATH) ?? $locator);
         $extension = strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
         $contentType = $this->normalizeContentType($this->firstScalar($asset, ['content_type', 'mime_type']));
@@ -646,6 +651,8 @@ class GenealogyEvidenceAssetCaptureStorageService
             'locator' => $locator,
             'locator_hash' => substr($sha1, 0, 16),
             'locator_sha1' => $sha1,
+            'locator_identity_mode' => $identity['mode'],
+            'source_generation_present' => $identity['source_generation_present'],
             'label' => $this->firstScalar($asset, ['label', 'title', 'name', 'filename'])
                 ?? $this->firstScalar($sourceContext, ['label', 'title', 'name'])
                 ?? basename($path)
@@ -825,6 +832,9 @@ class GenealogyEvidenceAssetCaptureStorageService
     {
         $label = strtolower((string) ($candidate['label'] ?? ''));
         $assetType = strtolower((string) ($candidate['asset_type'] ?? ''));
+        if ($contentType === 'application/json') {
+            return 'document';
+        }
         if (str_contains($label, 'headstone') || str_contains($label, 'tombstone') || str_contains($label, 'grave')) {
             return 'headstone';
         }
@@ -843,7 +853,9 @@ class GenealogyEvidenceAssetCaptureStorageService
         if ($assetType === 'video' || str_starts_with($contentType, 'video/')) {
             return 'video';
         }
-        if (in_array($assetType, ['pdf', 'html'], true) || str_contains($contentType, 'pdf') || str_contains($contentType, 'html')) {
+        if (in_array($assetType, ['document', 'pdf', 'html'], true)
+            || str_contains($contentType, 'pdf')
+            || str_contains($contentType, 'html')) {
             return 'document';
         }
 
@@ -891,6 +903,7 @@ class GenealogyEvidenceAssetCaptureStorageService
             'image/tiff' => 'tif',
             'image/jp2', 'image/jpx', 'image/jpm', 'image/j2k', 'image/x-jp2' => 'jp2',
             'application/pdf' => 'pdf',
+            'application/json' => 'json',
             'audio/mpeg' => 'mp3',
             'audio/wav', 'audio/x-wav' => 'wav',
             'audio/ogg' => 'ogg',
@@ -973,7 +986,9 @@ class GenealogyEvidenceAssetCaptureStorageService
     private function blockedRemoteHostSuffixes(): array
     {
         $suffixes = array_merge(
-            (array) config('scraping.manual_only_domains', []),
+            $this->shouldEnforceProviderSpecificDomains()
+                ? (array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', []))
+                : [],
             (array) config('genealogy.evidence_asset_capture.blocked_remote_host_suffixes', []),
         );
 
@@ -986,6 +1001,11 @@ class GenealogyEvidenceAssetCaptureStorageService
         }
 
         return array_keys($normalized);
+    }
+
+    private function shouldEnforceProviderSpecificDomains(): bool
+    {
+        return (bool) config('scraping.enforce_provider_specific_domains', config('scraping.enforce_manual_only_domains', false));
     }
 
     private function isAllowedLocalPath(string $path, array $candidate): bool

@@ -3,580 +3,447 @@
 namespace App\Console\Commands;
 
 use App\Controllers\NotificationController;
+use App\Services\ModelHardwareAdmissionService;
 use Illuminate\Console\Command;
-use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
+use Throwable;
 
 /**
- * OllamaCheckUpgrades - Monthly model advisor for Ollama LLMs
+ * Read-only monthly audit for registered local model candidates.
  *
- * Checks for newer/better models that fit the production VRAM constraint (6GB),
- * sends a Pushover notification with recommendations and the exact command
- * to execute changes with human approval.
- *
- * Scheduled: First Sunday of every month at 9:00 AM
- * Cron: 0 9 1-7 * 0
+ * Discovery and routing stay table-owned. This command never pulls, removes,
+ * promotes, or reconfigures a model; it only identifies the next eval lane.
  */
 class OllamaCheckUpgrades extends Command
 {
     protected $signature = 'ollama:check-upgrades
-                            {--force : Send notification even if no upgrades found}
-                            {--dry-run : Show what would be sent without sending}
-                            {--vram=6 : Maximum VRAM in GB for model selection}';
+                            {--force : Send notification even when no evaluation candidates are present}
+                            {--dry-run : Show the audit without sending a notification}
+                            {--vram=6 : Maximum candidate VRAM in GB}
+                            {--json : Emit machine-readable JSON}';
 
-    protected $description = 'Check for Ollama model upgrades and notify human with recommendations';
-
-    // Ollama library API for available models
-    private const OLLAMA_LIBRARY_API = 'https://ollama.com/api/tags';
-
-    // Known model categories with VRAM requirements (approximate GB)
-    private const MODEL_VRAM_MAP = [
-        // Instruct/Chat models
-        'llama3.1:8b' => 5.0,
-        'llama3.2:3b' => 2.5,
-        'llama3.2:1b' => 1.2,
-        'llama3:8b' => 5.0,
-        'mistral:7b' => 4.5,
-        'mixtral:8x7b' => 26.0, // Too large
-        'phi3:3.8b' => 2.8,
-        'phi3:14b' => 9.0,
-        'gemma:7b' => 5.0,
-        'gemma:2b' => 1.8,
-        'gemma2:9b' => 6.0,
-        'gemma2:2b' => 1.8,
-        'qwen:7b' => 5.0,
-        'qwen2:7b' => 5.0,
-        'qwen2.5:7b' => 5.0,
-        'qwen2.5:3b' => 2.5,
-        'deepseek-coder:6.7b' => 4.5,
-        'codellama:7b' => 4.5,
-        'codellama:13b' => 8.5,
-        'starcoder2:7b' => 5.0,
-
-        // Vision models
-        'llava:7b' => 4.5,
-        'llava:13b' => 8.5,
-        'llava-llama3:8b' => 5.5,
-        'bakllava:7b' => 5.0,
-        'moondream:1.8b' => 1.5,
-
-        // Embedding models
-        'nomic-embed-text' => 0.3,
-        'mxbai-embed-large' => 0.7,
-        'all-minilm' => 0.1,
-        'snowflake-arctic-embed' => 0.6,
-    ];
-
-    // Model categories for framework use cases
-    private const USE_CASE_CATEGORIES = [
-        'instruct' => [
-            'description' => 'General LLM for summaries, formatting, classification',
-            'current_env' => 'OLLAMA_MODEL',
-            'models' => ['llama3.1', 'llama3.2', 'llama3', 'mistral', 'phi3', 'gemma', 'gemma2', 'qwen', 'qwen2', 'qwen2.5'],
-        ],
-        'vision' => [
-            'description' => 'Image analysis and OCR enhancement',
-            'current_env' => 'OLLAMA_VISION_MODEL',
-            'models' => ['llava', 'llava-llama3', 'bakllava', 'moondream'],
-        ],
-        'embedding' => [
-            'description' => 'RAG vector embeddings (768-dim compatible)',
-            'current_env' => 'OLLAMA_EMBEDDING_MODEL',
-            'models' => ['nomic-embed-text', 'mxbai-embed-large', 'snowflake-arctic-embed'],
-        ],
-    ];
+    protected $description = 'Audit table-registered Ollama candidates and require eval gates before promotion';
 
     public function handle(): int
     {
-        $maxVram = (float) $this->option('vram');
-        $force = $this->option('force');
-        $dryRun = $this->option('dry-run');
+        $maxVram = max(1.0, (float) $this->option('vram'));
+        $dryRun = (bool) $this->option('dry-run');
+        $force = (bool) $this->option('force');
+        $payload = $this->collect($maxVram);
+        $shouldNotify = $force || $payload['status'] === 'evaluation_required';
+        $payload['notification'] = [
+            'dry_run' => $dryRun,
+            'would_send' => $shouldNotify,
+            'sent' => false,
+        ];
 
-        $this->info('Ollama Model Upgrade Advisor');
-        $this->info('============================');
-        $this->info("Max VRAM: {$maxVram}GB");
+        if ($dryRun || ! $shouldNotify || $payload['status'] === 'unavailable') {
+            $this->render($payload);
 
-        // 1. Get currently installed models from Ollama
-        $installed = $this->getInstalledModels();
-        if (empty($installed)) {
-            $this->error('Could not connect to Ollama or no models installed');
-
-            return 1;
+            return $payload['status'] === 'unavailable' ? self::FAILURE : self::SUCCESS;
         }
 
-        $this->info("\nCurrently Installed Models:");
-        foreach ($installed as $model) {
-            $size = $this->formatBytes($model['size'] ?? 0);
-            $this->line("  - {$model['name']} ({$size})");
+        $payload['notification']['sent'] = $this->sendNotification($this->buildNotificationMessage($payload));
+        $this->render($payload);
+
+        if (! $payload['notification']['sent']) {
+            return self::FAILURE;
         }
 
-        // 2. Get current configuration
-        $currentConfig = $this->getCurrentConfig();
-        $this->info("\nCurrent Configuration:");
-        foreach ($currentConfig as $key => $value) {
-            $this->line("  - {$key}: {$value}");
+        Log::info('Ollama model readiness audit completed', [
+            'status' => $payload['status'],
+            'summary' => $payload['summary'],
+            'notification_sent' => true,
+        ]);
+
+        return self::SUCCESS;
+    }
+
+    /** @return array<string,mixed> */
+    private function collect(float $maxVram): array
+    {
+        if (! Schema::hasTable('llm_instances') || ! Schema::hasTable('ollama_models')) {
+            return $this->unavailablePayload($maxVram);
         }
 
-        // 3. Fetch available models and find upgrades
-        $recommendations = $this->findRecommendations($installed, $currentConfig, $maxVram);
-
-        // 4. Build notification message
-        $hasUpgrades = ! empty($recommendations['upgrades']);
-        $hasAlternatives = ! empty($recommendations['alternatives']);
-
-        if (! $hasUpgrades && ! $hasAlternatives && ! $force) {
-            $this->info("\nNo upgrades or alternatives found. Your models are up to date!");
-
-            return 0;
-        }
-
-        $message = $this->buildNotificationMessage($currentConfig, $recommendations, $maxVram);
-        $command = $this->buildUpgradeCommand($recommendations);
-
-        $this->info("\n".str_repeat('=', 60));
-        $this->info('NOTIFICATION PREVIEW:');
-        $this->info(str_repeat('=', 60));
-        $this->line($message);
-        $this->info(str_repeat('=', 60));
-
-        if ($dryRun) {
-            $this->warn("\n[DRY RUN] Notification NOT sent");
-
-            return 0;
-        }
-
-        // 5. Send Pushover notification
-        $sent = $this->sendNotification($message, $command);
-
-        if ($sent) {
-            $this->info("\n✓ Pushover notification sent successfully");
-
-            // Log for audit
-            Log::info('Ollama upgrade check completed', [
-                'recommendations' => $recommendations,
-                'notification_sent' => true,
+        $instances = DB::table('llm_instances')
+            ->whereIn('instance_type', ['ollama', 'local_llm'])
+            ->orderBy('priority')
+            ->get([
+                'instance_id',
+                'instance_name',
+                'instance_type',
+                'priority',
+                'is_active',
+                'is_healthy',
+                'routability',
+                'gpu_target',
+                'host_affinity',
+                'config',
             ]);
-        } else {
-            $this->error("\n✗ Failed to send Pushover notification");
 
-            return 1;
-        }
+        $models = DB::table('ollama_models');
+        $availableModels = (clone $models)->where('is_available', 1);
+        $available = (clone $availableModels)->count();
+        $vetted = (clone $availableModels)->where('status', 'vetted')->count();
+        $testing = (clone $availableModels)->where('status', 'testing')->count();
+        $unused = (clone $availableModels)->where('total_requests', 0)->count();
+        $maxVramMb = (int) round($maxVram * 1024);
 
-        return 0;
-    }
+        $candidateRows = DB::table('ollama_models as models')
+            ->leftJoin('llm_instances as instances', 'instances.id', '=', 'models.instance_id')
+            ->where('models.is_available', 1)
+            ->whereIn('models.status', ['discovered', 'testing'])
+            ->where(function ($query) use ($maxVram, $maxVramMb): void {
+                $query->where('models.vram_required_mb', '<=', $maxVramMb)
+                    ->orWhere(function ($query) use ($maxVram): void {
+                        $query->whereNull('models.vram_required_mb')
+                            ->where(function ($query) use ($maxVram): void {
+                                $query->whereNull('models.size_gb')
+                                    ->orWhere('models.size_gb', '<=', $maxVram);
+                            });
+                    });
+            })
+            ->orderByDesc('models.quality_rating')
+            ->orderBy('models.total_requests')
+            ->orderBy('models.model_name')
+            ->limit(12)
+            ->get([
+                'models.model_name',
+                'models.profile',
+                'models.status',
+                'models.size_gb',
+                'models.vram_required_mb',
+                'models.quality_rating',
+                'models.total_requests',
+                'models.success_rate',
+                'models.last_seen_at',
+                'instances.instance_id as route_instance_id',
+            ]);
 
-    /**
-     * Get installed models from local Ollama
-     */
-    private function getInstalledModels(): array
-    {
-        $ollamaUrl = config('services.ollama.api_url', 'http://127.0.0.1:11434');
+        $candidates = $candidateRows->map(static fn (object $model): array => [
+            'model_name' => (string) $model->model_name,
+            'route_instance_id' => (string) ($model->route_instance_id ?? 'unassigned'),
+            'profile' => (string) ($model->profile ?? 'unassigned'),
+            'status' => (string) $model->status,
+            'size_gb' => is_numeric($model->size_gb) ? (float) $model->size_gb : null,
+            'vram_required_mb' => is_numeric($model->vram_required_mb) ? (int) $model->vram_required_mb : null,
+            'quality_rating' => is_numeric($model->quality_rating) ? (int) $model->quality_rating : null,
+            'total_requests' => (int) ($model->total_requests ?? 0),
+            'success_rate' => is_numeric($model->success_rate) ? (float) $model->success_rate : null,
+            'last_seen_at' => $model->last_seen_at ? (string) $model->last_seen_at : null,
+        ])->all();
 
-        try {
-            $response = Http::connectTimeout(5)->timeout(10)->get("{$ollamaUrl}/api/tags");
+        $activeInstances = $instances
+            ->filter(static fn (object $instance): bool => (bool) $instance->is_active)
+            ->map(fn (object $instance): array => $this->instanceSummary($instance))
+            ->values()
+            ->all();
+        $requestLog = $this->requestLogSummary();
+        $hardwareAdmission = $this->hardwareAdmissionSummary($instances);
+        $hardwareCandidates = count(array_filter(
+            $hardwareAdmission,
+            static fn (array $row): bool => $row['decision'] === 'candidate_only'
+        ));
+        $hardwareBlocked = count(array_filter(
+            $hardwareAdmission,
+            static fn (array $row): bool => str_starts_with((string) $row['decision'], 'blocked_')
+        ));
+        $status = $candidates !== [] || $hardwareCandidates > 0 ? 'evaluation_required' : 'observe';
 
-            if ($response->successful()) {
-                return $response->json('models') ?? [];
-            }
-        } catch (\Exception $e) {
-            $this->warn('Could not connect to Ollama: '.$e->getMessage());
-        }
-
-        return [];
-    }
-
-    /**
-     * Get current model configuration
-     */
-    private function getCurrentConfig(): array
-    {
         return [
-            'OLLAMA_MODEL' => config('services.ollama.model'),
-            'OLLAMA_EMBEDDING_MODEL' => config('services.ollama.embedding_model'),
-            'OLLAMA_VISION_MODEL' => config('services.ollama.vision_model'),
+            'schema' => 'plos.ollama_model_readiness_audit.v2',
+            'generated_at' => now()->toIso8601String(),
+            'status' => $status,
+            'mode' => 'observe',
+            'read_only' => true,
+            'table_owned' => true,
+            'max_candidate_vram_gb' => $maxVram,
+            'summary' => [
+                'local_instances' => $instances->count(),
+                'active_local_instances' => count($activeInstances),
+                'healthy_active_instances' => count(array_filter(
+                    $activeInstances,
+                    static fn (array $instance): bool => $instance['is_healthy']
+                )),
+                'models_total' => (clone $models)->count(),
+                'available_models' => $available,
+                'vetted_models' => $vetted,
+                'testing_models' => $testing,
+                'zero_usage_available_models' => $unused,
+                'evaluation_candidates' => count($candidates),
+                'hardware_fit_candidates' => $hardwareCandidates,
+                'hardware_admission_blocks' => $hardwareBlocked,
+            ],
+            'active_routes' => $activeInstances,
+            'request_log_30d' => $requestLog,
+            'evaluation_candidates' => $candidates,
+            'hardware_admission' => $hardwareAdmission,
+            'recommendation' => [
+                'decision' => $hardwareCandidates > 0
+                    ? 'confirm_one_published_fit_candidate_contract'
+                    : ($unused > 0 ? 'evaluate_existing_before_installing' : 'no_new_model_evidence'),
+                'install_recommended' => false,
+                'promotion_recommended' => false,
+                'reason' => $hardwareCandidates > 0
+                    ? "{$hardwareCandidates} exact artifacts have published hardware fit but still need one bounded PLOS role contract before install/promotion."
+                    : ($unused > 0
+                        ? "{$unused} available registered models still lack usage evidence."
+                        : 'No versioned evidence proves that a new model improves an active PLOS role.'),
+                'required_gates' => [
+                    'php artisan ollama:drift-check --json --compact --no-fail',
+                    'official exact-artifact metadata and hardware envelope registered',
+                    'one bounded PLOS role/tool/schema contract check',
+                    'time-boxed canary with role telemetry',
+                    'explicit rollback or deactivation path',
+                ],
+            ],
+            'safety' => [
+                'models_pulled' => false,
+                'models_removed' => false,
+                'routes_changed' => false,
+                'environment_changed' => false,
+                'services_restarted' => false,
+            ],
         ];
     }
 
     /**
-     * Find recommended upgrades and alternatives
+     * @param  Collection<int,object>  $instances
+     * @return array<int,array<string,mixed>>
      */
-    private function findRecommendations(array $installed, array $currentConfig, float $maxVram): array
+    private function hardwareAdmissionSummary($instances): array
     {
-        $recommendations = [
-            'upgrades' => [],
-            'alternatives' => [],
-            'notes' => [],
-        ];
+        $service = app(ModelHardwareAdmissionService::class);
+        $policy = $service->policy();
+        $classes = is_array($policy['hardware_classes'] ?? null) ? $policy['hardware_classes'] : [];
+        $rows = [];
 
-        // Check each use case category
-        foreach (self::USE_CASE_CATEGORIES as $category => $info) {
-            $currentModel = $currentConfig[$info['current_env']] ?? '';
-            $currentBase = $this->extractModelBase($currentModel);
-
-            // Find newer versions of the same model family
-            foreach ($info['models'] as $modelFamily) {
-                if (strpos($currentBase, $modelFamily) !== false) {
-                    $upgrade = $this->findNewerVersion($modelFamily, $currentModel, $maxVram);
-                    if ($upgrade) {
-                        $recommendations['upgrades'][$category] = [
-                            'current' => $currentModel,
-                            'recommended' => $upgrade['model'],
-                            'reason' => $upgrade['reason'],
-                            'vram' => $upgrade['vram'] ?? 'unknown',
-                        ];
-                    }
-                }
+        foreach ($instances as $instance) {
+            $config = json_decode((string) ($instance->config ?? '{}'), true);
+            $config = is_array($config) ? $config : [];
+            $admission = is_array($config['model_admission'] ?? null) ? $config['model_admission'] : [];
+            if (! filter_var($admission['enforce'] ?? false, FILTER_VALIDATE_BOOL)) {
+                continue;
             }
 
-            // Find alternatives from different families
-            $alternatives = $this->findAlternatives($category, $currentBase, $maxVram);
-            if (! empty($alternatives)) {
-                $recommendations['alternatives'][$category] = $alternatives;
-            }
-        }
+            $hardwareClass = (string) ($admission['hardware_class'] ?? '');
+            $classPolicy = is_array($classes[$hardwareClass] ?? null) ? $classes[$hardwareClass] : [];
+            $modelPolicies = is_array($classPolicy['models'] ?? null) ? $classPolicy['models'] : [];
 
-        // Add general notes
-        $recommendations['notes'] = $this->getContextualNotes($currentConfig, $maxVram);
-
-        return $recommendations;
-    }
-
-    /**
-     * Extract base model name (without quantization suffix)
-     */
-    private function extractModelBase(string $model): string
-    {
-        // Remove quantization suffixes like :8b-instruct-q5_K_M
-        return preg_replace('/:.*$/', '', $model);
-    }
-
-    /**
-     * Find newer version of a model family
-     */
-    private function findNewerVersion(string $family, string $current, float $maxVram): ?array
-    {
-        // Known version progression for common families with available sizes
-        // Format: 'family' => ['version' => [available sizes]]
-        $versionSizeMap = [
-            'llama3' => [
-                'llama3' => ['8b', '70b'],
-                'llama3.1' => ['8b', '70b', '405b'],
-                'llama3.2' => ['1b', '3b'],  // No 8B variant!
-                // llama3.3 only has 70B - excluded
-            ],
-            'gemma' => [
-                'gemma' => ['2b', '7b'],
-                'gemma2' => ['2b', '9b', '27b'],
-            ],
-            'qwen' => [
-                'qwen' => ['7b', '14b', '72b'],
-                'qwen2' => ['0.5b', '1.5b', '7b', '72b'],
-                'qwen2.5' => ['0.5b', '1.5b', '3b', '7b', '14b', '32b', '72b'],
-            ],
-            'phi' => [
-                'phi' => ['2b'],
-                'phi2' => ['2.7b'],
-                'phi3' => ['3.8b', '14b'],
-                'phi4' => ['14b'],
-            ],
-            'mistral' => [
-                'mistral' => ['7b'],
-                'mistral-nemo' => ['12b'],
-            ],
-        ];
-
-        // Extract current model size
-        $currentSize = $this->extractSize($current);
-
-        foreach ($versionSizeMap as $baseFamily => $versions) {
-            if (strpos($family, $baseFamily) !== false || $family === $baseFamily) {
-                // Find current version in the map (match longest version first)
-                $currentVersion = null;
-                $versionKeys = array_keys($versions);
-
-                // Sort by length descending to match more specific versions first
-                // e.g., match "llama3.1" before "llama3"
-                usort($versionKeys, fn ($a, $b) => strlen($b) - strlen($a));
-
-                foreach ($versionKeys as $ver) {
-                    if (strpos($current, $ver) !== false) {
-                        $currentVersion = $ver;
-                        break;
-                    }
-                }
-
-                // Restore original order for index comparison
-                $versionKeys = array_keys($versions);
-
-                if ($currentVersion === null) {
+            foreach ($modelPolicies as $model => $modelPolicy) {
+                if (! is_string($model) || ! is_array($modelPolicy)) {
                     continue;
                 }
-
-                $currentIdx = array_search($currentVersion, $versionKeys);
-
-                // Check newer versions (from newest to current+1)
-                for ($i = count($versionKeys) - 1; $i > $currentIdx; $i--) {
-                    $newerVersion = $versionKeys[$i];
-                    $availableSizes = $versions[$newerVersion];
-
-                    // Check if current size exists in newer version
-                    if (in_array($currentSize, $availableSizes)) {
-                        $testModel = $newerVersion.':'.$currentSize;
-                        $vram = $this->estimateVram($testModel);
-
-                        if ($vram <= $maxVram) {
-                            return [
-                                'model' => $testModel,
-                                'reason' => "Newer version available ({$newerVersion} vs {$currentVersion})",
-                                'vram' => $vram,
-                            ];
-                        }
-                    }
-
-                    // If exact size not available, find closest smaller size that fits VRAM
-                    foreach ($availableSizes as $size) {
-                        $testModel = $newerVersion.':'.$size;
-                        $vram = $this->estimateVram($testModel);
-
-                        if ($vram <= $maxVram && $vram >= 3.0) { // At least 3GB for reasonable quality
-                            return [
-                                'model' => $testModel,
-                                'reason' => "Newer version ({$newerVersion}:{$size}) - different size than current",
-                                'vram' => $vram,
-                            ];
-                        }
-                    }
-                }
+                $roles = array_values(array_filter((array) ($modelPolicy['roles'] ?? []), 'is_string'));
+                $assessment = $service->assessAgainstPolicy(
+                    $hardwareClass,
+                    $model,
+                    $roles[0] ?? null,
+                    $policy,
+                    (string) $instance->instance_id
+                );
+                $rows[] = [
+                    'instance_id' => (string) $instance->instance_id,
+                    'hardware_class' => $hardwareClass,
+                    'model' => $model,
+                    'roles' => $roles,
+                    'decision' => $assessment['decision'],
+                    'route_allowed' => $assessment['route_allowed'],
+                    'hardware_feasible' => $assessment['hardware_feasible'],
+                    'hardware_fit' => $assessment['hardware_fit'] ?? null,
+                    'deployment_state' => $assessment['deployment_state'] ?? null,
+                    'artifact_size_gb' => $assessment['artifact_size_gb'] ?? null,
+                    'required_gates' => $assessment['required_gates'],
+                ];
             }
         }
 
-        return null;
+        usort($rows, static fn (array $a, array $b): int => [$a['instance_id'], $a['decision'], $a['model']] <=> [$b['instance_id'], $b['decision'], $b['model']]);
+
+        return $rows;
     }
 
-    /**
-     * Extract size from model name (e.g., "8b" from "llama3.1:8b-instruct")
-     */
-    private function extractSize(string $model): string
+    /** @return array<string,mixed> */
+    private function instanceSummary(object $instance): array
     {
-        if (preg_match('/:(\d+b)/', $model, $matches)) {
-            return $matches[1];
-        }
+        $config = json_decode((string) ($instance->config ?? '{}'), true);
+        $models = is_array($config['models'] ?? null) ? $config['models'] : [];
 
-        return '7b'; // Default assumption
+        return [
+            'instance_id' => (string) $instance->instance_id,
+            'instance_name' => (string) $instance->instance_name,
+            'instance_type' => (string) $instance->instance_type,
+            'priority' => (int) $instance->priority,
+            'is_healthy' => (bool) $instance->is_healthy,
+            'routability' => (string) $instance->routability,
+            'gpu_target' => (string) ($instance->gpu_target ?? 'none'),
+            'host_affinity' => (string) ($instance->host_affinity ?? ''),
+            'role_models' => array_filter($models, static fn (mixed $model): bool => is_string($model) && $model !== ''),
+        ];
     }
 
-    /**
-     * Estimate VRAM usage for a model
-     */
-    private function estimateVram(string $model): float
+    /** @return array<string,mixed> */
+    private function requestLogSummary(): array
     {
-        $base = strtolower($this->extractModelBase($model));
-
-        foreach (self::MODEL_VRAM_MAP as $pattern => $vram) {
-            if (strpos($model, $pattern) !== false || strpos($base, $pattern) !== false) {
-                return $vram;
-            }
+        if (! Schema::hasTable('llm_model_request_logs')) {
+            return ['available' => false, 'calls' => 0, 'distinct_models' => 0, 'failures' => 0];
         }
 
-        // Estimate based on parameter count
-        if (preg_match('/(\d+)b/', $model, $matches)) {
-            $params = (int) $matches[1];
+        $row = DB::table('llm_model_request_logs')
+            ->where('created_at', '>=', now()->subDays(30))
+            ->selectRaw('COUNT(*) AS calls')
+            ->selectRaw('COUNT(DISTINCT model_name) AS distinct_models')
+            ->selectRaw('SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failures')
+            ->first();
 
-            // Rough estimate: 1B params ≈ 0.6GB VRAM for Q4 quantization
-            return $params * 0.6;
-        }
-
-        return 5.0; // Conservative default
+        return [
+            'available' => true,
+            'calls' => (int) ($row->calls ?? 0),
+            'distinct_models' => (int) ($row->distinct_models ?? 0),
+            'failures' => (int) ($row->failures ?? 0),
+        ];
     }
 
-    /**
-     * Find alternative models for a use case
-     */
-    private function findAlternatives(string $category, string $currentBase, float $maxVram): array
+    /** @return array<string,mixed> */
+    private function unavailablePayload(float $maxVram): array
     {
-        $alternatives = [];
-        $categoryInfo = self::USE_CASE_CATEGORIES[$category] ?? null;
-
-        if (! $categoryInfo) {
-            return [];
-        }
-
-        foreach ($categoryInfo['models'] as $family) {
-            if (strpos($currentBase, $family) === false) {
-                // Different family - could be an alternative
-                foreach (self::MODEL_VRAM_MAP as $model => $vram) {
-                    if (strpos($model, $family) !== false && $vram <= $maxVram) {
-                        $alternatives[] = [
-                            'model' => $model,
-                            'vram' => $vram,
-                            'note' => "Alternative family: {$family}",
-                        ];
-                        break; // One per family
-                    }
-                }
-            }
-        }
-
-        return array_slice($alternatives, 0, 3); // Max 3 alternatives per category
+        return [
+            'schema' => 'plos.ollama_model_readiness_audit.v2',
+            'generated_at' => now()->toIso8601String(),
+            'status' => 'unavailable',
+            'mode' => 'observe',
+            'read_only' => true,
+            'table_owned' => true,
+            'max_candidate_vram_gb' => $maxVram,
+            'summary' => [],
+            'active_routes' => [],
+            'request_log_30d' => ['available' => false],
+            'evaluation_candidates' => [],
+            'hardware_admission' => [],
+            'recommendation' => [
+                'decision' => 'inventory_unavailable',
+                'install_recommended' => false,
+                'promotion_recommended' => false,
+                'required_gates' => [],
+            ],
+            'safety' => [
+                'models_pulled' => false,
+                'models_removed' => false,
+                'routes_changed' => false,
+                'environment_changed' => false,
+                'services_restarted' => false,
+            ],
+        ];
     }
 
-    /**
-     * Get contextual notes based on configuration
-     */
-    private function getContextualNotes(array $config, float $maxVram): array
+    /** @param array<string,mixed> $payload */
+    private function render(array $payload): void
     {
-        $notes = [];
+        if ($this->option('json')) {
+            $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
 
-        // Check embedding model compatibility
-        if (strpos($config['OLLAMA_EMBEDDING_MODEL'], 'nomic-embed-text') !== false) {
-            $notes[] = 'nomic-embed-text is the standard 768-dim model. Changing requires RAG re-indexing.';
+            return;
         }
 
-        // VRAM utilization note
-        $totalVram = 0;
-        foreach ($config as $model) {
-            $totalVram += $this->estimateVram($model);
-        }
-        if ($totalVram > $maxVram * 0.8) {
-            $notes[] = "Current models use ~{$totalVram}GB. Consider smaller quantizations if switching.";
+        $summary = $payload['summary'];
+        $this->info('PLOS Ollama Model Readiness Audit');
+        $this->line('Status: '.strtoupper((string) $payload['status']));
+        if ($payload['status'] === 'unavailable') {
+            $this->error('The table-owned LLM inventory is unavailable; no recommendation was produced.');
+
+            return;
         }
 
-        // Quantization note
-        foreach ($config as $model) {
-            if (strpos($model, 'q5_K_M') !== false || strpos($model, 'q4_K_M') !== false) {
-                $notes[] = 'Using quantized models is good for VRAM efficiency.';
-                break;
-            }
+        $this->line(sprintf(
+            'Local routes: %d active, %d healthy | Models: %d available, %d vetted, %d testing, %d zero-usage',
+            $summary['active_local_instances'],
+            $summary['healthy_active_instances'],
+            $summary['available_models'],
+            $summary['vetted_models'],
+            $summary['testing_models'],
+            $summary['zero_usage_available_models'],
+        ));
+        $this->line('Decision: '.$payload['recommendation']['decision']);
+        $this->warn('No model install, removal, promotion, or route change is recommended by this command.');
+
+        foreach ($payload['evaluation_candidates'] as $candidate) {
+            $this->line(sprintf(
+                '  - %s on %s [%s] requests=%d vram_mb=%s',
+                $candidate['model_name'],
+                $candidate['route_instance_id'],
+                $candidate['profile'],
+                $candidate['total_requests'],
+                $candidate['vram_required_mb'] ?? 'unknown',
+            ));
         }
 
-        return $notes;
+        foreach ($payload['hardware_admission'] as $assessment) {
+            $this->line(sprintf(
+                '  - admission %s/%s: %s (%s)',
+                $assessment['instance_id'],
+                $assessment['model'],
+                $assessment['decision'],
+                $assessment['hardware_fit'] ?? 'unknown',
+            ));
+        }
+
+        $this->line('Required gates:');
+        foreach ($payload['recommendation']['required_gates'] as $gate) {
+            $this->line('  - '.$gate);
+        }
+
+        if ($payload['notification']['dry_run']) {
+            $this->warn('[DRY RUN] Notification not sent.');
+        } elseif ($payload['notification']['sent']) {
+            $this->info('Readiness notification sent.');
+        } elseif (! $payload['notification']['would_send']) {
+            $this->line('No notification required.');
+        }
     }
 
-    /**
-     * Build the notification message
-     */
-    private function buildNotificationMessage(array $currentConfig, array $recommendations, float $maxVram): string
+    /** @param array<string,mixed> $payload */
+    private function buildNotificationMessage(array $payload): string
     {
-        $lines = [];
-        $lines[] = '🤖 OLLAMA MODEL ADVISOR';
-        $lines[] = 'Monthly Check - '.date('F Y');
-        $lines[] = "VRAM Limit: {$maxVram}GB";
-        $lines[] = '';
+        $summary = $payload['summary'];
 
-        // Current models
-        $lines[] = '📋 CURRENT:';
-        $lines[] = '• LLM: '.($currentConfig['OLLAMA_MODEL'] ?? 'not set');
-        $lines[] = '• Vision: '.($currentConfig['OLLAMA_VISION_MODEL'] ?? 'not set');
-        $lines[] = '• Embed: '.($currentConfig['OLLAMA_EMBEDDING_MODEL'] ?? 'not set');
-        $lines[] = '';
-
-        // Recommended upgrades
-        if (! empty($recommendations['upgrades'])) {
-            $lines[] = '⬆️ RECOMMENDED UPGRADES:';
-            foreach ($recommendations['upgrades'] as $category => $upgrade) {
-                $lines[] = "• {$category}: {$upgrade['current']} → {$upgrade['recommended']}";
-                $lines[] = "  Reason: {$upgrade['reason']}";
-            }
-            $lines[] = '';
-        }
-
-        // Alternatives
-        if (! empty($recommendations['alternatives'])) {
-            $lines[] = '🔄 ALTERNATIVES TO CONSIDER:';
-            foreach ($recommendations['alternatives'] as $category => $alts) {
-                $altNames = array_map(fn ($a) => $a['model'], $alts);
-                $lines[] = "• {$category}: ".implode(', ', $altNames);
-            }
-            $lines[] = '';
-        }
-
-        // Notes
-        if (! empty($recommendations['notes'])) {
-            $lines[] = '📝 NOTES:';
-            foreach ($recommendations['notes'] as $note) {
-                $lines[] = "• {$note}";
-            }
-            $lines[] = '';
-        }
-
-        // No changes needed
-        if (empty($recommendations['upgrades']) && empty($recommendations['alternatives'])) {
-            $lines[] = '✅ All models are current. No upgrades recommended.';
-            $lines[] = '';
-        }
-
-        // Action instructions
-        $lines[] = '─────────────────────────';
-        $lines[] = 'TO APPLY CHANGES:';
-        $lines[] = 'Reply or ask AI assistant:';
-        $lines[] = '';
-        $lines[] = '"Apply Ollama model upgrades as recommended"';
-        $lines[] = '';
-        $lines[] = 'This will:';
-        $lines[] = '1. Pull new models';
-        $lines[] = '2. Update .env.production';
-        $lines[] = '3. Remove old models';
-        $lines[] = '4. Restart Ollama';
-
-        return implode("\n", $lines);
+        return implode("\n", [
+            'PLOS OLLAMA MODEL READINESS',
+            'Status: '.strtoupper((string) $payload['status']),
+            sprintf(
+                'Available %d | Vetted %d | Testing %d | Zero-use %d',
+                $summary['available_models'],
+                $summary['vetted_models'],
+                $summary['testing_models'],
+                $summary['zero_usage_available_models'],
+            ),
+            'Decision: '.$payload['recommendation']['decision'],
+            'No install or promotion is approved.',
+            'Next: verify drift, one exact role contract, bounded canary, privacy, and rollback.',
+        ]);
     }
 
-    /**
-     * Build the upgrade command for reference
-     */
-    private function buildUpgradeCommand(array $recommendations): string
-    {
-        $commands = [];
-
-        foreach ($recommendations['upgrades'] as $category => $upgrade) {
-            $commands[] = "ollama pull {$upgrade['recommended']}";
-        }
-
-        if (empty($commands)) {
-            return '# No upgrades to apply';
-        }
-
-        return implode("\n", $commands);
-    }
-
-    /**
-     * Send Pushover notification
-     */
-    private function sendNotification(string $message, string $command): bool
+    private function sendNotification(string $message): bool
     {
         try {
-            $controller = new NotificationController;
-
-            $result = $controller->send('pushover', [
+            $result = (new NotificationController)->send('pushover', [
                 'source_group' => 'ops_maintenance',
-                'title' => '🤖 Ollama Model Advisor',
+                'title' => 'Ollama Model Readiness Audit',
                 'message' => $message,
                 'priority' => 0,
                 'format_type' => 'monospace',
             ]);
 
-            return $result['success'] ?? false;
-        } catch (\Exception $e) {
-            Log::error('Failed to send Ollama upgrade notification', [
+            return (bool) ($result['success'] ?? false);
+        } catch (Throwable $e) {
+            Log::error('Failed to send Ollama model readiness notification', [
                 'error' => $e->getMessage(),
             ]);
 
             return false;
         }
-    }
-
-    /**
-     * Format bytes to human readable
-     */
-    private function formatBytes(int $bytes): string
-    {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $i = 0;
-        while ($bytes >= 1024 && $i < count($units) - 1) {
-            $bytes /= 1024;
-            $i++;
-        }
-
-        return round($bytes, 2).' '.$units[$i];
     }
 }

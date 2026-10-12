@@ -59,7 +59,8 @@ class ExtensionController extends Controller
                 'tasks' => $formattedTasks,
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension getTasks error: ' . $e->getMessage());
+            Log::error('Extension getTasks failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -75,7 +76,7 @@ class ExtensionController extends Controller
         try {
             $task = $this->dataRemovalService->getRequest($id);
 
-            if (!$task) {
+            if (! $task) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Task not found',
@@ -95,25 +96,25 @@ class ExtensionController extends Controller
                 $subjectData['name'] = $subject->name;
             }
             // Always include email - needed for confirmation on most broker sites
-            if (!empty($subject->email)) {
+            if (! empty($subject->email)) {
                 $subjectData['email'] = $subject->email;
             }
-            if (in_array('phone', $fieldsToSubmit) && !empty($subject->phone)) {
+            if (in_array('phone', $fieldsToSubmit) && ! empty($subject->phone)) {
                 $subjectData['phone'] = $subject->phone;
             }
-            if (in_array('address', $fieldsToSubmit) && !empty($subject->address_line1)) {
+            if (in_array('address', $fieldsToSubmit) && ! empty($subject->address_line1)) {
                 $subjectData['address_line1'] = $subject->address_line1;
             }
-            if (in_array('city', $fieldsToSubmit) && !empty($subject->city)) {
+            if (in_array('city', $fieldsToSubmit) && ! empty($subject->city)) {
                 $subjectData['city'] = $subject->city;
             }
-            if (in_array('state', $fieldsToSubmit) && !empty($subject->state)) {
+            if (in_array('state', $fieldsToSubmit) && ! empty($subject->state)) {
                 $subjectData['state'] = $subject->state;
             }
-            if (in_array('zip', $fieldsToSubmit) && !empty($subject->zip)) {
+            if (in_array('zip', $fieldsToSubmit) && ! empty($subject->zip)) {
                 $subjectData['zip'] = $subject->zip;
             }
-            if (in_array('dob', $fieldsToSubmit) && !empty($subject->date_of_birth)) {
+            if (in_array('dob', $fieldsToSubmit) && ! empty($subject->date_of_birth)) {
                 $subjectData['date_of_birth'] = $subject->date_of_birth;
             }
 
@@ -135,7 +136,8 @@ class ExtensionController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension getTaskDetails error: ' . $e->getMessage());
+            Log::error('Extension getTaskDetails failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -151,7 +153,7 @@ class ExtensionController extends Controller
         try {
             $task = $this->dataRemovalService->getRequest($id);
 
-            if (!$task) {
+            if (! $task) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Task not found',
@@ -183,7 +185,8 @@ class ExtensionController extends Controller
                 'message' => 'Task marked as complete',
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension completeTask error: ' . $e->getMessage());
+            Log::error('Extension completeTask failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -199,7 +202,7 @@ class ExtensionController extends Controller
         try {
             $task = $this->dataRemovalService->getRequest($id);
 
-            if (!$task) {
+            if (! $task) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Task not found',
@@ -228,7 +231,8 @@ class ExtensionController extends Controller
                 'message' => 'Task skipped',
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension skipTask error: ' . $e->getMessage());
+            Log::error('Extension skipTask failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -244,7 +248,7 @@ class ExtensionController extends Controller
         try {
             $task = $this->dataRemovalService->getRequest($id);
 
-            if (!$task) {
+            if (! $task) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Task not found',
@@ -257,7 +261,7 @@ class ExtensionController extends Controller
             if ($request->has('profile_url')) {
                 $profileUrl = $request->input('profile_url');
                 // Validate URL
-                if (!empty($profileUrl) && !filter_var($profileUrl, FILTER_VALIDATE_URL)) {
+                if (! empty($profileUrl) && ! filter_var($profileUrl, FILTER_VALIDATE_URL)) {
                     return response()->json([
                         'success' => false,
                         'error' => 'Invalid URL format',
@@ -266,7 +270,7 @@ class ExtensionController extends Controller
                 $updates['profile_url'] = $profileUrl;
             }
 
-            if (!empty($updates)) {
+            if (! empty($updates)) {
                 $this->dataRemovalService->updateRequest($id, $updates);
 
                 Log::info('Extension updated task fields', [
@@ -280,7 +284,8 @@ class ExtensionController extends Controller
                 'message' => 'Task fields updated',
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension updateTaskFields error: ' . $e->getMessage());
+            Log::error('Extension updateTaskFields failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -307,7 +312,8 @@ class ExtensionController extends Controller
                 'help' => $help,
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension getAIHelp error: ' . $e->getMessage());
+            Log::error('Extension getAIHelp failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -362,7 +368,8 @@ class ExtensionController extends Controller
                 'message' => 'Form fields reported',
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension reportFormFields error: ' . $e->getMessage());
+            Log::error('Extension reportFormFields failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -378,7 +385,7 @@ class ExtensionController extends Controller
         try {
             $domain = $request->query('domain');
 
-            if (!$domain) {
+            if (! $domain) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Domain is required',
@@ -387,7 +394,7 @@ class ExtensionController extends Controller
 
             $broker = $this->dataRemovalService->getBrokerByDomain($domain);
 
-            if (!$broker) {
+            if (! $broker) {
                 return response()->json([
                     'success' => true,
                     'config' => null,
@@ -415,7 +422,8 @@ class ExtensionController extends Controller
                 ],
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension getSiteConfig error: ' . $e->getMessage());
+            Log::error('Extension getSiteConfig failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -431,7 +439,7 @@ class ExtensionController extends Controller
         try {
             $broker = $this->dataRemovalService->getBroker($brokerId);
 
-            if (!$broker) {
+            if (! $broker) {
                 return response()->json([
                     'success' => false,
                     'error' => 'Broker not found',
@@ -456,7 +464,7 @@ class ExtensionController extends Controller
                 $updates['removal_url'] = $request->input('removal_url');
             }
 
-            if (!empty($updates)) {
+            if (! empty($updates)) {
                 $updates['form_config_source'] = $request->input('source', 'api');
                 $updates['form_config_updated_at'] = now();
 
@@ -474,7 +482,8 @@ class ExtensionController extends Controller
                 'message' => 'Site configuration updated',
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension updateSiteConfig error: ' . $e->getMessage());
+            Log::error('Extension updateSiteConfig failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -521,7 +530,7 @@ class ExtensionController extends Controller
                     'source' => 'browser_extension',
                     'extraction_type' => 'cloudflare_bypass',
                 ],
-                sourceId: md5($url ?? $title . $timestamp)
+                sourceId: md5($url ?? $title.$timestamp)
             );
 
             Log::info('Extension indexed page content', [
@@ -537,7 +546,8 @@ class ExtensionController extends Controller
                 'indexed' => true,
             ]);
         } catch (\Exception $e) {
-            Log::error('Extension indexPageContent error: ' . $e->getMessage());
+            Log::error('Extension indexPageContent failed', ['exception' => $e]);
+
             return response()->json([
                 'success' => false,
                 'error' => $e->getMessage(),
@@ -555,17 +565,17 @@ class ExtensionController extends Controller
         if ($task) {
             $help[] = "Task: Remove data for {$task['subject_name']} from {$task['broker_name']}";
 
-            if (!empty($task['last_error'])) {
+            if (! empty($task['last_error'])) {
                 if (stripos($task['last_error'], 'captcha') !== false) {
                     $help[] = "\nThis site requires a CAPTCHA. Steps:";
-                    $help[] = "1. The form fields should be auto-filled";
-                    $help[] = "2. Solve the CAPTCHA challenge";
-                    $help[] = "3. Click the Submit button";
+                    $help[] = '1. The form fields should be auto-filled';
+                    $help[] = '2. Solve the CAPTCHA challenge';
+                    $help[] = '3. Click the Submit button';
                     $help[] = "4. Click 'Mark Complete' in the extension";
                 }
             }
 
-            if (!empty($task['fields_to_submit'])) {
+            if (! empty($task['fields_to_submit'])) {
                 $fields = is_array($task['fields_to_submit'])
                     ? implode(', ', $task['fields_to_submit'])
                     : $task['fields_to_submit'];
@@ -574,16 +584,16 @@ class ExtensionController extends Controller
         }
 
         if ($page) {
-            if (!empty($page['detectedFields'])) {
-                $help[] = "\nDetected form fields on this page: " . implode(', ', $page['detectedFields']);
+            if (! empty($page['detectedFields'])) {
+                $help[] = "\nDetected form fields on this page: ".implode(', ', $page['detectedFields']);
             }
         }
 
         // Add general tips
         $help[] = "\nGeneral Tips:";
         $help[] = "- If auto-fill didn't work, manually enter the data shown";
-        $help[] = "- Look for opt-out or removal links at the bottom of the page";
-        $help[] = "- Some sites send a confirmation email - check your inbox";
+        $help[] = '- Look for opt-out or removal links at the bottom of the page';
+        $help[] = '- Some sites send a confirmation email - check your inbox';
         $help[] = "- If stuck, click 'Skip' and try again later";
 
         return implode("\n", $help);

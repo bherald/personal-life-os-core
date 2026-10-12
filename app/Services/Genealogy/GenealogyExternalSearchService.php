@@ -12,7 +12,7 @@ use Illuminate\Support\Facades\Log;
  *
  * Site-specific genealogy searches via SearXNG for sources that have no direct
  * PHP API: Ellis Island, Freedmen's Bureau, DAR, German records, Europeana.
- * Subscription/login sources return manual-only guidance instead of scraping.
+ * Subscription/login sources return provider-specific guidance instead of scraping.
  *
  * Also wraps GenealogySourceService::searchAll() in an agent-callable method
  * with structured criteria input.
@@ -114,7 +114,7 @@ class GenealogyExternalSearchService
             return ['success' => false, 'error' => 'surname required', 'results' => []];
         }
 
-        return $this->manualOnlySource(
+        return $this->providerSpecificSource(
             'Fold3 (Military Records)',
             'https://www.fold3.com/search#query='.urlencode($name),
             'Fold3 is a subscription/login source. PLOS keeps it as an operator-opened citation target and does not scrape or automate it.'
@@ -149,7 +149,7 @@ class GenealogyExternalSearchService
             $parts[] = 'immigration';
         }
         // Search public Ellis Island/Castle Garden pages only. FamilySearch is
-        // manual-only and is intentionally excluded from automated queries.
+        // provider-specific and intentionally excluded from automated queries.
         $parts[] = '(site:libertyellisfoundation.org OR site:statueofliberty.org OR site:castlegarden.org)';
 
         // Also try the direct Ellis Island API
@@ -262,7 +262,7 @@ class GenealogyExternalSearchService
             'direct_url' => 'https://www.archives.gov/research/african-americans/freedmens-bureau',
             'nara_query' => $naraQuery,
             'source_name' => "Freedmen's Bureau Records",
-            'note' => 'Bureau of Refugees, Freedmen, and Abandoned Lands 1865-1872. Uses public NARA/DiscoverFreedmen-style sources; FamilySearch collection lookup is manual-only.',
+            'note' => 'Bureau of Refugees, Freedmen, and Abandoned Lands 1865-1872. Uses public NARA/DiscoverFreedmen-style sources; FamilySearch collection lookup is provider-specific.',
             'coverage' => 'Alabama, Arkansas, DC, Florida, Georgia, Kentucky, Louisiana, Maryland, Mississippi, Missouri, North Carolina, South Carolina, Tennessee, Texas, Virginia',
         ]);
     }
@@ -284,10 +284,10 @@ class GenealogyExternalSearchService
             return ['success' => false, 'error' => 'surname required', 'results' => []];
         }
 
-        return $this->manualOnlySource(
+        return $this->providerSpecificSource(
             'NEHGS / American Ancestors',
             'https://www.americanancestors.org/databases/search?search='.urlencode($name),
-            'AmericanAncestors/NEHGS is a membership source. PLOS records it as a manual lookup target and does not scrape or automate it.',
+            'AmericanAncestors/NEHGS is a membership source. PLOS records it as an operator-opened lookup target and does not scrape or automate it.',
             ['coverage' => 'Massachusetts, Connecticut, Rhode Island, New Hampshire, Vermont, Maine, Nova Scotia']
         );
     }
@@ -380,7 +380,7 @@ class GenealogyExternalSearchService
             'paid_viewer_automation_allowed' => false,
             'login_session_automation_allowed' => false,
             'evidence_posture' => 'review_cue_only',
-            'note' => 'Public discovery helper for Archion, Matricula, and Archivportal-D. Treat results as manual review cues only; do not automate paid viewers, login sessions, manual-only collection pages, auto-imports, or canonical genealogy writes from this helper output.',
+            'note' => 'Public discovery helper for Archion, Matricula, and Archivportal-D. Treat results as operator-review cues only; do not automate paid viewers, login sessions, provider-specific collection pages, auto-imports, or canonical genealogy writes from this helper output.',
             'coverage' => 'Germany, Austria, Switzerland, Alsace-Lorraine, Silesia, Sudetenland',
         ]);
     }
@@ -507,13 +507,13 @@ class GenealogyExternalSearchService
     // Private helpers
     // -------------------------------------------------------------------------
 
-    private function manualOnlySource(string $sourceName, string $directUrl, string $note, array $extra = []): array
+    private function providerSpecificSource(string $sourceName, string $directUrl, string $note, array $extra = []): array
     {
         return array_merge([
             'success' => true,
-            'manual_only' => true,
-            'manual_required' => true,
-            'access_mode' => 'manual_browser',
+            'provider_specific' => true,
+            'operator_review_required' => true,
+            'access_mode' => 'provider_specific_browser',
             'manual_review_required' => true,
             'automation_supported' => false,
             'network_search_performed' => false,
@@ -524,7 +524,7 @@ class GenealogyExternalSearchService
             'writeback_allowed' => false,
             'metadata_writeback_allowed' => false,
             'operator_action' => 'open_in_browser',
-            'evidence_posture' => 'manual_citation_target',
+            'evidence_posture' => 'operator_review_citation_target',
             'error' => null,
             'source_name' => $sourceName,
             'direct_url' => $directUrl,

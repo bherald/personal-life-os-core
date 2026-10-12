@@ -3,9 +3,11 @@
 namespace App\Services\Genealogy;
 
 use App\Services\AIService;
+use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 
 /**
  * Priority A.1: AI Genealogist Persona Service
@@ -18,7 +20,25 @@ use Illuminate\Support\Facades\Log;
  */
 class GenealogyAIResearchService
 {
+    private const RUNTIME_POLICY_KEY = 'genealogy.ai_research_runtime_policy';
+
+    private const RUNTIME_POLICY_SCHEMA = 'plos.genealogy_ai_research_runtime_policy.v1';
+
+    private const MIN_CACHE_TTL_SECONDS = 60;
+
+    private const MAX_CACHE_TTL_SECONDS = 604800;
+
+    private const AI_OPERATIONS = [
+        'research_person',
+        'brick_wall',
+        'source_evaluation',
+        'relationship_analysis',
+        'proposal_extraction',
+    ];
+
     private AIService $aiService;
+
+    private SystemConfigService $systemConfig;
 
     private ?GenealogyLessonPromptContextService $lessonPromptContext = null;
 
@@ -39,9 +59,10 @@ Output style:
 - No lengthy explanations unless asked
 PROMPT;
 
-    public function __construct(AIService $aiService)
+    public function __construct(AIService $aiService, SystemConfigService $systemConfig)
     {
         $this->aiService = $aiService;
+        $this->systemConfig = $systemConfig;
     }
 
     private function lessonContext(): GenealogyLessonPromptContextService
@@ -70,6 +91,11 @@ PROMPT;
             ];
         }
 
+        $runtime = $this->runtimeSettings('research_person');
+        if ($runtime === null) {
+            return $this->runtimePolicyFailure('research_person');
+        }
+
         $focus = $options['focus'] ?? 'general';
         $includeSources = $options['include_sources'] ?? true;
         $isBrickWall = $options['brick_wall'] ?? false;
@@ -80,10 +106,10 @@ PROMPT;
         // Build the research prompt
         $prompt = $this->buildResearchPrompt($person, $context, $focus, $isBrickWall);
 
-        // Cache key for research results (24 hour cache)
+        // Cache lifetime is owned by the validated runtime policy.
         $cacheKey = "genealogy_ai_research:{$personId}:{$focus}:".md5(json_encode($options).'|'.$context);
 
-        return Cache::remember($cacheKey, 86400, function () use ($prompt, $person, $focus) {
+        return Cache::remember($cacheKey, $runtime['cache_ttl_seconds'], function () use ($prompt, $person, $focus, $runtime) {
             Log::info('GenealogyAIResearchService: Researching person', [
                 'person_id' => $person->id,
                 'name' => $person->given_name.' '.$person->surname,
@@ -93,7 +119,7 @@ PROMPT;
             $result = $this->aiService->process($prompt, [
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Enforces temp=0.1 + anti-hallucination for genealogy accuracy
-                'model_role' => 'quality', // N120: Use quality-tier model for genealogy research accuracy
+                'model_role' => $runtime['model_role'],
                 'sensitive_data' => true,
                 'data_class' => 'genealogy_person_research',
             ]);
@@ -136,6 +162,11 @@ PROMPT;
             ];
         }
 
+        $runtime = $this->runtimeSettings('brick_wall');
+        if ($runtime === null) {
+            return $this->runtimePolicyFailure('brick_wall');
+        }
+
         // Identify what's missing
         $gaps = $this->identifyResearchGaps($person);
         $context = $this->buildPersonContext($person, true, 'brick_wall');
@@ -158,7 +189,7 @@ PROMPT;
 
         $cacheKey = "genealogy_ai_brickwall:{$personId}:".md5($gaps.'|'.$context);
 
-        return Cache::remember($cacheKey, 86400, function () use ($prompt, $person) {
+        return Cache::remember($cacheKey, $runtime['cache_ttl_seconds'], function () use ($prompt, $person, $runtime) {
             Log::info('GenealogyAIResearchService: Brick wall analysis', [
                 'person_id' => $person->id,
                 'name' => $person->given_name.' '.$person->surname,
@@ -167,7 +198,7 @@ PROMPT;
             $result = $this->aiService->process($prompt, [
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Even brick wall strategies need factual grounding
-                'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'model_role' => $runtime['model_role'],
                 'sensitive_data' => true,
                 'data_class' => 'genealogy_brick_wall',
             ]);
@@ -201,6 +232,11 @@ PROMPT;
      */
     public function evaluateSource(string $sourceDescription, array $options = []): array
     {
+        $runtime = $this->runtimeSettings('source_evaluation');
+        if ($runtime === null) {
+            return $this->runtimePolicyFailure('source_evaluation');
+        }
+
         $personContext = '';
         if (! empty($options['person_id'])) {
             $person = $this->getPersonWithContext($options['person_id']);
@@ -259,13 +295,13 @@ PROMPT;
 
         $cacheKey = 'genealogy_ai_source_eval:'.md5($sourceDescription.json_encode($options));
 
-        return Cache::remember($cacheKey, 86400, function () use ($prompt, $sourceDescription) {
+        return Cache::remember($cacheKey, $runtime['cache_ttl_seconds'], function () use ($prompt, $sourceDescription, $runtime) {
             Log::info('GenealogyAIResearchService: Evaluating source');
 
             $result = $this->aiService->process($prompt, [
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Source evaluation requires strict accuracy
-                'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'model_role' => $runtime['model_role'],
                 'sensitive_data' => true,
                 'data_class' => 'genealogy_source_evaluation',
             ]);
@@ -304,6 +340,11 @@ PROMPT;
                 'success' => false,
                 'error' => 'One or both persons not found',
             ];
+        }
+
+        $runtime = $this->runtimeSettings('relationship_analysis');
+        if ($runtime === null) {
+            return $this->runtimePolicyFailure('relationship_analysis');
         }
 
         $context1 = $this->buildPersonContext($person1, false, 'relationship');
@@ -347,7 +388,7 @@ PROMPT;
 
         $cacheKey = "genealogy_ai_relationship:{$person1Id}:{$person2Id}";
 
-        return Cache::remember($cacheKey, 86400, function () use ($prompt, $person1, $person2) {
+        return Cache::remember($cacheKey, $runtime['cache_ttl_seconds'], function () use ($prompt, $person1, $person2, $runtime) {
             Log::info('GenealogyAIResearchService: Analyzing relationship', [
                 'person1' => $person1->given_name.' '.$person1->surname,
                 'person2' => $person2->given_name.' '.$person2->surname,
@@ -356,7 +397,7 @@ PROMPT;
             $result = $this->aiService->process($prompt, [
                 'system_prompt' => self::GENEALOGIST_SYSTEM_PROMPT,
                 'factual_mode' => true, // Relationship analysis requires accuracy
-                'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'model_role' => $runtime['model_role'],
                 'sensitive_data' => true,
                 'data_class' => 'genealogy_relationship_analysis',
             ]);
@@ -401,7 +442,7 @@ PROMPT;
             "genealogy_ai_brickwall:{$personId}:*",
         ];
 
-        $redis = \Illuminate\Support\Facades\Redis::connection(config('cache.stores.redis.connection', 'cache'));
+        $redis = Redis::connection(config('cache.stores.redis.connection', 'cache'));
         foreach ($patterns as $pattern) {
             $keys = $redis->keys($cachePrefix.$pattern);
             foreach ($keys as $key) {
@@ -839,6 +880,11 @@ PROMPT;
             ];
         }
 
+        $runtime = $this->runtimeSettings('proposal_extraction');
+        if ($runtime === null) {
+            return $this->runtimePolicyFailure('proposal_extraction');
+        }
+
         $currentData = $this->formatCurrentPersonData($person);
 
         $prompt = <<<PROMPT
@@ -889,7 +935,7 @@ PROMPT;
         try {
             $result = $this->aiService->process($prompt, [
                 'factual_mode' => true, // Anti-hallucination mode for precise extraction
-                'model_role' => 'quality', // N120: quality-tier for genealogy accuracy
+                'model_role' => $runtime['model_role'],
                 'sensitive_data' => true,
                 'data_class' => 'genealogy_proposal_extraction',
             ]);
@@ -947,6 +993,56 @@ PROMPT;
                 'error' => 'Extraction failed: '.$e->getMessage(),
             ];
         }
+    }
+
+    /** @return array{cache_ttl_seconds:int,model_role:string}|null */
+    private function runtimeSettings(string $operation): ?array
+    {
+        $policy = $this->systemConfig->get(self::RUNTIME_POLICY_KEY);
+        if (! is_array($policy) || ($policy['schema'] ?? null) !== self::RUNTIME_POLICY_SCHEMA) {
+            return null;
+        }
+
+        $cacheTtl = $policy['cache_ttl_seconds'] ?? null;
+        $roles = $policy['operation_model_roles'] ?? null;
+        if (
+            ! is_int($cacheTtl)
+            || $cacheTtl < self::MIN_CACHE_TTL_SECONDS
+            || $cacheTtl > self::MAX_CACHE_TTL_SECONDS
+            || ! is_array($roles)
+        ) {
+            return null;
+        }
+
+        foreach (self::AI_OPERATIONS as $requiredOperation) {
+            $role = $roles[$requiredOperation] ?? null;
+            if (! is_string($role) || preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $role) !== 1) {
+                return null;
+            }
+        }
+
+        if (! in_array($operation, self::AI_OPERATIONS, true)) {
+            return null;
+        }
+
+        return [
+            'cache_ttl_seconds' => $cacheTtl,
+            'model_role' => $roles[$operation],
+        ];
+    }
+
+    private function runtimePolicyFailure(string $operation): array
+    {
+        Log::warning('GenealogyAIResearchService: Runtime policy unavailable', [
+            'operation' => $operation,
+            'reason_code' => 'runtime_policy_unavailable',
+        ]);
+
+        return [
+            'success' => false,
+            'error' => 'Genealogy AI runtime policy is unavailable or invalid',
+            'reason_code' => 'runtime_policy_unavailable',
+        ];
     }
 
     /**

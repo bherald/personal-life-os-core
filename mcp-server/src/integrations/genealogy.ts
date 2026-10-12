@@ -1,6 +1,17 @@
 import { randomUUID } from 'crypto';
 import mysql from 'mysql2/promise';
 import { DatabaseManager } from './database.js';
+import {
+  buildGraphSnapshot,
+  evaluateGraphGuard,
+  inactiveGraphGuard,
+  plannedGraphGuard,
+  resolveOptionalReference,
+  type GenealogyGraphChild,
+  type GenealogyGraphFamily,
+  type GenealogyGraphGuardReport,
+  type GenealogyGraphSnapshot,
+} from './genealogyWriteSafety.js';
 
 type Row = Record<string, any>;
 
@@ -82,13 +93,15 @@ type GenealogyBatchArgs = {
     birth_place: string;
     death_date: string;
     death_place: string;
+    burial_date: string;
+    burial_place: string;
     notes_append: string;
     living: boolean;
   }>>;
   families?: Array<KeyRef & Partial<{
-    husband_id: number;
+    husband_id: number | null;
     husband_key: string;
-    wife_id: number;
+    wife_id: number | null;
     wife_key: string;
     marriage_date: string;
     marriage_place: string;
@@ -458,7 +471,8 @@ export class GenealogyService {
     if (args.person_ids?.length) {
       result.people = await this.db.query<Row[]>(
         `SELECT id, gedcom_id, given_name, surname, nickname, sex, birth_date, birth_place,
-                death_date, death_place, living, LEFT(COALESCE(notes,''), ?) AS notes
+                death_date, death_place, burial_date, burial_place, living,
+                LEFT(COALESCE(notes,''), ?) AS notes
            FROM genealogy_persons
           WHERE tree_id = ? AND id IN (?)
           ORDER BY id`,
@@ -576,10 +590,11 @@ export class GenealogyService {
       dry_run: dryRun,
       tree_id: args.tree_id,
       reason: args.reason,
-      inserted: { sources: 0, persons: 0, families: 0, children: 0, citations: 0, person_media: 0, family_media: 0 },
+      inserted: { sources: 0, persons: 0, families: 0, children: 0, citations: 0, person_sources: 0, person_media: 0, family_media: 0 },
       updated: { sources: 0, persons: 0, families: 0, media: 0 },
       touched_for_rag: { persons: 0, sources: 0, media: 0 },
       keys: {} as Record<string, number>,
+      graph_guard: (dryRun ? plannedGraphGuard() : inactiveGraphGuard()) as GenealogyGraphGuardReport,
     };
 
     if (dryRun) {
@@ -594,7 +609,12 @@ export class GenealogyService {
     }
 
     await this.db.transaction(async (conn) => {
-      await this.assertTreeExists(conn, args.tree_id);
+      const graphMutation = this.hasGraphMutation(args);
+      const beforeGraph = graphMutation
+        ? await this.captureGraphSnapshot(conn, args.tree_id)
+        : null;
+      if (!graphMutation) await this.assertTreeExists(conn, args.tree_id);
+      if (beforeGraph) evaluateGraphGuard(beforeGraph, beforeGraph);
       const keyMap = summary.keys;
       let nextPersonGedcom = await this.nextGedcomNumber(conn, 'genealogy_persons', args.tree_id, 'I');
       let nextFamilyGedcom = await this.nextGedcomNumber(conn, 'genealogy_families', args.tree_id, 'F');
@@ -722,6 +742,16 @@ export class GenealogyService {
           );
           summary.inserted.citations++;
         }
+
+        if (personId) {
+          const [personSourceResult] = await conn.query<mysql.ResultSetHeader>(
+            `INSERT IGNORE INTO genealogy_person_sources
+             (person_id, source_id, page, quality, created_at)
+             VALUES (?, ?, ?, ?, NOW())`,
+            [personId, sourceId, citation.page ?? null, citation.quality === undefined ? null : String(citation.quality)]
+          );
+          summary.inserted.person_sources += personSourceResult.affectedRows;
+        }
       }
 
       const touch = this.collectRagTouch(args, keyMap);
@@ -736,6 +766,11 @@ export class GenealogyService {
       if (touch.mediaIds.length) {
         await conn.query('UPDATE genealogy_media SET rag_indexed_at = NULL, updated_at = NOW() WHERE tree_id = ? AND id IN (?)', [args.tree_id, touch.mediaIds]);
         summary.touched_for_rag.media = touch.mediaIds.length;
+      }
+
+      if (beforeGraph) {
+        const afterGraph = await this.captureGraphSnapshot(conn, args.tree_id);
+        summary.graph_guard = evaluateGraphGuard(beforeGraph, afterGraph);
       }
     });
 
@@ -752,6 +787,7 @@ export class GenealogyService {
       person_media: args.person_media?.length ?? 0,
       family_media: args.family_media?.length ?? 0,
       citations: args.citations?.length ?? 0,
+      person_sources: args.citations?.filter((citation) => citation.person_id || citation.person_key).length ?? 0,
     };
   }
 
@@ -806,7 +842,7 @@ export class GenealogyService {
   ) {
     const fields = this.pickDefined(person, [
       'given_name', 'surname', 'sex', 'nickname', 'birth_date', 'birth_place',
-      'death_date', 'death_place',
+      'death_date', 'death_place', 'burial_date', 'burial_place',
     ]);
     if (person.living !== undefined) fields.living = person.living ? 1 : 0;
     fields.rag_indexed_at = null;
@@ -834,6 +870,8 @@ export class GenealogyService {
         birth_place: person.birth_place ?? '',
         death_date: person.death_date ?? '',
         death_place: person.death_place ?? '',
+        burial_date: person.burial_date ?? '',
+        burial_place: person.burial_place ?? '',
         notes: person.notes_append ?? '',
         living: person.living === undefined ? null : (person.living ? 1 : 0),
         created_at: new Date(),
@@ -850,14 +888,14 @@ export class GenealogyService {
     keyMap: Record<string, number>,
     nextGedcom: () => string
   ) {
-    const husbandId = family.husband_id || (family.husband_key ? keyMap[family.husband_key] : null);
-    const wifeId = family.wife_id || (family.wife_key ? keyMap[family.wife_key] : null);
-    if (husbandId) await this.assertPersonInTree(conn, treeId, husbandId);
-    if (wifeId) await this.assertPersonInTree(conn, treeId, wifeId);
+    const husband = resolveOptionalReference(family, 'husband_id', 'husband_key', keyMap, 'husband');
+    const wife = resolveOptionalReference(family, 'wife_id', 'wife_key', keyMap, 'wife');
+    if (husband.id) await this.assertPersonInTree(conn, treeId, husband.id);
+    if (wife.id) await this.assertPersonInTree(conn, treeId, wife.id);
 
     const fields = this.pickDefined(family, ['marriage_date', 'marriage_place', 'notes']);
-    fields.husband_id = husbandId ?? null;
-    fields.wife_id = wifeId ?? null;
+    if (!family.id || husband.specified) fields.husband_id = husband.id;
+    if (!family.id || wife.specified) fields.wife_id = wife.id;
     fields.updated_at = new Date();
 
     if (family.id) {
@@ -868,7 +906,7 @@ export class GenealogyService {
 
     const [existing] = await conn.query<mysql.RowDataPacket[]>(
       'SELECT id FROM genealogy_families WHERE tree_id = ? AND husband_id <=> ? AND wife_id <=> ? LIMIT 1',
-      [treeId, husbandId ?? null, wifeId ?? null]
+      [treeId, husband.id, wife.id]
     );
     if (existing.length) {
       if (Object.keys(fields).length) await conn.query('UPDATE genealogy_families SET ? WHERE id = ?', [fields, existing[0].id]);
@@ -973,7 +1011,8 @@ export class GenealogyService {
     const rows = id
       ? await this.db.query<Row[]>(
           `SELECT id, gedcom_id, given_name, surname, nickname, sex, birth_date, birth_place,
-                  death_date, death_place, living, LEFT(COALESCE(notes,''), 5000) AS notes,
+                  death_date, death_place, burial_date, burial_place, living,
+                  LEFT(COALESCE(notes,''), 5000) AS notes,
                   rag_indexed_at, updated_at
              FROM genealogy_persons
             WHERE tree_id = ? AND id = ?
@@ -982,7 +1021,8 @@ export class GenealogyService {
         )
       : await this.db.query<Row[]>(
           `SELECT id, gedcom_id, given_name, surname, nickname, sex, birth_date, birth_place,
-                  death_date, death_place, living, LEFT(COALESCE(notes,''), 5000) AS notes,
+                  death_date, death_place, burial_date, burial_place, living,
+                  LEFT(COALESCE(notes,''), 5000) AS notes,
                   rag_indexed_at, updated_at
              FROM genealogy_persons
             WHERE tree_id = ? AND gedcom_id = ?
@@ -1163,6 +1203,51 @@ export class GenealogyService {
     if (!(await this.exists(conn, 'SELECT id FROM genealogy_trees WHERE id = ?', [treeId]))) {
       throw new Error(`Genealogy tree not found: ${treeId}`);
     }
+  }
+
+  private hasGraphMutation(args: GenealogyBatchArgs) {
+    return Boolean(args.families?.length || args.children?.length);
+  }
+
+  private async captureGraphSnapshot(
+    conn: mysql.PoolConnection,
+    treeId: number
+  ): Promise<GenealogyGraphSnapshot> {
+    const [treeRows] = await conn.query<mysql.RowDataPacket[]>(
+      'SELECT id, root_person_id FROM genealogy_trees WHERE id = ? FOR UPDATE',
+      [treeId]
+    );
+    if (!treeRows.length) throw new Error(`Genealogy tree not found: ${treeId}`);
+
+    const [personRows] = await conn.query<mysql.RowDataPacket[]>(
+      'SELECT id FROM genealogy_persons WHERE tree_id = ?',
+      [treeId]
+    );
+    const [familyRows] = await conn.query<mysql.RowDataPacket[]>(
+      'SELECT id, husband_id, wife_id FROM genealogy_families WHERE tree_id = ?',
+      [treeId]
+    );
+    const [childRows] = await conn.query<mysql.RowDataPacket[]>(
+      `SELECT c.family_id, c.person_id
+         FROM genealogy_children c
+         JOIN genealogy_families f ON f.id = c.family_id
+        WHERE f.tree_id = ?`,
+      [treeId]
+    );
+
+    return buildGraphSnapshot(
+      treeRows[0].root_person_id === null ? null : Number(treeRows[0].root_person_id),
+      personRows.map((row) => Number(row.id)),
+      familyRows.map((row) => ({
+        id: Number(row.id),
+        husband_id: row.husband_id === null ? null : Number(row.husband_id),
+        wife_id: row.wife_id === null ? null : Number(row.wife_id),
+      } satisfies GenealogyGraphFamily)),
+      childRows.map((row) => ({
+        family_id: Number(row.family_id),
+        person_id: Number(row.person_id),
+      } satisfies GenealogyGraphChild))
+    );
   }
 
   private async assertPersonInTree(conn: mysql.PoolConnection, treeId: number, personId: number) {

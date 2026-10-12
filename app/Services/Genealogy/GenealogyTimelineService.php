@@ -406,7 +406,7 @@ class GenealogyTimelineService
     private function getPerson(int $personId): ?object
     {
         return DB::selectOne("
-            SELECT id, tree_id, gedcom_id, given_name, surname, sex, birth_date, death_date
+            SELECT id, tree_id, gedcom_id, given_name, surname, sex, birth_date, death_date, living
             FROM genealogy_persons
             WHERE id = ?
         ", [$personId]);

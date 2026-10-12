@@ -19,7 +19,7 @@ use Illuminate\Support\Facades\Log;
  *
  * Hard whitelist of profile names: default | offline_review | offline_dev_assist |
  * offline_genealogy_assist | hybrid_review | hybrid_dev_assist |
- * cloud_escalation_only.
+ * private_genealogy_research | cloud_escalation_only.
  * Anything else is rejected with exit code 2.
  *
  * Usage:
@@ -32,7 +32,7 @@ class RoutingProfileCommand extends Command
 {
     protected $signature = 'routing:profile
         {action : status|activate|list}
-        {name? : default|offline_review|offline_dev_assist|offline_genealogy_assist|hybrid_review|hybrid_dev_assist|cloud_escalation_only (required for activate)}';
+        {name? : default|offline_review|offline_dev_assist|offline_genealogy_assist|hybrid_review|hybrid_dev_assist|resilient_local_first|private_genealogy_research|cloud_escalation_only (required for activate)}';
 
     protected $description = 'Inspect or switch the active operator routing profile (system_configs routing.* rows). Human-controlled only — connectivity regain never changes the active profile.';
 
@@ -49,6 +49,8 @@ class RoutingProfileCommand extends Command
         'offline_genealogy_assist',
         'hybrid_review',
         'hybrid_dev_assist',
+        'resilient_local_first',
+        'private_genealogy_research',
         'cloud_escalation_only',
     ];
 
@@ -91,8 +93,7 @@ class RoutingProfileCommand extends Command
             "SELECT section, config_key, config_value, data_type, description
              FROM system_configs
              WHERE section = ? AND config_key LIKE 'profile.%'
-             ORDER BY config_key"
-        , ['routing']);
+             ORDER BY config_key", ['routing']);
 
         $profiles = [];
         foreach ($rows as $row) {

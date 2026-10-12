@@ -20,6 +20,14 @@ $mediaScanRoots = env(
 );
 
 return [
+    // Match recorded decisions across detector-row replacement, using all axes.
+    'face_region_match_tolerance' => 0.00015,
+
+    // Bump only when the semantic inputs to face queue generation change.
+    'face_match_queue_generation' => [
+        'semantic_version' => 'v1',
+    ],
+
     'nextcloud_root' => $genealogyRoot,
     'face_sync_root' => $faceSyncRoot,
     'ft_reference_root' => $ftReferenceRoot,
@@ -135,7 +143,7 @@ return [
     // stops at source discovery: imported candidates must still pass domain,
     // access-mode, API/scrape, and evidence-posture vetting before planner use.
     'trusted_source_catalogs' => [
-        ['name' => 'FamilySearch Research Wiki', 'url' => 'https://www.familysearch.org/en/wiki/FamilySearch_Research_Wiki', 'posture' => 'locality_guidance_manual_only'],
+        ['name' => 'FamilySearch Research Wiki', 'url' => 'https://www.familysearch.org/en/wiki/FamilySearch_Research_Wiki', 'posture' => 'provider_specific_locality_guidance'],
         ['name' => "Cyndi's List", 'url' => 'https://www.cyndislist.com', 'posture' => 'curated_directory_candidate_seed'],
         ['name' => 'Archives Portal Europe', 'url' => 'https://www.archivesportaleurope.net', 'posture' => 'archive_repository_catalog'],
         ['name' => 'Europeana', 'url' => 'https://www.europeana.eu', 'posture' => 'api_backed_cultural_record_catalog'],
@@ -161,6 +169,110 @@ return [
             'dar_search',
             'mcp_searxng_search',
             'mcp_genealogy_search',
+        ],
+    ],
+
+    // License-gated Genea research playbooks. These are PLOS-native workflows
+    // Adapted from lawfully reusable agent projects and documented research.
+    // observations. Do not copy GPL/AGPL Gramps, Gramps Web, or webtrees code
+    // into this repo; keep those projects reference-only.
+    'research_playbooks' => [
+        'enabled' => (bool) env('GENEALOGY_RESEARCH_PLAYBOOKS_ENABLED', true),
+        'default' => 'entity_source_audit',
+        'upstream_sources' => [
+            'gramps_mcp' => [
+                'repo' => 'https://github.com/Knuckles-Team/gramps-mcp',
+                'license' => 'MIT',
+                'use' => 'Pattern-adapted action-routed genealogy domains and entity/source/media checklist.',
+            ],
+            'gedcom_llm_safety' => [
+                'repo' => 'https://github.com/labourdayos-afk/gedcom-llm-safety',
+                'license' => 'MIT',
+                'revision' => '5af40e6973d155b789de271642db1cd8c038ec69',
+                'reviewed_at' => '2026-07-14',
+                'use' => 'Pattern-adapted pre-check, transactional audit-delta rollback, protected-root ancestor guard, and collateral-branch reachability membership guard.',
+            ],
+            'ancestry_agent' => [
+                'repo' => 'https://github.com/javaberlin/ancestry-agent',
+                'license' => 'MIT',
+                'use' => 'Pattern-adapted homonym disambiguation: relatives, date windows, migration, and human-in-loop decisions.',
+            ],
+            'ai_genealogy' => [
+                'repo' => 'https://github.com/evz/ai-genealogy',
+                'license' => 'MIT',
+                'use' => 'Pattern-adapted graph-first extraction, phonetic/trigram/vector retrieval, and model routing lanes.',
+            ],
+            'genealogy_ai' => [
+                'repo' => 'https://github.com/Scheldt-LLC/genealogy_ai',
+                'license' => 'MIT',
+                'use' => 'Pattern-adapted immutable-source, interpretation-separation, local-first document extraction workflow.',
+            ],
+            'genealogy_research_assistant' => [
+                'repo' => 'https://github.com/jonahlyn/genealogy-research-assistant',
+                'license' => 'Apache-2.0',
+                'use' => 'Pattern-adapted offline research logs, family group sheets, and citation-card discipline.',
+            ],
+            'genealogy_postgres_mcp' => [
+                'repo' => 'https://github.com/peterdewit/genealogy-postgres-mcp',
+                'license' => 'MIT',
+                'use' => 'Pattern-adapted persistent evidence/assertion memory for iterative AI-assisted research.',
+            ],
+        ],
+        'lanes' => [
+            'vital_record_gap' => [
+                'label' => 'vital record gap',
+                'objective' => 'Find direct or strong indirect evidence for missing birth, death, marriage, or place facts.',
+                'first_tools' => ['get_repositories_for_person', 'source_search_all', 'generate_record_hints', 'nara_search'],
+                'required_anchors' => ['full_name', 'life_window', 'place', 'relative_or_fan_bridge'],
+                'stop_rule' => 'Do not propose broad same-name hits unless the record text bridges date, place, relative, FAN member, occupation, or source chain.',
+                'report_rule' => 'Classify source quality and log negative searches with repository, query, date range, and place.',
+                'upstream_sources' => ['gramps_mcp', 'ai_genealogy', 'genealogy_ai', 'genealogy_research_assistant'],
+            ],
+            'homonym_disambiguation' => [
+                'label' => 'homonym disambiguation',
+                'objective' => 'Separate same-name people before any merge, source_add, relationship, or fact proposal.',
+                'first_tools' => ['get_person_full', 'get_person_events', 'get_siblings', 'source_search_all', 'fan_suggest_research'],
+                'required_anchors' => ['same_name_candidates', 'relative_set', 'date_window', 'place_path', 'migration_or_fan_signal'],
+                'stop_rule' => 'If identity is not bridged by relatives, places, dates, or FAN associates, return deferred and record search coverage only.',
+                'report_rule' => 'Explain why the candidate is the same person or a different person; include conflicting identity evidence.',
+                'upstream_sources' => ['ancestry_agent', 'gramps_mcp'],
+            ],
+            'pending_hint_triage' => [
+                'label' => 'pending hint triage',
+                'objective' => 'Convert existing hints into either source-backed proposals, negative coverage, or specific follow-up tasks.',
+                'first_tools' => ['get_research_hints', 'source_search_all', 'generate_record_hints', 'evidence_build_chain'],
+                'required_anchors' => ['hint_source', 'target_gap', 'full_name', 'date_or_place'],
+                'stop_rule' => 'Do not requeue vague hint text as a review item without a source locator or identity bridge.',
+                'report_rule' => 'Mark which hints were useful, exhausted, blocked by access, or unsafe for the target person.',
+                'upstream_sources' => ['genealogy_research_assistant', 'genealogy_postgres_mcp'],
+            ],
+            'negative_search_coverage' => [
+                'label' => 'negative search coverage',
+                'objective' => 'Turn high-exhaustion targets into useful negative evidence and narrower next searches.',
+                'first_tools' => ['get_search_coverage', 'get_repositories_for_person', 'source_search_all', 'update_search_coverage'],
+                'required_anchors' => ['repository', 'query_terms', 'date_range', 'place_or_jurisdiction'],
+                'stop_rule' => 'If no source-backed change appears, complete as deferred with durable negative coverage instead of generating weak review items.',
+                'report_rule' => 'State exactly what was searched and what future source class remains untested.',
+                'upstream_sources' => ['gedcom_llm_safety', 'genealogy_research_assistant'],
+            ],
+            'entity_source_audit' => [
+                'label' => 'entity source audit',
+                'objective' => 'Audit the person, events, sources, citations, media, and repositories before choosing a narrow next action.',
+                'first_tools' => ['get_person_full', 'get_person_sources', 'get_repositories_for_person', 'get_search_coverage'],
+                'required_anchors' => ['person_profile', 'existing_sources', 'missing_fact_or_media_gap'],
+                'stop_rule' => 'Keep action bounded to the anchor person unless a relative materially proves the target fact.',
+                'report_rule' => 'Return one best next evidence action, not a broad tree survey.',
+                'upstream_sources' => ['gramps_mcp', 'genealogy_postgres_mcp'],
+            ],
+            'gedcom_write_safety' => [
+                'label' => 'GEDCOM write safety',
+                'objective' => 'Protect FT4 and GEDCOM-like writeback from structural regression before any apply/export step.',
+                'first_tools' => ['get_person_full', 'family_profile', 'evidence_build_chain', 'assess_gps_compliance'],
+                'required_anchors' => ['protected_root', 'before_after_delta', 'source_backed_change', 'rollback_path'],
+                'stop_rule' => 'If an edit can reduce or replace protected-root ancestor or undirected reachable membership, the native batch writer rolls back; plausibility anomalies still stop for operator review.',
+                'report_rule' => 'Describe the proposed delta, source support, rollback path, protected-root risk, and returned graph_guard receipt.',
+                'upstream_sources' => ['gedcom_llm_safety'],
+            ],
         ],
     ],
 

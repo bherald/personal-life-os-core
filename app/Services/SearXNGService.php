@@ -2,9 +2,10 @@
 
 namespace App\Services;
 
+use App\Support\SensitiveTextTelemetry;
+use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * SearXNG Service
@@ -26,15 +27,21 @@ use Exception;
 class SearXNGService
 {
     private string $baseUrl;
+
     private int $timeout;
+
     private int $connectTimeout;
 
     // Circuit breaker settings
     private int $failureThreshold;
+
     private int $recoveryTimeout;
 
     private CircuitBreaker $circuitBreaker;
+
     private const CIRCUIT_NAME = 'searxng';
+
+    private const QUERY_TELEMETRY_SCOPE = 'searxng-connector-query-v1';
 
     public function __construct(?CircuitBreaker $circuitBreaker = null)
     {
@@ -49,10 +56,10 @@ class SearXNGService
     /**
      * Search for web content
      *
-     * @param string $query Search query
-     * @param int $maxResults Maximum results to return
-     * @param string $language Language code (default: en)
-     * @param string $timeRange Time range filter: day, week, month, year, or empty
+     * @param  string  $query  Search query
+     * @param  int  $maxResults  Maximum results to return
+     * @param  string  $language  Language code (default: en)
+     * @param  string  $timeRange  Time range filter: day, week, month, year, or empty
      * @return array Search results
      */
     public function search(string $query, int $maxResults = 10, string $language = 'en', string $timeRange = ''): array
@@ -68,9 +75,9 @@ class SearXNGService
     /**
      * Search for images
      *
-     * @param string $query Search query
-     * @param int $maxResults Maximum results to return
-     * @param string $language Language code
+     * @param  string  $query  Search query
+     * @param  int  $maxResults  Maximum results to return
+     * @param  string  $language  Language code
      * @return array Image search results
      */
     public function searchImages(string $query, int $maxResults = 20, string $language = 'en'): array
@@ -85,10 +92,10 @@ class SearXNGService
     /**
      * Search for news articles
      *
-     * @param string $query Search query
-     * @param int $maxResults Maximum results to return
-     * @param string $language Language code
-     * @param string $timeRange Time range filter
+     * @param  string  $query  Search query
+     * @param  int  $maxResults  Maximum results to return
+     * @param  string  $language  Language code
+     * @param  string  $timeRange  Time range filter
      * @return array News search results
      */
     public function searchNews(string $query, int $maxResults = 10, string $language = 'en', string $timeRange = 'week'): array
@@ -104,35 +111,44 @@ class SearXNGService
     /**
      * Execute search request against SearXNG API
      *
-     * @param string $query Search query
-     * @param array $params Additional parameters
-     * @param int $maxResults Maximum results
+     * @param  string  $query  Search query
+     * @param  array  $params  Additional parameters
+     * @param  int  $maxResults  Maximum results
      * @return array Search results with metadata
      */
     private function executeSearch(string $query, array $params, int $maxResults): array
     {
-        if ($manualOnlyDomain = $this->queryTargetsManualOnlyDomain($query)) {
-            Log::warning('SearXNGService: Manual-only domain search blocked', [
-                'query' => $query,
-                'domain' => $manualOnlyDomain,
+        $providerSpecificDomain = $this->queryTargetsProviderSpecificDomain($query);
+        if ($providerSpecificDomain && $this->shouldEnforceProviderSpecificDomains()) {
+            Log::warning('SearXNGService: Provider-specific domain search blocked by strict policy', [
+                ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
+                'domain' => $providerSpecificDomain,
             ]);
 
             return [
                 'success' => false,
                 'query' => $query,
-                'error' => "Manual-only domain search is disabled for {$manualOnlyDomain}; use operator browser review instead.",
+                'error' => "Provider-specific domain search is disabled for {$providerSpecificDomain} by strict policy.",
                 'results' => [],
                 'source' => 'SearXNG',
-                'manual_only' => true,
-                'manual_required' => true,
-                'policy' => 'manual_only_search_domain',
-                'domain' => $manualOnlyDomain,
+                'provider_specific' => true,
+                'operator_review_required' => true,
+                'policy' => 'provider_specific_search_domain',
+                'domain' => $providerSpecificDomain,
             ];
         }
 
+        if ($providerSpecificDomain) {
+            Log::info('SearXNGService: Provider-specific domain search allowed by private/advisory policy', [
+                ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
+                'domain' => $providerSpecificDomain,
+            ]);
+        }
+
         // Check circuit breaker (300s recovery timeout)
-        if (!$this->circuitBreaker->isAvailable(self::CIRCUIT_NAME, $this->recoveryTimeout)) {
+        if (! $this->circuitBreaker->isAvailable(self::CIRCUIT_NAME, $this->recoveryTimeout)) {
             Log::warning('SearXNGService: Circuit breaker open, skipping search');
+
             return [
                 'success' => false,
                 'error' => 'Service temporarily unavailable (circuit breaker open)',
@@ -144,7 +160,7 @@ class SearXNGService
 
         try {
             Log::info('SearXNGService: Executing search', [
-                'query' => $query,
+                ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
                 'category' => $params['categories'] ?? 'general',
             ]);
 
@@ -155,7 +171,7 @@ class SearXNGService
             ], $params);
 
             // Remove empty params
-            $requestParams = array_filter($requestParams, fn($v) => !empty($v));
+            $requestParams = array_filter($requestParams, fn ($v) => ! empty($v));
 
             $response = Http::timeout($this->timeout)
                 ->connectTimeout($this->connectTimeout)
@@ -165,11 +181,12 @@ class SearXNGService
                 ])
                 ->get("{$this->baseUrl}/search", $requestParams);
 
-            if (!$response->successful()) {
-                $this->recordFailure('HTTP ' . $response->status());
+            if (! $response->successful()) {
+                $this->recordFailure('http_error');
+
                 return [
                     'success' => false,
-                    'error' => 'SearXNG request failed: HTTP ' . $response->status(),
+                    'error' => 'SearXNG request failed: HTTP '.$response->status(),
                     'results' => [],
                     'source' => 'SearXNG',
                 ];
@@ -178,8 +195,9 @@ class SearXNGService
             $data = $response->json();
 
             // Check for valid response
-            if (!isset($data['results']) || !is_array($data['results'])) {
-                $this->recordFailure('Invalid response format');
+            if (! isset($data['results']) || ! is_array($data['results'])) {
+                $this->recordFailure('invalid_response_format');
+
                 return [
                     'success' => false,
                     'error' => 'Invalid response from SearXNG',
@@ -187,9 +205,6 @@ class SearXNGService
                     'source' => 'SearXNG',
                 ];
             }
-
-            // Record success
-            $this->recordSuccess();
 
             // Format results
             $results = [];
@@ -202,10 +217,48 @@ class SearXNGService
                 }
             }
 
+            $engineSummary = $this->engineSummary($results);
+            $engineHealth = $this->engineHealth($data['unresponsive_engines'] ?? []);
+
+            if ($results === [] && $engineHealth['unresponsive_engine_count'] > 0) {
+                $this->recordFailure('unresponsive_engines_no_results');
+
+                Log::warning('SearXNGService: No results and upstream engines were unresponsive', [
+                    ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
+                    'unresponsive_engine_count' => $engineHealth['unresponsive_engine_count'],
+                    'failure_event_count' => $engineHealth['failure_event_count'],
+                    'failure_reason_codes' => $engineHealth['reason_codes'],
+                ]);
+
+                return [
+                    'success' => false,
+                    'query' => $query,
+                    'error' => 'SearXNG engines unavailable',
+                    'failure_reason' => 'unresponsive_engines_no_results',
+                    'results' => [],
+                    'total_found' => count($data['results']),
+                    'returned' => 0,
+                    'source' => 'SearXNG',
+                    'suggestions' => $data['suggestions'] ?? [],
+                    'corrections' => $data['corrections'] ?? [],
+                    'engine_summary' => $engineSummary,
+                    'engine_health' => $engineHealth,
+                    'degraded' => true,
+                    'scraped_at' => now()->toIso8601String(),
+                    'provider_specific_domain' => $providerSpecificDomain,
+                ];
+            }
+
+            $this->recordSuccess();
+
             Log::info('SearXNGService: Search completed', [
-                'query' => $query,
+                ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
                 'results_count' => count($results),
-                'engines_used' => count($data['infoboxes'] ?? []),
+                'unique_engines_count' => $engineSummary['unique_engine_count'],
+                'multi_engine_results' => $engineSummary['multi_engine_result_count'],
+                'unresponsive_engine_count' => $engineHealth['unresponsive_engine_count'],
+                'failure_event_count' => $engineHealth['failure_event_count'],
+                'degraded' => $engineHealth['degraded'],
             ]);
 
             return [
@@ -217,20 +270,24 @@ class SearXNGService
                 'source' => 'SearXNG',
                 'suggestions' => $data['suggestions'] ?? [],
                 'corrections' => $data['corrections'] ?? [],
+                'engine_summary' => $engineSummary,
+                'engine_health' => $engineHealth,
+                'degraded' => $engineHealth['degraded'],
                 'scraped_at' => now()->toIso8601String(),
+                'provider_specific_domain' => $providerSpecificDomain,
             ];
 
         } catch (Exception $e) {
-            $this->recordFailure($e->getMessage());
+            $this->recordFailure('request_exception');
 
             Log::error('SearXNGService: Search failed', [
-                'query' => $query,
-                'error' => $e->getMessage(),
+                ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
+                'exception_class' => $e::class,
             ]);
 
             return [
                 'success' => false,
-                'error' => 'SearXNG search failed: ' . $e->getMessage(),
+                'error' => 'SearXNG search failed',
                 'results' => [],
                 'source' => 'SearXNG',
             ];
@@ -240,8 +297,8 @@ class SearXNGService
     /**
      * Format a single search result
      *
-     * @param array $item Raw result from SearXNG
-     * @param string $category Search category
+     * @param  array  $item  Raw result from SearXNG
+     * @param  string  $category  Search category
      * @return array|null Formatted result or null if invalid
      */
     private function formatResult(array $item, string $category): ?array
@@ -252,20 +309,23 @@ class SearXNGService
         }
 
         $host = parse_url($url, PHP_URL_HOST);
-        if ($this->manualOnlyDomainForHost($host)) {
-            Log::info('SearXNGService: Dropping manual-only domain result', [
-                'url' => $url,
-                'domain' => $this->manualOnlyDomainForHost($host),
+        $providerSpecificDomain = $this->providerSpecificDomainForHost($host);
+        if ($providerSpecificDomain && $this->shouldEnforceProviderSpecificDomains()) {
+            Log::info('SearXNGService: Dropping provider-specific domain result under strict policy', [
+                'result_host' => $host,
+                'domain' => $providerSpecificDomain,
             ]);
 
             return null;
         }
 
+        $engines = $this->normalizeEngines($item['engines'] ?? ($item['engine'] ?? []));
         $base = [
             'url' => $url,
             'title' => $item['title'] ?? 'Untitled',
             'source_engine' => 'SearXNG',
-            'engines' => $item['engines'] ?? [],
+            'engines' => $engines,
+            'engine_count' => count($engines),
             'score' => $item['score'] ?? null,
             'scraped_at' => now()->toIso8601String(),
         ];
@@ -291,18 +351,137 @@ class SearXNGService
         return array_merge($base, [
             'snippet' => $item['content'] ?? '',
             'source_name' => parse_url($url, PHP_URL_HOST),
+            'provider_specific_domain' => $providerSpecificDomain,
         ]);
     }
 
     /**
-     * Return the manual-only domain targeted by a site: query, if any.
+     * @return array<int, string>
      */
-    private function queryTargetsManualOnlyDomain(string $query): ?string
+    private function normalizeEngines(mixed $engines): array
+    {
+        if (is_string($engines)) {
+            $engines = [$engines];
+        }
+
+        if (! is_array($engines)) {
+            return [];
+        }
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn ($engine): string => trim((string) $engine),
+            $engines
+        ))));
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $results
+     * @return array{unique_engines: array<int, string>, unique_engine_count: int, multi_engine_result_count: int}
+     */
+    private function engineSummary(array $results): array
+    {
+        $uniqueEngines = [];
+        $multiEngineResultCount = 0;
+
+        foreach ($results as $result) {
+            $engines = $this->normalizeEngines($result['engines'] ?? []);
+            if (count($engines) > 1) {
+                $multiEngineResultCount++;
+            }
+
+            foreach ($engines as $engine) {
+                $uniqueEngines[$engine] = true;
+            }
+        }
+
+        $engineNames = array_keys($uniqueEngines);
+        sort($engineNames, SORT_STRING);
+
+        return [
+            'unique_engines' => $engineNames,
+            'unique_engine_count' => count($engineNames),
+            'multi_engine_result_count' => $multiEngineResultCount,
+        ];
+    }
+
+    /**
+     * @return array{degraded: bool, unresponsive_engine_count: int, failure_event_count: int, unresponsive_engines: array<int, array{engine: string, reason_codes: array<int, string>}>, reason_codes: array<int, string>}
+     */
+    private function engineHealth(mixed $unresponsiveEngines): array
+    {
+        if (! is_array($unresponsiveEngines)) {
+            $unresponsiveEngines = [];
+        }
+
+        $byEngine = [];
+        $failureEventCount = 0;
+        foreach ($unresponsiveEngines as $item) {
+            if (! is_array($item)) {
+                continue;
+            }
+
+            $engine = trim((string) ($item['engine'] ?? $item[0] ?? ''));
+            if ($engine === '') {
+                continue;
+            }
+
+            $engine = substr(preg_replace('/[^a-z0-9_. -]/i', '', $engine) ?? '', 0, 80);
+            if ($engine === '') {
+                continue;
+            }
+
+            $reasonCode = $this->engineFailureReasonCode((string) ($item['reason'] ?? $item[1] ?? ''));
+            $byEngine[$engine][$reasonCode] = true;
+            $failureEventCount++;
+        }
+
+        ksort($byEngine, SORT_STRING);
+        $engines = [];
+        $reasonCodes = [];
+        foreach ($byEngine as $engine => $engineReasonSet) {
+            $engineReasonCodes = array_keys($engineReasonSet);
+            sort($engineReasonCodes, SORT_STRING);
+            $engines[] = [
+                'engine' => $engine,
+                'reason_codes' => $engineReasonCodes,
+            ];
+            $reasonCodes = array_merge($reasonCodes, $engineReasonCodes);
+        }
+
+        $reasonCodes = array_values(array_unique($reasonCodes));
+        sort($reasonCodes, SORT_STRING);
+
+        return [
+            'degraded' => $engines !== [],
+            'unresponsive_engine_count' => count($engines),
+            'failure_event_count' => $failureEventCount,
+            'unresponsive_engines' => $engines,
+            'reason_codes' => $reasonCodes,
+        ];
+    }
+
+    private function engineFailureReasonCode(string $reason): string
+    {
+        $reason = strtolower($reason);
+
+        return match (true) {
+            str_contains($reason, 'timeout') => 'timeout',
+            str_contains($reason, 'captcha'), str_contains($reason, 'bot'), str_contains($reason, 'cloudflare') => 'access_challenge',
+            str_contains($reason, 'connect'), str_contains($reason, 'network'), str_contains($reason, 'dns') => 'network_error',
+            str_contains($reason, 'http') => 'http_error',
+            default => 'engine_error',
+        };
+    }
+
+    /**
+     * Return the provider-specific domain targeted by a site: query, if any.
+     */
+    private function queryTargetsProviderSpecificDomain(string $query): ?string
     {
         preg_match_all('/(?:^|\s)site:\s*["\']?([*.a-z0-9-]+)/i', $query, $matches);
 
         foreach ($matches[1] ?? [] as $host) {
-            $domain = $this->manualOnlyDomainForHost($host);
+            $domain = $this->providerSpecificDomainForHost($host);
             if ($domain) {
                 return $domain;
             }
@@ -312,9 +491,9 @@ class SearXNGService
     }
 
     /**
-     * Return the configured manual-only root domain for a host.
+     * Return the configured provider-specific root domain for a host.
      */
-    private function manualOnlyDomainForHost(?string $host): ?string
+    private function providerSpecificDomainForHost(?string $host): ?string
     {
         $normalizedHost = strtolower(trim((string) $host));
         $normalizedHost = trim($normalizedHost, " \t\n\r\0\x0B\"'()[]{}<>.,;:");
@@ -325,7 +504,7 @@ class SearXNGService
             return null;
         }
 
-        foreach ($this->manualOnlyDomains() as $domain) {
+        foreach ($this->providerSpecificDomains() as $domain) {
             if ($normalizedHost === $domain || str_ends_with($normalizedHost, '.'.$domain)) {
                 return $domain;
             }
@@ -335,14 +514,14 @@ class SearXNGService
     }
 
     /**
-     * Domains that may be opened manually but must not be searched or scraped by agents.
+     * Domains that need source-specific/API/private-capture posture.
      *
      * @return array<int, string>
      */
-    private function manualOnlyDomains(): array
+    private function providerSpecificDomains(): array
     {
-        $domains = config('scraping.manual_only_domains', []);
-        if (!is_array($domains)) {
+        $domains = config('scraping.provider_specific_domains', config('scraping.manual_only_domains', []));
+        if (! is_array($domains)) {
             return [];
         }
 
@@ -350,6 +529,11 @@ class SearXNGService
             static fn ($domain) => ltrim(strtolower(trim((string) $domain)), '*.'),
             $domains
         ))));
+    }
+
+    private function shouldEnforceProviderSpecificDomains(): bool
+    {
+        return (bool) config('scraping.enforce_provider_specific_domains', config('scraping.enforce_manual_only_domains', false));
     }
 
     /**
@@ -366,7 +550,7 @@ class SearXNGService
         $connectivity = 'unknown';
         $version = null;
 
-        if (!$circuitOpen) {
+        if (! $circuitOpen) {
             try {
                 $response = Http::timeout(5)
                     ->connectTimeout(2)
@@ -415,7 +599,7 @@ class SearXNGService
     /**
      * Record a failed request via shared CircuitBreaker
      *
-     * @param string $reason Failure reason for logging
+     * @param  string  $reason  Failure reason for logging
      */
     private function recordFailure(string $reason): void
     {
@@ -434,6 +618,7 @@ class SearXNGService
     public function forceResetCircuit(): bool
     {
         $this->circuitBreaker->reset(self::CIRCUIT_NAME);
+
         return true;
     }
 

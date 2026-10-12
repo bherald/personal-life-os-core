@@ -8,12 +8,12 @@
       <div class="relative bg-black border-2 border-ops-gold rounded-r-lg shadow-2xl w-full max-h-[90vh] flex flex-col mx-4"
            :class="hasInlinePreview ? 'max-w-4xl' : 'max-w-2xl'">
         <!-- Header -->
-        <div class="p-4 border-b-2 border-ops-plum flex items-center justify-between flex-shrink-0">
+        <div class="p-4 border-b-2 border-ops-plum flex items-center justify-between shrink-0">
           <div class="flex-1 min-w-0 mr-3">
             <h3 class="text-lg font-semibold text-ops-gold truncate">{{ item.title || item.filename || 'Preview' }}</h3>
             <p class="text-xs text-ops-text-muted uppercase mt-0.5">{{ item.type }} {{ item.extension ? '• ' + item.extension.toUpperCase() : '' }}</p>
           </div>
-          <button @click="$emit('close')" class="text-ops-text-muted hover:text-ops-peach text-2xl flex-shrink-0">&times;</button>
+          <button @click="$emit('close')" class="text-ops-text-muted hover:text-ops-peach text-2xl shrink-0">&times;</button>
         </div>
 
         <!-- Content area -->
@@ -84,12 +84,12 @@
                 target="_blank"
                 class="flex items-center gap-2 px-3 py-2 bg-ops-plum/20 border border-ops-plum rounded-r-lg hover:border-ops-sky hover:bg-ops-plum/30 transition-colors group"
               >
-                <span class="text-lg flex-shrink-0">{{ attachmentIcon(att) }}</span>
+                <span class="text-lg shrink-0">{{ attachmentIcon(att) }}</span>
                 <div class="flex-1 min-w-0">
                   <div class="text-sm text-ops-peach truncate group-hover:text-ops-gold">{{ displayAttachmentName(att) }}</div>
                   <div v-if="att.file_size" class="text-[10px] text-ops-text-muted/60">{{ formatSize(att.file_size) }}</div>
                 </div>
-                <svg class="w-4 h-4 text-ops-text-muted flex-shrink-0 group-hover:text-ops-sky" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-4 h-4 text-ops-text-muted shrink-0 group-hover:text-ops-sky" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
                 </svg>
               </a>
@@ -131,7 +131,7 @@
         </div>
 
         <!-- Footer actions -->
-        <div class="p-3 border-t-2 border-ops-plum flex-shrink-0 flex gap-2">
+        <div class="p-3 border-t-2 border-ops-plum shrink-0 flex gap-2">
           <a v-if="item.preview_url && !item.preview_url.startsWith('/api/')"
              :href="item.preview_url" target="_blank"
              class="flex-1 text-center px-3 py-2 bg-ops-sky/20 text-ops-sky rounded-r-full text-sm hover:bg-ops-sky/30 transition-colors font-semibold uppercase">

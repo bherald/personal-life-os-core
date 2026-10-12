@@ -1,0 +1,467 @@
+{
+  "shellcheck": {
+    "category": "source_security",
+    "package": "shellcheck",
+    "paths": [
+      "/usr/bin/shellcheck"
+    ],
+    "dependencies": [
+      "bubblewrap",
+      "prlimit"
+    ],
+    "adapter": "os_tools_shellcheck_fixture",
+    "references": [
+      {
+        "url": "https://www.shellcheck.net/wiki/",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "semgrep": {
+    "category": "source_security",
+    "package": null,
+    "paths": [
+      "/usr/bin/semgrep",
+      "/usr/local/bin/semgrep",
+      "{home}/.local/bin/semgrep"
+    ],
+    "dependencies": [
+      "python3"
+    ],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://semgrep.dev/docs/running-rules",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "nmap": {
+    "category": "network_security",
+    "package": "nmap",
+    "paths": [
+      "/usr/bin/nmap"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://nmap.org/book/man.html",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "zap": {
+    "category": "network_security",
+    "package": null,
+    "paths": [
+      "/usr/bin/zaproxy",
+      "/usr/share/zaproxy/zap.sh"
+    ],
+    "dependencies": [
+      "java"
+    ],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://www.zaproxy.org/docs/",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "git": {
+    "category": "development",
+    "package": "git",
+    "paths": [
+      "/usr/bin/git"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "php": {
+    "category": "development",
+    "package": null,
+    "paths": [
+      "/usr/bin/php"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "python3": {
+    "category": "development",
+    "package": "python3",
+    "paths": [
+      "/usr/bin/python3"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "java": {
+    "category": "development",
+    "package": null,
+    "paths": [
+      "/usr/bin/java"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "jq": {
+    "category": "data",
+    "package": "jq",
+    "paths": [
+      "/usr/bin/jq"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "sqlite3": {
+    "category": "data",
+    "package": "sqlite3",
+    "paths": [
+      "/usr/bin/sqlite3"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "tesseract": {
+    "category": "documents_ocr",
+    "package": "tesseract-ocr",
+    "paths": [
+      "/usr/bin/tesseract"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "pdftotext": {
+    "category": "documents_ocr",
+    "package": "poppler-utils",
+    "paths": [
+      "/usr/bin/pdftotext"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "ffmpeg": {
+    "category": "media",
+    "package": "ffmpeg",
+    "paths": [
+      "/usr/bin/ffmpeg"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://ffmpeg.org/ffmpeg.html",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "bubblewrap": {
+    "category": "administration",
+    "package": "bubblewrap",
+    "paths": [
+      "/usr/bin/bwrap"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "prlimit": {
+    "category": "administration",
+    "package": "util-linux",
+    "paths": [
+      "/usr/bin/prlimit"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Review local documentation for supported operations and limits."
+  },
+  "rg": {
+    "category": "development",
+    "package": "ripgrep",
+    "paths": [
+      "/usr/bin/rg",
+      "/usr/local/bin/rg"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Search source text and filenames.",
+    "references": [
+      {
+        "url": "https://github.com/BurntSushi/ripgrep/blob/master/GUIDE.md",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ]
+  },
+  "curl": {
+    "category": "network_security",
+    "package": "curl",
+    "paths": [
+      "/usr/bin/curl",
+      "/usr/local/bin/curl"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Inspect HTTP responses and transfer data; network scope depends on arguments.",
+    "references": [
+      {
+        "url": "https://curl.se/docs/manpage.html",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ]
+  },
+  "openssl": {
+    "category": "network_security",
+    "package": "openssl",
+    "paths": [
+      "/usr/bin/openssl",
+      "/usr/local/bin/openssl"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Inspect certificates and cryptographic formats; subcommands vary in impact.",
+    "references": [
+      {
+        "url": "https://docs.openssl.org/master/man1/openssl/",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ]
+  },
+  "pdfinfo": {
+    "category": "documents_ocr",
+    "package": "poppler-utils",
+    "paths": [
+      "/usr/bin/pdfinfo",
+      "/usr/local/bin/pdfinfo"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Inspect PDF metadata without OCR.",
+    "references": []
+  },
+  "pandoc": {
+    "category": "documents_ocr",
+    "package": "pandoc",
+    "paths": [
+      "/usr/bin/pandoc",
+      "/usr/local/bin/pandoc"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Convert documents between supported formats.",
+    "references": [
+      {
+        "url": "https://pandoc.org/MANUAL.html",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ]
+  },
+  "node": {
+    "category": "development",
+    "package": "nodejs",
+    "paths": [
+      "/usr/bin/node",
+      "/usr/local/bin/node"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Run JavaScript programs; arbitrary code execution requires explicit scope.",
+    "references": []
+  },
+  "composer": {
+    "category": "development",
+    "package": "composer",
+    "paths": [
+      "/usr/bin/composer",
+      "/usr/local/bin/composer"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Inspect PHP dependencies; installation and plugins can execute code.",
+    "references": [
+      {
+        "url": "https://getcomposer.org/doc/",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ]
+  },
+  "go": {
+    "category": "development",
+    "package": null,
+    "paths": [
+      "/usr/bin/go",
+      "/usr/local/bin/go",
+      "/usr/local/go/bin/go"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Build and test Go software; project code can execute.",
+    "references": [
+      {
+        "url": "https://go.dev/doc/cmd",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ]
+  },
+  "dig": {
+    "category": "network_security",
+    "package": "bind9-dnsutils",
+    "paths": [
+      "/usr/bin/dig",
+      "/usr/local/bin/dig"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "purpose": "Query DNS records within approved network scope.",
+    "references": [
+      {
+        "url": "https://bind9.readthedocs.io/en/latest/manpages.html",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ]
+  },
+  "sql-tap": {
+    "category": "database_diagnostics",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/sql-tap"
+    ],
+    "dependencies": [
+      "sql-tapd"
+    ],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://github.com/mickamy/sql-tap/tree/v0.3.2",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Inspect an explicitly configured local SQL diagnostic proxy. Captures private query text and bound parameters. Synthetic PostgreSQL/MySQL PDO compatibility passed; no production routing or execution admission is implied."
+  },
+  "sql-tapd": {
+    "category": "database_diagnostics",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/sql-tapd"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://github.com/mickamy/sql-tap/tree/v0.3.2",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Optional on-demand PostgreSQL/MySQL protocol diagnostic proxy. Bind proxy, gRPC and HTTP to loopback; preserve direct application connections unless a scoped diagnostic run explicitly selects the proxy. EXPLAIN credentials remain absent by default."
+  },
+  "plos-archify": {
+    "category": "plos_reference_tools",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-archify"
+    ],
+    "dependencies": [
+      "python3",
+      "node"
+    ],
+    "adapter": null,
+    "references": [],
+    "purpose": "Render offline PLOS architecture diagrams from explicit JSON sources."
+  },
+  "plos-pdf": {
+    "category": "plos_reference_tools",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-pdf"
+    ],
+    "dependencies": [
+      "python3",
+      "java"
+    ],
+    "adapter": null,
+    "references": [],
+    "purpose": "Extract local PDF text and page coordinates; retain existing extraction fallback."
+  },
+  "plos-hister": {
+    "category": "plos_reference_tools",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-hister"
+    ],
+    "dependencies": [
+      "python3"
+    ],
+    "adapter": null,
+    "references": [],
+    "purpose": "Search or explicitly import the selected local reference collection. No automatic browser collection."
+  },
+  "plos-pggraph-query": {
+    "category": "database_diagnostics",
+    "package": null,
+    "paths": [
+      "{home}/.local/bin/plos-pggraph-query"
+    ],
+    "dependencies": [
+      "docker",
+      "python3"
+    ],
+    "adapter": null,
+    "references": [
+      {
+        "url": "https://github.com/Evokoa/pgGraph/tree/v1.2.1",
+        "kind": "official_documentation",
+        "verification": "reference_only_runtime_does_not_fetch"
+      }
+    ],
+    "purpose": "Read-only known-ID queries over the installed source-backed PLOS architecture reference graph. Supports --diagram ID and --path FROM_NODE TO_NODE. Curated relationships, not a traced callgraph. Unavailable service returns a structured fallback to the atlas JSON and source files."
+  },
+  "docker": {
+    "category": "runtime_dependency",
+    "package": null,
+    "paths": [
+      "/usr/bin/docker",
+      "/usr/local/bin/docker"
+    ],
+    "dependencies": [],
+    "adapter": null,
+    "references": [],
+    "purpose": "Observe the installed container client used by the optional local pgGraph query wrapper. Discovery grants no container execution permissions."
+  }
+}

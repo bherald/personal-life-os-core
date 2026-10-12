@@ -5,18 +5,26 @@ namespace App\Console\Commands;
 use App\Services\AIAutoTagService;
 use App\Services\AIService;
 use App\Services\ExifWritebackService;
+use App\Services\FaceEmbeddingService;
+use App\Services\FileRegistryService;
+use App\Services\NextcloudFileApiService;
 use App\Services\PerceptualHashService;
+use App\Services\PhotoAnalysisService;
+use App\Services\PhotoDateExtractionService;
 use Exception;
 use Illuminate\Console\Command;
+use Illuminate\Database\QueryException;
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Str;
 
 /**
  * FileEnrichmentCommand - Unified file processing pipeline
  *
  * Consolidates all file enrichment tasks into a single command with proper
- * AIService integration (Ollama + Claude slots) for scheduled execution.
+ * AIService integration for scheduled execution.
  *
  * Processing Types:
  * - phash: Perceptual hashing for duplicate detection (no AI)
@@ -41,6 +49,12 @@ class FileEnrichmentCommand extends Command
                             {--limit=auto : Max files to process (number or "auto" for dynamic scaling)}
                             {--status : Show enrichment status only}
                             {--dry-run : Show what would be processed without doing it}
+                            {--face-preview : Prepare anonymous private detector evidence for explicit selectors only}
+                            {--asset-uuid=* : Explicit active asset UUIDs for face preview}
+                            {--face-review-id=* : Explicit pending face review rows for face preview}
+                            {--media-id=* : Explicit genealogy media rows for face preview}
+                            {--tree-id= : Required exact tree scope for review or media selectors}
+                            {--json : Emit face preview receipt JSON}
                             {--worker-id= : Worker ID for parallel execution (set by scheduler)}';
 
     protected $description = 'Unified file enrichment pipeline with AI integration';
@@ -74,6 +88,14 @@ class FileEnrichmentCommand extends Command
 
     public function handle(): int
     {
+        if ($this->option('face-preview')) {
+            return $this->handleFacePreview();
+        }
+        if ($this->option('asset-uuid') || $this->option('face-review-id') || $this->option('media-id')) {
+            $this->error('Explicit face selectors require --face-preview --type=faces.');
+
+            return self::FAILURE;
+        }
         if ($this->option('status')) {
             return $this->showStatus();
         }
@@ -96,6 +118,7 @@ class FileEnrichmentCommand extends Command
             'type' => $type,
             'tasks' => [],
         ];
+        $failedStage = false;
 
         $types = $type === 'all'
             ? ['phash', 'faces', 'video', 'exif', 'gps', 'ai', 'writeback']
@@ -133,26 +156,98 @@ class FileEnrichmentCommand extends Command
             } else {
                 $this->info('  Processed: '.($taskResult['processed'] ?? 0));
                 $this->info('  Errors: '.($taskResult['errors'] ?? 0));
+                if ($taskType === 'exif') {
+                    $this->info('  Checked: '.($taskResult['checked'] ?? 0).'; no date found: '.($taskResult['no_date'] ?? 0));
+                    foreach ($taskResult['error_reasons'] ?? [] as $reason => $count) {
+                        $this->warn("  Held: {$reason} ({$count})");
+                    }
+                }
+            }
+            if (! empty($taskResult['failure_details'])) {
+                $this->line('[ENRICHMENT_FAILURES:'.json_encode(['type' => $taskType,
+                    'failures' => $taskResult['failure_details'],
+                    'omitted' => max(0, ($taskResult['errors'] ?? 0) - count($taskResult['failure_details'])),
+                ], JSON_THROW_ON_ERROR).']');
+            }
+            $progress = ($taskType === 'exif' ? ($taskResult['checked'] ?? 0) : ($taskResult['processed'] ?? 0))
+                + ($taskResult['geocoded'] ?? 0) + ($taskResult['backfill_extracted'] ?? 0);
+            if ($progress === 0 && (($taskResult['errors'] ?? 0) > 0 || isset($taskResult['error']))) {
+                $failedStage = true;
+                break; // A failed prerequisite must not be hidden by a later optimization.
             }
         }
 
         $results['completed_at'] = now()->toDateTimeString();
 
-        // Release any stale claims from this worker
-        if ($workerId) {
+        // Release claims only after an executing run; previews must not change them.
+        if ($workerId && ! $dryRun) {
             DB::update('UPDATE file_registry SET claim_worker = NULL, claim_expires_at = NULL WHERE claim_worker = ?', [$workerId]);
         }
 
         // Emit structured items_processed marker for ScheduledJobService to parse
         $totalProcessed = 0;
         foreach ($results['tasks'] as $type => $task) {
-            $totalProcessed += ($task['processed'] ?? 0) + ($task['geocoded'] ?? 0) + ($task['backfill_extracted'] ?? 0);
+            $totalProcessed += ($type === 'exif' ? ($task['checked'] ?? $task['processed'] ?? 0) : ($task['processed'] ?? 0))
+                + ($task['geocoded'] ?? 0) + ($task['backfill_extracted'] ?? 0);
         }
         $this->line("[ITEMS_PROCESSED:{$totalProcessed}]");
 
         Log::info('FileEnrichmentCommand completed', $results);
 
-        return Command::SUCCESS;
+        return $failedStage ? Command::FAILURE : Command::SUCCESS;
+    }
+
+    private function handleFacePreview(): int
+    {
+        $assets = array_values(array_unique((array) $this->option('asset-uuid')));
+        $reviews = array_values(array_unique((array) $this->option('face-review-id')));
+        $media = array_values(array_unique((array) $this->option('media-id')));
+        $maximum = min(5, max(1, (int) config('file_registry.face_preview.max_assets', 5)));
+        $tree = $this->option('tree-id');
+        if ($this->option('type') !== 'faces' || $this->option('worker-id') || $this->option('status')
+            || count($assets) + count($reviews) + count($media) < 1
+            || count($assets) + count($reviews) + count($media) > $maximum
+            || (($reviews !== [] || $media !== []) && (! ctype_digit((string) $tree) || (int) $tree < 1))) {
+            $this->error('Face preview requires --type=faces, 1 to '.$maximum.' explicit selectors, and --tree-id for review/media selectors.');
+
+            return self::FAILURE;
+        }
+        foreach ($assets as $uuid) {
+            if (! Str::isUuid($uuid)) {
+                $this->error('Invalid asset UUID.');
+
+                return self::FAILURE;
+            }
+        }
+        foreach (array_merge($reviews, $media) as $id) {
+            if (! ctype_digit((string) $id) || (int) $id < 1) {
+                $this->error('Review and media selectors must be positive integers.');
+
+                return self::FAILURE;
+            }
+        }
+        $selectors = array_merge(
+            array_map(fn ($uuid) => ['asset_uuid' => $uuid], $assets),
+            array_map(fn ($id) => ['face_review_id' => (int) $id, 'tree_id' => (int) $tree], $reviews),
+            array_map(fn ($id) => ['media_id' => (int) $id, 'tree_id' => (int) $tree], $media),
+        );
+        $service = app(FaceEmbeddingService::class);
+        $receipts = [];
+        foreach ($selectors as $selector) {
+            $receipts[] = $service->previewFaces($selector, (bool) $this->option('dry-run'));
+        }
+        // Only receipts reach CLI output; boxes and crops live in the private packet.
+        $this->line(json_encode([
+            'mode' => $this->option('dry-run') ? 'dry_run' : 'anonymous_face_preview',
+            'database_writes' => ! $this->option('dry-run')
+                && count(array_filter($receipts, fn ($receipt) => ($receipt['suggestions_published'] ?? false) === true)) > 0,
+            'database_write_scope' => 'anonymous_face_preview_indexes',
+            'identity_writes' => false, 'operator_identity_decision_required' => true,
+            'receipts' => $receipts,
+        ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+
+        return count(array_filter($receipts, fn ($receipt) => ! ($receipt['success'] ?? false))) > 0
+            ? self::FAILURE : self::SUCCESS;
     }
 
     private static ?int $cpuCores = null;
@@ -185,7 +280,7 @@ class FileEnrichmentCommand extends Command
             $loadAvg = sys_getloadavg();
             $load1min = $loadAvg[0] ?? 0;
             if (self::$cpuCores === null) {
-                self::$cpuCores = (int) (trim(\Illuminate\Support\Facades\Process::timeout(5)->run(['nproc'])->output() ?: '4'));
+                self::$cpuCores = (int) (trim(Process::timeout(5)->run(['nproc'])->output() ?: '4'));
             }
             $loadRatio = $load1min / self::$cpuCores;
 
@@ -272,17 +367,19 @@ class FileEnrichmentCommand extends Command
     private function getPendingCount(string $type): int
     {
         $imageExts = "'".implode("','", config('file_types.image'))."'";
+        $pending = AIAutoTagService::pendingAnalysisPredicate();
+        $aiPending = $pending['sql'];
         $allAiExts = "'".implode("','", array_merge(config('file_types.image'), config('file_types.document')))."'";
         try {
             return match ($type) {
                 'faces' => (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND face_scan_at IS NULL AND extension IN ({$imageExts})")->c ?? 0),
-                'ai' => (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND ai_analyzed_at IS NULL AND (ai_analysis_version IS NULL OR (ai_analysis_version NOT IN ('skipped', 'processing') AND ai_analysis_version NOT LIKE 'fail:%')) AND extension IN ({$allAiExts})")->c ?? 0),
+                'ai' => (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND {$aiPending} AND extension IN ({$allAiExts})", $pending['bindings'])->c ?? 0),
                 'exif' => (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND (exif_checked IS NULL OR exif_checked = 0) AND extension IN ({$imageExts})")->c ?? 0),
-                'writeback' => (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND (exif_written IS NULL OR exif_written = 0) AND extension IN ({$imageExts}) AND date_taken IS NOT NULL AND date_taken_source NOT LIKE 'exif_%'")->c ?? 0),
+                'writeback' => $this->getMetadataWritebackPendingCount($imageExts),
                 'phash' => (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry fr WHERE status = 'active' AND extension IN ({$imageExts}) AND NOT EXISTS (SELECT 1 FROM file_registry_perceptual_hashes ph WHERE ph.file_registry_id = fr.id)")->c ?? 0),
                 default => 1000, // Unknown — assume moderate backlog
             };
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::warning('FileEnrichment: getPendingCount failed', [
                 'type' => $type,
                 'error' => $e->getMessage(),
@@ -290,6 +387,32 @@ class FileEnrichmentCommand extends Command
 
             return -1;
         }
+    }
+
+    private function getMetadataWritebackPendingCount(string $imageExts): int
+    {
+        $writebackService = app(ExifWritebackService::class);
+        $trustedFaceWritebackExists = $writebackService->faceWritebackExistsSql('fr', 'frf', 'fip');
+
+        return (int) (DB::selectOne("
+            SELECT COUNT(*) as c
+            FROM file_registry fr
+            WHERE fr.status = 'active'
+            AND fr.extension IN ({$imageExts})
+            AND (
+                (fr.date_taken IS NOT NULL
+                 AND (COALESCE(fr.date_taken_precision, 'exact') = 'exact' OR (fr.date_taken_precision = 'year' AND fr.date_taken_source = 'user_manual'))
+                 AND fr.date_taken_source NOT LIKE 'exif_%'
+                 AND (fr.exif_written IS NULL OR fr.exif_written = 0)
+                 AND fr.date_taken_confidence >= 0.3)
+                OR
+                (fr.gps_location IS NOT NULL AND fr.gps_location != ''
+                 AND (fr.exif_location_written IS NULL OR fr.exif_location_written = 0))
+                OR
+                ((fr.exif_faces_written IS NULL OR fr.exif_faces_written = 0)
+                 AND {$trustedFaceWritebackExists})
+            )
+        ")->c ?? 0);
     }
 
     /**
@@ -330,7 +453,7 @@ class FileEnrichmentCommand extends Command
 
                     return (float) $recent->avg_seconds;
                 }
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 // Fall through to tier 2
             }
         }
@@ -354,7 +477,7 @@ class FileEnrichmentCommand extends Command
 
                 return max(2.0, $llmSeconds); // floor at 2s sanity
             }
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             // Fall through to tier 3
         }
 
@@ -380,7 +503,7 @@ class FileEnrichmentCommand extends Command
                 SELECT
                     COUNT(*) as total_healthy,
                     SUM(CASE WHEN instance_type = 'ollama' AND circuit_state != 'open' THEN 1 ELSE 0 END) as healthy_ollama,
-                    SUM(CASE WHEN instance_type != 'ollama' AND instance_type != 'claude_cli' THEN 1 ELSE 0 END) as healthy_external
+                    SUM(CASE WHEN instance_type NOT IN ('ollama', 'claude_cli', 'anthropic_api') THEN 1 ELSE 0 END) as healthy_external
                 FROM llm_instances
                 WHERE is_active = 1 AND is_healthy = 1 AND circuit_state != 'open'
             ");
@@ -401,7 +524,7 @@ class FileEnrichmentCommand extends Command
 
             // Ollama only, no external — normal throughput
             return 1.0;
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             return 1.0; // Safe default
         }
     }
@@ -422,7 +545,7 @@ class FileEnrichmentCommand extends Command
 
                     return max(20, min(120, $target));
                 }
-            } catch (\Exception $e) {
+            } catch (Exception $e) {
                 // Fall through to default
             }
         }
@@ -470,11 +593,14 @@ class FileEnrichmentCommand extends Command
         $videoHashPending = $videos - $videoHashDone;
         $this->line('  Video Hashes: '.number_format($videoHashDone).' done, '.number_format(max(0, $videoHashPending)).' pending');
 
-        // AI Analysis
-        $aiDone = DB::selectOne("SELECT COUNT(*) as count FROM file_registry WHERE status = 'active' AND ai_analyzed_at IS NOT NULL")->count ?? 0;
-        $aiSupported = $images + DB::selectOne("SELECT COUNT(*) as count FROM file_registry WHERE status = 'active' AND extension IN ('".implode("','", config('file_types.document'))."')")->count ?? 0;
-        $aiPending = $aiSupported - $aiDone;
-        $this->line("\nAI Analysis: ".number_format($aiDone).' done, '.number_format(max(0, $aiPending)).' pending');
+        // These categories describe recorded state; only images have source-hash proof.
+        $aiCounts = AIAutoTagService::getAnalysisCounts();
+        $this->line("\nAI Analysis:");
+        $this->line('  Recorded History: '.number_format($aiCounts['analyzed_count']).' (includes legacy skip timestamps)');
+        $this->line('  Source-bound Images: '.number_format($aiCounts['source_bound_image_count']).' (stored catalog/provenance binding)');
+        $this->line('  Current-version Documents: '.number_format($aiCounts['current_version_document_count']).' (no source-byte proof)');
+        $this->line('  Pending Supported Work: '.number_format($aiCounts['pending_count']));
+        $this->line('  Pending includes eligible retries; processing, skipped and held failures are excluded. Unqualified records are not source-bound.');
 
         // Metadata Writeback (physical file = source of truth)
         $this->line("\n--- Metadata Writeback Status ---");
@@ -484,6 +610,7 @@ class FileEnrichmentCommand extends Command
             SELECT COUNT(*) as count
             FROM file_registry
             WHERE date_taken IS NOT NULL
+            AND (COALESCE(date_taken_precision, 'exact') = 'exact' OR (date_taken_precision = 'year' AND date_taken_source = 'user_manual'))
             AND date_taken_source NOT LIKE 'exif_%'
             AND (exif_written IS NULL OR exif_written = 0)
             AND extension IN ({$imageExts})
@@ -494,16 +621,19 @@ class FileEnrichmentCommand extends Command
 
         // Face writeback pending
         try {
+            $writebackService = app(ExifWritebackService::class);
+            $trustedFaceWritebackExists = $writebackService->faceWritebackExistsSql('fr', 'ff', 'fip');
             $faceWritebackPending = DB::selectOne("
-                SELECT COUNT(DISTINCT fr.id) as count
+                SELECT COUNT(*) as count
                 FROM file_registry fr
-                INNER JOIN file_registry_faces ff ON ff.file_registry_id = fr.id
                 WHERE (fr.exif_faces_written IS NULL OR fr.exif_faces_written = 0)
+                AND fr.status = 'active'
                 AND fr.extension IN ({$imageExts})
+                AND {$trustedFaceWritebackExists}
             ")->count ?? 0;
             $faceWritebackDone = DB::selectOne('SELECT COUNT(*) as count FROM file_registry WHERE exif_faces_written = 1')->count ?? 0;
             $this->line('Face Writeback: '.number_format($faceWritebackDone).' done, '.number_format($faceWritebackPending).' pending');
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->line('Face Writeback: (column not yet added)');
         }
 
@@ -518,7 +648,7 @@ class FileEnrichmentCommand extends Command
             ")->count ?? 0;
             $tagWritebackDone = DB::selectOne('SELECT COUNT(*) as count FROM file_registry WHERE exif_tags_written = 1')->count ?? 0;
             $this->line('Tag Writeback: '.number_format($tagWritebackDone).' done, '.number_format($tagWritebackPending).' pending');
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             $this->line('Tag Writeback: (table/column not yet added)');
         }
 
@@ -702,7 +832,7 @@ PHPCMD;
         $imageExts = "'".implode("','", config('file_types.image'))."'";
         $workerId = $this->option('worker-id');
 
-        if ($workerId) {
+        if ($workerId && ! $dryRun) {
             // Claim-based: atomically claim unclaimed files
             $claimExpiry = now()->addMinutes(30)->format('Y-m-d H:i:s');
             DB::update("
@@ -747,118 +877,41 @@ PHPCMD;
             mkdir($outputDir, 0755, true);
         }
 
-        // Filter to files that exist, build path-to-file map
+        // Resolve virtual Nextcloud paths and admit only readable files within its configured root.
+        $nextcloud = app(NextcloudFileApiService::class);
+        $dataPath = trim((string) config('services.nextcloud.data_path', ''));
+        $dataRoot = $dataPath === '' ? false : realpath($dataPath);
         $validFiles = [];
         foreach ($files as $file) {
-            $localPath = $file->current_path;
-            if (! file_exists($localPath)) {
-                // Mark as scanned with 0 faces so we don't retry missing files
-                DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = 0 WHERE id = ?', [$file->id]);
+            $sourcePath = (string) $file->current_path;
+            if ($sourcePath === '' || str_contains($sourcePath, "\0") || str_contains($sourcePath, '\\')
+                || in_array('..', explode('/', $sourcePath), true)) {
                 $errors++;
 
                 continue;
             }
-            $validFiles[$localPath] = $file;
+            $localPath = realpath($sourcePath) ?: $nextcloud->localPath($sourcePath);
+            $physical = is_string($localPath) ? realpath($localPath) : false;
+            if ($dataRoot === false || $physical === false
+                || ! str_starts_with($physical, rtrim($dataRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)
+                || ! is_file($physical) || ! is_readable($physical)) {
+                // Keep unavailable evidence pending; absence is not a successful zero-face scan.
+                $errors++;
+
+                continue;
+            }
+            $validFiles[$physical] = $file;
         }
 
         if (empty($validFiles)) {
+            if ($workerId) {
+                DB::update('UPDATE file_registry SET claim_worker = NULL, claim_expires_at = NULL WHERE claim_worker = ?', [$workerId]);
+            }
+
             return ['processed' => $processed, 'errors' => $errors];
         }
 
-        // Dedup guard: skip files whose content was already face-scanned via a duplicate copy.
-        // Uses perceptual hash to find twins. Copies face data from the already-scanned twin.
-        $deduped = 0;
-        $toRemove = [];
-        $validFileIds = array_values(array_map(fn ($f) => $f->id, $validFiles));
-        if (! empty($validFileIds)) {
-            $ph = implode(',', array_fill(0, count($validFileIds), '?'));
-            // Find files that have a phash twin already scanned
-            $dupeMatches = DB::select("
-                SELECT f.id as new_id, f.current_path as new_path,
-                       twin.id as twin_id
-                FROM file_registry f
-                INNER JOIN file_registry_perceptual_hashes h1 ON h1.file_registry_id = f.id
-                INNER JOIN file_registry_perceptual_hashes h2
-                    ON h2.dhash_hex = h1.dhash_hex AND h2.file_registry_id != f.id
-                INNER JOIN file_registry twin
-                    ON twin.id = h2.file_registry_id AND twin.face_scan_at IS NOT NULL AND twin.status = 'active'
-                WHERE f.id IN ({$ph})
-                GROUP BY f.id, f.current_path, twin.id
-            ", $validFileIds);
-
-            foreach ($dupeMatches as $dm) {
-                $twinId = $dm->twin_id;
-                $newId = $dm->new_id;
-                $newPath = $dm->new_path;
-
-                // Copy face_embeddings from twin's file_registry_id, pointing to new file
-                $twinEmbeddings = DB::connection('pgsql_rag')->select('
-                    SELECT embedding::text as emb_str, person_cluster_id, match_confidence,
-                           region_x, region_y, region_w, region_h, crop_path, embedding_model
-                    FROM face_embeddings WHERE file_registry_id = ?
-                ', [$twinId]);
-
-                // Copy file_registry_faces from twin
-                $twinFaces = DB::select('
-                    SELECT person_name, genealogy_person_id, face_index, region_x, region_y,
-                           region_w, region_h, confidence, source, cluster_id, embedding
-                    FROM file_registry_faces WHERE file_registry_id = ?
-                ', [$twinId]);
-
-                $twinFaceCount = DB::selectOne('SELECT face_count FROM file_registry WHERE id = ?', [$twinId]);
-
-                // Insert face records for new file (MySQL)
-                foreach ($twinFaces as $tf) {
-                    DB::insert('
-                        INSERT IGNORE INTO file_registry_faces
-                        (file_registry_id, person_name, genealogy_person_id, face_index,
-                         region_x, region_y, region_w, region_h, confidence, source, cluster_id,
-                         embedding, detected_at, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), NOW())
-                    ', [
-                        $newId, $tf->person_name, $tf->genealogy_person_id, $tf->face_index,
-                        $tf->region_x, $tf->region_y, $tf->region_w, $tf->region_h,
-                        $tf->confidence, $tf->source, $tf->cluster_id, $tf->embedding,
-                    ]);
-                }
-
-                // For pgvector: link new file's face records to existing clusters WITHOUT creating new embeddings.
-                // The twin's embeddings already represent this face content — no need to duplicate vectors.
-                // Just link the MySQL faces to the same clusters.
-                $newFaces = DB::select('SELECT id FROM file_registry_faces WHERE file_registry_id = ?', [$newId]);
-                foreach ($newFaces as $nf) {
-                    // Check if pgvector row already exists for this face record
-                    $existing = DB::connection('pgsql_rag')->selectOne('
-                        SELECT id FROM face_embeddings WHERE file_registry_face_id = ?
-                    ', [$nf->id]);
-                    if (! $existing && ! empty($twinEmbeddings)) {
-                        // Don't insert duplicate pgvector rows — the twin's embeddings are sufficient.
-                        // The cluster already has the face represented.
-                    }
-                }
-
-                // Mark as scanned with twin's face count
-                DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = ? WHERE id = ?',
-                    [$twinFaceCount->face_count ?? 0, $newId]);
-
-                $toRemove[] = $newPath;
-                $deduped++;
-            }
-        }
-
-        // Remove deduped files from processing queue
-        foreach ($toRemove as $path) {
-            unset($validFiles[$path]);
-        }
-
-        if ($deduped > 0) {
-            $this->line("  Dedup: copied face data for {$deduped} duplicate files (skipped re-detection)");
-        }
-
-        if (empty($validFiles)) {
-            return ['processed' => $processed + $deduped, 'errors' => $errors];
-        }
-
+        // Perceptual similarity is review evidence; every source needs its own detection.
         // Process in batches using Python batch mode (avoids ~2.5s startup per image)
         $batchSize = config('compute.face_detection_batch_size', 50);
         $chunks = array_chunk(array_keys($validFiles), $batchSize);
@@ -884,41 +937,24 @@ PHPCMD;
                 $batchResult = json_decode($output, true);
 
                 if ($batchResult && $batchResult['success'] && isset($batchResult['results'])) {
+                    $reportedPaths = [];
                     foreach ($batchResult['results'] as $imgResult) {
                         $imgPath = $imgResult['image_path'] ?? $imgResult['image'] ?? '';
                         $file = $validFiles[$imgPath] ?? null;
-                        if (! $file) {
+                        if (! $file || isset($reportedPaths[$imgPath])) {
                             continue;
                         }
+                        $reportedPaths[$imgPath] = true;
 
-                        if ($imgResult['success'] && isset($imgResult['faces'])) {
-                            foreach ($imgResult['faces'] as $idx => $face) {
-                                $norm = $face['normalized'] ?? [];
-                                DB::insert("
-                                    INSERT IGNORE INTO file_registry_faces
-                                    (file_registry_id, face_index, person_name, region_x, region_y, region_w, region_h,
-                                     confidence, source, embedding, detected_at, created_at, updated_at)
-                                    VALUES (?, ?, '', ?, ?, ?, ?, ?, 'ai_detection', ?, NOW(), NOW(), NOW())
-                                ", [
-                                    $file->id, $idx,
-                                    $norm['x'] ?? 0, $norm['y'] ?? 0, $norm['w'] ?? 0, $norm['h'] ?? 0,
-                                    $face['confidence'] ?? 0.9,
-                                    json_encode($face['embedding'] ?? []),
-                                ]);
-                                // Inline pgvector insert + cluster assignment
-                                $this->insertPgvectorAndCluster($file->id, $face);
-                            }
-                            DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = ? WHERE id = ?',
-                                [count($imgResult['faces']), $file->id]);
-                            // Apply XMP names to newly detected faces
+                        if ($this->publishDetectedFaces($file, $imgPath, $imgResult)) {
                             $this->applyXmpNamesToAiFaces($file->id, $imgPath);
                             $processed++;
                         } else {
-                            // Mark as scanned (0 faces) so we don't retry errors forever
-                            DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = 0 WHERE id = ?', [$file->id]);
+                            // Detector failures leave the evidence pending for review.
                             $errors++;
                         }
                     }
+                    $errors += count(array_diff($paths, array_keys($reportedPaths)));
                 } else {
                     // Batch failed entirely — fall back to single-image mode for this chunk
                     foreach ($paths as $path) {
@@ -934,34 +970,13 @@ PHPCMD;
                                 $path,
                             ])->output();
                             $result = json_decode($singleOutput, true);
-                            if ($result && $result['success'] !== false && isset($result['faces'])) {
-                                foreach ($result['faces'] as $idx => $face) {
-                                    $norm = $face['normalized'] ?? [];
-                                    DB::insert("
-                                        INSERT IGNORE INTO file_registry_faces
-                                        (file_registry_id, face_index, person_name, region_x, region_y, region_w, region_h,
-                                         confidence, source, embedding, detected_at, created_at, updated_at)
-                                        VALUES (?, ?, '', ?, ?, ?, ?, ?, 'ai_detection', ?, NOW(), NOW(), NOW())
-                                    ", [
-                                        $file->id, $idx,
-                                        $norm['x'] ?? 0, $norm['y'] ?? 0, $norm['w'] ?? 0, $norm['h'] ?? 0,
-                                        $face['confidence'] ?? 0.9,
-                                        json_encode($face['embedding'] ?? []),
-                                    ]);
-                                    // Inline pgvector insert + cluster assignment
-                                    $this->insertPgvectorAndCluster($file->id, $face);
-                                }
-                                DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = ? WHERE id = ?',
-                                    [count($result['faces']), $file->id]);
-                                // Apply XMP names to newly detected faces
+                            if (is_array($result) && $this->publishDetectedFaces($file, $path, $result)) {
                                 $this->applyXmpNamesToAiFaces($file->id, $path);
                                 $processed++;
                             } else {
-                                DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = 0 WHERE id = ?', [$file->id]);
                                 $errors++;
                             }
-                        } catch (\Exception $e) {
-                            DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = 0 WHERE id = ?', [$file->id]);
+                        } catch (Exception $e) {
                             $errors++;
                         }
                     }
@@ -972,14 +987,8 @@ PHPCMD;
                 @array_map('unlink', glob("{$batchOutputDir}/*.json"));
                 @rmdir($batchOutputDir);
 
-            } catch (\Exception $e) {
-                // Mark all files in failed chunk as scanned to prevent infinite retry
-                foreach ($paths as $path) {
-                    $file = $validFiles[$path] ?? null;
-                    if ($file) {
-                        DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = 0 WHERE id = ?', [$file->id]);
-                    }
-                }
+            } catch (Exception $e) {
+                // Preserve pending source evidence when the batch cannot complete.
                 $errors += count($paths);
                 Log::error('FileEnrichment face batch error', ['error' => $e->getMessage()]);
             }
@@ -996,169 +1005,229 @@ PHPCMD;
         return ['processed' => $processed, 'errors' => $errors];
     }
 
-    /**
-     * Insert a face embedding into pgvector and attempt cluster assignment.
-     * Called inline during face detection for incremental clustering.
-     */
-    private function insertPgvectorAndCluster(int $fileRegistryId, array $face): void
+    /** Bind one detector result to its source before publishing any derived rows. */
+    private function publishDetectedFaces(object $file, string $path, array $result): bool
     {
-        $embedding = $face['embedding'] ?? [];
-        if (empty($embedding) || count($embedding) < 64) {
-            return;
+        $sourceHash = $result['source_sha256'] ?? null;
+        if (($result['success'] ?? false) !== true || ! is_array($result['faces'] ?? null)
+            || ! is_string($sourceHash) || ! preg_match('/^[a-f0-9]{64}$/D', $sourceHash)
+            || (isset($result['image_path']) && $result['image_path'] !== $path)) {
+            return false;
         }
-
-        try {
-            $embeddingService = app(\App\Services\FaceEmbeddingService::class);
-            if (! $embeddingService->isAvailable()) {
-                return;
+        foreach ($result['faces'] as $face) {
+            if (($face['source_sha256'] ?? null) !== $sourceHash || ($face['face_region_convention'] ?? null) !== 'normalized_top_left') {
+                return false;
             }
-
-            // Get the face record we just inserted (latest for this file+index)
-            $faceRecord = DB::selectOne("
-                SELECT id FROM file_registry_faces
-                WHERE file_registry_id = ? AND source = 'ai_detection'
-                ORDER BY id DESC LIMIT 1
-            ", [$fileRegistryId]);
-
-            if (! $faceRecord) {
-                return;
-            }
-
-            $pgConn = \Illuminate\Support\Facades\DB::connection('pgsql_rag');
-
-            // Insert into pgvector (idempotent via ON CONFLICT)
-            $vectorStr = '['.implode(',', $embedding).']';
-            $pgConn->statement('
-                INSERT INTO face_embeddings (file_registry_id, file_registry_face_id, embedding, created_at, updated_at)
-                VALUES (?, ?, ?::vector, NOW(), NOW())
-                ON CONFLICT (file_registry_face_id) DO NOTHING
-            ', [$fileRegistryId, $faceRecord->id, $vectorStr]);
-
-            // Get the pgvector row ID for cluster assignment
-            $pgRow = $pgConn->selectOne('
-                SELECT id FROM face_embeddings WHERE file_registry_face_id = ?
-            ', [$faceRecord->id]);
-
-            if ($pgRow) {
-                $result = $embeddingService->assignToCluster($pgRow->id, $embedding);
-                if (isset($result['cluster_id'])) {
-                    DB::update('UPDATE file_registry_faces SET cluster_id = ? WHERE id = ?',
-                        [$result['cluster_id'], $faceRecord->id]);
+            foreach (['x', 'y', 'w', 'h'] as $axis) {
+                $value = $face['normalized'][$axis] ?? null;
+                if (! is_numeric($value) || ! is_finite((float) $value)) {
+                    return false;
                 }
             }
-        } catch (\Exception $e) {
-            // Non-fatal — face is saved in MySQL, clustering can be done later via backfill
-            Log::debug('Inline pgvector/cluster failed', [
-                'file_id' => $fileRegistryId,
-                'error' => $e->getMessage(),
-            ]);
+            $box = $face['normalized'];
+            if ($box['x'] < 0 || $box['y'] < 0 || $box['w'] <= 0 || $box['h'] <= 0
+                || $box['x'] + $box['w'] > 1 || $box['y'] + $box['h'] > 1) {
+                return false;
+            }
+        }
+        try {
+            $published = DB::transaction(function () use ($file, $path, $result, $sourceHash): bool {
+                $current = DB::selectOne('SELECT current_path, status FROM file_registry WHERE id = ? FOR UPDATE', [$file->id]);
+                $hash = @hash_file('sha256', $path);
+                if (! $current || $current->status !== 'active' || $current->current_path !== $file->current_path
+                    || ! is_string($hash) || ! hash_equals($sourceHash, $hash)) {
+                    return false;
+                }
+                $driftHold = app(FaceEmbeddingService::class)->legacySourceDriftHoldReason((int) $file->id, $sourceHash, true);
+                if ($driftHold !== null) {
+                    Log::warning('Face detection publication held', ['file_id' => $file->id, 'reason' => $driftHold]);
+
+                    return false;
+                }
+                DB::update('UPDATE file_registry_faces SET source_current = 0, superseded_at = COALESCE(superseded_at, CURRENT_TIMESTAMP)
+                    WHERE file_registry_id = ? AND source_current = 1 AND (source_sha256 IS NULL OR source_sha256 <> ?)', [$file->id, $sourceHash]);
+                foreach ($result['faces'] as $index => $face) {
+                    $box = $face['normalized'];
+                    $stored = DB::selectOne("SELECT source_sha256, face_region_convention, source_current, superseded_at, region_x, region_y, region_w, region_h
+                        FROM file_registry_faces WHERE file_registry_id = ? AND face_index = ? AND source = 'ai_detection' AND source_sha256 = ?", [$file->id, $index, $sourceHash]);
+                    if (! $stored) {
+                        DB::insert("INSERT IGNORE INTO file_registry_faces
+                        (file_registry_id, face_index, person_name, region_x, region_y, region_w, region_h,
+                        confidence, source, embedding, source_sha256, face_region_convention, source_generation_key, source_current, detected_at, created_at, updated_at)
+                        VALUES (?, ?, '', ?, ?, ?, ?, ?, 'ai_detection', ?, ?, ?, ?, 1, NOW(), NOW(), NOW())", [
+                            $file->id, $index, $box['x'], $box['y'], $box['w'], $box['h'], $face['confidence'] ?? 0.9,
+                            json_encode($face['embedding'] ?? []), $sourceHash, 'normalized_top_left', $sourceHash,
+                        ]);
+                        $stored = DB::selectOne("SELECT source_sha256, face_region_convention, source_current, superseded_at, region_x, region_y, region_w, region_h
+                        FROM file_registry_faces WHERE file_registry_id = ? AND face_index = ? AND source = 'ai_detection' AND source_sha256 = ?", [$file->id, $index, $sourceHash]);
+                    }
+                    if (! $stored || empty($stored->source_current) || ! empty($stored->superseded_at) || ($stored->source_sha256 ?? null) !== $sourceHash || ($stored->face_region_convention ?? null) !== 'normalized_top_left') {
+                        throw new \RuntimeException('Existing source generation requires review');
+                    }
+                    foreach (['x', 'y', 'w', 'h'] as $axis) {
+                        if (round((float) $stored->{'region_'.$axis}, 8) !== round((float) $box[$axis], 8)) {
+                            throw new \RuntimeException('Existing detection region requires review');
+                        }
+                    }
+                }
+                $hash = @hash_file('sha256', $path);
+                if (! is_string($hash) || ! hash_equals($sourceHash, $hash)) {
+                    throw new \RuntimeException('Source changed before detection publication');
+                }
+                DB::update('UPDATE file_registry SET face_scan_at = NOW(), face_count = ? WHERE id = ?', [count($result['faces']), $file->id]);
+
+                return true;
+            });
+            if ($published) {
+                try {
+                    DB::connection('pgsql_rag')->update('UPDATE face_embeddings SET source_current = FALSE, superseded_at = COALESCE(superseded_at, CURRENT_TIMESTAMP)
+                        WHERE file_registry_id = ? AND source_current = TRUE AND (source_sha256 IS NULL OR source_sha256 <> ?)', [$file->id, $sourceHash]);
+                } catch (\Throwable $e) {
+                    Log::warning('Older face vectors could not be superseded', ['file_id' => $file->id, 'exception' => $e::class]);
+                }
+                foreach ($result['faces'] as $index => $face) {
+                    if (! $this->insertPgvectorAndCluster($file->id, $face, (int) $index)) {
+                        break; // Uncertain grouping stops further publication, never a retry.
+                    }
+                }
+            }
+
+            return $published;
+        } catch (\Throwable $e) {
+            Log::warning('Face detection publication held', ['file_id' => $file->id, 'exception' => $e::class]);
+
+            return false;
         }
     }
 
     /**
-     * After AI face detection, read XMP metadata from the same file and apply
-     * any embedded face names to the matching AI-detected regions by IoU overlap.
-     * Never overwrites a face that already has a name.
+     * Insert a face embedding into pgvector and attempt cluster assignment.
+     * Called inline during face detection for incremental clustering.
+     */
+    private function insertPgvectorAndCluster(int $fileRegistryId, array $face, int $faceIndex): bool
+    {
+        $embedding = $face['embedding'] ?? [];
+        if (! is_array($embedding) || count($embedding) < 64 || $faceIndex < 0) {
+            return true;
+        }
+        foreach ($embedding as $value) {
+            if (! is_numeric($value) || ! is_finite((float) $value)) {
+                return true;
+            }
+        }
+
+        try {
+            $embeddingService = app(FaceEmbeddingService::class);
+            if (! $embeddingService->isAvailable()) {
+                return true;
+            }
+
+            // INSERT IGNORE may retain an older row; bind only the current unnamed region.
+            $faceRecord = DB::selectOne("
+                SELECT id, region_x, region_y, region_w, region_h, embedding, source_sha256, face_region_convention, source_current, superseded_at
+                FROM file_registry_faces
+                WHERE file_registry_id = ? AND source = 'ai_detection' AND face_index = ?
+                  AND person_name = '' AND genealogy_person_id IS NULL AND COALESCE(verified, 0) = 0
+                  AND source_sha256 = ? AND source_current = 1 AND superseded_at IS NULL
+            ", [$fileRegistryId, $faceIndex, $face['source_sha256'] ?? null]);
+
+            if (! $faceRecord || ! is_string($face['source_sha256'] ?? null)
+                || ! preg_match('/^[a-f0-9]{64}$/D', $face['source_sha256'])
+                || ($faceRecord->source_sha256 ?? null) !== $face['source_sha256']
+                || ($face['face_region_convention'] ?? null) !== 'normalized_top_left'
+                || ($faceRecord->face_region_convention ?? null) !== 'normalized_top_left') {
+                return true;
+            }
+            foreach (['x', 'y', 'w', 'h'] as $coordinate) {
+                $current = $face['normalized'][$coordinate] ?? null;
+                $stored = $faceRecord->{'region_'.$coordinate} ?? null;
+                if (! is_numeric($current) || ! is_numeric($stored)
+                    || ! is_finite((float) $current) || ! is_finite((float) $stored)
+                    || round((float) $current, 8) !== round((float) $stored, 8)) {
+                    return true;
+                }
+            }
+            $storedEmbedding = json_decode($faceRecord->embedding ?? '', true);
+            if (! is_array($storedEmbedding) || count($storedEmbedding) !== count($embedding)) {
+                return true;
+            }
+            foreach ($embedding as $index => $value) {
+                if (! isset($storedEmbedding[$index]) || ! is_numeric($storedEmbedding[$index])
+                    || (float) $storedEmbedding[$index] !== (float) $value) {
+                    return true;
+                }
+            }
+
+            $publicationEvidence = (object) array_merge((array) $faceRecord, [
+                'file_registry_id' => $fileRegistryId, 'file_registry_face_id' => (int) $faceRecord->id,
+            ]);
+            if (! $embeddingService->embeddingHasCurrentSourceEvidence($publicationEvidence)) {
+                return true;
+            }
+
+            $pgConn = DB::connection('pgsql_rag');
+
+            // Preserve existing vectors and memberships; cluster only a newly inserted row.
+            $vectorStr = '['.implode(',', $embedding).']';
+            $inserted = $pgConn->select('
+                INSERT INTO face_embeddings (file_registry_id, file_registry_face_id, embedding, region_x, region_y, region_w, region_h, source_sha256, face_region_convention, source_current, superseded_at, created_at, updated_at)
+                VALUES (?, ?, ?::vector, ?, ?, ?, ?, ?, ?, TRUE, NULL, NOW(), NOW())
+                ON CONFLICT (file_registry_face_id)
+                WHERE file_registry_face_id IS NOT NULL AND source_current IS TRUE AND superseded_at IS NULL
+                DO NOTHING
+                RETURNING id
+            ', [$fileRegistryId, $faceRecord->id, $vectorStr, $faceRecord->region_x, $faceRecord->region_y, $faceRecord->region_w, $faceRecord->region_h, $face['source_sha256'], 'normalized_top_left']);
+            $pgRow = $inserted[0] ?? null;
+            if ($pgRow) {
+                // The service owns guarded membership writes; retained IDs may use a different namespace.
+                $grouping = $embeddingService->assignToCluster($pgRow->id, $embedding);
+                if (($grouping['action'] ?? null) === 'unknown') {
+                    Log::warning('Inline automatic grouping outcome is partial or unknown; no replay authorized', [
+                        'file_id' => $fileRegistryId, 'face_embedding_id' => (int) $pgRow->id,
+                        'reason' => $grouping['reason'] ?? 'matching_publication_outcome_unknown',
+                        'automatic_replay_allowed' => false, 'technical_recovery_required' => true,
+                    ]);
+
+                    return false;
+                }
+            }
+
+            return true;
+        } catch (Exception $e) {
+            // Face persistence is independent; grouping failures grant no replay authority.
+            Log::debug('Inline pgvector/cluster failed', [
+                'file_id' => $fileRegistryId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Import embedded source regions as unverified evidence without naming detector faces.
+     * The legacy return value counts detector faces named, which remains zero.
      */
     private function applyXmpNamesToAiFaces(int $fileId, string $filePath): int
     {
-        if (! file_exists($filePath)) {
+        if (! is_file($filePath)) {
             return 0;
         }
 
         try {
-            $faceService = app(\App\Services\FaceRegionService::class);
-            if (! $faceService->isAvailable()) {
+            $file = DB::selectOne("SELECT asset_uuid FROM file_registry WHERE id = ? AND status = 'active'", [$fileId]);
+            if (! $file || ! $file->asset_uuid) {
                 return 0;
             }
-
-            $xmpRegions = $faceService->readFaceRegions($filePath);
-            if (empty($xmpRegions)) {
-                return 0;
+            $result = app(FileRegistryService::class)->scanFileFaces($file->asset_uuid, $filePath);
+            if (! ($result['success'] ?? false)) {
+                Log::debug('XMP evidence import requires review', ['file_id' => $fileId]);
             }
-
-            // Get unnamed AI-detected faces for this file
-            $aiFaces = DB::select("
-                SELECT id, region_x, region_y, region_w, region_h
-                FROM file_registry_faces
-                WHERE file_registry_id = ? AND person_name = ''
-            ", [$fileId]);
-
-            if (empty($aiFaces)) {
-                return 0;
-            }
-
-            $named = 0;
-            $usedIds = [];
-
-            foreach ($xmpRegions as $xmp) {
-                $xmpName = trim($xmp['name'] ?? '');
-                if (empty($xmpName) || $xmpName === 'Unknown') {
-                    continue;
-                }
-
-                // Handle comma-concatenated names (bad XMP data)
-                if (str_contains($xmpName, ',')) {
-                    $parts = array_map('trim', explode(',', $xmpName));
-                    $realNames = array_filter($parts, fn ($p) => $p !== 'Unknown' && $p !== '');
-                    if (count($realNames) === 1) {
-                        $xmpName = reset($realNames);
-                    } else {
-                        continue;
-                    }
-                }
-                if (strlen($xmpName) > 250) {
-                    continue;
-                }
-
-                $bestMatch = null;
-                $bestIou = 0.15; // minimum threshold
-
-                foreach ($aiFaces as $ai) {
-                    if (in_array($ai->id, $usedIds)) {
-                        continue;
-                    }
-
-                    // IoU calculation
-                    $left = max($xmp['x'], (float) $ai->region_x);
-                    $top = max($xmp['y'], (float) $ai->region_y);
-                    $right = min($xmp['x'] + $xmp['w'], (float) $ai->region_x + (float) $ai->region_w);
-                    $bottom = min($xmp['y'] + $xmp['h'], (float) $ai->region_y + (float) $ai->region_h);
-
-                    if ($right <= $left || $bottom <= $top) {
-                        continue;
-                    }
-
-                    $intersection = ($right - $left) * ($bottom - $top);
-                    $area1 = $xmp['w'] * $xmp['h'];
-                    $area2 = (float) $ai->region_w * (float) $ai->region_h;
-                    $union = $area1 + $area2 - $intersection;
-                    $iou = $union > 0 ? $intersection / $union : 0;
-
-                    if ($iou > $bestIou) {
-                        $bestIou = $iou;
-                        $bestMatch = $ai;
-                    }
-                }
-
-                if ($bestMatch) {
-                    DB::update("UPDATE file_registry_faces SET person_name = ? WHERE id = ? AND person_name = ''",
-                        [$xmpName, $bestMatch->id]);
-                    $usedIds[] = $bestMatch->id;
-                    $named++;
-                }
-            }
-
-            if ($named > 0) {
-                DB::update('UPDATE file_registry SET exif_faces_written = 0 WHERE id = ?', [$fileId]);
-            }
-
-            return $named;
-        } catch (\Exception $e) {
-            Log::debug('XMP face name apply failed', ['file_id' => $fileId, 'error' => $e->getMessage()]);
-
-            return 0;
+        } catch (Exception $e) {
+            Log::debug('XMP evidence import failed', ['file_id' => $fileId, 'error' => $e->getMessage()]);
         }
+
+        return 0;
     }
 
     /**
@@ -1238,10 +1307,12 @@ PHPCMD;
      */
     private function processExifDates(int $limit, bool $dryRun): array
     {
+        if ($limit <= 0) {
+            return ['processed' => 0, 'checked' => 0, 'no_date' => 0, 'errors' => 0];
+        }
         $imageExts = "'".implode("','", config('file_types.image'))."'";
-
         $files = DB::select("
-            SELECT fr.id, fr.asset_uuid, fr.current_path, fr.filename
+            SELECT fr.id, fr.asset_uuid, fr.current_path, fr.filename, fr.nextcloud_modified_at, fr.file_size, fr.content_hash, fr.lifecycle_generation_key, fr.is_scan, fr.date_needs_review
             FROM file_registry fr
             WHERE fr.status = 'active'
             AND fr.extension IN ({$imageExts})
@@ -1250,99 +1321,158 @@ PHPCMD;
             ORDER BY fr.created_at DESC
             LIMIT ?
         ", [$limit]);
-
         if ($dryRun) {
-            return ['pending' => count($files), 'processed' => 0, 'errors' => 0];
+            return ['pending' => count($files), 'processed' => 0, 'checked' => 0, 'no_date' => 0, 'errors' => 0];
         }
 
-        $processed = 0;
-        $errors = 0;
-
+        $processed = $errors = $checked = $noDate = 0;
+        $errorReasons = [];
+        $failureDetails = [];
+        $nextcloud = app(NextcloudFileApiService::class);
+        $dataPath = trim((string) config('services.nextcloud.data_path', ''));
+        $dataRoot = $dataPath === '' ? false : realpath($dataPath);
         foreach ($files as $file) {
+            $failureStage = 'source';
             try {
-                $localPath = $file->current_path;
-
-                if (! file_exists($localPath)) {
-                    DB::update('UPDATE file_registry SET exif_checked = 1, updated_at = NOW() WHERE id = ?', [$file->id]);
-                    $errors++;
-                    Log::debug('FileEnrichment exif: file not found', ['path' => $localPath]);
-
-                    continue;
+                $sourcePath = (string) $file->current_path;
+                if ($sourcePath === '' || str_contains($sourcePath, "\0") || str_contains($sourcePath, '\\')
+                    || in_array('..', explode('/', $sourcePath), true)) {
+                    throw new \RuntimeException('exif_source_unavailable');
                 }
-
-                $exif = @exif_read_data($localPath, 'EXIF', true);
-                $dateTaken = null;
-                $gpsLat = null;
-                $gpsLon = null;
-                $cameraMake = null;
-                $cameraModel = null;
-                $rating = null;
-
-                if ($exif) {
-                    // Date
-                    foreach ([$exif['EXIF']['DateTimeOriginal'] ?? null, $exif['EXIF']['DateTimeDigitized'] ?? null, $exif['IFD0']['DateTime'] ?? null] as $dateStr) {
-                        if ($dateStr) {
-                            $candidate = str_replace(':', '-', substr($dateStr, 0, 10)).substr($dateStr, 10);
-                            if (strtotime($candidate) !== false) {
-                                $dateTaken = $candidate;
-                                break;
-                            }
-                        }
-                    }
-
-                    // Camera
-                    $cameraMake = isset($exif['IFD0']['Make']) ? trim($exif['IFD0']['Make']) : null;
-                    $cameraModel = isset($exif['IFD0']['Model']) ? trim($exif['IFD0']['Model']) : null;
-
-                    // GPS
-                    if (! empty($exif['GPS']['GPSLatitude']) && ! empty($exif['GPS']['GPSLongitude'])) {
-                        $gpsLat = $this->gpsToDecimal($exif['GPS']['GPSLatitude'], $exif['GPS']['GPSLatitudeRef'] ?? 'N');
-                        $gpsLon = $this->gpsToDecimal($exif['GPS']['GPSLongitude'], $exif['GPS']['GPSLongitudeRef'] ?? 'E');
-                    }
-
-                    // Rating (stored in IFD0 or EXIF as RatingPercent or Rating)
-                    $ratingRaw = $exif['IFD0']['Rating'] ?? $exif['EXIF']['Rating'] ?? null;
-                    if ($ratingRaw !== null && $ratingRaw >= 1 && $ratingRaw <= 5) {
-                        $rating = (int) $ratingRaw;
+                $localPath = realpath($sourcePath) ?: $nextcloud->localPath($sourcePath);
+                $physical = is_string($localPath) ? realpath($localPath) : false;
+                if ($dataRoot === false || $physical === false
+                    || ! str_starts_with($physical, rtrim($dataRoot, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)
+                    || ! is_file($physical) || ! is_readable($physical)) {
+                    throw new \RuntimeException('exif_source_unavailable');
+                }
+                $hashPath = $sourcePath;
+                if (realpath($sourcePath) !== false) {
+                    // Legacy physical paths are admitted only through an exact
+                    // contained connector round-trip; the catalog path is unchanged.
+                    $hashPath = '/'.ltrim(substr($physical, strlen(rtrim($dataRoot, DIRECTORY_SEPARATOR))), '/');
+                    $bound = $nextcloud->localPath($hashPath);
+                    if (! is_string($bound) || realpath($bound) !== $physical) {
+                        throw new \RuntimeException('exif_source_unproven');
                     }
                 }
-
-                // ExifTool pass for keywords and caption (broader IPTC/XMP support)
-                $exifKeywords = null;
-                $exifCaption = null;
-                $exiftool = '/usr/bin/exiftool';
-                if (file_exists($exiftool)) {
-                    $json = Process::timeout(30)->run([
-                        $exiftool,
-                        '-json',
-                        '-IPTC:Keywords',
-                        '-XMP:Subject',
-                        '-IPTC:Caption-Abstract',
-                        '-XMP:Description',
-                        '-Rating',
-                        $localPath,
-                    ])->output();
-                    if ($json) {
-                        $et = json_decode($json, true)[0] ?? [];
-                        // Keywords: merge IPTC and XMP, deduplicate
-                        $kw = array_unique(array_filter(array_merge(
-                            (array) ($et['Keywords'] ?? []),
-                            (array) ($et['Subject'] ?? [])
-                        )));
-                        $exifKeywords = $kw ? implode(', ', $kw) : null;
-                        // Caption
-                        $exifCaption = $et['Caption-Abstract'] ?? $et['Description'] ?? null;
-                        // Rating fallback from ExifTool if PHP EXIF missed it
-                        if ($rating === null && isset($et['Rating']) && $et['Rating'] >= 1 && $et['Rating'] <= 5) {
-                            $rating = (int) $et['Rating'];
-                        }
-                    }
+                clearstatcache(true, $physical);
+                $before = stat($physical);
+                if ($before === false) {
+                    throw new \RuntimeException('exif_source_unavailable');
+                }
+                $hashTimeout = config('file_registry.photo_review.hash_timeout_seconds');
+                $toolTimeout = config('file_registry.exif_read.timeout_seconds');
+                $executable = config('file_registry.exif_read.executable');
+                if (! is_numeric($hashTimeout) || ! is_finite((float) $hashTimeout) || $hashTimeout <= 0
+                    || ! is_numeric($toolTimeout) || ! is_finite((float) $toolTimeout) || $toolTimeout <= 0
+                    || ! is_string($executable) || trim($executable) === '' || str_contains($executable, "\0")) {
+                    throw new \RuntimeException('exif_read_policy_unavailable');
+                }
+                $deadline = hrtime(true) / 1e9 + (float) $hashTimeout;
+                $fingerprintFields = array_flip(['dev', 'ino', 'mode', 'size', 'mtime', 'ctime']);
+                $sourceProof = $nextcloud->computeFileHash($hashPath, $deadline, true);
+                if (! ($sourceProof['success'] ?? false) || ! is_string($sourceProof['hash'] ?? null)
+                    || ! preg_match('/^[a-f0-9]{64}$/D', $sourceProof['hash'])
+                    || ($sourceProof['source_fingerprint'] ?? null) !== array_intersect_key($before, $fingerprintFields)) {
+                    throw new \RuntimeException('exif_source_unproven');
+                }
+                $failureStage = 'php_exif';
+                $exif = @exif_read_data($physical, 'ANY_TAG', true) ?: [];
+                $gpsLat = $gpsLon = $cameraMake = $cameraModel = $rating = null;
+                $cameraMake = isset($exif['IFD0']['Make']) ? trim($exif['IFD0']['Make']) : null;
+                $cameraModel = isset($exif['IFD0']['Model']) ? trim($exif['IFD0']['Model']) : null;
+                if (! empty($exif['GPS']['GPSLatitude']) && ! empty($exif['GPS']['GPSLongitude'])) {
+                    $gpsLat = $this->gpsToDecimal($exif['GPS']['GPSLatitude'], $exif['GPS']['GPSLatitudeRef'] ?? 'N');
+                    $gpsLon = $this->gpsToDecimal($exif['GPS']['GPSLongitude'], $exif['GPS']['GPSLongitudeRef'] ?? 'E');
+                }
+                $ratingRaw = $exif['IFD0']['Rating'] ?? $exif['EXIF']['Rating'] ?? null;
+                if ($ratingRaw !== null && $ratingRaw >= 1 && $ratingRaw <= 5) {
+                    $rating = (int) $ratingRaw;
                 }
 
-                DB::update("
+                // PHP cannot distinguish absent EXIF from a failed metadata read.
+                // Only a successful complete tool response permits terminal checking.
+                $failureStage = 'metadata_tool';
+                $read = Process::timeout((float) $toolTimeout)->run([
+                    $executable, '-json', '-G1', '-a', '-s', '-DateTimeOriginal', '-CreateDate', '-ModifyDate',
+                    '-XMP-dc:Source', '-XMP-photoshop:DateCreated', '-IPTC:DateCreated',
+                    '-IPTC:Keywords', '-XMP:Subject', '-IPTC:Caption-Abstract', '-XMP:Description', '-Rating', $physical,
+                ]);
+                if (! $read->successful()) {
+                    throw new \RuntimeException('exif_metadata_read_failed');
+                }
+                $failureStage = 'metadata_decode';
+                $decoded = json_decode($read->output(), true, flags: JSON_THROW_ON_ERROR);
+                if (! is_array($decoded) || ! array_is_list($decoded) || count($decoded) !== 1
+                    || ! is_array($decoded[0]) || ($decoded[0]['SourceFile'] ?? null) !== $physical
+                    || ! empty($decoded[0]['Error']) || ! empty($decoded[0]['Warning'])
+                    || ! empty($decoded[0]['ExifTool:Error']) || ! empty($decoded[0]['ExifTool:Warning'])) {
+                    throw new \RuntimeException('exif_metadata_read_invalid');
+                }
+                $et = $decoded[0];
+                $dateService = app(PhotoDateExtractionService::class);
+                $operatorDate = $dateService->operatorDateFromExifMetadata($et);
+                $scanContext = $dateService->isScanContext($sourcePath, $file->filename);
+                $isScan = (int) $file->is_scan === 1 || $scanContext !== false;
+                $reviewHeld = (int) $file->date_needs_review === 1 || $operatorDate !== null || $isScan;
+                // Grouped marker tags remain distinct; normalize only the ordinary requested fields.
+                foreach ($et as $key => $value) {
+                    $field = str_contains($key, ':') ? substr($key, strrpos($key, ':') + 1) : $key;
+                    if (in_array($field, ['DateTimeOriginal', 'CreateDate', 'ModifyDate', 'Keywords', 'Subject',
+                        'Caption-Abstract', 'Description', 'Rating'], true) && ! array_key_exists($field, $et)) {
+                        $et[$field] = $value;
+                    }
+                }
+                $dateTaken = $dateSource = null;
+                // Same field/source classification as PhotoDateExtractionService.
+                foreach ([
+                    'exif_original' => $exif['EXIF']['DateTimeOriginal'] ?? $et['DateTimeOriginal'] ?? null,
+                    'exif_digitized' => $exif['EXIF']['DateTimeDigitized'] ?? $et['CreateDate'] ?? null,
+                    'exif_modified' => $exif['IFD0']['DateTime'] ?? $et['ModifyDate'] ?? null,
+                ] as $source => $dateStr) {
+                    $candidate = $dateService->parseExifDate($dateStr);
+                    if ($candidate !== null && ! $reviewHeld) {
+                        $dateTaken = $candidate;
+                        $dateSource = $source;
+                        break;
+                    }
+                }
+                $kw = array_unique(array_filter(array_merge((array) ($et['Keywords'] ?? []), (array) ($et['Subject'] ?? []))));
+                $exifKeywords = $kw ? implode(', ', $kw) : null;
+                $exifCaption = $et['Caption-Abstract'] ?? $et['Description'] ?? null;
+                if ($rating === null && isset($et['Rating']) && $et['Rating'] >= 1 && $et['Rating'] <= 5) {
+                    $rating = (int) $et['Rating'];
+                }
+
+                clearstatcache();
+                $after = stat($physical);
+                $currentLocal = realpath($sourcePath) ?: $nextcloud->localPath($sourcePath);
+                if ($after === false || ! is_string($currentLocal) || realpath($currentLocal) !== $physical) {
+                    throw new \RuntimeException('exif_source_changed');
+                }
+                foreach (['dev', 'ino', 'mode', 'size', 'mtime', 'ctime'] as $field) {
+                    if ($before[$field] !== $after[$field]) {
+                        throw new \RuntimeException('exif_source_changed');
+                    }
+                }
+                $afterProof = $nextcloud->computeFileHash($hashPath, hrtime(true) / 1e9 + (float) $hashTimeout, true);
+                if (! ($afterProof['success'] ?? false) || ! is_string($afterProof['hash'] ?? null)
+                    || ! hash_equals($sourceProof['hash'], $afterProof['hash'])
+                    || ($afterProof['source_fingerprint'] ?? null) !== $sourceProof['source_fingerprint']) {
+                    throw new \RuntimeException('exif_source_changed');
+                }
+                $failureStage = 'registry_publish';
+                // MySQL evaluates SET left-to-right: classify before filling date_taken.
+                // COALESCE retains dates and metadata supplied by an operator meanwhile.
+                DB::transaction(function () use ($dateTaken, $dateSource, $gpsLat, $gpsLon, $cameraMake, $cameraModel,
+                    $rating, $exifKeywords, $exifCaption, $file, $sourcePath, $hashPath, $nextcloud, $sourceProof, $hashTimeout, $reviewHeld, $isScan): void {
+                    $updated = DB::update("
                     UPDATE file_registry
-                    SET date_taken        = COALESCE(date_taken, ?),
-                        date_taken_source = CASE WHEN date_taken IS NULL AND ? IS NOT NULL THEN 'exif_original' ELSE date_taken_source END,
+                    SET date_needs_review = CASE WHEN date_taken IS NULL AND ? = 1 THEN 1 ELSE date_needs_review END,
+                        is_scan = CASE WHEN date_taken IS NULL AND ? = 1 THEN 1 ELSE is_scan END,
+                        date_taken_source = CASE WHEN date_taken IS NULL AND ? IS NOT NULL THEN ? ELSE date_taken_source END,
+                        date_taken        = COALESCE(date_taken, ?),
                         gps_latitude      = COALESCE(gps_latitude, ?),
                         gps_longitude     = COALESCE(gps_longitude, ?),
                         camera_make       = COALESCE(camera_make, ?),
@@ -1352,21 +1482,77 @@ PHPCMD;
                         exif_caption      = COALESCE(exif_caption, ?),
                         exif_checked      = 1,
                         updated_at        = NOW()
-                    WHERE id = ?
-                ", [$dateTaken, $dateTaken, $gpsLat, $gpsLon, $cameraMake, $cameraModel, $rating, $exifKeywords, $exifCaption, $file->id]);
+                    WHERE id = ? AND status = 'active' AND BINARY current_path = BINARY ?
+                        AND (exif_checked IS NULL OR exif_checked = 0)
+                        AND is_scan <=> ? AND date_needs_review <=> ?
+                        AND nextcloud_modified_at <=> ? AND file_size <=> ? AND BINARY content_hash <=> BINARY ?
+                        AND BINARY lifecycle_generation_key <=> BINARY ?
+                ", [(int) $reviewHeld, (int) $isScan, $dateTaken, $dateSource, $dateTaken, $gpsLat, $gpsLon, $cameraMake, $cameraModel,
+                        $rating, $exifKeywords, $exifCaption, $file->id, $sourcePath, $file->is_scan, $file->date_needs_review, $file->nextcloud_modified_at,
+                        $file->file_size, $file->content_hash, $file->lifecycle_generation_key]);
+                    if ($updated !== 1) {
+                        throw new \RuntimeException('exif_registry_changed');
+                    }
+                    $finalProof = $nextcloud->computeFileHash($hashPath, hrtime(true) / 1e9 + (float) $hashTimeout, true);
+                    if (! ($finalProof['success'] ?? false) || ! is_string($finalProof['hash'] ?? null)
+                        || ! hash_equals($sourceProof['hash'], $finalProof['hash'])
+                        || ($finalProof['source_fingerprint'] ?? null) !== $sourceProof['source_fingerprint']) {
+                        throw new \RuntimeException('exif_source_changed');
+                    }
 
-                if ($dateTaken) {
+                });
+                $checked++;
+                if ($dateTaken !== null) {
                     $processed++;
+                } else {
+                    $noDate++;
                 }
-
-            } catch (Exception $e) {
+            } catch (\Throwable $e) {
                 $errors++;
-                DB::update('UPDATE file_registry SET exif_checked = 1, updated_at = NOW() WHERE id = ?', [$file->id]);
-                Log::debug('FileEnrichment exif error', ['file_id' => $file->id, 'error' => $e->getMessage()]);
+                // Failed stages retain their pending marker for recovery/retry.
+                $knownReasons = ['exif_source_unavailable', 'exif_source_unproven', 'exif_source_changed',
+                    'exif_metadata_read_failed', 'exif_metadata_read_invalid', 'exif_registry_changed', 'exif_read_policy_unavailable'];
+                $reason = in_array($e->getMessage(), $knownReasons, true) ? $e->getMessage() : 'exif_read_exception';
+                $errorReasons[$reason] = ($errorReasons[$reason] ?? 0) + 1;
+                if (count($failureDetails) < config('file_registry.ai_analysis.failure_receipt_limit', 50)) {
+                    $kind = match (true) {
+                        $e instanceof QueryException => 'database',
+                        $e instanceof \JsonException => 'json',
+                        $e instanceof ProcessTimedOutException => 'timeout',
+                        $e instanceof \TypeError => 'type',
+                        $e instanceof \ErrorException => 'php_warning',
+                        default => 'exception',
+                    };
+                    $databaseCodes = [];
+                    if ($e instanceof QueryException) {
+                        $errorInfo = $e->errorInfo ?? null;
+                        $sqlState = is_array($errorInfo) ? ($errorInfo[0] ?? null) : null;
+                        if (! is_string($sqlState) || ! preg_match('/\A[A-Za-z0-9]{5}\z/D', $sqlState)) {
+                            $sqlState = $e->getCode();
+                        }
+                        if (is_string($sqlState) && preg_match('/\A[A-Za-z0-9]{5}\z/D', $sqlState)) {
+                            $databaseCodes['sqlstate'] = strtoupper($sqlState);
+                        }
+                        $driverCode = is_array($errorInfo) ? ($errorInfo[1] ?? null) : null;
+                        if (is_int($driverCode) && $driverCode >= 0 && $driverCode <= 2147483647) {
+                            $databaseCodes['driver_error_code'] = $driverCode;
+                        } elseif (is_string($driverCode) && preg_match('/\A[0-9]{1,10}\z/D', $driverCode)) {
+                            $normalizedDriverCode = ltrim($driverCode, '0');
+                            $parsedDriverCode = filter_var($normalizedDriverCode === '' ? '0' : $normalizedDriverCode, FILTER_VALIDATE_INT);
+                            if ($parsedDriverCode !== false && $parsedDriverCode >= 0 && $parsedDriverCode <= 2147483647) {
+                                $databaseCodes['driver_error_code'] = $parsedDriverCode;
+                            }
+                        }
+                    }
+                    $failureDetails[] = ['file_registry_id' => (int) $file->id, 'reason' => $reason,
+                        'stage' => $failureStage, 'exception_kind' => $kind] + $databaseCodes;
+                }
+                Log::debug('FileEnrichment exif read held', ['file_id' => $file->id, 'reason' => $reason]);
             }
         }
 
-        return ['processed' => $processed, 'errors' => $errors];
+        return ['processed' => $processed, 'checked' => $checked, 'no_date' => $noDate, 'errors' => $errors, 'error_reasons' => $errorReasons]
+            + ($failureDetails === [] ? [] : ['failure_details' => $failureDetails]);
     }
 
     /**
@@ -1443,7 +1629,7 @@ PHPCMD;
 
         $geocoded = 0;
         if (! $dryRun) {
-            $photoAnalysis = app(\App\Services\PhotoAnalysisService::class);
+            $photoAnalysis = app(PhotoAnalysisService::class);
             foreach ($toGeocode as $file) {
                 $location = $photoAnalysis->reverseGeocode((float) $file->gps_latitude, (float) $file->gps_longitude);
                 DB::update(
@@ -1501,36 +1687,51 @@ PHPCMD;
     }
 
     /**
-     * Process AI analysis using AIService (Ollama + Claude)
+     * Process AI analysis using AIService.
      * Uses claim-based selection when running with --worker-id for parallel safety.
      */
     private function processAIAnalysis(int $limit, bool $dryRun): array
     {
         $workerId = $this->option('worker-id');
         $aiTagService = app(AIAutoTagService::class);
+        $pending = AIAutoTagService::pendingAnalysisPredicate();
+        $aiPending = $pending['sql'];
+        if (! $dryRun) {
+            $aiTagService->recoverOrphanedProcessingFiles();
+        }
+
+        if ($workerId && $dryRun) {
+            $extensions = "'".implode("','", array_merge(config('file_types.image'), config('file_types.document')))."'";
+            $files = DB::select("
+                SELECT id FROM file_registry WHERE status = 'active'
+                AND {$aiPending}
+                AND extension IN ({$extensions})
+                AND (claim_worker IS NULL OR claim_expires_at < NOW())
+                ORDER BY created_at DESC LIMIT ?
+            ", [...$pending['bindings'], $limit]);
+
+            return ['pending' => count($files), 'processed' => 0, 'errors' => 0];
+        }
 
         if ($workerId) {
             // Claim-based: atomically claim unclaimed files for AI analysis
             $imageExts = "'".implode("','", config('file_types.image'))."'";
             $docExts = "'".implode("','", config('file_types.document'))."'";
-            $claimExpiry = now()->addMinutes(30)->format('Y-m-d H:i:s');
+            $claimExpiry = now()->addMinutes(config('file_registry.ai_analysis.claim_minutes', 30))->format('Y-m-d H:i:s');
 
             DB::update("
                 UPDATE file_registry
                 SET claim_worker = ?, claim_expires_at = ?
                 WHERE status = 'active'
-                AND ai_analyzed_at IS NULL
-                AND (ai_analysis_version IS NULL OR ai_analysis_version NOT IN ('skipped', 'processing'))
-                AND ai_analysis_version NOT LIKE 'fail:%'
+                AND {$aiPending}
                 AND extension IN ({$imageExts},{$docExts})
                 AND (claim_worker IS NULL OR claim_expires_at < NOW())
                 ORDER BY created_at DESC
                 LIMIT ?
-            ", [$workerId, $claimExpiry, $limit]);
+            ", [$workerId, $claimExpiry, ...$pending['bindings'], $limit]);
 
-            $files = DB::select('
-                SELECT id FROM file_registry WHERE claim_worker = ? AND ai_analyzed_at IS NULL
-            ', [$workerId]);
+            $files = DB::select("SELECT id FROM file_registry WHERE claim_worker = ? AND status = 'active'
+                AND {$aiPending} AND claim_expires_at > NOW()", [$workerId, ...$pending['bindings']]);
         } else {
             $files = $aiTagService->getUnanalyzedFiles($limit);
         }
@@ -1544,7 +1745,7 @@ PHPCMD;
         }
 
         $fileIds = array_column($files, 'id');
-        $results = $aiTagService->batchAnalyze($fileIds, 5, false);
+        $results = $aiTagService->batchAnalyze($fileIds, 5, false, $workerId ?: null);
 
         // Release claims
         if ($workerId) {
@@ -1555,6 +1756,7 @@ PHPCMD;
             'processed' => $results['processed'] ?? 0,
             'errors' => $results['failed'] ?? 0,
             'skipped' => $results['skipped'] ?? 0,
+            'failure_details' => $results['failure_details'] ?? [],
         ];
     }
 
@@ -1570,10 +1772,12 @@ PHPCMD;
         }
 
         $libraryRoot = '/'.trim((string) config('services.nextcloud.library_root', '/Library'), '/');
-        $basePath = rtrim($dataPath, '/').$libraryRoot;
         $imageExts = "'".implode("','", config('file_types.image'))."'";
 
-        // Get files needing writeback: derived dates OR pending location writeback
+        $writebackService = app(ExifWritebackService::class);
+        $trustedFaceWritebackExists = $writebackService->faceWritebackExistsSql('fr', 'frf', 'fip');
+
+        // Get files needing writeback: derived dates, pending locations, or trusted face labels.
         $files = DB::select("
             SELECT fr.id, fr.current_path, fr.filename,
                    fr.date_taken, fr.date_taken_source, fr.date_taken_confidence
@@ -1582,11 +1786,15 @@ PHPCMD;
             AND fr.extension IN ({$imageExts})
             AND (
                 (fr.date_taken IS NOT NULL AND fr.date_taken_source NOT LIKE 'exif_%'
+                 AND (COALESCE(fr.date_taken_precision, 'exact') = 'exact' OR (fr.date_taken_precision = 'year' AND fr.date_taken_source = 'user_manual'))
                  AND (fr.exif_written IS NULL OR fr.exif_written = 0)
                  AND fr.date_taken_confidence >= 0.3)
                 OR
                 (fr.gps_location IS NOT NULL AND fr.gps_location != ''
                  AND (fr.exif_location_written IS NULL OR fr.exif_location_written = 0))
+                OR
+                ((fr.exif_faces_written IS NULL OR fr.exif_faces_written = 0)
+                 AND {$trustedFaceWritebackExists})
             )
             ORDER BY fr.created_at DESC
             LIMIT ?
@@ -1599,16 +1807,13 @@ PHPCMD;
         $processed = 0;
         $errors = 0;
 
-        $writebackService = app(ExifWritebackService::class);
-
         foreach ($files as $file) {
             try {
-                // Build local path
-                $ncPath = '/'.ltrim((string) $file->current_path, '/');
-                if (str_starts_with($ncPath, $libraryRoot)) {
-                    $localPath = $basePath.substr($ncPath, strlen($libraryRoot));
-                } else {
-                    $localPath = $basePath.$ncPath;
+                $localPath = $this->resolveWritebackLocalPath((string) $file->current_path, $dataPath, $libraryRoot);
+                if ($localPath === null) {
+                    $errors++;
+
+                    continue;
                 }
 
                 if (! file_exists($localPath)) {
@@ -1664,5 +1869,30 @@ PHPCMD;
         }
 
         return ['processed' => $processed, 'errors' => $errors];
+    }
+
+    private function resolveWritebackLocalPath(string $currentPath, string $dataPath, string $libraryRoot): ?string
+    {
+        $libraryRoot = '/'.trim($libraryRoot, '/');
+        $ncPath = '/'.ltrim($currentPath, '/');
+        $matchedLibraryRoot = str_starts_with(strtolower($ncPath), strtolower($libraryRoot));
+        $diskLibraryRoot = $matchedLibraryRoot ? substr($ncPath, 0, strlen($libraryRoot)) : $libraryRoot;
+        $basePath = rtrim($dataPath, '/').$diskLibraryRoot;
+        $relativePath = $matchedLibraryRoot
+            ? substr($ncPath, strlen($libraryRoot))
+            : ltrim($ncPath, '/');
+
+        $segments = [];
+        foreach (explode('/', $relativePath) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..' || str_contains($segment, "\0")) {
+                return null;
+            }
+            $segments[] = $segment;
+        }
+
+        return $basePath.(empty($segments) ? '' : '/'.implode('/', $segments));
     }
 }

@@ -32,16 +32,13 @@ class CalendarSyncRAGJob implements ShouldQueue
         // Then run full sync + index
         $results = $service->syncAndIndex();
 
-        $summary = sprintf(
-            'Calendar sync: fetched=%d, inserted=%d, updated=%d | RAG: indexed=%d, skipped=%d, reindexed=%d',
-            $results['sync']['fetched'],
-            $results['sync']['inserted'],
-            $results['sync']['updated'],
-            $results['rag']['indexed'],
-            $results['rag']['skipped'],
-            $reindex['marked_for_reindex']
-        );
-
-        Log::info("CalendarSyncRAGJob: {$summary}");
+        Log::info('CalendarSyncRAGJob completed', [
+            'fetched' => $results['sync']['fetched'],
+            'inserted' => $results['sync']['inserted'],
+            'updated' => $results['sync']['updated'],
+            'rag_indexed' => $results['rag']['indexed'],
+            'rag_skipped' => $results['rag']['skipped'],
+            'marked_for_reindex' => $reindex['marked_for_reindex'],
+        ]);
     }
 }

@@ -139,7 +139,7 @@ function redactDisplayText(value) {
   align-items: flex-start;
   gap: 1rem;
   padding: 1rem;
-  background: var(--ops-plum);
+  background: var(--color-accent);
   border-radius: 0 16px 16px 0;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -152,7 +152,7 @@ function redactDisplayText(value) {
 
 .review-item.selected {
   background: var(--ops-magenta);
-  box-shadow: 0 0 0 2px var(--ops-orange);
+  box-shadow: 0 0 0 2px var(--ops-warning);
 }
 
 .item-checkbox { flex-shrink: 0; margin-top: 0.25rem; }
@@ -183,8 +183,8 @@ function redactDisplayText(value) {
   font-weight: 600;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
-  background: var(--ops-lilac);
-  color: var(--ops-black);
+  background: var(--color-accent);
+  color: white;
   text-transform: capitalize;
 }
 
@@ -193,32 +193,32 @@ function redactDisplayText(value) {
   font-weight: 600;
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
-  background: var(--ops-sky);
-  color: var(--ops-black);
+  background: var(--color-accent);
+  color: white;
 }
 
-.item-confidence.high { background: var(--ops-green); }
-.item-confidence.medium { background: var(--ops-gold); }
-.item-confidence.low { background: var(--ops-sunset); color: var(--ops-white); }
+.item-confidence.high { background: var(--ops-success); }
+.item-confidence.medium { background: var(--ops-warning); }
+.item-confidence.low { background: var(--ops-danger); color: var(--ops-white); }
 
 .item-title {
   font-size: 0.9375rem;
   font-weight: 500;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
 }
 
 .item-summary {
   font-size: 0.8125rem;
-  color: var(--ops-text-muted);
+  color: var(--color-text-secondary);
   margin-top: 0.25rem;
 }
 
 .item-evidence {
   font-size: 0.75rem;
-  color: var(--ops-sky);
+  color: var(--color-accent);
   margin-top: 0.5rem;
   padding: 0.5rem;
-  background: var(--ops-black);
+  background: var(--color-bg-secondary);
   border-radius: 8px;
   font-style: italic;
 }
@@ -246,7 +246,7 @@ function redactDisplayText(value) {
   transition: all 0.15s ease;
 }
 
-.action-btn.approve { background: var(--ops-green); color: var(--ops-black); }
-.action-btn.reject { background: var(--ops-sunset); color: var(--ops-white); }
+.action-btn.approve { background: var(--ops-success); color: white; }
+.action-btn.reject { background: var(--ops-danger); color: var(--ops-white); }
 .action-btn:hover { filter: brightness(1.2); }
 </style>

@@ -4,10 +4,13 @@ namespace App\Console\Commands;
 
 use App\Controllers\NotificationController;
 use App\Services\AgentProceduralMemoryService;
+use App\Services\ComputeRouterService;
+use App\Services\DailyReportAiRuntimeSnapshotService;
 use App\Services\ErrorTrackingService;
 use App\Services\OfflineAuditService;
 use App\Services\OfflinePolicyService;
 use App\Services\OllamaModelRegistryService;
+use App\Services\PlosWorkboardService;
 use App\Services\RagBacklogService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
@@ -18,14 +21,11 @@ use Illuminate\Support\Facades\Process;
 use Illuminate\Support\Facades\Redis;
 
 /**
- * ops:daily-report — Consolidated daily Pushover report (5:50 AM + 4 PM midday).
+ * ops:daily-report — Action-first daily Pushover report (5:00 AM).
  *
- * Sends 5 HTML messages in reverse order so they display top-to-bottom:
- *   1. System & Services
- *   2. Jobs & Agents
- *   3. File Pipelines
- *   4. RAG & Genealogy
- *   5. Alerts & Actions (emergency priority — requires ACK)
+ * Sends one compact production/work brief, one exact host/engine/model brief,
+ * and an action packet only when operator intervention is genuinely required.
+ * The complete canonical workboard remains available at /daily-ops.
  *
  * Auto-healing (safe/reversible):
  *   1. LLM circuit breakers past retry_at -> half_open
@@ -36,17 +36,20 @@ class MorningDigestCommand extends Command
 {
     protected $signature = 'ops:daily-report
                             {--dry-run : Print output without sending Pushover}
-                            {--hours=8 : Hours of overnight history to analyze}
+                            {--hours=24 : Hours of production history to analyze}
                             {--no-fix : Skip auto-healing actions}
                             {--smoke : Fast validation mode for deploy smoke-tests}';
 
-    protected $description = 'Consolidated daily ops report (5:50 AM)';
+    protected $description = 'Action-first daily production and workboard report (5:00 AM)';
 
     /** @var string[] */
     private array $autoFixed = [];
 
     /** @var string[] */
     private array $issues = [];
+
+    /** @var string[] */
+    private array $watches = [];
 
     // HTML color constants for Pushover
     private const GREEN = '#00AA00';
@@ -57,8 +60,12 @@ class MorningDigestCommand extends Command
 
     private const GRAY = '#888888';
 
-    public function __construct(private readonly RagBacklogService $ragBacklogService)
-    {
+    private const BLUE = '#3366CC';
+
+    public function __construct(
+        private readonly RagBacklogService $ragBacklogService,
+        private readonly DailyReportAiRuntimeSnapshotService $aiRuntimeSnapshot,
+    ) {
         parent::__construct();
     }
 
@@ -69,6 +76,10 @@ class MorningDigestCommand extends Command
 
     public function handle(): int
     {
+        $this->autoFixed = [];
+        $this->issues = [];
+        $this->watches = [];
+
         $hours = max(1, (int) $this->option('hours'));
         $smoke = (bool) $this->option('smoke');
 
@@ -80,7 +91,7 @@ class MorningDigestCommand extends Command
             $messages = $this->buildMessages($hours, $smoke);
 
             // INF-11a: Snapshot pipeline metrics for velocity tracking
-            if (! $smoke) {
+            if (! $smoke && ! $this->option('dry-run')) {
                 $this->savePipelineSnapshot();
             }
 
@@ -226,9 +237,7 @@ class MorningDigestCommand extends Command
     // Message builders — one per Pushover message
     // =========================================================================
 
-    /**
-     * Build all 5 messages. Each returns ['title' => ..., 'body' => ..., 'emergency' => bool].
-     */
+    /** Build the smoke canary or the approved action-first report. */
     private function buildMessages(int $hours, bool $smoke = false): array
     {
         if ($smoke) {
@@ -240,13 +249,694 @@ class MorningDigestCommand extends Command
             ];
         }
 
-        return [
-            $this->buildMsg1SystemServices($hours, $smoke),
-            $this->buildMsg2JobsAgents($hours),
-            $this->buildMsg3FilePipelines(),
-            $this->buildMsg4RagGenealogy($hours),
-            $this->buildMsg5AlertsActions($hours),
+        $runtime = $this->aiRuntimeSnapshot->snapshot($hours);
+        $this->issues = array_merge($this->issues, $runtime['issues']);
+        $this->watches = array_merge($this->watches, $runtime['watches']);
+
+        $prod = $this->buildCompactOverview($hours);
+        $ai = $this->buildCompactAiRuntimeMessages($hours, $runtime);
+        $messages = array_merge([$prod], $ai);
+        if ($this->issues !== []) {
+            $messages[] = $this->buildCompactActionMessage();
+        }
+
+        return $this->numberMessages($messages);
+    }
+
+    /** @return array{title:string,body:string,emergency:bool} */
+    private function buildCompactOverview(int $hours): array
+    {
+        $backup = $this->getBackupStatus();
+        if (! $backup['healthy'] && ! $backup['running']) {
+            $this->issues[] = 'Backup: '.$backup['detail'];
+        }
+
+        $infra = $this->getCompactInfrastructureStatus();
+        foreach ($infra['issues'] as $issue) {
+            $this->issues[] = $issue;
+        }
+
+        $failedJobs = [];
+        foreach ($this->getFailedJobs($hours) as $job) {
+            if ($this->isCompletedMhc06SoakJob($job)) {
+                $this->watches[] = 'Completed MHC-06 soak monitor remains visible as historical failure';
+
+                continue;
+            }
+            $failedJobs[] = $job;
+            $this->issues[] = 'Job failed: '.$this->formatJobIssueLabel($job);
+        }
+
+        $stalledJobs = $this->getStalledJobs();
+        foreach ($stalledJobs as $job) {
+            $this->issues[] = 'Job stalled: '.$this->formatJobIssueLabel($job)." ({$job->running_min}m)";
+        }
+
+        foreach ($this->getJobFailureRates() as $rate) {
+            if ($this->isCompletedMhc06SoakJob($rate)) {
+                continue;
+            }
+            $this->watches[] = $rate->name.': '.$rate->fails.'/'.$rate->total.' attempt fail';
+        }
+
+        $agents = $this->getAgentStats($hours);
+        if ($agents['errors'] > 0) {
+            $this->issues[] = number_format($agents['errors']).' agent error(s) in '.$hours.'h';
+        }
+        $work = $this->getCompactWorkboardSnapshot();
+
+        $this->issues = array_values(array_unique($this->issues));
+        $this->watches = array_values(array_unique($this->watches));
+        $state = $this->issues !== [] ? 'ATTENTION' : ($this->watches !== [] ? 'WATCH' : 'STABLE');
+        $stateColor = $this->issues !== [] ? self::RED : ($this->watches !== [] ? self::YELLOW : self::GREEN);
+        $stateIcon = $this->issues !== [] ? '🔴' : ($this->watches !== [] ? '🟡' : '🟢');
+
+        $lines = [
+            $stateIcon.' <b>'.$this->c($stateColor, $state).'</b>  '.count($this->issues).' action • '.count($this->watches).' watch',
+            '🖥 <b>INFRA</b>  '.(gethostname() ?: 'unknown-host'),
+            '   PLOS '.$this->compactState($infra['plos']).' • DB '.$this->compactState($infra['database']).' • Redis '.$this->compactState($infra['redis']).' • Workers '.$this->compactState($infra['horizon']),
+            '   📥 '.number_format($infra['queued']).' queued • 🧠 '.$infra['memory'].' RAM • 💽 root '.$infra['root_used_pct'].'%',
+            '🛡 <b>BACKUPS</b>',
+            '   MySQL '.$backup['mysql_size'].' '.$backup['mysql_label'].' • PG '.$backup['pg_size'].' '.$backup['pg_label'],
+            '📋 <b>WORK</b>',
+            '   ▶ '.($work['counts']['active'] ?? 0).' active • 🔒 '.($work['counts']['operator'] ?? 0).' gated • 👁 '.($work['counts']['watch'] ?? 0).' watch • ⏸ '.$work['held'].' held',
+            '   Now: '.$work['now'],
+            '   🤖 Agents '.number_format($agents['completed']).' done • '.number_format($agents['errors']).' error • '.count($failedJobs).' job fail • '.count($stalledJobs).' stalled',
+            '   🔗 /daily-ops',
         ];
+
+        if ($this->watches !== []) {
+            $lines[] = '👁 <b>'.$this->c(self::YELLOW, 'WATCH').'</b>  '.$this->truncateDigestText(implode(' • ', array_slice($this->watches, 0, 2)), 180);
+        }
+
+        return [
+            'title' => $stateIcon.' PLOS DAILY • '.now()->format('M j, g:i A'),
+            'body' => $this->boundedPushoverBody($lines),
+            'emergency' => false,
+        ];
+    }
+
+    /**
+     * @param  array<string,mixed>  $runtime
+     * @return list<array{title:string,body:string,emergency:bool}>
+     */
+    private function buildCompactAiRuntimeMessages(int $hours, array $runtime): array
+    {
+        $controller = (array) ($runtime['controller'] ?? []);
+        $hostBlocks = [];
+        if (($controller['reachable'] ?? false) === true) {
+            $controllerHost = (string) ($controller['host_id'] ?? 'model host');
+            $hostBlocks[] = [
+                '<b>🎛 '.$controllerHost.' CONTROLLER</b>',
+                '   '.$this->runtimeStateBadge((string) ($controller['state'] ?? 'UNKNOWN')).' • 🔁 '.($controller['execution_mode'] ?? 'UNKNOWN').
+                    ' • 🛡 '.(($controller['resource_gate_passed'] ?? false) ? 'GREEN' : 'RED').
+                    ($controller['free_ram_gb'] !== null ? ' • 🧠 '.$controller['free_ram_gb'].'GB free' : ''),
+            ];
+        }
+        foreach ((array) ($runtime['entries'] ?? []) as $entry) {
+            $hostKey = (string) ($entry['host'] ?? 'Unknown');
+            $ip = (string) ($entry['ip'] ?? 'unknown');
+            $port = (int) ($entry['port'] ?? 0);
+            $usage = number_format((int) ($entry['requests'] ?? 0)).' req';
+            $failures = (int) ($entry['failures'] ?? 0);
+            if ($failures > 0) {
+                $usage .= ' • '.number_format($failures).' attempt fail';
+            }
+            $endpoint = $hostKey.($ip !== 'provider' ? ' '.$ip.($port > 0 ? ':'.$port : '') : '');
+            $metric = $this->compactAiMetricSummary($entry);
+            $hostBlocks[] = [
+                '<b>'.$this->runtimeStateBadge((string) ($entry['state'] ?? 'UNKNOWN'), (string) ($entry['policy_state'] ?? '')).' '.$endpoint.'</b>',
+                '   🧩 '.$entry['engine'].' • '.$entry['model'],
+                '   📊 '.$usage.($metric !== '' ? ' • '.$metric : ''),
+            ];
+        }
+
+        if ($hostBlocks === []) {
+            $hostBlocks[] = ['🔴 '.$this->c(self::RED, 'Runtime inventory unavailable')];
+        }
+
+        $totals = (array) ($runtime['totals'] ?? []);
+        $metricSummary = (array) ($runtime['metrics'] ?? []);
+        $controllerHost = (string) ($controller['host_id'] ?? 'model host');
+        $metricLine = ($metricSummary['available'] ?? false) !== true
+            ? 'Metrics llm_model_request_logs unavailable'
+            : 'Metrics llm_model_request_logs'.(($metricSummary['sampled'] ?? false) ? ' sampled' : ' exact').
+                ' | trace '.$this->metricPercent($metricSummary['route_trace_coverage_rate'] ?? null).
+                ' | tokens '.$this->metricPercent($metricSummary['usage_coverage_rate'] ?? null);
+        $hostBlocks[] = [
+            '<b>📈 USAGE • '.$hours.'h</b>',
+            '   Local '.number_format((int) ($totals['local'] ?? 0)).' • External '.number_format((int) ($totals['external'] ?? 0)).' • fail = attempt fail',
+            '   '.str_replace(' | ', ' • ', $metricLine),
+            '🛡 <b>POLICY</b>  '.app(OfflinePolicyService::class)->activeProfile().' • '.$controllerHost.' '.strtolower((string) ($controller['execution_mode'] ?? 'unknown')),
+            '   🧰 Tool execution PLOS-supervised • host proposals '.$this->capabilityPolicy($controller['tools_enabled'] ?? null),
+            '   ↪ Silent host fallback '.$this->capabilityPolicy($controller['fallback_enabled'] ?? null),
+        ];
+
+        return array_map(static fn (string $body): array => [
+            'title' => '🤖 PLOS AI HOSTS • '.$hours.'h',
+            'body' => $body,
+            'emergency' => false,
+        ], $this->paginateAiHostBlocks(array_values($hostBlocks)));
+    }
+
+    /** @param list<list<string>> $blocks @return list<string> */
+    private function paginateAiHostBlocks(array $blocks): array
+    {
+        $segments = [];
+        foreach ($blocks as $lines) {
+            $header = $lines[0] ?? '';
+            $current = [];
+            foreach ($lines as $index => $line) {
+                $candidate = implode("\n", [...$current, $line]);
+                if ($current !== [] && strlen($candidate) > 970) {
+                    $segments[] = implode("\n", $current);
+                    $current = $index > 0 && str_starts_with($header, '<b>') ? [$header, $line] : [$line];
+
+                    continue;
+                }
+                $current[] = $line;
+            }
+            if ($current !== []) {
+                $segments[] = implode("\n", $current);
+            }
+        }
+
+        $chunks = [];
+        $current = '';
+        foreach ($segments as $segment) {
+            $candidate = $current === '' ? $segment : $current."\n".$segment;
+            if ($current !== '' && strlen($candidate) > 970) {
+                $chunks[] = $current;
+                $current = $segment;
+
+                continue;
+            }
+            $current = $candidate;
+        }
+        if ($current !== '') {
+            $chunks[] = $current;
+        }
+
+        return $chunks;
+    }
+
+    /** @return array{title:string,body:string,emergency:bool} */
+    private function buildCompactActionMessage(): array
+    {
+        $lines = ['🚨 <b>'.$this->c(self::RED, 'ACTION REQUIRED').'</b>'];
+        foreach (array_slice(array_values(array_unique($this->issues)), 0, 6) as $index => $issue) {
+            $lines[] = '   '.($index + 1).'. '.$this->c(self::RED, $this->truncateDigestText($issue, 130));
+        }
+        if (count($this->issues) > 6) {
+            $lines[] = '  +'.(count($this->issues) - 6).' more at /daily-ops';
+        }
+
+        return [
+            'title' => '🚨 PLOS ACTION',
+            'body' => $this->boundedPushoverBody($lines),
+            'emergency' => true,
+        ];
+    }
+
+    /** @return array<string,mixed> */
+    private function getCompactInfrastructureStatus(): array
+    {
+        $status = [
+            'plos' => true,
+            'database' => false,
+            'redis' => false,
+            'horizon' => false,
+            'queued' => 0,
+            'memory' => '?',
+            'root_used_pct' => 0,
+            'issues' => [],
+        ];
+
+        try {
+            $status['database'] = (int) (DB::selectOne('SELECT 1 AS ok')?->ok ?? 0) === 1;
+            $status['queued'] = (int) (DB::selectOne('SELECT COUNT(*) AS c FROM jobs')?->c ?? 0);
+        } catch (\Throwable) {
+        }
+        try {
+            $status['redis'] = (bool) Redis::connection()->ping();
+        } catch (\Throwable) {
+        }
+        try {
+            $process = Process::timeout(5)->run(['pgrep', '-fc', 'horizon:work']);
+            $status['horizon'] = (int) trim($process->output()) > 0;
+        } catch (\Throwable) {
+        }
+
+        $memory = $this->getMemory();
+        $status['memory'] = ($memory['used_gb'] ?? '?').'/'.($memory['total_gb'] ?? '?').'GB';
+        $root = $this->diskUsage('/');
+        $status['root_used_pct'] = (int) ($root['pct'] ?? 0);
+
+        foreach (['database' => 'Database unavailable', 'redis' => 'Redis unavailable', 'horizon' => 'Horizon has no active workers'] as $key => $issue) {
+            if (! $status[$key]) {
+                $status['issues'][] = $issue;
+            }
+        }
+
+        return $status;
+    }
+
+    /** @return array{counts:array<string,int>,held:int,now:string} */
+    private function getCompactWorkboardSnapshot(): array
+    {
+        try {
+            $payload = app(PlosWorkboardService::class)->payload();
+            $items = array_values(array_filter(
+                $payload['items'],
+                static fn (array $item): bool => $item['status_group'] === 'active'
+            ));
+            usort($items, static fn (array $a, array $b): int => $a['priority'] <=> $b['priority']);
+            $ids = array_column(array_slice($items, 0, 3), 'id');
+            $counts = $payload['counts'];
+
+            return [
+                'counts' => $counts,
+                'held' => (int) ($counts['parked'] ?? 0) + (int) ($counts['paused'] ?? 0),
+                'now' => $ids === [] ? 'none' : implode(', ', $ids),
+            ];
+        } catch (\Throwable) {
+            $this->issues[] = 'Canonical PLOS workboard unavailable';
+
+            return ['counts' => [], 'held' => 0, 'now' => 'unavailable'];
+        }
+    }
+
+    private function isCompletedMhc06SoakJob(object $job): bool
+    {
+        if (($job->name ?? null) !== 'model_host_controller_mhc06_soak') {
+            return false;
+        }
+
+        $path = base_path('scripts/patches/colibri/k3-selective-v162/MHC-06-LIVE-RECEIPT.json');
+        $receipt = is_readable($path) ? json_decode((string) file_get_contents($path), true) : null;
+
+        return is_array($receipt)
+            && ($receipt['gate'] ?? null) === 'MHC-06'
+            && ($receipt['status'] ?? null) === 'green_soak_complete'
+            && data_get($receipt, 'promotion.result') === 'green'
+            && data_get($receipt, 'soak.result') === 'green'
+            && data_get($receipt, 'final_state.lease_present') === false
+            && data_get($receipt, 'final_state.resource_gate_passed') === true;
+    }
+
+    /** @param list<string> $lines */
+    private function boundedPushoverBody(array $lines): string
+    {
+        $accepted = [];
+        foreach ($lines as $line) {
+            $candidate = implode("\n", [...$accepted, $line]);
+            if (strlen($candidate) > 970) {
+                break;
+            }
+            $accepted[] = $line;
+        }
+
+        $body = implode("\n", $accepted);
+        if (count($accepted) < count($lines)) {
+            $body .= "\n… details: /daily-ops";
+        }
+
+        return $body;
+    }
+
+    private function compactState(bool $state): string
+    {
+        return ($state ? '🟢 ' : '🔴 ').$this->c($state ? self::GREEN : self::RED, $state ? 'OK' : 'DOWN');
+    }
+
+    private function runtimeStateBadge(string $state, string $policyState = ''): string
+    {
+        return match ($state) {
+            'ONLINE', 'ACTIVE-LEASE', 'STABLE' => '🟢 '.$this->c(self::GREEN, str_replace('-', ' ', $state)),
+            'MANAGED-IDLE', 'RESEARCH-IDLE', 'IDLE' => '🔵 '.$this->c(self::BLUE, str_replace('-', ' ', $state)),
+            'INACTIVE' => '⚪ '.$this->c(self::GRAY, $state),
+            'UNAVAILABLE' => $policyState === 'storage_absent'
+                ? '⚪ '.$this->c(self::GRAY, 'STORAGE ABSENT')
+                : '🔴 '.$this->c(self::RED, $state),
+            'DRIFT' => '🟠 '.$this->c(self::YELLOW, $state),
+            'BLOCKED' => '🔴 '.$this->c(self::RED, $state),
+            default => '⚪ '.$this->c(self::GRAY, str_replace('-', ' ', $state)),
+        };
+    }
+
+    private function capabilityPolicy(mixed $value): string
+    {
+        return match ($value) {
+            true => 'ALLOWED',
+            false => 'BLOCKED',
+            default => 'UNKNOWN',
+        };
+    }
+
+    /** @param array<string,mixed> $entry */
+    private function compactAiMetricSummary(array $entry): string
+    {
+        $parts = [];
+        if (is_numeric($entry['success_rate'] ?? null)) {
+            $parts[] = 'ok '.$this->metricPercent($entry['success_rate']);
+        }
+        if (is_numeric($entry['p95_latency_ms'] ?? null)) {
+            $parts[] = 'p95 '.$this->metricDuration((int) $entry['p95_latency_ms']);
+        }
+        if (is_numeric($entry['usage_coverage_rate'] ?? null)) {
+            $parts[] = 'tokens '.$this->metricPercent($entry['usage_coverage_rate']);
+        }
+        if (is_numeric($entry['health_score'] ?? null)) {
+            $parts[] = 'health '.(int) $entry['health_score'];
+        }
+
+        return implode(' • ', $parts);
+    }
+
+    private function metricPercent(mixed $value): string
+    {
+        return is_numeric($value) ? rtrim(rtrim(number_format((float) $value, 1), '0'), '.').'%' : 'n/a';
+    }
+
+    private function metricDuration(int $milliseconds): string
+    {
+        if ($milliseconds >= 1000) {
+            return rtrim(rtrim(number_format($milliseconds / 1000, 1), '0'), '.').'s';
+        }
+
+        return $milliseconds.'ms';
+    }
+
+    /** @return array{title:string,body:string,emergency:bool} */
+    private function buildActionFirstProdState(int $hours): array
+    {
+        $backup = $this->getBackupStatus();
+        if (! $backup['healthy'] && ! $backup['running']) {
+            $this->issues[] = 'Backup: '.$backup['detail'];
+        }
+
+        $services = $this->getServiceStatus();
+        $serviceProblems = [];
+        if ($services['redis'] === null) {
+            $serviceProblems[] = 'Redis down';
+            $this->issues[] = 'Redis unavailable';
+        }
+        if ($services['horizon'] === null || $services['horizon'] <= 0) {
+            $serviceProblems[] = 'Horizon down';
+            $this->issues[] = 'Horizon has no active workers';
+        }
+        foreach ($services['llm'] as $instance) {
+            if (! $instance['healthy']) {
+                $serviceProblems[] = $instance['name'].' down';
+            }
+        }
+
+        $failedJobs = $this->getFailedJobs($hours);
+        $stalledJobs = $this->getStalledJobs();
+        foreach ($failedJobs as $job) {
+            $this->issues[] = 'Job failed: '.$this->formatJobIssueLabel($job);
+        }
+        foreach ($stalledJobs as $job) {
+            $this->issues[] = 'Job stalled: '.$this->formatJobIssueLabel($job)." ({$job->running_min}m)";
+        }
+        foreach ($this->getJobFailureRates() as $rate) {
+            $this->watches[] = $rate->name.': '.$rate->fails.'/'.$rate->total.' failed ('.$rate->fail_pct.'%)';
+        }
+        foreach ($this->getComputeCapabilityAttention() as $attention) {
+            $message = sprintf(
+                'Compute %s: %s for %s',
+                $attention['operator_action'] ? 'action required' : 'auto-recovery pending',
+                $attention['capability'],
+                $attention['job'].' ('.$attention['state'].')'
+            );
+            if ($attention['operator_action']) {
+                $this->issues[] = $message;
+            } else {
+                $this->watches[] = $message;
+            }
+        }
+
+        $agents = $this->getAgentStats($hours);
+        if ($agents['errors'] > 0) {
+            $this->issues[] = number_format($agents['errors']).' agent error(s) in '.$hours.'h';
+        }
+
+        $pipeline = $this->getPipelineBacklog();
+        $pipelinePending = array_sum(array_map(
+            static fn (string $key): int => max(0, (int) ($pipeline[$key]['pending'] ?? 0)),
+            ['thumbs', 'phash', 'ai_img', 'faces', 'exif', 'writeback', 'rag']
+        ));
+        $genea = $this->getGenealogyDigest($hours);
+        $reviewPending = (int) ($genea['pending_review'] ?? 0);
+
+        $state = $this->issues === [] ? 'STABLE' : 'ATTENTION';
+        $stateColor = $this->issues === [] ? self::GREEN : self::YELLOW;
+        $lines = [
+            '<b>STATE: '.$this->c($stateColor, $state).'</b>',
+            '  Services         '.($serviceProblems === []
+                ? $this->c(self::GREEN, 'No Redis, Horizon, or Ollama outage detected')
+                : $this->c(self::RED, implode(', ', $serviceProblems))),
+            '',
+            '<b>BACKUPS</b>',
+            "  MySQL            {$this->c($backup['mysql_color'], $backup['mysql_size'])}  {$backup['mysql_date']}  {$backup['mysql_label']}",
+            "  PostgreSQL       {$this->c($backup['pg_color'], $backup['pg_size'])}  {$backup['pg_date']}  {$backup['pg_label']}",
+            '  Status           '.$this->c($backup['healthy'] ? self::GREEN : self::YELLOW, $backup['running'] ? $backup['detail'] : ($backup['healthy'] ? 'Good' : $backup['detail'])),
+            '',
+            '<b>PRODUCTION ('.$hours.'h)</b>',
+            '  Jobs             '.count($failedJobs).' failed, '.count($stalledJobs).' stalled',
+            '  Agent Tasks      '.number_format($agents['completed']).' completed, '.number_format($agents['errors']).' errors',
+            '  File Pipelines   '.number_format($pipelinePending).' pending',
+            '  Genea Work       '.number_format((int) ($genea['queue_completed_window'] ?? 0)).' done, '.
+                number_format((int) ($genea['queue_findings_window'] ?? 0)).' findings, '.
+                number_format((int) ($genea['queue_review_items_window'] ?? 0)).' reviews',
+            '  Genea Queue      '.number_format((int) ($genea['queue_pending'] ?? 0)).' pending, '.
+                number_format((int) ($genea['queue_in_progress'] ?? 0)).' running',
+            '  Operator Review  '.number_format($reviewPending).' pending',
+        ];
+
+        return [
+            'title' => 'PLOS PROD | '.now()->format('M j, g:i A'),
+            'body' => implode("\n", $lines),
+            'emergency' => false,
+        ];
+    }
+
+    /** @return array{title:string,body:string,emergency:bool} */
+    private function buildActionFirstAiUsage(int $hours): array
+    {
+        $lines = ['<b>MODEL EXECUTION ('.$hours.'h)</b>'];
+        foreach ($this->getLLMUsageExpanded($hours) as $line) {
+            if (str_contains($line, 'OpenAI Codex Exec:')) {
+                continue;
+            }
+            $lines[] = $line;
+        }
+
+        $codex = $this->getCodexExecutionSummary($hours);
+        $lines[] = '';
+        $lines[] = '<b>EXTERNAL CODEX</b>';
+        $lines[] = '  Executed         '.number_format($codex['executed']);
+        $lines[] = '  Attempt Failures '.number_format($codex['failures']);
+        if ($codex['input_tokens'] > 0 || $codex['output_tokens'] > 0) {
+            $lines[] = '  Tokens           '.number_format($codex['input_tokens']).' in, '.
+                number_format($codex['output_tokens']).' out';
+        }
+
+        $lines[] = '';
+        $lines[] = '<b>ROUTING POLICY</b>';
+        foreach ($this->getAiPolicyContextLines($hours) as $line) {
+            $lines[] = $line;
+        }
+
+        return [
+            'title' => 'PLOS AI USAGE',
+            'body' => implode("\n", $lines),
+            'emergency' => false,
+        ];
+    }
+
+    /** @return array{executed:int,failures:int,input_tokens:int,output_tokens:int} */
+    private function getCodexExecutionSummary(int $hours): array
+    {
+        try {
+            $row = DB::selectOne(
+                "SELECT COUNT(*) AS executed,
+                        COALESCE(SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END), 0) AS failures,
+                        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0) AS output_tokens
+                 FROM llm_model_request_logs
+                 WHERE instance_id = 'codex_exec'
+                   AND created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)",
+                [$hours]
+            );
+
+            return [
+                'executed' => (int) ($row->executed ?? 0),
+                'failures' => (int) ($row->failures ?? 0),
+                'input_tokens' => (int) ($row->input_tokens ?? 0),
+                'output_tokens' => (int) ($row->output_tokens ?? 0),
+            ];
+        } catch (\Throwable $e) {
+            Log::debug('ops:daily-report: Codex execution summary failed', ['error' => $e->getMessage()]);
+
+            return ['executed' => 0, 'failures' => 0, 'input_tokens' => 0, 'output_tokens' => 0];
+        }
+    }
+
+    /** @return array{title:string,body:string,emergency:bool} */
+    private function buildActionFirstAttention(int $hours): array
+    {
+        $review = $this->getReviewQueue();
+        $reviewPending = array_sum(array_map(static fn ($row): int => (int) $row->pending, $review));
+        $alerts = $this->getAlerts($hours);
+        if ($alerts['critical'] > 0) {
+            $this->issues[] = $alerts['critical'].' critical system alert(s)';
+        } elseif ($alerts['high'] > 0) {
+            $this->issues[] = $alerts['high'].' high-priority system alert(s)';
+        }
+
+        $lines = [];
+        if ($this->issues !== []) {
+            $lines[] = '<b>FIX</b>';
+            foreach (array_values(array_unique($this->issues)) as $index => $issue) {
+                $lines[] = '  '.($index + 1).'. '.$this->c(self::RED, $issue);
+            }
+        }
+
+        if ($reviewPending > 0) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $lines[] = '<b>REVIEW</b>';
+            foreach ($review as $row) {
+                if ((int) $row->pending > 0) {
+                    $lines[] = '  '.$row->label.': '.number_format((int) $row->pending);
+                }
+            }
+            foreach ($this->getPendingLlmPortfolioActions() as $action) {
+                $lines[] = '  Model action: '.$action;
+            }
+        }
+
+        if ($this->watches !== []) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $lines[] = '<b>WATCH</b>';
+            foreach (array_values(array_unique($this->watches)) as $watch) {
+                $lines[] = '  '.$watch;
+            }
+        }
+
+        if ($this->autoFixed !== []) {
+            if ($lines !== []) {
+                $lines[] = '';
+            }
+            $lines[] = '<b>AUTO-FIXES APPLIED</b>';
+            foreach ($this->autoFixed as $fix) {
+                $lines[] = '  '.$this->c(self::GREEN, $fix);
+            }
+        }
+
+        if ($lines === []) {
+            $lines[] = $this->c(self::GREEN, '<b>ALL CLEAR - No operator action required</b>');
+        }
+
+        return [
+            'title' => 'PLOS OPERATOR ATTENTION',
+            'body' => implode("\n", $lines),
+            'emergency' => $this->issues !== [],
+        ];
+    }
+
+    /** @return list<string> */
+    private function getPendingLlmPortfolioActions(): array
+    {
+        try {
+            return array_map(
+                fn (object $row): string => $this->truncateDigestText((string) $row->title, 120),
+                DB::select(
+                    "SELECT title
+                     FROM agent_review_queue
+                     WHERE review_type = 'ai_model_update'
+                       AND agent_id = 'codex-portfolio'
+                       AND status = 'pending'
+                     ORDER BY priority DESC, updated_at DESC
+                     LIMIT 3"
+                )
+            );
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    /** @return array<int,array{title:string,body:string,emergency:bool}> */
+    private function buildWorkboardMessages(): array
+    {
+        try {
+            $payload = app(PlosWorkboardService::class)->payload();
+        } catch (\Throwable $e) {
+            $this->issues[] = 'Canonical PLOS workboard unavailable';
+
+            return [[
+                'title' => 'PLOS WORKBOARD',
+                'body' => $this->c(self::RED, 'Canonical workboard unavailable'),
+                'emergency' => false,
+            ]];
+        }
+
+        $blocks = [];
+        foreach ($payload['items'] as $item) {
+            $blocks[] = '<b>'.$item['priority'].'. '.$item['id'].'</b> ['.$item['status']."]\n".
+                '  '.$item['area'].' - '.$item['summary'];
+        }
+
+        $prefix = '<b>CANONICAL WORK LIST</b>';
+        if ($payload['updated_at'] !== null) {
+            $prefix .= "\n  Updated ".now()->parse($payload['updated_at'])->format('M j, g:i A');
+        }
+
+        $chunks = $this->paginateBlocks($blocks, 850, $prefix);
+
+        return array_map(static fn (string $body): array => [
+            'title' => 'PLOS WORKBOARD',
+            'body' => $body,
+            'emergency' => false,
+        ], $chunks);
+    }
+
+    /** @param array<int,array{title:string,body:string,emergency:bool}> $messages */
+    private function numberMessages(array $messages): array
+    {
+        $total = count($messages);
+        foreach ($messages as $index => &$message) {
+            $message['title'] .= ' | '.($index + 1).'/'.$total;
+        }
+        unset($message);
+
+        return $messages;
+    }
+
+    /** @param string[] $blocks @return string[] */
+    private function paginateBlocks(array $blocks, int $maxBytes, string $firstPrefix = ''): array
+    {
+        $chunks = [];
+        $current = $firstPrefix;
+        foreach ($blocks as $block) {
+            $candidate = $current === '' ? $block : $current."\n\n".$block;
+            if ($current !== '' && strlen($candidate) > $maxBytes) {
+                $chunks[] = $current;
+                $current = $block;
+
+                continue;
+            }
+            $current = $candidate;
+        }
+        if ($current !== '') {
+            $chunks[] = $current;
+        }
+
+        return $chunks;
     }
 
     /**
@@ -331,11 +1021,10 @@ class MorningDigestCommand extends Command
             $serviceLines[] = '  Horizon          '.$this->statusColor(false, $services['horizon'] !== null ? "{$services['horizon']} workers" : 'DOWN');
             $this->issues[] = 'Horizon has no active workers';
         }
-        if ($services['ollama_primary'] === false) {
-            $serviceLines[] = '  Ollama Primary   '.$this->statusColor(false, 'DOWN');
-        }
-        if ($services['ollama_secondary'] === false) {
-            $serviceLines[] = '  Ollama Secondary '.$this->statusColor(false, 'DOWN');
+        foreach ($services['llm'] as $instance) {
+            if (! $instance['healthy']) {
+                $serviceLines[] = '  '.$this->truncateDigestText($instance['name'], 18).' '.$this->statusColor(false, 'DOWN');
+            }
         }
 
         // GPU
@@ -1082,6 +1771,47 @@ class MorningDigestCommand extends Command
         }
     }
 
+    /** @return list<array{job:string,capability:string,state:string,operator_action:bool}> */
+    private function getComputeCapabilityAttention(): array
+    {
+        try {
+            $rows = DB::select(
+                'SELECT name, notes FROM scheduled_jobs WHERE enabled = 1 AND notes IS NOT NULL'
+            );
+            $router = app(ComputeRouterService::class);
+            $attention = [];
+
+            foreach ($rows as $row) {
+                $notes = json_decode((string) ($row->notes ?? ''), true);
+                $capability = trim((string) data_get($notes, 'runtime.required_compute_capability', ''));
+                if ($capability === '') {
+                    continue;
+                }
+
+                $status = $router->getCapabilityStatus($capability);
+                $state = (string) ($status['state'] ?? 'unavailable');
+                if (in_array($state, ['available', 'capacity_busy'], true)) {
+                    continue;
+                }
+
+                $attention[] = [
+                    'job' => (string) $row->name,
+                    'capability' => $capability,
+                    'state' => $state,
+                    'operator_action' => $state === 'unregistered',
+                ];
+            }
+
+            return $attention;
+        } catch (\Throwable $e) {
+            Log::debug('ops:daily-report: compute capability attention failed', [
+                'exception_class' => $e::class,
+            ]);
+
+            return [];
+        }
+    }
+
     private function getStalledJobs(): array
     {
         try {
@@ -1323,13 +2053,13 @@ class MorningDigestCommand extends Command
             }
 
             if (count($cols) >= 6 && is_numeric($cols[0])) {
-                $id = $cols[1];
+                $id = str_replace('`', '', strip_tags($cols[1]));
                 $status = $cols[2];
-                $next = $cols[4];
+                $next = str_replace('`', '', strip_tags($cols[4]));
             } elseif (count($cols) >= 4) {
-                $id = $cols[0];
+                $id = str_replace('`', '', strip_tags($cols[0]));
                 $status = $cols[1];
-                $next = $cols[2];
+                $next = str_replace('`', '', strip_tags($cols[2]));
             } else {
                 continue;
             }
@@ -1397,44 +2127,59 @@ class MorningDigestCommand extends Command
     {
         $imgExts = "'".implode("','", config('file_types.image'))."'";
         $docExts = "'".implode("','", config('file_types.document'))."'";
+        $available = "AND COALESCE(verification_failures, 0) = 0
+            AND (
+                thumbnail_error IS NULL
+                OR (
+                    thumbnail_error NOT LIKE '%404%'
+                    AND thumbnail_error NOT LIKE '%not found%'
+                    AND thumbnail_error NOT LIKE '%no such file%'
+                    AND thumbnail_error NOT LIKE '%Failed to download source file%'
+                )
+            )";
+        $availableFr = str_replace(
+            ['verification_failures', 'thumbnail_error'],
+            ['fr.verification_failures', 'fr.thumbnail_error'],
+            $available
+        );
 
         $q = fn (string $sql) => $this->safeQuery(fn (string $s) => (int) (DB::selectOne($s)?->c ?? 0), $sql);
 
-        $imgTotal = $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND extension IN ({$imgExts})");
-        $docTotal = $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND extension IN ({$docExts})");
+        $imgTotal = $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND extension IN ({$imgExts})");
+        $docTotal = $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND extension IN ({$docExts})");
 
         return [
             'ai_img' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND ai_analyzed_at IS NULL AND (ai_analysis_version IS NULL OR (ai_analysis_version NOT IN ('skipped','processing') AND ai_analysis_version NOT LIKE 'fail:%')) AND extension IN ({$imgExts})"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND ai_analyzed_at IS NULL AND (ai_analysis_version IS NULL OR (ai_analysis_version NOT IN ('skipped','processing') AND ai_analysis_version NOT LIKE 'fail:%' AND ai_analysis_version NOT LIKE 'processing:%')) AND extension IN ({$imgExts})"),
                 'total' => $imgTotal,
             ],
             'ai_doc' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND ai_analyzed_at IS NULL AND (ai_analysis_version IS NULL OR (ai_analysis_version NOT IN ('skipped','processing') AND ai_analysis_version NOT LIKE 'fail:%')) AND extension IN ({$docExts})"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND ai_analyzed_at IS NULL AND (ai_analysis_version IS NULL OR (ai_analysis_version NOT IN ('skipped','processing') AND ai_analysis_version NOT LIKE 'fail:%' AND ai_analysis_version NOT LIKE 'processing:%')) AND extension IN ({$docExts})"),
                 'total' => $docTotal,
             ],
             'faces' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND face_scan_at IS NULL AND extension IN ({$imgExts})"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND face_scan_at IS NULL AND extension IN ({$imgExts})"),
                 'total' => $imgTotal,
             ],
             'phash' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry fr WHERE fr.status = 'active' AND fr.extension IN ({$imgExts}) AND NOT EXISTS (SELECT 1 FROM file_registry_perceptual_hashes ph WHERE ph.file_registry_id = fr.id)"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry fr WHERE fr.status = 'active' {$availableFr} AND fr.extension IN ({$imgExts}) AND NOT EXISTS (SELECT 1 FROM file_registry_perceptual_hashes ph WHERE ph.file_registry_id = fr.id)"),
                 'total' => $imgTotal,
             ],
             'thumbs' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND thumbnail_generated_at IS NULL AND thumbnail_error IS NULL AND extension IN ({$imgExts},'mp4','mov','avi','mkv','webm','wmv','m4v','flv','pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp')"),
-                'total' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND extension IN ({$imgExts},'mp4','mov','avi','mkv','webm','wmv','m4v','flv','pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp')"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND thumbnail_generated_at IS NULL AND thumbnail_error IS NULL AND extension IN ({$imgExts},'mp4','mov','avi','mkv','webm','wmv','m4v','flv','pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp')"),
+                'total' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND extension IN ({$imgExts},'mp4','mov','avi','mkv','webm','wmv','m4v','flv','pdf','doc','docx','xls','xlsx','ppt','pptx','odt','ods','odp')"),
             ],
             'exif' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND (exif_checked IS NULL OR exif_checked = 0) AND extension IN ({$imgExts})"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND (exif_checked IS NULL OR exif_checked = 0) AND extension IN ({$imgExts})"),
                 'total' => $imgTotal,
             ],
             'rag' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND rag_indexed_at IS NULL AND (extension IN ({$docExts},'md','html','htm') OR (extension IN ({$imgExts}) AND ai_description IS NOT NULL))"),
-                'total' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND (extension IN ({$docExts},'md','html','htm') OR (extension IN ({$imgExts}) AND ai_description IS NOT NULL))"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND rag_indexed_at IS NULL AND (extension IN ({$docExts},'md','html','htm') OR (extension IN ({$imgExts}) AND ai_description IS NOT NULL))"),
+                'total' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND (extension IN ({$docExts},'md','html','htm') OR (extension IN ({$imgExts}) AND ai_description IS NOT NULL))"),
             ],
             'writeback' => [
-                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND extension IN ({$imgExts}) AND date_taken IS NOT NULL AND date_taken_source NOT LIKE 'exif_%' AND (exif_written IS NULL OR exif_written = 0) AND date_taken_confidence >= 0.3"),
-                'total' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND extension IN ({$imgExts}) AND date_taken IS NOT NULL"),
+                'pending' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND extension IN ({$imgExts}) AND date_taken IS NOT NULL AND (COALESCE(date_taken_precision, 'exact') = 'exact' OR (date_taken_precision = 'year' AND date_taken_source = 'user_manual')) AND date_taken_source NOT LIKE 'exif_%' AND (exif_written IS NULL OR exif_written = 0) AND date_taken_confidence >= 0.3"),
+                'total' => $q("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' {$available} AND extension IN ({$imgExts}) AND date_taken IS NOT NULL"),
             ],
         ];
     }
@@ -1734,6 +2479,84 @@ class MorningDigestCommand extends Command
     }
 
     /**
+     * Action-first AI policy context. Provider-denial receipts produced while
+     * scanning Codex as an ineligible candidate are enforcement checks, not
+     * attempted external executions.
+     *
+     * @return string[]
+     */
+    private function getAiPolicyContextLines(int $hours): array
+    {
+        try {
+            $policy = app(OfflinePolicyService::class);
+            $profile = $policy->activeProfile();
+            $offlineMode = $policy->isOfflineModeActive();
+        } catch (\Throwable $e) {
+            $this->watches[] = 'Routing policy context unavailable';
+
+            return ['  Policy context unavailable'];
+        }
+
+        $lines = ['  Profile          '.$profile];
+        if ($offlineMode) {
+            $lines[] = '  Offline Switch   '.$this->c(self::RED, 'ACTIVE');
+            $this->issues[] = 'Offline mode kill switch is active';
+        }
+
+        try {
+            $audit = app(OfflineAuditService::class)->summarizeWindow($hours);
+            if (($audit['result'] ?? null) === 'ok') {
+                $denied = (int) ($audit['denied'] ?? 0);
+                $codexEligibilityChecks = 0;
+                foreach ((array) ($audit['top_denials'] ?? []) as $row) {
+                    if (($row['operation'] ?? null) === 'provider:codex_exec') {
+                        $codexEligibilityChecks += (int) ($row['count'] ?? 0);
+                    }
+                }
+
+                if ($codexEligibilityChecks > 0) {
+                    $lines[] = '  Codex Checks     '.number_format($codexEligibilityChecks).
+                        ' denied locally (expected; no external call)';
+                }
+
+                $otherDenials = max(0, $denied - $codexEligibilityChecks);
+                if ($otherDenials > 0) {
+                    $lines[] = '  Other Denials    '.number_format($otherDenials).' guarded operations';
+                }
+
+                $modeChanges = (int) ($audit['mode_changes'] ?? 0);
+                if ($modeChanges > 0) {
+                    $this->watches[] = number_format($modeChanges).' routing profile change(s) in '.$hours.'h';
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->watches[] = 'Offline policy audit summary unavailable';
+        }
+
+        try {
+            $circuits = DB::select(
+                "SELECT instance_name, circuit_state
+                 FROM llm_instances
+                 WHERE is_active = 1 AND circuit_state IN ('open', 'half_open')
+                 ORDER BY circuit_state DESC, instance_name"
+            );
+            if ($circuits !== []) {
+                $names = array_map(static fn ($row): string => $row->instance_name.' '.$row->circuit_state, $circuits);
+                $lines[] = '  Circuits         '.$this->c(self::RED, implode(', ', $names));
+                foreach ($circuits as $circuit) {
+                    if ($circuit->circuit_state === 'open') {
+                        $this->issues[] = 'LLM provider circuit open: '.$circuit->instance_name;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $this->watches[] = 'LLM circuit state unavailable';
+        }
+
+        return $lines;
+    }
+
+    /**
      * Ollama drift snapshot for the ROUTING section.
      *
      * The scheduled `ollama:drift-check` job runs daily at 05:30 with
@@ -1899,16 +2722,22 @@ class MorningDigestCommand extends Command
                 'SELECT li.instance_name,
                         li.instance_type,
                         li.circuit_state,
-                        COALESCE(COUNT(l.id), 0) AS daily_requests,
-                        COALESCE(SUM(CASE WHEN l.success = 0 THEN 1 ELSE 0 END), 0) AS daily_failures,
-                        COALESCE(SUM(CASE WHEN l.escalated = 1 THEN 1 ELSE 0 END), 0) AS escalated_requests,
-                        ROUND(AVG(l.latency_ms)) AS avg_latency_ms
+                        COALESCE(l.daily_requests, 0) AS daily_requests,
+                        COALESCE(l.daily_failures, 0) AS daily_failures,
+                        COALESCE(l.escalated_requests, 0) AS escalated_requests,
+                        l.avg_latency_ms
                  FROM llm_instances li
-                 LEFT JOIN llm_model_request_logs l
-                   ON l.instance_id = li.instance_id
-                  AND l.created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                 LEFT JOIN (
+                     SELECT instance_id,
+                            COUNT(id) AS daily_requests,
+                            SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS daily_failures,
+                            SUM(CASE WHEN escalated = 1 THEN 1 ELSE 0 END) AS escalated_requests,
+                            ROUND(AVG(latency_ms)) AS avg_latency_ms
+                     FROM llm_model_request_logs
+                     WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
+                     GROUP BY instance_id
+                 ) l ON l.instance_id = li.instance_id
                  WHERE li.is_active = 1
-                 GROUP BY li.id, li.instance_name, li.instance_type, li.circuit_state, li.priority
                  ORDER BY daily_requests DESC, li.priority ASC, li.instance_name ASC',
                 [$hours]
             );
@@ -1937,8 +2766,10 @@ class MorningDigestCommand extends Command
                 $latency = $latencyMs > 5000 ? $this->c(self::YELLOW, '  '.round($latencyMs / 1000, 1).'s avg') : '';
 
                 $failureRate = $reqs > 0 ? $failures / $reqs : ($failures > 0 ? 1.0 : 0.0);
-                if ($failures >= 25 || $failureRate >= 0.02) {
+                if ($failures >= 25 || ($reqs >= 50 && $failureRate >= 0.02)) {
                     $this->issues[] = "LLM provider attempt failures: {$name} {$failures}/{$reqs} in {$hours}h";
+                } elseif ($failures > 0 && $failureRate >= 0.02) {
+                    $this->watches[] = "{$name}: {$failures}/{$reqs} provider attempts failed";
                 }
 
                 $providerLines[] = "  [{$scope}] {$name}: ".$this->shortNum($reqs)." calls{$failureFlag}{$escalationFlag}{$circuitFlag}{$latency}";
@@ -1966,8 +2797,7 @@ class MorningDigestCommand extends Command
 
     private function getServiceStatus(): array
     {
-        $result = ['redis' => null, 'horizon' => null, 'ollama_primary' => false, 'ollama_secondary' => false];
-        $ollamaUrls = $this->getOllamaServiceUrls();
+        $result = ['redis' => null, 'horizon' => null, 'llm' => []];
 
         try {
             $redis = Redis::connection();
@@ -1985,60 +2815,27 @@ class MorningDigestCommand extends Command
         } catch (\Throwable) {
         }
 
-        // Primary Ollama
         try {
-            if (! empty($ollamaUrls[0])) {
-                $ctx = stream_context_create(['http' => ['timeout' => 3]]);
-                $resp = @file_get_contents(rtrim($ollamaUrls[0], '/').'/api/tags', false, $ctx);
-                if ($resp) {
-                    $count = count(json_decode($resp, true)['models'] ?? []);
-                    $result['ollama_primary'] = "{$count} models";
-                }
-            }
-        } catch (\Throwable) {
-        }
-        if (! $result['ollama_primary']) {
-            $this->issues[] = 'Ollama Primary down';
-        }
-
-        // Secondary Ollama
-        try {
-            if (! empty($ollamaUrls[1])) {
-                $ctx = stream_context_create(['http' => ['timeout' => 3]]);
-                $resp = @file_get_contents(rtrim($ollamaUrls[1], '/').'/api/tags', false, $ctx);
-                if ($resp) {
-                    $count = count(json_decode($resp, true)['models'] ?? []);
-                    $result['ollama_secondary'] = "{$count} models";
-                }
+            $rows = DB::table('llm_instances')
+                ->where('instance_type', 'ollama')
+                ->where('is_active', true)
+                ->where('routability', 'allowed')
+                ->orderBy('priority')
+                ->get(['instance_id', 'instance_name', 'is_healthy', 'supported_models']);
+            foreach ($rows as $row) {
+                $models = json_decode((string) ($row->supported_models ?? '[]'), true);
+                $result['llm'][] = [
+                    'instance_id' => (string) $row->instance_id,
+                    'name' => (string) $row->instance_name,
+                    'healthy' => (bool) $row->is_healthy,
+                    'models' => is_array($models) ? count($models) : 0,
+                    'source' => 'llm_instances',
+                ];
             }
         } catch (\Throwable) {
         }
 
         return $result;
-    }
-
-    private function getOllamaServiceUrls(): array
-    {
-        try {
-            $urls = collect(DB::select("
-                SELECT base_url
-                FROM llm_instances
-                WHERE instance_type = 'ollama' AND is_active = 1
-                ORDER BY priority ASC
-                LIMIT 2
-            "))
-                ->pluck('base_url')
-                ->filter(fn ($url) => is_string($url) && $url !== '')
-                ->values()
-                ->all();
-
-            if (! empty($urls)) {
-                return $urls;
-            }
-        } catch (\Throwable) {
-        }
-
-        return [config('services.ollama.api_url', 'http://127.0.0.1:11434')];
     }
 
     private function getGpuStatus(): ?string

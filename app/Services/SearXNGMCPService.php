@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\SensitiveTextTelemetry;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -21,6 +22,8 @@ use Illuminate\Support\Facades\Log;
  */
 class SearXNGMCPService
 {
+    private const QUERY_TELEMETRY_SCOPE = 'searxng-mcp-query-v1';
+
     private SearXNGService $searxng;
 
     public function __construct()
@@ -31,10 +34,10 @@ class SearXNGMCPService
     /**
      * Search the web using SearXNG
      *
-     * @param string $query Search query
-     * @param int $max_results Maximum results to return (default: 10)
-     * @param string $language Language code (default: en)
-     * @param string $time_range Time filter: day, week, month, year, or empty
+     * @param  string  $query  Search query
+     * @param  int  $max_results  Maximum results to return (default: 10)
+     * @param  string  $language  Language code (default: en)
+     * @param  string  $time_range  Time filter: day, week, month, year, or empty
      * @return array Search results
      */
     public function searxng_search(
@@ -44,7 +47,7 @@ class SearXNGMCPService
         string $time_range = ''
     ): array {
         Log::info('SearXNGMCPService: searxng_search called', [
-            'query' => $query,
+            ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
             'max_results' => $max_results,
         ]);
 
@@ -58,9 +61,13 @@ class SearXNGMCPService
             'total_found' => $results['total_found'] ?? 0,
             'returned' => $results['returned'] ?? count($results['results'] ?? []),
             'suggestions' => $results['suggestions'] ?? [],
+            'engine_summary' => $results['engine_summary'] ?? null,
+            'engine_health' => $results['engine_health'] ?? null,
+            'degraded' => $results['degraded'] ?? false,
+            'failure_reason' => $results['failure_reason'] ?? null,
             'error' => $results['error'] ?? null,
-            'manual_only' => $results['manual_only'] ?? false,
-            'manual_required' => $results['manual_required'] ?? false,
+            'provider_specific' => $results['provider_specific'] ?? false,
+            'operator_review_required' => $results['operator_review_required'] ?? false,
             'policy' => $results['policy'] ?? null,
             'domain' => $results['domain'] ?? null,
             'source' => 'SearXNG',
@@ -71,9 +78,9 @@ class SearXNGMCPService
     /**
      * Search for images using SearXNG
      *
-     * @param string $query Search query
-     * @param int $max_results Maximum results to return (default: 20)
-     * @param string $language Language code (default: en)
+     * @param  string  $query  Search query
+     * @param  int  $max_results  Maximum results to return (default: 20)
+     * @param  string  $language  Language code (default: en)
      * @return array Image search results
      */
     public function searxng_images(
@@ -82,7 +89,7 @@ class SearXNGMCPService
         string $language = 'en'
     ): array {
         Log::info('SearXNGMCPService: searxng_images called', [
-            'query' => $query,
+            ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
             'max_results' => $max_results,
         ]);
 
@@ -95,9 +102,13 @@ class SearXNGMCPService
             'results' => $results['results'] ?? [],
             'total_found' => $results['total_found'] ?? 0,
             'returned' => $results['returned'] ?? count($results['results'] ?? []),
+            'engine_summary' => $results['engine_summary'] ?? null,
+            'engine_health' => $results['engine_health'] ?? null,
+            'degraded' => $results['degraded'] ?? false,
+            'failure_reason' => $results['failure_reason'] ?? null,
             'error' => $results['error'] ?? null,
-            'manual_only' => $results['manual_only'] ?? false,
-            'manual_required' => $results['manual_required'] ?? false,
+            'provider_specific' => $results['provider_specific'] ?? false,
+            'operator_review_required' => $results['operator_review_required'] ?? false,
             'policy' => $results['policy'] ?? null,
             'domain' => $results['domain'] ?? null,
             'source' => 'SearXNG',
@@ -108,10 +119,10 @@ class SearXNGMCPService
     /**
      * Search for news articles using SearXNG
      *
-     * @param string $query Search query
-     * @param int $max_results Maximum results to return (default: 10)
-     * @param string $language Language code (default: en)
-     * @param string $time_range Time filter: day, week, month, year (default: week)
+     * @param  string  $query  Search query
+     * @param  int  $max_results  Maximum results to return (default: 10)
+     * @param  string  $language  Language code (default: en)
+     * @param  string  $time_range  Time filter: day, week, month, year (default: week)
      * @return array News search results
      */
     public function searxng_news(
@@ -121,7 +132,7 @@ class SearXNGMCPService
         string $time_range = 'week'
     ): array {
         Log::info('SearXNGMCPService: searxng_news called', [
-            'query' => $query,
+            ...SensitiveTextTelemetry::query($query, self::QUERY_TELEMETRY_SCOPE),
             'max_results' => $max_results,
             'time_range' => $time_range,
         ]);
@@ -135,9 +146,13 @@ class SearXNGMCPService
             'results' => $results['results'] ?? [],
             'total_found' => $results['total_found'] ?? 0,
             'returned' => $results['returned'] ?? count($results['results'] ?? []),
+            'engine_summary' => $results['engine_summary'] ?? null,
+            'engine_health' => $results['engine_health'] ?? null,
+            'degraded' => $results['degraded'] ?? false,
+            'failure_reason' => $results['failure_reason'] ?? null,
             'error' => $results['error'] ?? null,
-            'manual_only' => $results['manual_only'] ?? false,
-            'manual_required' => $results['manual_required'] ?? false,
+            'provider_specific' => $results['provider_specific'] ?? false,
+            'operator_review_required' => $results['operator_review_required'] ?? false,
             'policy' => $results['policy'] ?? null,
             'domain' => $results['domain'] ?? null,
             'source' => 'SearXNG',

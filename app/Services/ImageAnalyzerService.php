@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Log;
  * - Face detection (via FaceRegionService integration)
  * - Image classification with custom categories
  *
- * Leverages AIService vision capabilities (Ollama llava / Claude vision)
+ * Leverages the configured AIService vision capabilities.
  * with configurable caching and detail levels.
  *
  * @see AIService for vision processing
@@ -25,6 +25,7 @@ use Illuminate\Support\Facades\Log;
 class ImageAnalyzerService
 {
     protected AIService $aiService;
+
     protected ?FaceRegionService $faceRegionService;
 
     /** Default cache TTL in seconds (1 hour) */
@@ -59,39 +60,54 @@ class ImageAnalyzerService
     /**
      * Analyze an image file with comprehensive AI analysis
      *
-     * @param string $imagePath Absolute path to the image file
-     * @param array $options Analysis options:
-     *   - detail_level: string (low|medium|high) - Level of detail in analysis
-     *   - include_faces: bool - Include face detection via FaceRegionService
-     *   - include_text: bool - Include OCR text extraction
-     *   - include_objects: bool - Include object detection
-     *   - custom_prompt: string - Override default analysis prompt
-     *   - cache_ttl: int - Cache TTL in seconds (0 to disable)
-     *   - force_refresh: bool - Bypass cache and force new analysis
+     * @param  string  $imagePath  Absolute path to the image file
+     * @param  array  $options  Analysis options:
+     *                          - detail_level: string (low|medium|high) - Level of detail in analysis
+     *                          - include_faces: bool - Include face detection via FaceRegionService
+     *                          - include_text: bool - Include OCR text extraction
+     *                          - include_objects: bool - Include object detection
+     *                          - custom_prompt: string - Override default analysis prompt
+     *                          - cache_ttl: int - Cache TTL in seconds (0 to disable)
+     *                          - force_refresh: bool - Bypass cache and force new analysis
      * @return array Analysis result with description, objects, text, faces, tags, confidence_scores
      */
     public function analyze(string $imagePath, array $options = []): array
     {
         $options = $this->normalizeOptions($options);
 
-        if (!file_exists($imagePath)) {
+        if (! file_exists($imagePath)) {
             Log::warning('ImageAnalyzerService: File not found', ['path' => $imagePath]);
-            return $this->errorResult('File not found: ' . $imagePath);
+
+            return $this->errorResult('File not found: '.$imagePath);
         }
 
         $extension = strtolower(pathinfo($imagePath, PATHINFO_EXTENSION));
-        if (!in_array($extension, config('file_types.image'))) {
+        if (! in_array($extension, config('file_types.image'))) {
             Log::warning('ImageAnalyzerService: Unsupported format', ['path' => $imagePath, 'ext' => $extension]);
-            return $this->errorResult('Unsupported image format: ' . $extension);
+
+            return $this->errorResult('Unsupported image format: '.$extension);
         }
 
-        // Check cache unless force refresh
-        $cacheKey = $this->getCacheKey($imagePath, $options);
-        if (!$options['force_refresh'] && $options['cache_ttl'] > 0) {
+        $isLocalFile = is_file($imagePath);
+        $imageContent = $isLocalFile ? @file_get_contents($imagePath) : null;
+        if ($isLocalFile && $imageContent === false) {
+            return $this->errorResult('Failed to read image file: '.$imagePath);
+        }
+        $sourceSha256 = is_string($imageContent) ? hash('sha256', $imageContent) : null;
+
+        // Check cache unless force refresh. Hash the same local bytes that will
+        // be analyzed, avoiding a file change between cache-keying and reading.
+        $cacheKey = $this->getCacheKey($imagePath, $options, $sourceSha256);
+        if (! $options['force_refresh'] && $options['cache_ttl'] > 0) {
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
+                if ($sourceSha256 !== null && ! $this->localFileMatchesHash($imagePath, $sourceSha256)) {
+                    return $this->sourceChangedResult();
+                }
+
                 Log::debug('ImageAnalyzerService: Cache hit', ['path' => $imagePath]);
                 $cached['from_cache'] = true;
+
                 return $cached;
             }
         }
@@ -104,9 +120,13 @@ class ImageAnalyzerService
         ]);
 
         $startTime = microtime(true);
-        $result = $this->performAnalysis($imagePath, $options);
-        $result['duration_ms'] = (int)((microtime(true) - $startTime) * 1000);
+        $result = $this->performAnalysis($imagePath, $options, $imageContent);
+        $result['duration_ms'] = (int) ((microtime(true) - $startTime) * 1000);
         $result['from_cache'] = false;
+
+        if ($sourceSha256 !== null && ! $this->localFileMatchesHash($imagePath, $sourceSha256)) {
+            return $this->sourceChangedResult();
+        }
 
         // Cache successful results
         if ($result['success'] && $options['cache_ttl'] > 0) {
@@ -119,8 +139,8 @@ class ImageAnalyzerService
     /**
      * Analyze an image from URL
      *
-     * @param string $url Image URL
-     * @param array $options Same options as analyze()
+     * @param  string  $url  Image URL
+     * @param  array  $options  Same options as analyze()
      * @return array Analysis result
      */
     public function analyzeUrl(string $url, array $options = []): array
@@ -128,17 +148,18 @@ class ImageAnalyzerService
         $options = $this->normalizeOptions($options);
 
         // Validate URL
-        if (!filter_var($url, FILTER_VALIDATE_URL)) {
-            return $this->errorResult('Invalid URL: ' . $url);
+        if (! filter_var($url, FILTER_VALIDATE_URL)) {
+            return $this->errorResult('Invalid URL: '.$url);
         }
 
         // Check cache
         $cacheKey = $this->getCacheKey($url, $options);
-        if (!$options['force_refresh'] && $options['cache_ttl'] > 0) {
+        if (! $options['force_refresh'] && $options['cache_ttl'] > 0) {
             $cached = Cache::get($cacheKey);
             if ($cached !== null) {
                 Log::debug('ImageAnalyzerService: Cache hit for URL', ['url' => $url]);
                 $cached['from_cache'] = true;
+
                 return $cached;
             }
         }
@@ -147,14 +168,14 @@ class ImageAnalyzerService
 
         // Download image to temp file
         $tempPath = $this->downloadImage($url);
-        if (!$tempPath) {
-            return $this->errorResult('Failed to download image from URL: ' . $url);
+        if (! $tempPath) {
+            return $this->errorResult('Failed to download image from URL: '.$url);
         }
 
         try {
             $startTime = microtime(true);
             $result = $this->performAnalysis($tempPath, $options);
-            $result['duration_ms'] = (int)((microtime(true) - $startTime) * 1000);
+            $result['duration_ms'] = (int) ((microtime(true) - $startTime) * 1000);
             $result['from_cache'] = false;
             $result['source_url'] = $url;
 
@@ -172,35 +193,36 @@ class ImageAnalyzerService
     /**
      * Describe an image with a custom prompt
      *
-     * @param string $path Image file path
-     * @param string $prompt Custom prompt for description
-     * @param array $options Additional options
+     * @param  string  $path  Image file path
+     * @param  string  $prompt  Custom prompt for description
+     * @param  array  $options  Additional options
      * @return array Description result
      */
     public function describeImage(string $path, string $prompt, array $options = []): array
     {
-        if (!file_exists($path)) {
-            return $this->errorResult('File not found: ' . $path);
+        if (! file_exists($path)) {
+            return $this->errorResult('File not found: '.$path);
         }
 
         $imageContent = @file_get_contents($path);
         if ($imageContent === false) {
-            return $this->errorResult('Failed to read image file: ' . $path);
+            return $this->errorResult('Failed to read image file: '.$path);
         }
 
         $startTime = microtime(true);
 
         $visionResult = $this->aiService->processImage(
-            base64_encode($imageContent),
+            $imageContent,
             $prompt,
             $options
         );
 
-        if (!$visionResult['success']) {
+        if (! $visionResult['success']) {
             Log::warning('ImageAnalyzerService: Vision processing failed', [
                 'path' => $path,
                 'error' => $visionResult['error'] ?? 'Unknown error',
             ]);
+
             return $this->errorResult($visionResult['error'] ?? 'Vision processing failed');
         }
 
@@ -209,26 +231,26 @@ class ImageAnalyzerService
             'description' => $visionResult['response'] ?? '',
             'provider' => $visionResult['provider'] ?? null,
             'model' => $visionResult['model'] ?? null,
-            'duration_ms' => (int)((microtime(true) - $startTime) * 1000),
+            'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
         ];
     }
 
     /**
      * Detect objects in an image
      *
-     * @param string $path Image file path
-     * @param array $options Detection options
+     * @param  string  $path  Image file path
+     * @param  array  $options  Detection options
      * @return array Object detection result with objects array
      */
     public function detectObjects(string $path, array $options = []): array
     {
-        if (!file_exists($path)) {
-            return $this->errorResult('File not found: ' . $path);
+        if (! file_exists($path)) {
+            return $this->errorResult('File not found: '.$path);
         }
 
         $imageContent = @file_get_contents($path);
         if ($imageContent === false) {
-            return $this->errorResult('Failed to read image file: ' . $path);
+            return $this->errorResult('Failed to read image file: '.$path);
         }
 
         $prompt = <<<'PROMPT'
@@ -258,12 +280,12 @@ PROMPT;
         $startTime = microtime(true);
 
         $visionResult = $this->aiService->processImage(
-            base64_encode($imageContent),
+            $imageContent,
             $prompt,
             $options
         );
 
-        if (!$visionResult['success']) {
+        if (! $visionResult['success']) {
             return $this->errorResult($visionResult['error'] ?? 'Object detection failed');
         }
 
@@ -278,7 +300,7 @@ PROMPT;
                 'raw_response' => $response,
                 'parse_error' => 'Failed to parse JSON response',
                 'provider' => $visionResult['provider'] ?? null,
-                'duration_ms' => (int)((microtime(true) - $startTime) * 1000),
+                'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
             ];
         }
 
@@ -289,26 +311,26 @@ PROMPT;
             'scene_type' => $parsed['scene_type'] ?? 'unknown',
             'provider' => $visionResult['provider'] ?? null,
             'model' => $visionResult['model'] ?? null,
-            'duration_ms' => (int)((microtime(true) - $startTime) * 1000),
+            'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
         ];
     }
 
     /**
      * Extract text from an image (OCR)
      *
-     * @param string $path Image file path
-     * @param array $options Extraction options
+     * @param  string  $path  Image file path
+     * @param  array  $options  Extraction options
      * @return array Text extraction result
      */
     public function extractText(string $path, array $options = []): array
     {
-        if (!file_exists($path)) {
-            return $this->errorResult('File not found: ' . $path);
+        if (! file_exists($path)) {
+            return $this->errorResult('File not found: '.$path);
         }
 
         $imageContent = @file_get_contents($path);
         if ($imageContent === false) {
-            return $this->errorResult('Failed to read image file: ' . $path);
+            return $this->errorResult('Failed to read image file: '.$path);
         }
 
         $prompt = <<<'PROMPT'
@@ -339,12 +361,12 @@ PROMPT;
         $startTime = microtime(true);
 
         $visionResult = $this->aiService->processImage(
-            base64_encode($imageContent),
+            $imageContent,
             $prompt,
             $options
         );
 
-        if (!$visionResult['success']) {
+        if (! $visionResult['success']) {
             return $this->errorResult($visionResult['error'] ?? 'Text extraction failed');
         }
 
@@ -360,7 +382,7 @@ PROMPT;
                 'raw_response' => $response,
                 'parse_error' => 'Failed to parse JSON response',
                 'provider' => $visionResult['provider'] ?? null,
-                'duration_ms' => (int)((microtime(true) - $startTime) * 1000),
+                'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
             ];
         }
 
@@ -373,22 +395,22 @@ PROMPT;
             'text_quality' => $parsed['text_quality'] ?? 'unknown',
             'provider' => $visionResult['provider'] ?? null,
             'model' => $visionResult['model'] ?? null,
-            'duration_ms' => (int)((microtime(true) - $startTime) * 1000),
+            'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
         ];
     }
 
     /**
      * Classify an image into specified categories
      *
-     * @param string $path Image file path
-     * @param array $categories List of possible categories
-     * @param array $options Classification options
+     * @param  string  $path  Image file path
+     * @param  array  $categories  List of possible categories
+     * @param  array  $options  Classification options
      * @return array Classification result with category, confidence, and reasoning
      */
     public function classifyImage(string $path, array $categories, array $options = []): array
     {
-        if (!file_exists($path)) {
-            return $this->errorResult('File not found: ' . $path);
+        if (! file_exists($path)) {
+            return $this->errorResult('File not found: '.$path);
         }
 
         if (empty($categories)) {
@@ -397,10 +419,10 @@ PROMPT;
 
         $imageContent = @file_get_contents($path);
         if ($imageContent === false) {
-            return $this->errorResult('Failed to read image file: ' . $path);
+            return $this->errorResult('Failed to read image file: '.$path);
         }
 
-        $categoryList = implode(', ', array_map(fn($c) => '"' . $c . '"', $categories));
+        $categoryList = implode(', ', array_map(fn ($c) => '"'.$c.'"', $categories));
 
         $prompt = <<<PROMPT
 Classify this image into ONE of the following categories: [{$categoryList}]
@@ -425,12 +447,12 @@ PROMPT;
         $startTime = microtime(true);
 
         $visionResult = $this->aiService->processImage(
-            base64_encode($imageContent),
+            $imageContent,
             $prompt,
             $options
         );
 
-        if (!$visionResult['success']) {
+        if (! $visionResult['success']) {
             return $this->errorResult($visionResult['error'] ?? 'Classification failed');
         }
 
@@ -445,13 +467,13 @@ PROMPT;
                 'raw_response' => $response,
                 'parse_error' => 'Failed to parse JSON response',
                 'provider' => $visionResult['provider'] ?? null,
-                'duration_ms' => (int)((microtime(true) - $startTime) * 1000),
+                'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
             ];
         }
 
         // Validate the selected category is in our list
         $selectedCategory = $parsed['category'] ?? 'unknown';
-        if (!in_array($selectedCategory, $categories)) {
+        if (! in_array($selectedCategory, $categories)) {
             // Find closest match
             $selectedCategory = $this->findClosestCategory($selectedCategory, $categories);
         }
@@ -459,14 +481,14 @@ PROMPT;
         return [
             'success' => true,
             'category' => $selectedCategory,
-            'confidence' => (float)($parsed['confidence'] ?? 0.5),
+            'confidence' => (float) ($parsed['confidence'] ?? 0.5),
             'confidence_level' => $parsed['confidence_level'] ?? 'medium',
             'reasoning' => $parsed['reasoning'] ?? null,
             'alternative_categories' => $parsed['alternative_categories'] ?? [],
             'provided_categories' => $categories,
             'provider' => $visionResult['provider'] ?? null,
             'model' => $visionResult['model'] ?? null,
-            'duration_ms' => (int)((microtime(true) - $startTime) * 1000),
+            'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
         ];
     }
 
@@ -482,7 +504,7 @@ PROMPT;
 
         return [
             'available' => $visionAvailable,
-            'vision_provider' => $visionAvailable ? 'ollama/claude' : null,
+            'vision_provider' => $visionAvailable ? 'configured' : null,
             'face_detection' => $faceServiceAvailable,
             'face_service_status' => $this->faceRegionService?->getStatus() ?? ['available' => false],
             'supported_formats' => config('file_types.image'),
@@ -505,9 +527,11 @@ PROMPT;
     /**
      * Perform the actual image analysis
      */
-    protected function performAnalysis(string $imagePath, array $options): array
+    protected function performAnalysis(string $imagePath, array $options, ?string $imageContent = null): array
     {
-        $imageContent = @file_get_contents($imagePath);
+        if ($imageContent === null) {
+            $imageContent = @file_get_contents($imagePath);
+        }
         if ($imageContent === false) {
             return $this->errorResult('Failed to read image file');
         }
@@ -530,16 +554,17 @@ PROMPT;
 
         // Process with vision AI
         $visionResult = $this->aiService->processImage(
-            base64_encode($imageContent),
+            $imageContent,
             $prompt,
             ['suppressAlert' => true]
         );
 
-        if (!$visionResult['success']) {
+        if (! $visionResult['success']) {
             Log::warning('ImageAnalyzerService: Vision analysis failed', [
                 'path' => $imagePath,
                 'error' => $visionResult['error'] ?? 'Unknown error',
             ]);
+
             return $this->errorResult($visionResult['error'] ?? 'Vision analysis failed');
         }
 
@@ -582,7 +607,7 @@ PROMPT;
     protected function buildAnalysisPrompt(array $options): string
     {
         // Use custom prompt if provided
-        if (!empty($options['custom_prompt'])) {
+        if (! empty($options['custom_prompt'])) {
             return $options['custom_prompt'];
         }
 
@@ -635,7 +660,7 @@ ADDITION;
      */
     protected function detectFaces(string $imagePath): array
     {
-        if (!$this->faceRegionService || !$this->faceRegionService->isAvailable()) {
+        if (! $this->faceRegionService || ! $this->faceRegionService->isAvailable()) {
             return [];
         }
 
@@ -661,6 +686,7 @@ ADDITION;
                 'path' => $imagePath,
                 'error' => $e->getMessage(),
             ]);
+
             return [];
         }
     }
@@ -702,6 +728,7 @@ ADDITION;
             $content = @file_get_contents($url, false, $context);
             if ($content === false) {
                 Log::warning('ImageAnalyzerService: Failed to download image', ['url' => $url]);
+
                 return null;
             }
 
@@ -723,7 +750,7 @@ ADDITION;
                 }
             }
 
-            $tempPath = sys_get_temp_dir() . '/image_analysis_' . uniqid() . '.' . $extension;
+            $tempPath = sys_get_temp_dir().'/image_analysis_'.uniqid().'.'.$extension;
             if (file_put_contents($tempPath, $content) === false) {
                 return null;
             }
@@ -734,6 +761,7 @@ ADDITION;
                 'url' => $url,
                 'error' => $e->getMessage(),
             ]);
+
             return null;
         }
     }
@@ -757,7 +785,7 @@ ADDITION;
     /**
      * Generate cache key for analysis
      */
-    protected function getCacheKey(string $pathOrUrl, array $options): string
+    protected function getCacheKey(string $pathOrUrl, array $options, ?string $contentSha256 = null): string
     {
         $keyData = [
             'path' => $pathOrUrl,
@@ -768,12 +796,29 @@ ADDITION;
             'prompt' => $options['custom_prompt'] ?? '',
         ];
 
-        // For file paths, include modification time
-        if (file_exists($pathOrUrl)) {
+        // Bind local-file results to their bytes so same-path/same-mtime
+        // replacements cannot reuse a stale analysis. URL freshness is governed
+        // by the existing TTL policy.
+        if (is_file($pathOrUrl)) {
             $keyData['mtime'] = filemtime($pathOrUrl);
+            $keyData['content_sha256'] = $contentSha256 ?? (@hash_file('sha256', $pathOrUrl) ?: 'unreadable');
         }
 
-        return self::CACHE_PREFIX . md5(json_encode($keyData));
+        return self::CACHE_PREFIX.md5(json_encode($keyData));
+    }
+
+    private function localFileMatchesHash(string $path, string $expectedSha256): bool
+    {
+        $currentSha256 = @hash_file('sha256', $path);
+
+        return is_string($currentSha256) && hash_equals($expectedSha256, $currentSha256);
+    }
+
+    private function sourceChangedResult(): array
+    {
+        return $this->errorResult('Image source changed during analysis; please retry') + [
+            'error_code' => 'source_changed_during_analysis',
+        ];
     }
 
     /**
@@ -837,8 +882,8 @@ ADDITION;
     /**
      * Clear cached analysis for a specific image
      *
-     * @param string $pathOrUrl Image path or URL
-     * @param array $options Options used for the analysis (to match cache key)
+     * @param  string  $pathOrUrl  Image path or URL
+     * @param  array  $options  Options used for the analysis (to match cache key)
      * @return bool Whether cache was cleared
      */
     public function clearCache(string $pathOrUrl, array $options = []): bool
@@ -870,8 +915,8 @@ ADDITION;
     /**
      * Batch analyze multiple images
      *
-     * @param array $imagePaths Array of image paths
-     * @param array $options Analysis options
+     * @param  array  $imagePaths  Array of image paths
+     * @param  array  $options  Analysis options
      * @return array Array of results keyed by path
      */
     public function analyzeBatch(array $imagePaths, array $options = []): array
@@ -888,18 +933,18 @@ ADDITION;
     /**
      * Compare two images for similarity
      *
-     * @param string $path1 First image path
-     * @param string $path2 Second image path
-     * @param array $options Comparison options
+     * @param  string  $path1  First image path
+     * @param  string  $path2  Second image path
+     * @param  array  $options  Comparison options
      * @return array Comparison result with similarity score
      */
     public function compareImages(string $path1, string $path2, array $options = []): array
     {
-        if (!file_exists($path1)) {
-            return $this->errorResult('First image not found: ' . $path1);
+        if (! file_exists($path1)) {
+            return $this->errorResult('First image not found: '.$path1);
         }
-        if (!file_exists($path2)) {
-            return $this->errorResult('Second image not found: ' . $path2);
+        if (! file_exists($path2)) {
+            return $this->errorResult('Second image not found: '.$path2);
         }
 
         $image1Content = @file_get_contents($path1);
@@ -940,7 +985,7 @@ PROMPT;
         $analysis1 = $this->analyze($path1, ['detail_level' => 'high']);
         $analysis2 = $this->analyze($path2, ['detail_level' => 'high']);
 
-        if (!$analysis1['success'] || !$analysis2['success']) {
+        if (! $analysis1['success'] || ! $analysis2['success']) {
             return $this->errorResult('Failed to analyze one or both images');
         }
 

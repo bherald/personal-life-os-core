@@ -1,11 +1,20 @@
-@import 'tailwindcss/base';
-@import 'tailwindcss/components';
-@import 'tailwindcss/utilities';
+@import 'tailwindcss';
+@config '../../tailwind.config.js';
 
-/* ========================================
-   Ops console font
-   ======================================== */
-@import url('https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&display=swap');
+/* Preserve v3 baseline values while keeping Decision Desk semantic overrides. */
+@theme {
+  --default-ring-width: 3px;
+  --default-ring-color: var(--color-blue-500);
+}
+
+@layer base {
+  *, ::after, ::before, ::backdrop, ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+  input::placeholder, textarea::placeholder { color: var(--color-gray-400); }
+  button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+  dialog { margin: auto; }
+}
 
 @layer base {
   /* ========================================
@@ -287,23 +296,23 @@
   }
 
   .badge-success {
-    @apply bg-[#27ae60] bg-opacity-20 text-[#27ae60] border border-[#27ae60];
+    @apply bg-[#27ae60]/20 text-[#27ae60] border border-[#27ae60];
   }
 
   .badge-warning {
-    @apply bg-[#f39c12] bg-opacity-20 text-[#f39c12] border border-[#f39c12];
+    @apply bg-[#f39c12]/20 text-[#f39c12] border border-[#f39c12];
   }
 
   .badge-danger {
-    @apply bg-[#e74c3c] bg-opacity-20 text-[#e74c3c] border border-[#e74c3c];
+    @apply bg-[#e74c3c]/20 text-[#e74c3c] border border-[#e74c3c];
   }
 
   .badge-info {
-    @apply bg-accent bg-opacity-20 text-accent border border-accent;
+    @apply bg-accent/20 text-accent border border-accent;
   }
 
   .badge-gray {
-    @apply bg-opacity-20 border;
+    @apply border;
     background-color: var(--color-text-secondary);
     color: var(--color-text-secondary);
     border-color: var(--color-text-secondary);
@@ -317,19 +326,19 @@
   }
 
   .alert-success {
-    @apply bg-[#27ae60] bg-opacity-10 border-[#27ae60] text-[#27ae60];
+    @apply bg-[#27ae60]/10 border-[#27ae60] text-[#27ae60];
   }
 
   .alert-warning {
-    @apply bg-[#f39c12] bg-opacity-10 border-[#f39c12] text-[#f39c12];
+    @apply bg-[#f39c12]/10 border-[#f39c12] text-[#f39c12];
   }
 
   .alert-danger {
-    @apply bg-[#e74c3c] bg-opacity-10 border-[#e74c3c] text-[#e74c3c];
+    @apply bg-[#e74c3c]/10 border-[#e74c3c] text-[#e74c3c];
   }
 
   .alert-info {
-    @apply bg-accent bg-opacity-10 border-accent text-accent;
+    @apply bg-accent/10 border-accent text-accent;
   }
 
   /* ========================================

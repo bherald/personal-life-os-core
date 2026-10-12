@@ -2,7 +2,12 @@
 
 namespace App\Console\Commands;
 
+use App\Services\FileCategorizationRAGService;
+use App\Services\McpExternalRuntimeAdmissionService;
+use App\Services\PerceptualHashService;
+use App\Services\VideoHashService;
 use Illuminate\Console\Command;
+use Illuminate\Process\ProcessResult;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
 
@@ -195,6 +200,11 @@ class HealthGateCommand extends Command
 
     private function extractPhpUnitSummary(string $output): string
     {
+        $pao = $this->parsePaoPhpUnitResult($output);
+        if ($pao !== null) {
+            return "{$pao['tests']} tests, {$pao['assertions']} assertions";
+        }
+
         if (preg_match('/Tests:\s+(\d+),\s+Assertions:\s+(\d+)/i', $output, $m)) {
             return "{$m[1]} tests, {$m[2]} assertions";
         }
@@ -211,13 +221,32 @@ class HealthGateCommand extends Command
     }
 
     /**
+     * @return array{tests:int,assertions:int,failed:int}|null
+     */
+    private function parsePaoPhpUnitResult(string $output): ?array
+    {
+        $decoded = json_decode(trim($output), true);
+        if (! is_array($decoded)
+            || ($decoded['tool'] ?? null) !== 'phpunit'
+            || ! is_numeric($decoded['tests'] ?? null)
+            || ! is_numeric($decoded['assertions'] ?? null)) {
+            return null;
+        }
+
+        return [
+            'tests' => (int) $decoded['tests'],
+            'assertions' => (int) $decoded['assertions'],
+            'failed' => (int) ($decoded['failed'] ?? 0),
+        ];
+    }
+
+    /**
      * Pre-flight check: every enabled external MCP server's configured
      * absolute executable path and known-executable env var must point
      * at something that exists on disk. Returns [passed, detail].
      *
-     * Bare executable names (e.g. `node`, `npx`) resolve via PATH at
-     * launch and are NOT flagged — only absolute paths (`/...`, `~/...`)
-     * are verified.
+     * Runtime admission rejects indirect launchers and verifies exact npm
+     * manifest/lock/install/binary ownership when runtime_pin is configured.
      *
      * @return array{0: bool, 1: string}
      */
@@ -231,6 +260,13 @@ class HealthGateCommand extends Command
                 continue;
             }
             if (($cfg['type'] ?? 'external') !== 'external') {
+                continue;
+            }
+
+            $admission = app(McpExternalRuntimeAdmissionService::class)->inspect($cfg);
+            if (! $admission['admitted']) {
+                $missing[] = "{$name}: runtime {$admission['reason_code']}";
+
                 continue;
             }
 
@@ -261,7 +297,7 @@ class HealthGateCommand extends Command
             return [false, 'missing paths: '.implode('; ', $missing)];
         }
 
-        return [true, 'all enabled external MCP server paths resolve'];
+        return [true, 'all enabled external MCP runtimes are pinned and paths resolve'];
     }
 
     /**
@@ -278,10 +314,10 @@ class HealthGateCommand extends Command
     protected function fileTypeClassifierTargets(): array
     {
         return [
-            ['class' => \App\Services\PerceptualHashService::class,       'constant' => 'SUPPORTED_EXTENSIONS',       'config_key' => 'image'],
-            ['class' => \App\Services\VideoHashService::class,            'constant' => 'SUPPORTED_EXTENSIONS',       'config_key' => 'video'],
-            ['class' => \App\Services\FileCategorizationRAGService::class, 'constant' => 'BULK_TEXT_HEAVY_EXTENSIONS', 'config_key' => 'rag_indexable'],
-            ['class' => \App\Console\Commands\PipelineBurnDownCommand::class, 'constant' => 'IMAGE_EXTENSIONS',       'config_key' => 'image'],
+            ['class' => PerceptualHashService::class,       'constant' => 'SUPPORTED_EXTENSIONS',       'config_key' => 'image'],
+            ['class' => VideoHashService::class,            'constant' => 'SUPPORTED_EXTENSIONS',       'config_key' => 'video'],
+            ['class' => FileCategorizationRAGService::class, 'constant' => 'BULK_TEXT_HEAVY_EXTENSIONS', 'config_key' => 'rag_indexable'],
+            ['class' => PipelineBurnDownCommand::class, 'constant' => 'IMAGE_EXTENSIONS',       'config_key' => 'image'],
         ];
     }
 
@@ -350,7 +386,7 @@ class HealthGateCommand extends Command
         return [true, 'all tracked extension constants align with config(file_types.*)'];
     }
 
-    private function runStabilizationTestProcess(): \Illuminate\Process\ProcessResult
+    private function runStabilizationTestProcess(): ProcessResult
     {
         $commands = [
             ['php', 'vendor/bin/phpunit', 'tests/Feature/Stabilization'],
@@ -391,6 +427,11 @@ class HealthGateCommand extends Command
         }
 
         $detail = $this->extractPhpUnitSummary($output);
+
+        $pao = $this->parsePaoPhpUnitResult($output);
+        if ($pao !== null && $pao['failed'] > 0) {
+            return [false, "{$detail} — {$pao['failed']} failures\n{$output}"];
+        }
 
         if (preg_match('/Failures?: (\d+)|Errors?: (\d+)/', $output, $fm)) {
             $failCount = max((int) ($fm[1] ?? 0), (int) ($fm[2] ?? 0));

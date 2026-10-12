@@ -19,18 +19,41 @@
  *   POST /fill       - Fill form field
  *   POST /click      - Click element
  *   POST /content    - Get page content
+ *   POST /snapshot   - Get capped accessibility snapshot (untrusted content)
  *   GET  /health     - Health check
  *   POST /close      - Close current page
  *   POST /shutdown   - Shutdown server
+ *   GET/POST /allowlist - Inspect or add allowed navigation domains
+ *
+ * Every endpoint requires installation-derived bearer authentication and
+ * loopback Host/Origin validation. Arbitrary page evaluation is off by default.
  */
 
 const http = require('http');
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const {
+    DEFAULT_MAX_CONTENT_WINDOW_CHARS,
+    contentWindow,
+    isDomainAllowed,
+    navigationScopeForTarget,
+    normalizeDomain,
+    parseJsonBody,
+    requestPolicyError,
+    requireAutomationToken,
+    resolvePublicNavigationTarget,
+    safeOutputName,
+    sendJson,
+} = require('./security-policy.cjs');
 
 const PORT = parseInt(process.argv[2]) || 9223;
 const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR || '/tmp/playwright-screenshots';
+const AUTH_TOKEN = requireAutomationToken();
+const ALLOW_EVALUATE = process.env.BROWSER_AUTOMATION_ALLOW_EVALUATE === 'true';
+const MAX_SNAPSHOT_CHARS = 200000;
+const ALLOWED_DOMAINS = new Set();
+const BLOCKED_EXTENSIONS = ['.exe', '.msi', '.dll', '.bat', '.cmd', '.ps1', '.sh', '.dmg', '.pkg', '.deb', '.rpm', '.zip', '.rar', '.7z', '.tar', '.gz'];
 
 // Ensure screenshot directory exists
 if (!fs.existsSync(SCREENSHOT_DIR)) {
@@ -41,6 +64,9 @@ let browser = null;
 let context = null;
 let page = null;
 let lastActivity = Date.now();
+let activeNavigationScope = null;
+let blockedNavigationUrl = null;
+let blockedNavigationError = null;
 
 // Auto-restart browser if idle for too long (30 minutes)
 const IDLE_TIMEOUT = 30 * 60 * 1000;
@@ -51,14 +77,21 @@ const IDLE_TIMEOUT = 30 * 60 * 1000;
 async function getBrowser() {
     if (!browser || !browser.isConnected()) {
         console.log('[Playwright] Launching browser...');
+        const isRoot = process.getuid && process.getuid() === 0;
+        const args = [
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+        ];
+        if (isRoot) {
+            args.push('--no-sandbox', '--disable-setuid-sandbox');
+        }
+
+        const executablePath = process.env.PLAYWRIGHT_EXECUTABLE_PATH || undefined;
         browser = await chromium.launch({
             headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled',
-            ],
+            args,
+            executablePath,
+            chromiumSandbox: !isRoot,
         });
         console.log('[Playwright] Browser launched');
     }
@@ -68,8 +101,14 @@ async function getBrowser() {
 /**
  * Get or create browser context
  */
-async function getContext() {
+async function getContext(forceNew = false) {
     const b = await getBrowser();
+
+    if (forceNew && context) {
+        await context.close().catch(() => {});
+        context = null;
+        page = null;
+    }
 
     if (!context) {
         console.log('[Playwright] Creating browser context...');
@@ -78,8 +117,8 @@ async function getContext() {
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             locale: 'en-US',
             timezoneId: 'America/New_York',
-            geolocation: { longitude: -74.006, latitude: 40.7128 },
-            permissions: ['geolocation'],
+            acceptDownloads: false,
+            serviceWorkers: 'block',
         });
 
         // Add stealth scripts to avoid detection
@@ -109,43 +148,60 @@ async function getContext() {
 /**
  * Get or create page
  */
-async function getPage() {
-    const ctx = await getContext();
+async function getPage(freshSession = false) {
+    const ctx = await getContext(freshSession);
 
     if (!page || page.isClosed()) {
         console.log('[Playwright] Creating new page...');
         page = await ctx.newPage();
+        const cdp = await ctx.newCDPSession(page);
+        await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*', resourceType: 'Document', requestStage: 'Request' }],
+        });
+        cdp.on('Fetch.requestPaused', async event => {
+            try {
+                if (!activeNavigationScope || !isDomainAllowed(event.request.url, activeNavigationScope)) {
+                    blockedNavigationUrl = event.request.url;
+                    blockedNavigationError = 'Top-level navigation left the operation domain scope';
+                    console.log(`[Playwright] Security: Blocked document request outside operation scope - ${event.request.url}`);
+                    await cdp.send('Fetch.failRequest', {
+                        requestId: event.requestId,
+                        errorReason: 'BlockedByClient',
+                    });
+                    return;
+                }
+
+                const dnsPolicy = await resolvePublicNavigationTarget(event.request.url);
+                if (!dnsPolicy.allowed) {
+                    blockedNavigationUrl = event.request.url;
+                    blockedNavigationError = 'Top-level hostname did not resolve exclusively to public addresses';
+                    console.log(`[Playwright] Security: Blocked document request by DNS policy - ${dnsPolicy.reason}`);
+                    await cdp.send('Fetch.failRequest', {
+                        requestId: event.requestId,
+                        errorReason: 'BlockedByClient',
+                    });
+                    return;
+                }
+
+                await cdp.send('Fetch.continueRequest', { requestId: event.requestId });
+            } catch (error) {
+                console.log(`[Playwright] Security: Document request policy failed closed - ${error.message}`);
+                await cdp.send('Fetch.failRequest', {
+                    requestId: event.requestId,
+                    errorReason: 'BlockedByClient',
+                }).catch(() => {});
+            }
+        });
+        page.on('download', download => download.cancel().catch(() => {}));
+        page.on('popup', popup => {
+            console.log(`[Playwright] Security: Blocked popup - ${popup.url()}`);
+            popup.close().catch(() => {});
+        });
         console.log('[Playwright] Page created');
     }
 
     lastActivity = Date.now();
     return page;
-}
-
-/**
- * Parse JSON body from request
- */
-function parseBody(req) {
-    return new Promise((resolve, reject) => {
-        let body = '';
-        req.on('data', chunk => body += chunk);
-        req.on('end', () => {
-            try {
-                resolve(body ? JSON.parse(body) : {});
-            } catch (e) {
-                reject(new Error('Invalid JSON'));
-            }
-        });
-        req.on('error', reject);
-    });
-}
-
-/**
- * Send JSON response
- */
-function sendJson(res, status, data) {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
 }
 
 /**
@@ -156,6 +212,11 @@ async function handleRequest(req, res) {
     const method = req.method;
 
     try {
+        const policyError = requestPolicyError(req, PORT, AUTH_TOKEN);
+        if (policyError) {
+            return sendJson(res, policyError.status, { error: policyError.error });
+        }
+
         // Health check
         if (url === '/health' && method === 'GET') {
             return sendJson(res, 200, {
@@ -165,6 +226,28 @@ async function handleRequest(req, res) {
                 uptime: process.uptime(),
                 lastActivity: new Date(lastActivity).toISOString(),
                 engine: 'playwright',
+                security: {
+                    sandboxEnabled: !(process.getuid && process.getuid() === 0),
+                    authRequired: true,
+                    hostProtection: true,
+                    originProtection: true,
+                    domainAllowlist: ALLOWED_DOMAINS.size,
+                    freshContextPerNavigation: true,
+                    downloadsAccepted: false,
+                    serviceWorkersBlocked: true,
+                    arbitraryEvaluateEnabled: ALLOW_EVALUATE,
+                    topLevelNavigationAllowlist: true,
+                    documentRequestsScoped: true,
+                    ipLiteralAndLocalhostTargetsBlocked: true,
+                    topLevelDnsPublicAddressesRequired: true,
+                    dnsResolutionFailClosed: true,
+                    popupsBlocked: true,
+                    credentialApiEnabled: false,
+                    contentWindowing: true,
+                    maxContentWindowChars: DEFAULT_MAX_CONTENT_WINDOW_CHARS,
+                    maxRequestBodyBytes: 1024 * 1024,
+                    maxSnapshotChars: MAX_SNAPSHOT_CHARS,
+                },
             });
         }
 
@@ -178,25 +261,71 @@ async function handleRequest(req, res) {
             return;
         }
 
-        const body = await parseBody(req);
+        const body = await parseJsonBody(req);
 
         // Navigate to URL
         if (url === '/navigate' && method === 'POST') {
-            const { url: targetUrl, waitUntil = 'networkidle', timeout = 30000 } = body;
+            const { url: targetUrl, waitUntil = 'networkidle', timeout = 30000, bypassAllowlist = false, freshSession = true } = body;
 
             if (!targetUrl) {
                 return sendJson(res, 400, { error: 'url is required' });
             }
 
-            const p = await getPage();
-            console.log(`[Playwright] Navigating to: ${targetUrl}`);
+            const navigationScope = navigationScopeForTarget(targetUrl, ALLOWED_DOMAINS, bypassAllowlist);
+            if (!navigationScope) {
+                return sendJson(res, 403, { error: 'Domain not in allowlist' });
+            }
 
-            await p.goto(targetUrl, {
-                waitUntil,
-                timeout
-            });
+            const dnsPolicy = await resolvePublicNavigationTarget(targetUrl);
+            if (!dnsPolicy.allowed) {
+                return sendJson(res, 403, {
+                    error: 'Target hostname did not resolve exclusively to public addresses',
+                    reason: dnsPolicy.reason,
+                });
+            }
+
+            let parsedTarget;
+            try {
+                parsedTarget = new URL(targetUrl);
+            } catch {
+                return sendJson(res, 400, { error: 'Invalid URL' });
+            }
+            if (!['http:', 'https:'].includes(parsedTarget.protocol) || parsedTarget.username || parsedTarget.password) {
+                return sendJson(res, 403, { error: 'URL scheme or credentials are not allowed' });
+            }
+            if (BLOCKED_EXTENSIONS.some(extension => parsedTarget.pathname.toLowerCase().endsWith(extension))) {
+                return sendJson(res, 403, { error: 'Blocked file type' });
+            }
+
+            activeNavigationScope = navigationScope;
+            blockedNavigationUrl = null;
+            blockedNavigationError = null;
+            const p = await getPage(freshSession);
+            console.log(`[Playwright] Navigating to: ${targetUrl} (fresh session: ${freshSession})`);
+
+            try {
+                await p.goto(targetUrl, {
+                    waitUntil,
+                    timeout
+                });
+            } catch (error) {
+                if (blockedNavigationUrl) {
+                    return sendJson(res, 403, {
+                        error: blockedNavigationError,
+                        blockedUrl: blockedNavigationUrl,
+                    });
+                }
+                throw error;
+            }
 
             const pageUrl = p.url();
+            if (!isDomainAllowed(pageUrl, navigationScope)) {
+                await p.goto('about:blank').catch(() => {});
+                return sendJson(res, 403, {
+                    error: 'Final navigation URL left the operation domain scope',
+                    blockedUrl: pageUrl,
+                });
+            }
             const title = await p.title();
 
             return sendJson(res, 200, {
@@ -211,7 +340,7 @@ async function handleRequest(req, res) {
             const { name, selector, fullPage = false } = body;
 
             const p = await getPage();
-            const filename = name || `screenshot-${Date.now()}`;
+            const filename = safeOutputName(name, `screenshot-${Date.now()}`);
             const filepath = path.join(SCREENSHOT_DIR, `${filename}.png`);
 
             if (selector) {
@@ -238,6 +367,10 @@ async function handleRequest(req, res) {
 
         // Evaluate JavaScript
         if (url === '/evaluate' && method === 'POST') {
+            if (!ALLOW_EVALUATE) {
+                return sendJson(res, 403, { error: 'Arbitrary page evaluation is disabled' });
+            }
+
             const { script } = body;
 
             if (!script) {
@@ -255,7 +388,7 @@ async function handleRequest(req, res) {
 
         // Get page content
         if (url === '/content' && method === 'POST') {
-            const { type = 'html' } = body;
+            const { type = 'html', offset = 0, limit = DEFAULT_MAX_CONTENT_WINDOW_CHARS } = body;
 
             const p = await getPage();
             let content;
@@ -268,8 +401,47 @@ async function handleRequest(req, res) {
 
             return sendJson(res, 200, {
                 success: true,
-                content,
+                ...contentWindow(content, offset, limit),
+                untrustedPageContent: true,
                 url: p.url(),
+            });
+        }
+
+        // Accessibility snapshots are untrusted page content, not instructions.
+        if (url === '/snapshot' && method === 'POST') {
+            const { selector = 'body' } = body;
+            const p = await getPage();
+            const snapshot = await p.locator(selector).ariaSnapshot({ timeout: 5000 });
+            const truncated = snapshot.length > MAX_SNAPSHOT_CHARS;
+
+            return sendJson(res, 200, {
+                success: true,
+                snapshot: snapshot.slice(0, MAX_SNAPSHOT_CHARS),
+                truncated,
+                untrustedPageContent: true,
+                url: p.url(),
+            });
+        }
+
+        if (url === '/allowlist' && method === 'GET') {
+            return sendJson(res, 200, {
+                success: true,
+                domains: Array.from(ALLOWED_DOMAINS).sort(),
+                count: ALLOWED_DOMAINS.size,
+            });
+        }
+
+        if (url === '/allowlist' && method === 'POST') {
+            const domain = normalizeDomain(body.domain);
+            if (!domain) {
+                return sendJson(res, 400, { error: 'Invalid domain format' });
+            }
+
+            ALLOWED_DOMAINS.add(domain);
+            return sendJson(res, 200, {
+                success: true,
+                domain,
+                totalDomains: ALLOWED_DOMAINS.size,
             });
         }
 
@@ -351,25 +523,8 @@ async function handleRequest(req, res) {
                 await page.close();
                 page = null;
             }
-            return sendJson(res, 200, { success: true });
-        }
-
-        // Get cookies
-        if (url === '/cookies' && method === 'GET') {
-            const ctx = await getContext();
-            const cookies = await ctx.cookies();
-            return sendJson(res, 200, { success: true, cookies });
-        }
-
-        // Set cookies
-        if (url === '/cookies' && method === 'POST') {
-            const { cookies } = body;
-            if (!cookies || !Array.isArray(cookies)) {
-                return sendJson(res, 400, { error: 'cookies array is required' });
-            }
-
-            const ctx = await getContext();
-            await ctx.addCookies(cookies);
+            activeNavigationScope = null;
+            blockedNavigationUrl = null;
             return sendJson(res, 200, { success: true });
         }
 
@@ -378,7 +533,7 @@ async function handleRequest(req, res) {
 
     } catch (error) {
         console.error('[Playwright] Error:', error.message);
-        return sendJson(res, 500, {
+        return sendJson(res, error.statusCode || 500, {
             error: error.message,
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
         });
@@ -408,6 +563,8 @@ setInterval(async () => {
             await page.close().catch(() => {});
             page = null;
         }
+        activeNavigationScope = null;
+        blockedNavigationUrl = null;
         if (context) {
             await context.close().catch(() => {});
             context = null;

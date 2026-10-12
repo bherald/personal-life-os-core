@@ -1,5 +1,15 @@
 <?php
 
+use App\Services\EmailService;
+use App\Services\FaceMatcherService;
+use App\Services\FileRegistryService;
+use App\Services\GenealogyService;
+use App\Services\JoplinFilesService;
+use App\Services\NewsArticleService;
+use App\Services\NextcloudService;
+use App\Services\ResearchService;
+use App\Services\YouTubeTranscriptStorageService;
+
 /**
  * Domain Configuration - Personal Life OS
  *
@@ -37,7 +47,7 @@ return [
         'calendar' => [
             'name' => 'Calendar',
             'table' => 'calendar_events',
-            'service' => \App\Services\NextcloudService::class,
+            'service' => NextcloudService::class,
             'rag_type' => 'calendar_event',
             'enabled' => true,
             'description' => 'Nextcloud calendar events',
@@ -48,7 +58,7 @@ return [
         'contacts' => [
             'name' => 'Contacts',
             'table' => 'contacts',
-            'service' => \App\Services\NextcloudService::class,
+            'service' => NextcloudService::class,
             'rag_type' => 'contact',
             'enabled' => true,
             'description' => 'Nextcloud contacts',
@@ -59,7 +69,7 @@ return [
         'news' => [
             'name' => 'News Articles',
             'table' => 'news_articles',
-            'service' => \App\Services\NewsArticleService::class,
+            'service' => NewsArticleService::class,
             'rag_type' => 'news_article',
             'enabled' => true,
             'description' => 'RSS feed articles',
@@ -70,7 +80,7 @@ return [
             'name' => 'Genealogy',
             'table' => 'genealogy_persons', // Primary table
             'tables' => ['genealogy_*'], // All genealogy tables
-            'service' => \App\Services\GenealogyService::class,
+            'service' => GenealogyService::class,
             'rag_type' => 'genealogy_person',
             'enabled' => true,
             'description' => 'Family tree and genealogy records',
@@ -80,7 +90,7 @@ return [
         'email' => [
             'name' => 'Email',
             'table' => 'email_threads',
-            'service' => \App\Services\EmailService::class,
+            'service' => EmailService::class,
             'rag_type' => 'email',
             'enabled' => true,
             'description' => 'Email threads and classifications',
@@ -90,7 +100,8 @@ return [
         'youtube' => [
             'name' => 'YouTube',
             'table' => 'youtube_transcripts',
-            'service' => \App\Services\YouTubeTranscriptStorageService::class,
+            'source_type' => 'youtube_transcript',
+            'service' => YouTubeTranscriptStorageService::class,
             'rag_type' => 'youtube_video',
             'enabled' => true,
             'description' => 'YouTube video transcripts',
@@ -100,7 +111,7 @@ return [
         'files' => [
             'name' => 'File Registry',
             'table' => 'file_registry',
-            'service' => \App\Services\FileRegistryService::class,
+            'service' => FileRegistryService::class,
             'rag_type' => 'file_catalog',
             'enabled' => true,
             'description' => 'File catalog and metadata',
@@ -111,7 +122,7 @@ return [
             'name' => 'Media Manager',
             'table' => 'file_registry_faces',
             'tables' => ['file_registry_faces', 'genealogy_face_match_queue'],
-            'service' => \App\Services\FaceMatcherService::class,
+            'service' => FaceMatcherService::class,
             'rag_type' => null, // Faces don't go to RAG
             'enabled' => true,
             'description' => 'Media face detection and genealogy linking',
@@ -125,7 +136,7 @@ return [
         'joplin' => [
             'name' => 'Joplin Notes',
             'table' => 'joplin_notes', // Virtual - actually in RAG
-            'service' => \App\Services\JoplinFilesService::class,
+            'service' => JoplinFilesService::class,
             'rag_type' => 'joplin_note',
             'enabled' => true,
             'description' => 'Joplin markdown notes',
@@ -135,7 +146,7 @@ return [
         'research' => [
             'name' => 'Research',
             'table' => 'research_results', // PostgreSQL
-            'service' => \App\Services\ResearchService::class,
+            'service' => ResearchService::class,
             'rag_type' => 'research',
             'enabled' => true,
             'description' => 'Research findings and sources',

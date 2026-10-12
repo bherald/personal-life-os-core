@@ -5,7 +5,6 @@ namespace App\Services\Genealogy;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
 
 /**
  * Newspaper Search Service
@@ -24,7 +23,9 @@ use Illuminate\Support\Facades\Cache;
 class NewspaperSearchService
 {
     protected string $locBaseUrl = 'https://www.loc.gov';
+
     protected string $chroniclingBaseUrl = 'https://chroniclingamerica.loc.gov';
+
     protected int $rateLimitMs = 1000; // 1 request per second
 
     /**
@@ -44,13 +45,13 @@ class NewspaperSearchService
         ];
 
         // Add date range filter
-        if (!empty($options['date_start']) || !empty($options['date_end'])) {
+        if (! empty($options['date_start']) || ! empty($options['date_end'])) {
             $dateFilter = '';
-            if (!empty($options['date_start'])) {
+            if (! empty($options['date_start'])) {
                 $dateFilter = $options['date_start'];
             }
-            if (!empty($options['date_end'])) {
-                $dateFilter .= '/' . $options['date_end'];
+            if (! empty($options['date_end'])) {
+                $dateFilter .= '/'.$options['date_end'];
             }
             if ($dateFilter) {
                 $params['dates'] = $dateFilter;
@@ -58,13 +59,13 @@ class NewspaperSearchService
         }
 
         // Add state filter
-        if (!empty($options['state'])) {
-            $params['fa'] = 'location:' . $options['state'];
+        if (! empty($options['state'])) {
+            $params['fa'] = 'location:'.$options['state'];
         }
 
         Log::info('NewspaperSearchService: Searching LOC', [
             'query' => $query,
-            'options' => $options
+            'options' => $options,
         ]);
 
         // Rate limiting
@@ -73,7 +74,7 @@ class NewspaperSearchService
         try {
             $response = Http::connectTimeout(5)->timeout(30)->get($url, $params);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 return [
                     'success' => false,
                     'error' => "LOC API error: HTTP {$response->status()}",
@@ -144,10 +145,10 @@ class NewspaperSearchService
     /**
      * Get OCR text for a specific newspaper page
      *
-     * @param string $lccn Library of Congress Control Number
-     * @param string $date Date in YYYY-MM-DD format
-     * @param int $edition Edition number (usually 1)
-     * @param int $page Page/sequence number
+     * @param  string  $lccn  Library of Congress Control Number
+     * @param  string  $date  Date in YYYY-MM-DD format
+     * @param  int  $edition  Edition number (usually 1)
+     * @param  int  $page  Page/sequence number
      */
     public function getPageOCR(string $lccn, string $date, int $edition = 1, int $page = 1): array
     {
@@ -167,7 +168,7 @@ class NewspaperSearchService
         try {
             $response = Http::connectTimeout(5)->timeout(30)->get($url);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 return [
                     'success' => false,
                     'error' => "Failed to get OCR: HTTP {$response->status()}",
@@ -205,7 +206,7 @@ class NewspaperSearchService
         try {
             $response = Http::connectTimeout(5)->timeout(30)->get($url);
 
-            if (!$response->successful()) {
+            if (! $response->successful()) {
                 return [
                     'success' => false,
                     'error' => "Failed to get newspaper info: HTTP {$response->status()}",
@@ -240,13 +241,13 @@ class NewspaperSearchService
     public function searchAndSaveForPerson(int $personId, int $treeId, array $options = []): array
     {
         // Get person data
-        $person = DB::selectOne("
+        $person = DB::selectOne('
             SELECT id, given_name, surname, birth_date, birth_place, death_date, death_place
             FROM genealogy_persons
-            WHERE id = ?
-        ", [$personId]);
+            WHERE id = ? AND tree_id = ?
+        ', [$personId, $treeId]);
 
-        if (!$person) {
+        if (! $person) {
             return [
                 'success' => false,
                 'error' => 'Person not found',
@@ -266,11 +267,11 @@ class NewspaperSearchService
 
         // Determine date range from person's life
         $searchOptions = $options;
-        if (!empty($person->birth_date)) {
+        if (! empty($person->birth_date)) {
             $birthYear = date('Y', strtotime($person->birth_date));
             $searchOptions['date_start'] = $birthYear;
         }
-        if (!empty($person->death_date)) {
+        if (! empty($person->death_date)) {
             $deathYear = date('Y', strtotime($person->death_date));
             $searchOptions['date_end'] = $deathYear + 1; // Include year after death for obituaries
         }
@@ -278,7 +279,7 @@ class NewspaperSearchService
         // Search
         $searchResults = $this->search($name, $searchOptions);
 
-        if (!$searchResults['success']) {
+        if (! $searchResults['success']) {
             return [
                 'success' => false,
                 'error' => $searchResults['error'],
@@ -299,11 +300,11 @@ class NewspaperSearchService
         }
 
         // Log the search
-        DB::insert("
+        DB::insert('
             INSERT INTO genealogy_research_searches
             (tree_id, person_id, search_query, search_params, sources_searched, total_results, clippings_created)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        ", [
+        ', [
             $treeId,
             $personId,
             $name,
@@ -360,6 +361,7 @@ class NewspaperSearchService
                 'error' => $e->getMessage(),
                 'result' => $result,
             ]);
+
             return null;
         }
     }
@@ -370,6 +372,15 @@ class NewspaperSearchService
     public function linkClippingToPerson(int $clippingId, int $personId, string $relevanceType = 'mentioned', float $confidence = 0.5): bool
     {
         try {
+            $sameTree = DB::selectOne('
+                SELECT c.id FROM genealogy_newspaper_clippings c
+                JOIN genealogy_persons p ON p.id = ? AND p.tree_id = c.tree_id
+                WHERE c.id = ?
+            ', [$personId, $clippingId]);
+            if (! $sameTree) {
+                return false;
+            }
+
             DB::insert("
                 INSERT INTO genealogy_person_clippings
                 (person_id, clipping_id, relevance_type, confidence, match_method, created_at)
@@ -384,6 +395,7 @@ class NewspaperSearchService
                 'clipping_id' => $clippingId,
                 'person_id' => $personId,
             ]);
+
             return false;
         }
     }
@@ -393,13 +405,14 @@ class NewspaperSearchService
      */
     public function getClippingsForPerson(int $personId): array
     {
-        return DB::select("
+        return DB::select('
             SELECT c.*, pc.relevance_type, pc.confidence, pc.is_verified
             FROM genealogy_newspaper_clippings c
             INNER JOIN genealogy_person_clippings pc ON c.id = pc.clipping_id
+            INNER JOIN genealogy_persons p ON p.id = pc.person_id AND p.tree_id = c.tree_id
             WHERE pc.person_id = ?
             ORDER BY c.publication_date DESC
-        ", [$personId]);
+        ', [$personId]);
     }
 
     /**
@@ -411,15 +424,15 @@ class NewspaperSearchService
         $offset = $options['offset'] ?? 0;
         $type = $options['type'] ?? null;
 
-        $sql = "SELECT * FROM genealogy_newspaper_clippings WHERE tree_id = ?";
+        $sql = 'SELECT * FROM genealogy_newspaper_clippings WHERE tree_id = ?';
         $params = [$treeId];
 
         if ($type) {
-            $sql .= " AND clipping_type = ?";
+            $sql .= ' AND clipping_type = ?';
             $params[] = $type;
         }
 
-        $sql .= " ORDER BY publication_date DESC LIMIT ? OFFSET ?";
+        $sql .= ' ORDER BY publication_date DESC LIMIT ? OFFSET ?';
         $params[] = $limit;
         $params[] = $offset;
 
@@ -431,7 +444,7 @@ class NewspaperSearchService
      */
     protected function detectClippingType(array $result): string
     {
-        $text = strtolower(($result['title'] ?? '') . ' ' . ($result['description'] ?? ''));
+        $text = strtolower(($result['title'] ?? '').' '.($result['description'] ?? ''));
 
         if (preg_match('/obituar|died|death|funeral|burial|passed away|in loving memory/i', $text)) {
             return 'obituary';

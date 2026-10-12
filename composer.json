@@ -14,9 +14,12 @@
         "laravel/passport": "^13.2",
         "laravel/tinker": "^2.10.1",
         "mrmysql/youtube-transcript": "^0.0.5",
+        "nikic/php-parser": "^5.8",
+        "opis/json-schema": "^2.6",
         "phpoffice/phpspreadsheet": "^5.4",
         "phpoffice/phpword": "^1.4",
         "smalot/pdfparser": "^2.12",
+        "symfony/yaml": "^7.4",
         "tecnickcom/tcpdf": "^6.10",
         "thiagoalessio/tesseract_ocr": "^2.13"
     },
@@ -69,6 +72,18 @@
         "test": [
             "Composer\\Config::disableProcessTimeout",
             "@php artisan config:clear --ansi && php artisan test"
+        ],
+        "test:plos-cli": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php vendor/bin/phpunit tests/Unit/Services --filter UnifiedCli"
+        ],
+        "test:plos-cli-mysql": [
+            "Composer\\Config::disableProcessTimeout",
+            "python3 scripts/plos-cli/test-data-bindings.py --suite all"
+        ],
+        "test:plos-cli-rag": [
+            "Composer\\Config::disableProcessTimeout",
+            "python3 scripts/plos-cli/test-rag-postgres.py"
         ],
         "analyse": [
             "@php -d memory_limit=1G vendor/bin/phpstan analyse --no-progress"

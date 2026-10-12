@@ -194,8 +194,8 @@ class OpsFaceNamedOnlyTriageCommand extends Command
     private function decisionReason(string $action): string
     {
         return $action === 'outside_tree'
-            ? 'RTS face named-only cleanup: candidate service returned no FT4 person candidates; non-identity outside-tree decision.'
-            : 'RTS face named-only cleanup: vague/non-person face label; non-identity too-vague decision.';
+            ? 'RTC face named-only cleanup: candidate service returned no FT4 person candidates; non-identity outside-tree decision.'
+            : 'RTC face named-only cleanup: vague/non-person face label; non-identity too-vague decision.';
     }
 
     /**

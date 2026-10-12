@@ -451,16 +451,16 @@ onMounted(() => {
 .ops-section-line {
   flex: 1;
   height: 4px;
-  background-color: var(--ops-plum);
+  background-color: var(--color-accent);
   border-radius: 2px;
 }
 
 .ops-section-title {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.75rem;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
+  text-transform: none;
+  letter-spacing: normal;
   white-space: nowrap;
   padding: 0.25rem 0.75rem;
   background-color: var(--color-bg-secondary);
@@ -488,9 +488,9 @@ onMounted(() => {
   align-self: stretch;
 }
 
-.bg-green { background-color: var(--ops-green); }
-.bg-dim { background-color: var(--ops-plum); }
-.bg-sky { background-color: var(--ops-sky); }
+.bg-green { background-color: var(--ops-success); }
+.bg-dim { background-color: var(--color-accent); }
+.bg-sky { background-color: var(--color-accent); }
 
 .ops-server-content {
   flex: 1;
@@ -506,7 +506,7 @@ onMounted(() => {
 
 .ops-server-name {
   font-weight: 700;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-size: 0.875rem;
 }
 
@@ -516,7 +516,7 @@ onMounted(() => {
 }
 
 .ops-server-desc {
-  color: var(--ops-violet);
+  color: var(--color-accent);
   font-size: 0.75rem;
   margin-top: 0.25rem;
 }
@@ -539,7 +539,7 @@ onMounted(() => {
 
 .ops-tool-group-name {
   font-weight: 700;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-size: 0.875rem;
   text-transform: uppercase;
 }
@@ -552,7 +552,7 @@ onMounted(() => {
 
 .ops-tool-card {
   background-color: var(--color-bg-tertiary);
-  border-left: 4px solid var(--ops-sky);
+  border-left: 4px solid var(--color-accent);
   border-radius: 0 12px 12px 0;
   padding: 0.75rem 1rem;
   cursor: pointer;
@@ -561,19 +561,19 @@ onMounted(() => {
 
 .ops-tool-card:hover {
   background-color: var(--color-bg-hover);
-  border-left-color: var(--ops-orange);
+  border-left-color: var(--ops-warning);
   transform: translateX(4px);
 }
 
 .ops-tool-name {
   font-weight: 600;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-size: 0.8125rem;
   margin-bottom: 0.25rem;
 }
 
 .ops-tool-desc {
-  color: var(--ops-violet);
+  color: var(--color-accent);
   font-size: 0.6875rem;
   line-height: 1.3;
 }
@@ -592,7 +592,7 @@ onMounted(() => {
 }
 
 .ops-label {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -600,25 +600,25 @@ onMounted(() => {
 
 .ops-select {
   background-color: var(--color-bg-primary);
-  border: 2px solid var(--ops-plum);
+  border: 2px solid var(--color-accent);
   border-radius: 0 15px 15px 0;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   padding: 0.625rem 1rem;
-  font-family: 'Antonio', sans-serif;
+  font-family: inherit;
   font-size: 0.875rem;
   cursor: pointer;
 }
 
 .ops-select:focus {
   outline: none;
-  border-color: var(--ops-peach);
+  border-color: var(--color-text-primary);
 }
 
 .ops-textarea {
   background-color: var(--color-bg-primary);
-  border: 2px solid var(--ops-plum);
+  border: 2px solid var(--color-accent);
   border-radius: 0 15px 15px 0;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   padding: 0.75rem 1rem;
   font-family: monospace;
   font-size: 0.75rem;
@@ -627,25 +627,25 @@ onMounted(() => {
 
 .ops-textarea:focus {
   outline: none;
-  border-color: var(--ops-peach);
+  border-color: var(--color-text-primary);
 }
 
 .ops-tool-info {
   background-color: var(--color-bg-tertiary);
-  border-left: 4px solid var(--ops-sky);
+  border-left: 4px solid var(--color-accent);
   border-radius: 0 12px 12px 0;
   padding: 0.75rem 1rem;
 }
 
 .ops-tool-info-name {
   font-weight: 600;
-  color: var(--ops-sky);
+  color: var(--color-accent);
   font-size: 0.875rem;
   margin-bottom: 0.25rem;
 }
 
 .ops-tool-info-desc {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.8125rem;
 }
 
@@ -653,7 +653,7 @@ onMounted(() => {
 .ops-result-panel {
   margin-top: 1rem;
   background-color: var(--color-bg-tertiary);
-  border-left: 4px solid var(--ops-green);
+  border-left: 4px solid var(--ops-success);
   border-radius: 0 15px 15px 0;
   overflow: hidden;
 }
@@ -663,11 +663,11 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 0.75rem 1rem;
-  background-color: var(--ops-plum);
+  background-color: var(--color-accent);
 }
 
 .ops-result-label {
-  color: var(--ops-lilac);
+  color: var(--color-accent);
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -680,14 +680,14 @@ onMounted(() => {
 }
 
 .ops-result-duration {
-  color: var(--ops-sky);
+  color: var(--color-accent);
   font-size: 0.75rem;
   font-weight: 700;
 }
 
 .ops-result-code {
   padding: 1rem;
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-family: monospace;
   font-size: 0.6875rem;
   overflow-x: auto;
@@ -727,11 +727,11 @@ onMounted(() => {
   color: var(--ops-red-alert);
   font-size: 0.75rem;
   font-weight: 700;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .ops-error-text {
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
   font-size: 0.8125rem;
 }
 
@@ -739,7 +739,7 @@ onMounted(() => {
 .ops-modal-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.85);
+  background-color: var(--color-bg-tertiary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -749,7 +749,7 @@ onMounted(() => {
 
 .ops-modal {
   background-color: var(--color-bg-primary);
-  border: 2px solid var(--ops-plum);
+  border: 2px solid var(--color-accent);
   border-radius: 0 25px 25px 0;
   max-width: 700px;
   width: 100%;
@@ -770,9 +770,9 @@ onMounted(() => {
 .ops-modal-title {
   font-size: 1.25rem;
   font-weight: 700;
-  color: var(--ops-black);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  color: var(--color-text-primary);
+  text-transform: none;
+  letter-spacing: normal;
   margin: 0;
 }
 
@@ -781,7 +781,7 @@ onMounted(() => {
 }
 
 .ops-code {
-  color: var(--ops-sky);
+  color: var(--color-accent);
   font-family: monospace;
   font-size: 0.6875rem;
   overflow-x: auto;
@@ -789,7 +789,7 @@ onMounted(() => {
 }
 
 .text-peach {
-  color: var(--ops-peach);
+  color: var(--color-text-primary);
 }
 
 .w-full {

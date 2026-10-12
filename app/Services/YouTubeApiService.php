@@ -2,6 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Support\SensitiveTextTelemetry;
+use Carbon\Carbon;
 use Exception;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Psr7\HttpFactory;
@@ -38,8 +41,12 @@ class YouTubeApiService
 
     private ?YouTubeTranscriptLanguagePolicy $transcriptLanguagePolicy = null;
 
-    public function __construct()
+    private ?YouTubeApiRuntimePolicyService $apiRuntimePolicy;
+
+    public function __construct(?YouTubeApiRuntimePolicyService $apiRuntimePolicy = null)
     {
+        $this->apiRuntimePolicy = $apiRuntimePolicy;
+
         // Get credentials from config (works when config is cached, unlike env())
         $clientId = config('youtube.client_id');
         $clientSecret = config('youtube.client_secret');
@@ -231,7 +238,7 @@ class YouTubeApiService
      */
     private function apiRequest(string $endpoint, array $params = [], bool $useCache = true): array
     {
-        $cacheKey = 'youtube_api:'.$endpoint.':'.md5(json_encode($params));
+        $cacheKey = $this->apiCacheKey($endpoint, $params);
 
         // Check cache
         if ($useCache) {
@@ -805,7 +812,7 @@ class YouTubeApiService
 
                     return $result;
 
-                } catch (\Exception $e) {
+                } catch (Exception $e) {
                     $lastError = $e->getMessage();
                     Log::debug('Invidious instance failed', [
                         'instance' => $instance,
@@ -829,7 +836,7 @@ class YouTubeApiService
                 'error_type' => 'AllInvidiousInstancesFailed',
             ];
 
-        } catch (\Exception $e) {
+        } catch (Exception $e) {
             Log::error('Invidious transcript fetch error', [
                 'video_id' => $videoId,
                 'error' => $e->getMessage(),
@@ -1315,6 +1322,7 @@ class YouTubeApiService
     public function getTranscriptViaPhpLib(string $videoId, string $language = 'en'): array
     {
         try {
+            $runtimePolicy = $this->apiRuntimePolicy()->required();
             Log::debug('Fetching transcript via PHP library', [
                 'video_id' => $videoId,
                 'language' => $language,
@@ -1322,8 +1330,8 @@ class YouTubeApiService
 
             // Create PSR-18/17 compliant HTTP client
             $httpClient = new GuzzleClient([
-                'timeout' => 15,
-                'connect_timeout' => 10,
+                'timeout' => $runtimePolicy['phplib_request_timeout_seconds'],
+                'connect_timeout' => $runtimePolicy['phplib_connect_timeout_seconds'],
             ]);
             $httpFactory = new HttpFactory;
 
@@ -1452,17 +1460,28 @@ class YouTubeApiService
             ];
 
         } catch (Exception $e) {
+            $errorReceipt = SensitiveTextTelemetry::content(
+                $e->getMessage(),
+                'youtube-transcript-phplib',
+                'error',
+            );
             Log::error('PHP lib transcript exception', [
-                'video_id' => $videoId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'exception_type' => $e::class,
+                'video_receipt' => SensitiveTextTelemetry::content(
+                    $videoId,
+                    'youtube-transcript-phplib',
+                    'video_id',
+                ),
+                'error_receipt' => $errorReceipt,
+                'stack_trace_logged' => false,
             ]);
 
             return [
                 'success' => false,
                 'video_id' => $videoId,
-                'error' => $e->getMessage(),
+                'error' => 'PHP transcript library failed',
                 'error_type' => 'PhpLibError',
+                'error_receipt' => $errorReceipt,
             ];
         }
     }
@@ -1604,22 +1623,28 @@ class YouTubeApiService
     }
 
     /**
-     * Clear API cache
+     * Clear one exact API response without touching shared execution custody.
      *
-     * @param  string|null  $endpoint  Specific endpoint to clear (null for all)
+     * @param  string|null  $endpoint  Exact endpoint; global clearing is held
+     * @param  array  $params  The original query parameters
      */
-    public function clearCache(?string $endpoint = null): void
+    public function clearCache(?string $endpoint = null, array $params = []): void
     {
-        if ($endpoint) {
-            // Clear specific endpoint cache
-            // Note: This is a simplified version, in production use Redis SCAN
-            Cache::forget('youtube_api:'.$endpoint);
-        } else {
-            // Clear all YouTube API cache
-            Cache::flush();
+        if ($endpoint === null || $endpoint === '') {
+            throw new \RuntimeException('youtube_api_cache_scope_required');
+        }
+        $key = $this->apiCacheKey($endpoint, $params);
+        Cache::forget($key);
+        if (Cache::has($key)) {
+            throw new \RuntimeException('youtube_api_cache_invalidation_unavailable');
         }
 
-        Log::info('YouTube API cache cleared', ['endpoint' => $endpoint ?? 'all']);
+        Log::info('YouTube API response cache cleared', ['endpoint' => $endpoint]);
+    }
+
+    private function apiCacheKey(string $endpoint, array $params): string
+    {
+        return 'youtube_api:'.$endpoint.':'.md5(json_encode($params, JSON_THROW_ON_ERROR));
     }
 
     /**
@@ -2228,6 +2253,9 @@ class YouTubeApiService
                 usleep(1000000); // 1 second
 
             } catch (Exception $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 // Record exception as failure
                 $this->recordMethodHealth($methodName, false, 'Exception');
 
@@ -2452,7 +2480,7 @@ class YouTubeApiService
             return false;
         }
 
-        $cooldownUntil = \Carbon\Carbon::parse($health['cooldown_until']);
+        $cooldownUntil = Carbon::parse($health['cooldown_until']);
 
         if (now()->lt($cooldownUntil)) {
             return true;
@@ -2523,48 +2551,15 @@ class YouTubeApiService
      */
     public function getTranscriptViaWhisper(string $videoId, string $language = 'en'): array
     {
-        $lockKey = 'whisper_gpu_lock';
-        $ollamaBusyKey = 'ollama_busy_lock';
-        $lockTtl = (int) config('services.whisper.gpu_lock_ttl', 900);
+        $audioFile = null;
+        $retainInput = false;
 
         try {
-            // Check GPU availability - can't run if Ollama is busy
-            if (Cache::has($ollamaBusyKey)) {
-                Log::info('Whisper: Ollama is using GPU, skipping', ['video_id' => $videoId]);
-
-                return [
-                    'success' => false,
-                    'video_id' => $videoId,
-                    'error' => 'GPU busy (Ollama)',
-                    'error_type' => 'GpuBusy',
-                    'method' => 'whisper',
-                ];
-            }
-
-            // Try to acquire GPU lock
-            if (! Cache::add($lockKey, [
-                'video_id' => $videoId,
-                'started_at' => time(),
-                'pid' => getmypid(),
-            ], $lockTtl)) {
-                Log::info('Whisper: GPU lock already held', ['video_id' => $videoId]);
-
-                return [
-                    'success' => false,
-                    'video_id' => $videoId,
-                    'error' => 'Whisper GPU lock unavailable',
-                    'error_type' => 'GpuBusy',
-                    'method' => 'whisper',
-                ];
-            }
-
             Log::info('Whisper: Starting audio transcription', ['video_id' => $videoId]);
 
             // Download audio via yt-dlp
             $audioFile = $this->downloadAudioViaYtDlp($videoId);
             if (! $audioFile) {
-                Cache::forget($lockKey);
-
                 return [
                     'success' => false,
                     'video_id' => $videoId,
@@ -2574,23 +2569,24 @@ class YouTubeApiService
                 ];
             }
 
-            // Transcribe with Whisper
-            $transcription = $this->transcribeWithWhisper($audioFile, $language);
-
-            // Cleanup audio file
-            if (file_exists($audioFile)) {
-                @unlink($audioFile);
-            }
-
-            // Release GPU lock
-            Cache::forget($lockKey);
+            $transcriptionResult = app(WhisperRuntimeService::class)->transcribe(
+                $audioFile,
+                $language,
+                'youtube_transcription_fallback'
+            );
+            $transcription = $transcriptionResult['text'];
 
             if (empty($transcription)) {
+                $gpuBusy = in_array($transcriptionResult['error'], [
+                    'GPU busy (Ollama)',
+                    'Whisper GPU lock unavailable',
+                ], true);
+
                 return [
                     'success' => false,
                     'video_id' => $videoId,
-                    'error' => 'Whisper transcription returned empty',
-                    'error_type' => 'EmptyTranscription',
+                    'error' => $transcriptionResult['error'] ?? 'Whisper transcription returned empty',
+                    'error_type' => $gpuBusy ? 'GpuBusy' : 'EmptyTranscription',
                     'method' => 'whisper',
                 ];
             }
@@ -2608,10 +2604,11 @@ class YouTubeApiService
                 'transcript' => $this->textToTranscriptEntries($transcription),
             ];
 
-        } catch (Exception $e) {
-            // Always release lock on failure
-            Cache::forget($lockKey);
-
+        } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                $retainInput = true;
+                throw $e;
+            }
             Log::error('Whisper transcription failed', [
                 'video_id' => $videoId,
                 'error' => $e->getMessage(),
@@ -2624,6 +2621,10 @@ class YouTubeApiService
                 'error_type' => 'WhisperError',
                 'method' => 'whisper',
             ];
+        } finally {
+            if (! $retainInput && $audioFile !== null && file_exists($audioFile)) {
+                @unlink($audioFile);
+            }
         }
     }
 
@@ -2638,7 +2639,7 @@ class YouTubeApiService
         }
 
         $outputFile = $tempDir.'/whisper_'.$videoId.'_'.uniqid().'.wav';
-        $timeout = (int) config('services.whisper.youtube_download_timeout', 120);
+        $timeout = $this->apiRuntimePolicy()->required()['whisper_youtube_download_timeout_seconds'];
         $homeDir = $this->resolveRuntimeEnvValue('HOME') ?? '';
         $runtimePath = $this->resolveRuntimeEnvValue('PATH') ?? '/usr/bin:/bin:/usr/local/bin';
         $ytdlpPath = $this->resolveRuntimeEnvValue('YTDLP_PATH') ?? ($homeDir !== '' ? $homeDir.'/.local/bin/yt-dlp' : 'yt-dlp');
@@ -2655,11 +2656,12 @@ class YouTubeApiService
 
         $url = "https://www.youtube.com/watch?v={$videoId}";
 
-        $result = \Illuminate\Support\Facades\Process::timeout($timeout)
+        $process = Process::timeout($timeout)
             ->env([
                 'PATH' => implode(':', array_filter([$denoPath, dirname($ytdlpPath), $runtimePath])),
-            ])
-            ->run([
+            ]);
+        try {
+            $result = $process->run([
                 $ytdlpPath,
                 '-x',
                 '--audio-format', 'wav',
@@ -2669,6 +2671,12 @@ class YouTubeApiService
                 '-o', $outputFile,
                 $url,
             ]);
+        } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+            throw new InferenceAdmissionException('Whisper audio download outcome is UNKNOWN; partial download and preprocessor artifacts require reconciliation.', 0, $e);
+        }
 
         if (! $result->successful() || ! file_exists($outputFile)) {
             Log::warning('Whisper: Audio download failed', [
@@ -2692,87 +2700,9 @@ class YouTubeApiService
         return $outputFile;
     }
 
-    /**
-     * Transcribe audio file using Whisper CLI
-     */
-    private function transcribeWithWhisper(string $audioFile, string $language = 'en'): ?string
+    private function apiRuntimePolicy(): YouTubeApiRuntimePolicyService
     {
-        // Find Whisper executable (reuse AIService pattern)
-        $whisperPath = $this->findWhisperPath();
-        if (! $whisperPath) {
-            Log::error('Whisper: Executable not found');
-
-            return null;
-        }
-
-        $outputDir = storage_path('app/temp/whisper_out_'.uniqid());
-        @mkdir($outputDir, 0755, true);
-
-        $model = config('services.whisper.model', 'base');
-        $timeout = (int) config('services.whisper.timeout', 300);
-
-        $cmd = [
-            $whisperPath, $audioFile,
-            '--model', $model,
-            '--output_dir', $outputDir,
-            '--output_format', 'txt',
-        ];
-
-        if (! empty($language)) {
-            $cmd[] = '--language';
-            $cmd[] = $language;
-        }
-
-        $result = \Illuminate\Support\Facades\Process::timeout($timeout)->run($cmd);
-
-        $transcription = '';
-        if ($result->successful()) {
-            $txtFiles = glob($outputDir.'/*.txt');
-            if (! empty($txtFiles)) {
-                $transcription = trim(file_get_contents($txtFiles[0]));
-            }
-        } else {
-            Log::warning('Whisper: Transcription process failed', [
-                'exit_code' => $result->exitCode(),
-                'error' => substr($result->errorOutput(), -500),
-            ]);
-        }
-
-        // Cleanup
-        array_map('unlink', glob($outputDir.'/*'));
-        @rmdir($outputDir);
-
-        return $transcription ?: null;
-    }
-
-    /**
-     * Find Whisper executable path
-     */
-    private function findWhisperPath(): ?string
-    {
-        $paths = [
-            config('services.whisper.path'),
-            '/usr/local/bin/whisper',
-            '/usr/bin/whisper',
-            ($this->resolveRuntimeEnvValue('HOME') ?? '').'/.local/bin/whisper',
-        ];
-
-        foreach ($paths as $path) {
-            if ($path && file_exists($path) && is_executable($path)) {
-                return $path;
-            }
-        }
-
-        // Try 'which'
-        $result = \Illuminate\Support\Facades\Process::timeout(5)->run(['which', 'whisper']);
-        if ($result->successful()) {
-            $path = trim($result->output());
-            if (! empty($path) && file_exists($path) && is_executable($path)) {
-                return $path;
-            }
-        }
-
-        return null;
+        return $this->apiRuntimePolicy ??= app(YouTubeApiRuntimePolicyService::class);
     }
 
     /**

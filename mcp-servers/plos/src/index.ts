@@ -4,9 +4,14 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
+  ErrorCode,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  McpError,
+  ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { zodToJsonSchema as convertZodToJsonSchema } from 'zod-to-json-schema';
 
 import { CONFIG } from './config.js';
 import { startTunnels, stopTunnels } from './db/ssh-tunnel.js';
@@ -14,6 +19,13 @@ import { closeMysql } from './db/mysql.js';
 import { closePg } from './db/postgres.js';
 import { logger } from './util/logger.js';
 import type { ToolContext } from './util/tool-context.js';
+import {
+  runToolWithLifecycle,
+  ToolCancelledError,
+  ToolTimeoutError,
+} from './util/tool-lifecycle.js';
+import { runToolWithProgress } from './util/tool-progress.js';
+import { buildToolSuccessResult, toolAnnotations, type ToolRisk } from './util/tool-result.js';
 
 // Tools - PLOS data access
 import { plosSchema, plosSchemaInput } from './tools/plos-schema.js';
@@ -28,8 +40,34 @@ import { plosCacheClear, plosCacheClearInput } from './tools/plos-cache-clear.js
 import { plosJobDiagnostic, plosJobDiagnosticInput } from './tools/plos-job-diagnostic.js';
 import { plosTinker, plosTinkerInput } from './tools/plos-tinker.js';
 import { plosSsh, plosSshInput } from './tools/plos-ssh.js';
-import { plosDecompose, plosDecomposeInput } from './tools/plos-decompose.js';
+import {
+  plosOfflineCapabilities,
+  plosOfflineCapabilitiesInput,
+  plosOfflineImprovement,
+  plosOfflineImprovementInput,
+  plosOfflinePipelineTools,
+  plosOfflinePipelineToolsInput,
+  plosOfflineSidecar,
+  plosOfflineSidecarInput,
+  plosColibriLocalResearch,
+  plosColibriLocalResearchInput,
+  plosColibriResearch,
+  plosColibriResearchInput,
+} from './tools/plos-offline-codex.js';
+import {
+  plosAudioTts,
+  plosAudioTtsInput,
+  plosRerank,
+  plosRerankInput,
+} from './tools/plos-offline-modalities.js';
+import {
+  plosImageGenerate,
+  plosImageGenerateInput,
+  plosMediaAnalyze,
+  plosMediaAnalyzeInput,
+} from './tools/plos-offline-media.js';
 import { genealogyContext, genealogyContextInput } from './tools/genealogy-context.js';
+import { genealogySearch, genealogySearchInput } from './tools/genealogy-search.js';
 import { genealogyBatchApply, genealogyBatchApplyInput } from './tools/genealogy-batch-apply.js';
 
 // Tools - Ollama delegation
@@ -40,67 +78,127 @@ import { ollamaDescribeCode, ollamaDescribeCodeInput } from './tools/ollama-desc
 import { ollamaDraftCommit, ollamaDraftCommitInput } from './tools/ollama-draft-commit.js';
 import { ollamaDraft, ollamaDraftInput } from './tools/ollama-draft.js';
 
-// Convert zod schema to JSON Schema for MCP tool definitions
+// Convert the full Zod contract, including nested arrays, unions, defaults,
+// bounds, and descriptions, into the schema MCP clients actually receive.
 function zodToJsonSchema(schema: z.ZodObject<any>): Record<string, unknown> {
-  const shape = schema.shape;
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
+  const converted = convertZodToJsonSchema(schema, {
+    $refStrategy: 'none',
+    target: 'jsonSchema7',
+  }) as Record<string, unknown>;
 
-  for (const [key, value] of Object.entries(shape)) {
-    const zodField = value as z.ZodTypeAny;
-    const def = zodField._def;
+  delete converted.$schema;
+  delete converted.definitions;
 
-    let prop: Record<string, unknown> = {};
-
-    // Unwrap optional/default (recursive — handles z.number().optional().default(24) etc.)
-    let innerDef = def;
-    let isOptional = false;
-    while (innerDef.typeName === 'ZodOptional' || innerDef.typeName === 'ZodDefault') {
-      isOptional = true;
-      innerDef = innerDef.innerType?._def ?? innerDef;
-      if (!innerDef.typeName || innerDef === def) break; // safety valve
-    }
-
-    // Map types
-    switch (innerDef.typeName) {
-      case 'ZodString':
-        prop.type = 'string';
-        break;
-      case 'ZodNumber':
-        prop.type = 'number';
-        break;
-      case 'ZodBoolean':
-        prop.type = 'boolean';
-        break;
-      case 'ZodEnum':
-        prop.type = 'string';
-        prop.enum = innerDef.values;
-        break;
-      case 'ZodArray':
-        prop.type = 'array';
-        break;
-      default:
-        prop.type = 'string';
-    }
-
-    // Add description from zod .describe()
-    if (zodField.description) prop.description = zodField.description;
-    if (def.description) prop.description = def.description;
-    // Check inner type description too
-    const inner = def.innerType;
-    if (inner?.description) prop.description = inner.description;
-    if (inner?._def?.innerType?.description) prop.description = inner._def.innerType.description;
-
-    properties[key] = prop;
-    if (!isOptional) required.push(key);
-  }
-
-  return {
-    type: 'object',
-    properties,
-    ...(required.length > 0 ? { required } : {}),
-  };
+  return converted;
 }
+
+const nonNegativeCountMapSchema = {
+  type: 'object',
+  additionalProperties: { type: 'integer', minimum: 0 },
+};
+
+const genealogySearchOutputSchema = {
+  type: 'object',
+  properties: {
+    schema: { const: 'plos.genealogy_search.v1' },
+    read_only: { const: true },
+    tree_id: { type: 'integer', minimum: 1 },
+    query: { type: 'string' },
+    entity_type: { enum: ['all', 'person', 'family', 'source', 'media'] },
+    result_count: { type: 'integer', minimum: 0 },
+    duration_ms: { type: 'integer', minimum: 0 },
+    living_person_details_redacted: { const: true },
+    results: {
+      type: 'object',
+      additionalProperties: { type: 'array' },
+    },
+  },
+  required: [
+    'schema',
+    'read_only',
+    'tree_id',
+    'query',
+    'entity_type',
+    'result_count',
+    'duration_ms',
+    'living_person_details_redacted',
+    'results',
+  ],
+  additionalProperties: false,
+};
+
+const genealogyContextOutputSchema = {
+  type: 'object',
+  properties: {
+    tree_id: { type: 'integer', minimum: 1 },
+    people: { type: 'array' },
+    families: { type: 'array' },
+    children: { type: 'array' },
+    media: { type: 'array' },
+    media_links: { type: 'array' },
+    citations: { type: 'array' },
+    sources: { type: 'array' },
+  },
+  required: ['tree_id'],
+  additionalProperties: false,
+};
+
+const genealogyGraphSnapshotSchema = {
+  type: 'object',
+  properties: {
+    root_person_id: { type: ['integer', 'null'], minimum: 1 },
+    root_present: { type: 'boolean' },
+    people: { type: 'integer', minimum: 0 },
+    ancestors: { type: ['integer', 'null'], minimum: 0 },
+    reachable: { type: ['integer', 'null'], minimum: 0 },
+  },
+  required: ['root_person_id', 'root_present', 'people', 'ancestors', 'reachable'],
+  additionalProperties: false,
+};
+
+const genealogyGraphDeltaSchema = {
+  type: 'object',
+  properties: {
+    people: { type: 'integer' },
+    ancestors: { type: ['integer', 'null'] },
+    reachable: { type: ['integer', 'null'] },
+  },
+  required: ['people', 'ancestors', 'reachable'],
+  additionalProperties: false,
+};
+
+const genealogyBatchApplyOutputSchema = {
+  type: 'object',
+  properties: {
+    dry_run: { type: 'boolean' },
+    tree_id: { type: 'integer', minimum: 1 },
+    reason: { type: 'string', minLength: 1 },
+    inserted: nonNegativeCountMapSchema,
+    updated: nonNegativeCountMapSchema,
+    touched_for_rag: nonNegativeCountMapSchema,
+    keys: {
+      type: 'object',
+      additionalProperties: { type: 'integer', minimum: 1 },
+    },
+    planned: nonNegativeCountMapSchema,
+    graph_guard: {
+      type: 'object',
+      properties: {
+        schema: { const: 'plos.genealogy_graph_guard.v1' },
+        status: { enum: ['not_required', 'planned', 'not_configured', 'passed'] },
+        transactional_rollback: { const: true },
+        root_person_id: { type: ['integer', 'null'], minimum: 1 },
+        before: genealogyGraphSnapshotSchema,
+        after: genealogyGraphSnapshotSchema,
+        delta: genealogyGraphDeltaSchema,
+      },
+      required: ['schema', 'status', 'transactional_rollback', 'root_person_id'],
+      additionalProperties: false,
+    },
+  },
+  required: ['dry_run', 'tree_id', 'reason', 'inserted', 'updated', 'touched_for_rag', 'keys', 'graph_guard'],
+  additionalProperties: false,
+};
 
 // Tool registry
 type ToolDefinition = {
@@ -109,6 +207,10 @@ type ToolDefinition = {
   inputSchema: Record<string, unknown>;
   zodSchema: z.ZodObject<any>;
   handler: (input: any, context?: ToolContext) => Promise<string>;
+  risk: ToolRisk;
+  openWorld?: boolean;
+  timeoutMs?: number;
+  outputSchema?: Record<string, unknown>;
 };
 
 const TOOLS: ToolDefinition[] = [
@@ -118,6 +220,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosSchemaInput),
     zodSchema: plosSchemaInput,
     handler: plosSchema,
+    risk: 'read',
   },
   {
     name: 'plos_query',
@@ -125,6 +228,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosQueryInput),
     zodSchema: plosQueryInput,
     handler: plosQueryTool,
+    risk: 'write',
   },
   {
     name: 'plos_health',
@@ -132,6 +236,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosHealthInput),
     zodSchema: plosHealthInput,
     handler: plosHealth,
+    risk: 'read',
   },
   {
     name: 'plos_job_status',
@@ -139,6 +244,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosJobStatusInput),
     zodSchema: plosJobStatusInput,
     handler: plosJobStatus,
+    risk: 'read',
   },
   {
     name: 'plos_agent_status',
@@ -146,6 +252,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosAgentStatusInput),
     zodSchema: plosAgentStatusInput,
     handler: plosAgentStatus,
+    risk: 'read',
   },
   {
     name: 'plos_log_search',
@@ -153,6 +260,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosLogSearchInput),
     zodSchema: plosLogSearchInput,
     handler: plosLogSearch,
+    risk: 'read',
   },
   {
     name: 'plos_config',
@@ -160,6 +268,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosConfigInput),
     zodSchema: plosConfigInput,
     handler: plosConfig,
+    risk: 'write',
   },
   {
     name: 'plos_artisan',
@@ -167,13 +276,16 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosArtisanInput),
     zodSchema: plosArtisanInput,
     handler: plosArtisan,
+    risk: 'write',
+    openWorld: true,
   },
   {
     name: 'plos_cache_clear',
-    description: 'Clear Laravel caches on the configured remote instance (cache, config, route, view, event) + optional Redis flush + Horizon/queue restart.',
+    description: 'Invalidate named Laravel configuration/inventory snapshots and file caches on the configured remote instance. Global Redis flushing is held; Horizon/queue restart requires explicit disruptive confirmation.',
     inputSchema: zodToJsonSchema(plosCacheClearInput),
     zodSchema: plosCacheClearInput,
     handler: plosCacheClear,
+    risk: 'destructive',
   },
   {
     name: 'plos_job_diagnostic',
@@ -181,6 +293,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosJobDiagnosticInput),
     zodSchema: plosJobDiagnosticInput,
     handler: plosJobDiagnostic,
+    risk: 'read',
   },
   {
     name: 'plos_tinker',
@@ -188,6 +301,10 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosTinkerInput),
     zodSchema: plosTinkerInput,
     handler: plosTinker,
+    risk: 'destructive',
+    openWorld: true,
+    // Preserve the handler's 120s subprocess cap, with bounded time to return timeout output.
+    timeoutMs: 125_000,
   },
   {
     name: 'plos_ssh',
@@ -195,13 +312,106 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(plosSshInput),
     zodSchema: plosSshInput,
     handler: plosSsh,
+    risk: 'destructive',
+    openWorld: true,
   },
   {
-    name: 'plos_decompose',
-    description: 'Process text through PLOS AIService with RLM auto-decompose. Large prompts (>8K tokens) are automatically split into smaller chunks, processed with fast local models, and synthesized with a quality model. Use for analyzing large documents, research content, or any text that benefits from context shrinkage.',
-    inputSchema: zodToJsonSchema(plosDecomposeInput),
-    zodSchema: plosDecomposeInput,
-    handler: plosDecompose,
+    name: 'plos_offline_capabilities',
+    description: 'Return the offline Codex/PLOS capability manifest: SDK-like modality surface, Codex profile, MCP posture, sidecar coordination, media input/output posture, transcription, embeddings, model catalog, and operator gates.',
+    inputSchema: zodToJsonSchema(plosOfflineCapabilitiesInput),
+    zodSchema: plosOfflineCapabilitiesInput,
+    handler: plosOfflineCapabilities,
+    risk: 'read',
+  },
+  {
+    name: 'plos_offline_pipeline_tools',
+    description: 'Return the ordered PLOS AI pipeline inventory for offline agents: AIService execution order, tool-calling order, configured ollama_pipeline task stages/options, MCP tool order, route/provider controls, and live DB inventory when available.',
+    inputSchema: zodToJsonSchema(plosOfflinePipelineToolsInput),
+    zodSchema: plosOfflinePipelineToolsInput,
+    handler: plosOfflinePipelineTools,
+    risk: 'read',
+  },
+  {
+    name: 'plos_offline_sidecar',
+    description: 'Plan or run a read-only multi-model offline Codex sidecar split. Uses primary local Codex for planning and Jetson Codex for independent review; writeback remains outside this tool behind the normal approval/editor gate.',
+    inputSchema: zodToJsonSchema(plosOfflineSidecarInput),
+    zodSchema: plosOfflineSidecarInput,
+    handler: plosOfflineSidecar,
+    risk: 'read',
+    timeoutMs: 1_260_000,
+  },
+  {
+    name: 'plos_colibri_research',
+    description: 'Plan or run the fail-closed Colibri public-web research canary. PLOS executes only its exact read-only SearXNG allowlist; normal Colibri routes stay tool-free. Defaults to the configured local checkout; runtime and source access require installation qualification.',
+    inputSchema: zodToJsonSchema(plosColibriResearchInput),
+    zodSchema: plosColibriResearchInput,
+    handler: plosColibriResearch,
+    risk: 'read',
+    openWorld: true,
+    timeoutMs: 1_830_000,
+  },
+  {
+    name: 'plos_colibri_local_research',
+    description: 'Plan or run the separately gated Colibri local-offline research canary. PLOS exposes only exact read-only RAG search, similar-document, and resumable-read operations; indexing, SQL, filesystem, public web, writes, and fallback remain unavailable.',
+    inputSchema: zodToJsonSchema(plosColibriLocalResearchInput),
+    zodSchema: plosColibriLocalResearchInput,
+    handler: plosColibriLocalResearch,
+    risk: 'read',
+    openWorld: false,
+    timeoutMs: 1_830_000,
+  },
+  {
+    name: 'plos_offline_improvement',
+    description: 'Create a review-gated offline improvement proposal from a task lesson. Defaults observe-only; write_report=true stores a JSON review packet but does not mutate skills, memory, or production data.',
+    inputSchema: zodToJsonSchema(plosOfflineImprovementInput),
+    zodSchema: plosOfflineImprovementInput,
+    handler: plosOfflineImprovement,
+    risk: 'write',
+  },
+  {
+    name: 'plos_audio_tts',
+    description: 'Probe or run local offline text-to-speech through the PLOS audio:tts adapter. Default is dry-run/probe; execute=true is required to create an audio file.',
+    inputSchema: zodToJsonSchema(plosAudioTtsInput),
+    zodSchema: plosAudioTtsInput,
+    handler: plosAudioTts,
+    risk: 'write',
+    timeoutMs: 180_000,
+  },
+  {
+    name: 'plos_rerank',
+    description: 'Rerank supplied documents with the PLOS generic offline reranker. Defaults to lexical-only and can optionally use table-routed embeddings.',
+    inputSchema: zodToJsonSchema(plosRerankInput),
+    zodSchema: plosRerankInput,
+    handler: plosRerank,
+    risk: 'read',
+    timeoutMs: 300_000,
+  },
+  {
+    name: 'plos_media_analyze',
+    description: 'Analyze a local image with an installed offline Ollama vision model. Default is dry-run validation; execute=true is required to send the image to the local model.',
+    inputSchema: zodToJsonSchema(plosMediaAnalyzeInput),
+    zodSchema: plosMediaAnalyzeInput,
+    handler: plosMediaAnalyze,
+    risk: 'write',
+    timeoutMs: 300_000,
+  },
+  {
+    name: 'plos_image_generate',
+    description: 'Generate an image through the configured local PLOS image adapter. Default is dry-run validation; execute=true is required to create an image file.',
+    inputSchema: zodToJsonSchema(plosImageGenerateInput),
+    zodSchema: plosImageGenerateInput,
+    handler: plosImageGenerate,
+    risk: 'write',
+    timeoutMs: 900_000,
+  },
+  {
+    name: 'genealogy_search',
+    description: 'Discover tree-scoped person, family, source, and media IDs with bounded literal search before requesting detailed genealogy context.',
+    inputSchema: zodToJsonSchema(genealogySearchInput),
+    zodSchema: genealogySearchInput,
+    handler: genealogySearch,
+    risk: 'read',
+    outputSchema: genealogySearchOutputSchema,
   },
   {
     name: 'genealogy_context',
@@ -209,13 +419,17 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(genealogyContextInput),
     zodSchema: genealogyContextInput,
     handler: genealogyContext,
+    risk: 'read',
+    outputSchema: genealogyContextOutputSchema,
   },
   {
     name: 'genealogy_batch_apply',
-    description: 'Apply guarded tree-scoped genealogy batches for sources, persons, families, child links, media links, citations, media metadata, and RAG reindex touches. Defaults to dry_run.',
+    description: 'Apply guarded tree-scoped genealogy batches in one transaction. Defaults to dry_run, preserves omitted family links, and rolls back protected-root ancestor or reachability regressions.',
     inputSchema: zodToJsonSchema(genealogyBatchApplyInput),
     zodSchema: genealogyBatchApplyInput,
     handler: genealogyBatchApply,
+    risk: 'write',
+    outputSchema: genealogyBatchApplyOutputSchema,
   },
   {
     name: 'ollama_summarize',
@@ -223,6 +437,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(ollamaSummarizeInput),
     zodSchema: ollamaSummarizeInput,
     handler: ollamaSummarize,
+    risk: 'read',
   },
   {
     name: 'ollama_classify_error',
@@ -230,6 +445,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(ollamaClassifyErrorInput),
     zodSchema: ollamaClassifyErrorInput,
     handler: ollamaClassifyError,
+    risk: 'read',
   },
   {
     name: 'ollama_explain_diff',
@@ -237,6 +453,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(ollamaExplainDiffInput),
     zodSchema: ollamaExplainDiffInput,
     handler: ollamaExplainDiff,
+    risk: 'read',
   },
   {
     name: 'ollama_describe_code',
@@ -244,6 +461,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(ollamaDescribeCodeInput),
     zodSchema: ollamaDescribeCodeInput,
     handler: ollamaDescribeCode,
+    risk: 'read',
   },
   {
     name: 'ollama_draft_commit',
@@ -251,6 +469,7 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(ollamaDraftCommitInput),
     zodSchema: ollamaDraftCommitInput,
     handler: ollamaDraftCommit,
+    risk: 'read',
   },
   {
     name: 'ollama_draft',
@@ -258,11 +477,30 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: zodToJsonSchema(ollamaDraftInput),
     zodSchema: ollamaDraftInput,
     handler: ollamaDraft,
+    risk: 'read',
   },
 ];
 
+const SERVER_INSTRUCTIONS = [
+  'This is the PLOS MCP server. PLOS and Genea/genealogy are domains on this server, not separate MCP servers or resources.',
+  'For an operator-configured family tree, call genealogy_search with the explicitly selected tree_id and entity_type person first, then genealogy_context for selected IDs.',
+  'Do not call list_mcp_resources for genealogy and do not invent a genealogy MCP server.',
+  'Private PLOS data may be processed by the explicitly selected local-only model. In offline mode, never use or suggest a cloud or backup LLM.',
+  'Genealogy writes must use genealogy_batch_apply dry-run first; face and photo identity decisions remain operator-owned.',
+].join(' ');
+
+const GENEALOGY_TOOL_GUIDE_URI = 'plos://genealogy/tool-guide';
+const GENEALOGY_TOOL_GUIDE = [
+  'Genea and genealogy are provided by the PLOS MCP server; there is no separate genealogy MCP server.',
+  'Use the genealogy_search tool for bounded discovery, then genealogy_context for selected result IDs.',
+  'Use the operator-configured family tree. A surname lookup uses genealogy_search with the explicitly selected tree_id, entity_type "person", and query set to the surname.',
+  'Private results may be processed by the selected local-only model. Offline mode must not use a cloud or backup LLM.',
+  'Writes use genealogy_batch_apply with dry_run first. Face and photo identity decisions remain operator-owned.',
+].join(' ');
+
 async function main() {
   logger.info('PLOS MCP Server starting', { tools: TOOLS.length });
+  const stdioKeepAlive = setInterval(() => {}, 60_000);
 
   // Start SSH tunnels for DB access
   try {
@@ -274,8 +512,25 @@ async function main() {
 
   const server = new Server(
     { name: 'plos', version: '1.0.0' },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: {
+        resources: {},
+        tools: {},
+      },
+      instructions: SERVER_INSTRUCTIONS,
+    }
   );
+
+  let shuttingDown = false;
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    clearInterval(stdioKeepAlive);
+    await closeMysql();
+    await closePg();
+    stopTunnels();
+    process.exit(0);
+  };
 
   // List tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -283,11 +538,42 @@ async function main() {
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
+      ...(t.outputSchema ? { outputSchema: t.outputSchema } : {}),
+      annotations: toolAnnotations(t.risk, t.openWorld ?? false),
     })),
   }));
 
+  // Static, non-sensitive compatibility guide for local models that try MCP
+  // resource discovery before selecting a PLOS genealogy tool.
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: [
+      {
+        uri: GENEALOGY_TOOL_GUIDE_URI,
+        name: 'PLOS genealogy tool guide',
+        description: 'How to use the PLOS genealogy search/context tools in local-only offline sessions.',
+        mimeType: 'text/plain',
+      },
+    ],
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    if (request.params.uri !== GENEALOGY_TOOL_GUIDE_URI) {
+      throw new McpError(ErrorCode.InvalidParams, 'Unknown PLOS resource URI.');
+    }
+
+    return {
+      contents: [
+        {
+          uri: GENEALOGY_TOOL_GUIDE_URI,
+          mimeType: 'text/plain',
+          text: GENEALOGY_TOOL_GUIDE,
+        },
+      ],
+    };
+  });
+
   // Handle tool calls — every handler wrapped with a global timeout safety net
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     const tool = TOOLS.find(t => t.name === name);
 
@@ -298,38 +584,35 @@ async function main() {
       };
     }
 
-    let timedOut = false;
-
     try {
       const parsed = tool.zodSchema.parse(args);
-      const abortController = new AbortController();
-
-      // Global timeout guard — abort cooperating tools and fail fast for the MCP caller.
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        const t = setTimeout(() => {
-          timedOut = true;
-          abortController.abort();
-          reject(new Error(`Tool "${name}" timed out after ${CONFIG.toolTimeoutMs / 1000}s`));
-        }, CONFIG.toolTimeoutMs);
-        if (typeof t === 'object' && 'unref' in t) t.unref();
-      });
-
-      const result = await Promise.race([
-        tool.handler(parsed as any, { signal: abortController.signal }),
-        timeoutPromise,
-      ]);
+      const toolTimeoutMs = tool.timeoutMs ?? CONFIG.toolTimeoutMs;
+      const result = await runToolWithLifecycle(
+        signal => runToolWithProgress(
+          () => tool.handler(parsed as any, { signal }),
+          {
+            progressToken: extra._meta?.progressToken,
+            signal,
+            heartbeatMs: CONFIG.toolProgressHeartbeatMs,
+            sendNotification: extra.sendNotification,
+          },
+        ),
+        {
+          toolName: name,
+          timeoutMs: toolTimeoutMs,
+          clientSignal: extra.signal,
+        },
+      );
 
       logger.info('Tool call success', { tool: name });
 
-      return {
-        content: [{ type: 'text' as const, text: result }],
-      };
+      return buildToolSuccessResult(result, tool.outputSchema);
     } catch (err) {
-      const msg = (err as Error).name === 'AbortError'
-        ? timedOut
-          ? `Tool "${name}" timed out after ${CONFIG.toolTimeoutMs / 1000}s`
-          : `Tool "${name}" aborted`
-        : (err as Error).message;
+      const msg = err instanceof ToolTimeoutError || err instanceof ToolCancelledError
+        ? err.message
+        : (err as Error).name === 'AbortError'
+          ? `Tool "${name}" aborted`
+          : (err as Error).message;
       logger.error('Tool call failed', { tool: name, error: msg });
 
       return {
@@ -342,17 +625,15 @@ async function main() {
   // Graceful shutdown
   process.on('SIGINT', async () => {
     logger.info('Shutting down');
-    await closeMysql();
-    await closePg();
-    stopTunnels();
-    process.exit(0);
+    await shutdown();
   });
 
   process.on('SIGTERM', async () => {
-    await closeMysql();
-    await closePg();
-    stopTunnels();
-    process.exit(0);
+    await shutdown();
+  });
+
+  process.stdin.once('end', () => {
+    setTimeout(() => void shutdown(), 100);
   });
 
   // Start

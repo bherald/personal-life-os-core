@@ -232,11 +232,8 @@ trait ApiResponseTrait
     protected function logError(string $message, Exception $exception, int $code): void
     {
         $context = [
-            'exception' => get_class($exception),
-            'message' => $exception->getMessage(),
-            'code' => $exception->getCode(),
-            'file' => $exception->getFile(),
-            'line' => $exception->getLine(),
+            'exception_type' => $exception::class,
+            'exception_code' => $exception->getCode(),
             'http_code' => $code,
         ];
 

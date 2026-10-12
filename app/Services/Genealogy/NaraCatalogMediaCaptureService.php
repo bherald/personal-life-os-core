@@ -2,6 +2,7 @@
 
 namespace App\Services\Genealogy;
 
+use App\Services\FileRegistryService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Http;
@@ -260,6 +261,13 @@ class NaraCatalogMediaCaptureService
 
             return $item;
         }
+        if (($hold = $this->registryPathHoldReason($targetPath)) !== null) {
+            $item['status'] = 'blocked';
+            $item['blockers'][] = $hold;
+            $item['registry_write_attempted'] = false;
+
+            return $item;
+        }
 
         try {
             $response = Http::withHeaders([
@@ -300,7 +308,13 @@ class NaraCatalogMediaCaptureService
             }
 
             File::ensureDirectoryExists(dirname($targetPath));
-            File::put($targetPath, $body);
+            if (! $this->createNewTargetFile($targetPath, $body)) {
+                $item['status'] = file_exists($targetPath) ? 'blocked' : 'failed';
+                $item['blockers'][] = file_exists($targetPath) ? 'target_path_already_exists' : 'target_file_write_failed';
+                $item['physical_file_retained'] = file_exists($targetPath);
+
+                return $item;
+            }
 
             $extension = strtolower(pathinfo($targetPath, PATHINFO_EXTENSION));
             if ($mime === null || $mime === 'application/octet-stream') {
@@ -308,6 +322,14 @@ class NaraCatalogMediaCaptureService
             }
             $mediaType = $this->mediaType($record, $extension);
             $assetUuid = $this->registerFileRegistry($targetPath, $mime, $catalogUrl, $naId, $this->recordTitle($record, $media));
+            if ($assetUuid === null && Schema::hasTable('file_registry')) {
+                $item['status'] = 'blocked';
+                $item['blockers'][] = 'registry_path_ownership_changed';
+                $item['physical_file_retained'] = true;
+                $item['registry_write_attempted'] = true;
+
+                return $item;
+            }
             $this->updateMediaRow(
                 media: $media,
                 path: $targetPath,
@@ -357,12 +379,33 @@ class NaraCatalogMediaCaptureService
         array $item
     ): array {
         try {
+            if (($hold = $this->registryPathHoldReason($targetPath)) !== null) {
+                $item['status'] = 'blocked';
+                $item['blockers'][] = $hold;
+                $item['registry_write_attempted'] = false;
+
+                return $item;
+            }
             $html = $this->metadataHtml($record, $naId, $catalogUrl);
             File::ensureDirectoryExists(dirname($targetPath));
-            File::put($targetPath, $html);
+            if (! $this->createNewTargetFile($targetPath, $html)) {
+                $item['status'] = file_exists($targetPath) ? 'blocked' : 'failed';
+                $item['blockers'][] = file_exists($targetPath) ? 'target_path_already_exists' : 'target_file_write_failed';
+                $item['physical_file_retained'] = file_exists($targetPath);
+
+                return $item;
+            }
 
             $bytes = strlen($html);
             $assetUuid = $this->registerFileRegistry($targetPath, 'text/html', $catalogUrl, $naId, $this->recordTitle($record, $media));
+            if ($assetUuid === null && Schema::hasTable('file_registry')) {
+                $item['status'] = 'blocked';
+                $item['blockers'][] = 'registry_path_ownership_changed';
+                $item['physical_file_retained'] = true;
+                $item['registry_write_attempted'] = true;
+
+                return $item;
+            }
             $this->updateMediaRow(
                 media: $media,
                 path: $targetPath,
@@ -651,45 +694,89 @@ class NaraCatalogMediaCaptureService
 
         try {
             $pathHash = hash('sha256', $path);
-            $existing = DB::table('file_registry')->select(['asset_uuid'])->where('path_hash', $pathHash)->first();
-            if ($existing && is_string($existing->asset_uuid ?? null)) {
-                return $existing->asset_uuid;
-            }
-
-            $assetUuid = (string) Str::uuid();
             $extension = strtolower(pathinfo($path, PATHINFO_EXTENSION));
             $contentHash = is_file($path) ? hash_file('sha256', $path) : null;
             $fileSize = is_file($path) ? filesize($path) : 0;
 
-            DB::table('file_registry')->insert([
-                'asset_uuid' => $assetUuid,
-                'current_path' => $path,
-                'path_hash' => $pathHash,
-                'original_path' => $catalogUrl,
-                'original_source' => 'other',
-                'filename' => basename($path),
-                'extension' => $extension ?: null,
-                'mime_type' => $mime,
-                'file_size' => $fileSize ?: 0,
-                'content_hash' => $contentHash ?: null,
-                'content_hash_verified_at' => $contentHash ? now() : null,
-                'status' => 'active',
-                'last_verified_at' => now(),
-                'title' => substr($title, 0, 500),
-                'category' => 'genealogy',
-                'tags' => json_encode(['source:nara', 'nara_id:'.$naId], JSON_UNESCAPED_SLASHES),
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
+            return DB::transaction(function () use ($path, $pathHash, $extension, $contentHash, $fileSize, $mime, $catalogUrl, $naId, $title): string {
+                $existing = app(FileRegistryService::class)->currentExactSourcePath($path, true);
+                if ($existing !== null) {
+                    throw new \RuntimeException('NARA target path already has a registry owner.');
+                }
 
-            return $assetUuid;
+                $assetUuid = (string) Str::uuid();
+                DB::table('file_registry')->insert([
+                    'asset_uuid' => $assetUuid,
+                    'current_path' => $path,
+                    'path_hash' => $pathHash,
+                    'original_path' => $catalogUrl,
+                    'original_source' => 'other',
+                    'filename' => basename($path),
+                    'extension' => $extension ?: null,
+                    'mime_type' => $mime,
+                    'file_size' => $fileSize ?: 0,
+                    'content_hash' => $contentHash ?: null,
+                    'content_hash_verified_at' => $contentHash ? now() : null,
+                    'status' => 'active',
+                    'last_verified_at' => now(),
+                    'title' => substr($title, 0, 500),
+                    'category' => 'genealogy',
+                    'tags' => json_encode(['source:nara', 'nara_id:'.$naId], JSON_UNESCAPED_SLASHES),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                return $assetUuid;
+            });
         } catch (Throwable $exception) {
             Log::warning('NARA catalog media capture file_registry registration failed', [
-                'path' => $path,
                 'error' => $exception->getMessage(),
             ]);
 
             return null;
+        }
+    }
+
+    private function registryPathHoldReason(string $path): ?string
+    {
+        if (file_exists($path) || is_link($path)) {
+            return 'target_path_already_exists';
+        }
+        if (! Schema::hasTable('file_registry')) {
+            return null;
+        }
+
+        try {
+            return app(FileRegistryService::class)->currentExactSourcePath($path) === null
+                ? null : 'target_registry_path_already_owned';
+        } catch (Throwable) {
+            return 'target_registry_path_requires_review';
+        }
+    }
+
+    private function createNewTargetFile(string $path, string $contents): bool
+    {
+        $handle = @fopen($path, 'x+b');
+        if ($handle === false) {
+            return false;
+        }
+
+        try {
+            $offset = 0;
+            $length = strlen($contents);
+            while ($offset < $length) {
+                $written = fwrite($handle, substr($contents, $offset));
+                if ($written === false || $written === 0) {
+                    return false;
+                }
+                $offset += $written;
+            }
+
+            return fflush($handle);
+        } catch (Throwable) {
+            return false;
+        } finally {
+            fclose($handle);
         }
     }
 

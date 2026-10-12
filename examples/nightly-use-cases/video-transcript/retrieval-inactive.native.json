@@ -1,0 +1,54 @@
+{
+  "schema": "plos.portable_workflow.v2",
+  "dsl_version": "2.0",
+  "source": {
+    "product": "PLOS",
+    "format": "native-portable-workflow"
+  },
+  "workflow": {
+    "name": "Original fictional video summary retrieval stage",
+    "description": "PLOS v2.1 inactive synthetic retrieval stage only; no scheduler, corpus ingestion, model execution, Joplin or Pushover delivery is performed.",
+    "schedule": null,
+    "active": false,
+    "current_version": 1,
+    "error_handling": "stop",
+    "retry": null,
+    "defaults": [],
+    "nodes": [
+      {
+        "node_type": "RAGSearch",
+        "node_order": 0,
+        "timeout_seconds": 60,
+        "compensation_handler": null,
+        "compensation_config": null,
+        "configs": [
+          {
+            "key": "query",
+            "value": "Summarize the fictional transcript and retain the corrected claim and missing test receipt.",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "document_type",
+            "value": "public_demo_video",
+            "requires_runtime_value": false
+          },
+          {
+            "key": "limit",
+            "value": "2",
+            "requires_runtime_value": false
+          }
+        ]
+      }
+    ]
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "workflow_sha256": "fff525b47f0e0534f0f8a84e5e5be7d3b0f6f3a27667f4f2126285f5e5178850"
+  },
+  "warnings": [],
+  "posture": {
+    "secrets_included": false,
+    "imported_active": false,
+    "import_requires_execute_and_confirm": true
+  }
+}

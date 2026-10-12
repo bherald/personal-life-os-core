@@ -38,6 +38,9 @@ class GenealogyPacketSynthesisService
                 'dedup' => false,
                 'factual_mode' => true,
                 'task_type' => 'genealogy_packet_synthesis',
+                'ollama_output_schema' => ($payload['profile']['structured_output_enforced'] ?? false)
+                    ? $payload['profile']['output_schema']
+                    : null,
             ]
         );
 

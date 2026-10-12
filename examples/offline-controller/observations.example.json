@@ -1,0 +1,22 @@
+{
+  "schema": "plos.offline_controller.observations_example.v1",
+  "fictional": true,
+  "targets": {
+    "example-host-a/example_chat_a": {
+      "task": null,
+      "listeners": []
+    },
+    "example-host-a/example_embed_a": {
+      "task": null,
+      "listeners": []
+    },
+    "example-host-b/example_chat_b": {
+      "task": null,
+      "listeners": []
+    },
+    "example-host-b/example_embed_b": {
+      "task": null,
+      "listeners": []
+    }
+  }
+}

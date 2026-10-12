@@ -1,7 +1,7 @@
 <template>
   <div class="ai-hub-container flex bg-[#1a1a1a]">
     <!-- Left Sidebar -->
-    <div class="w-72 bg-[#2d2d2d] border-r border-[#444] flex flex-col">
+    <div class="ai-hub-sidebar w-72 bg-[#2d2d2d] border-r border-[#444] flex flex-col">
       <!-- Mode Selector -->
       <div class="p-3 border-b border-[#444]">
         <div class="flex gap-1 bg-[#1a1a1a] rounded-lg p-1">
@@ -30,6 +30,24 @@
             </span>
           </button>
         </div>
+        <div
+          v-if="mode === 'chat' && !chatBootstrapReady"
+          class="mt-2 flex min-h-8 items-center justify-between gap-2 text-xs text-[#d6e0e6]"
+          aria-live="polite"
+        >
+          <span v-if="chatStore.modelModesLoading">Loading model routes...</span>
+          <template v-else>
+            <span class="min-w-0 break-words text-[#f39c12]">{{ chatStore.modelModesError || 'Model routes unavailable' }}</span>
+            <button
+              type="button"
+              class="shrink-0 px-2 py-1 border border-[#555] text-[#e0e0e0] hover:border-accent disabled:opacity-50"
+              :disabled="chatStore.modelModesLoading"
+              @click="loadModelModes"
+            >
+              Retry
+            </button>
+          </template>
+        </div>
       </div>
 
       <!-- Chat Mode Sidebar -->
@@ -39,7 +57,8 @@
           <div class="flex gap-2">
             <button
               @click="handleNewConversation"
-              class="btn-primary flex-1 flex items-center justify-center gap-2"
+              :disabled="!chatBootstrapReady || chatStore.loading || chatStore.sending"
+              class="btn-primary flex-1 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
@@ -49,15 +68,23 @@
           </div>
           <select
             v-model="chatMode"
-            class="w-full bg-[#1a1a1a] text-[#e0e0e0] border border-[#555] rounded-md px-3 py-1.5 text-xs focus:border-accent focus:outline-none"
+            :disabled="!chatBootstrapReady || chatStore.loading"
+            aria-label="Chat model route"
+            class="w-full bg-[#1a1a1a] text-[#e0e0e0] border border-[#555] rounded-md px-3 py-1.5 text-xs focus:border-accent focus:outline-hidden"
           >
-            <option
-              v-for="profile in chatStore.modelModes"
-              :key="profile.id"
-              :value="profile.id"
+            <optgroup
+              v-for="group in groupedModelModes"
+              :key="group.category"
+              :label="group.category"
             >
-              {{ profile.label }}{{ profile.candidate ? ' (candidate)' : '' }}
-            </option>
+              <option
+                v-for="profile in group.modes"
+                :key="profile.id"
+                :value="profile.id"
+              >
+                {{ profile.label }} — {{ profile.model }}{{ profile.candidate ? ' (candidate)' : '' }}
+              </option>
+            </optgroup>
           </select>
           <div v-if="selectedChatMode" class="space-y-2">
             <div class="flex flex-wrap gap-1">
@@ -76,18 +103,18 @@
               </span>
             </div>
             <div class="text-[11px] text-[#95a5a6] leading-snug">
-              {{ selectedChatMode.model }}
+              {{ selectedChatMode.category }} · {{ selectedChatMode.model }}
             </div>
           </div>
           <label class="flex items-center gap-2 text-xs text-[#d6e0e6]">
-            <input v-model="privateChat" type="checkbox" class="form-checkbox">
+            <input v-model="privateChat" type="checkbox" class="form-checkbox" :disabled="!chatBootstrapReady">
             Private routing
           </label>
           <label
             v-if="selectedChatMode?.override_required"
             class="flex items-center gap-2 text-xs text-[#f39c12]"
           >
-            <input v-model="modelOverride" type="checkbox" class="form-checkbox">
+            <input v-model="modelOverride" type="checkbox" class="form-checkbox" :disabled="!chatBootstrapReady">
             Operator override
           </label>
         </div>
@@ -105,8 +132,10 @@
               v-for="conversation in chatStore.conversations"
               :key="conversation.id"
               @click="handleSelectConversation(conversation.id)"
+              :disabled="chatStore.sending"
+              :title="chatStore.sending ? 'Wait for the active response to finish before switching conversations' : undefined"
               :class="[
-                'w-full px-4 py-3 text-left hover:bg-[#34495e] transition-colors',
+                'w-full px-4 py-3 text-left hover:bg-[#34495e] transition-colors disabled:cursor-not-allowed disabled:opacity-50',
                 chatStore.currentConversation?.id === conversation.id ? 'bg-[#34495e] border-l-4 border-accent' : ''
               ]"
             >
@@ -203,7 +232,7 @@
     </div>
 
     <!-- Main Content Area -->
-    <div class="flex-1 flex flex-col bg-[#1a1a1a] overflow-hidden">
+    <div class="ai-hub-main min-w-0 flex-1 flex flex-col bg-[#1a1a1a] overflow-hidden">
       <!-- ================== CHAT MODE ================== -->
       <template v-if="mode === 'chat'">
         <!-- No Conversation Selected -->
@@ -264,13 +293,15 @@
               </button>
               <button
                 @click="handleClearHistory"
-                class="px-3 py-1.5 text-xs text-[#f39c12] hover:bg-[#34495e] rounded transition"
+                :disabled="chatStore.sending"
+                class="px-3 py-1.5 text-xs text-[#f39c12] hover:bg-[#34495e] rounded transition disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Clear
               </button>
               <button
                 @click="handleClearConversation"
-                class="px-3 py-1.5 text-xs text-[#e74c3c] hover:bg-[#34495e] rounded transition"
+                :disabled="chatStore.sending"
+                class="px-3 py-1.5 text-xs text-[#e74c3c] hover:bg-[#34495e] rounded transition disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Delete
               </button>
@@ -278,7 +309,12 @@
           </div>
 
           <!-- Messages Area -->
-          <div ref="messagesContainer" class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          <div
+            ref="messagesContainer"
+            class="flex-1 overflow-y-auto px-6 py-4"
+            @scroll.passive="handleMessagesScroll"
+          >
+            <div ref="messagesContent" class="space-y-4">
             <div v-if="!chatStore.messages.length" class="text-center text-[#95a5a6] mt-8">
               Start a conversation by typing a message below
             </div>
@@ -304,11 +340,89 @@
                   </span>
                 </div>
 
-                <div class="prose prose-sm max-w-none" v-html="renderMarkdown(message.content)" @click="handleCodeCopy"></div>
+                <div
+                  v-if="message.content"
+                  class="prose prose-sm max-w-none"
+                  v-html="renderMarkdown(message.content)"
+                  @click="handleCodeCopy"
+                ></div>
+
+                <div
+                  v-if="message.role === 'assistant' && message.streaming"
+                  class="mt-1 flex min-h-5 items-center gap-2 text-sm text-[#95a5a6]"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span class="animate-pulse">...</span>
+                  <span>{{ chatStore.streamStatus || 'Preparing request' }}</span>
+                  <button
+                    type="button"
+                    class="ml-2 rounded border border-[#e74c3c] px-2 py-1 text-xs font-semibold text-[#ff8a80] transition hover:bg-[#e74c3c] hover:text-white"
+                    aria-label="Cancel active AI response"
+                    @click="handleCancelStream"
+                  >
+                    Stop
+                  </button>
+                </div>
+
+                <div
+                  v-if="message.role === 'assistant' && toolActivities(message).length"
+                  class="mt-3 border-t border-[#444] pt-2"
+                  aria-live="polite"
+                >
+                  <div class="mb-1 text-[11px] font-semibold text-[#95a5a6]">Tool activity</div>
+                  <div class="space-y-1">
+                    <div
+                      v-for="activity in toolActivities(message)"
+                      :key="activity.tool_call_id"
+                      class="grid min-h-5 grid-cols-[8px_minmax(0,1fr)_auto] items-center gap-2 text-xs"
+                    >
+                      <span
+                        class="block h-2 w-2 rounded-full"
+                        :class="toolActivityStatusClass(activity.status)"
+                      ></span>
+                      <span class="min-w-0 break-all text-[#d6e0e6]">
+                        {{ activity.server }} / {{ activity.tool }}
+                      </span>
+                      <span class="whitespace-nowrap text-[#95a5a6]">
+                        {{ toolActivityStatusLabel(activity.status) }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  v-if="message.role === 'assistant' && message.streamInterruption"
+                  role="status"
+                  class="mt-3 border-l-4 border-[#f39c12] bg-[#3b3325] px-3 py-2 text-sm text-[#f5d28c]"
+                >
+                  {{ message.streamInterruption.message }}
+                </div>
+
+                <div
+                  v-if="message.role === 'assistant' && message.streamFailure"
+                  role="alert"
+                  class="mt-3 border-l-4 border-[#e74c3c] bg-[#3b2525] px-3 py-2 text-sm text-[#f5b7b1]"
+                >
+                  <div>{{ message.streamFailure.message }}</div>
+                  <div class="mt-1 break-all font-mono text-[11px] text-[#c9a3a0]">
+                    {{ message.streamFailure.error_code }}
+                    <span v-if="message.streamFailure.run_id"> · {{ message.streamFailure.run_id }}</span>
+                    <span v-if="message.streamFailure.retryable"> · retryable</span>
+                  </div>
+                </div>
 
                 <div v-if="message.attachments && message.attachments.length" class="mt-3 flex flex-wrap gap-2">
+                  <audio
+                    v-for="attachment in message.attachments.filter(item => item.media_type === 'audio')"
+                    :key="`audio-${attachment.id}`"
+                    :src="attachment.url"
+                    controls
+                    preload="metadata"
+                    class="w-full max-w-xl"
+                  ></audio>
                   <a
-                    v-for="attachment in message.attachments"
+                    v-for="attachment in message.attachments.filter(item => item.media_type !== 'audio')"
                     :key="attachment.id"
                     :href="attachment.url || null"
                     :target="attachment.url ? '_blank' : null"
@@ -346,6 +460,16 @@
                           {{ source.title }}
                         </button>
                         <span v-if="source.type" class="text-[#666] ml-2">({{ source.type }})</span>
+                        <span v-if="source.source?.source_type" class="text-[#7f8c8d] ml-2">
+                          {{ source.source.source_type }}
+                        </span>
+                        <span
+                          v-if="source.source?.citation_status"
+                          :class="citationStatusClass(source.source.citation_status)"
+                          class="ml-2 px-1 border text-[10px]"
+                        >
+                          {{ citationStatusLabel(source.source.citation_status) }}
+                        </span>
                         <a
                           v-if="source.url"
                           :href="source.url"
@@ -363,31 +487,56 @@
                   </div>
                 </div>
 
-                <!-- Save to RAG -->
-                <div v-if="message.role === 'assistant' && !message.streaming" class="mt-3 pt-2 border-t border-[#444]">
+                <div v-if="message.role === 'assistant' && !message.streaming" class="mt-3 flex flex-wrap items-center gap-2 border-t border-[#444] pt-2">
+                  <div class="flex h-8 shrink-0 items-center overflow-hidden rounded border border-[#555]" aria-label="Response feedback">
+                    <button
+                      type="button"
+                      class="flex h-8 w-9 items-center justify-center text-base transition"
+                      :class="feedbackButtonClass(message, 'helpful')"
+                      :disabled="feedbackSaving === message.id"
+                      title="Helpful response"
+                      aria-label="Mark response helpful"
+                      @click="handleResponseFeedback(message, 'helpful')"
+                    >
+                      &#8593;
+                    </button>
+                    <button
+                      type="button"
+                      class="flex h-8 w-9 items-center justify-center border-l border-[#555] text-base transition"
+                      :class="feedbackButtonClass(message, 'unhelpful')"
+                      :disabled="feedbackSaving === message.id"
+                      title="Unhelpful response"
+                      aria-label="Mark response unhelpful"
+                      @click="handleResponseFeedback(message, 'unhelpful')"
+                    >
+                      &#8595;
+                    </button>
+                  </div>
+                  <select
+                    v-if="message.response_feedback?.value === 'unhelpful'"
+                    :value="message.response_feedback?.reason || ''"
+                    :disabled="feedbackSaving === message.id"
+                    class="h-8 max-w-[220px] rounded border border-[#555] bg-[#1a1a1a] px-2 py-0 text-xs text-[#d6e0e6]"
+                    aria-label="Unhelpful response reason"
+                    @change="handleFeedbackReason(message, $event.target.value)"
+                  >
+                    <option value="">Add reason</option>
+                    <option v-for="option in feedbackReasonOptions" :key="option.value" :value="option.value">
+                      {{ option.label }}
+                    </option>
+                  </select>
                   <button
                     v-if="!message.savedToRAG"
                     @click="handleSaveToRAG(message)"
                     :disabled="savingToRAG === message.id"
-                    class="flex items-center gap-2 text-xs text-[#95a5a6] hover:text-accent transition"
+                    class="ml-auto flex min-h-8 items-center gap-2 text-xs text-[#95a5a6] transition hover:text-accent"
                   >
                     {{ savingToRAG === message.id ? 'Saving...' : 'Save to Knowledge Base' }}
                   </button>
-                  <span v-else class="text-xs text-[#2ecc71]">Saved</span>
+                  <span v-else class="ml-auto text-xs text-[#2ecc71]">Saved</span>
                 </div>
               </div>
             </div>
-
-            <!-- Thinking Indicator -->
-            <div v-if="chatStore.sending" class="flex justify-start">
-              <div class="max-w-3xl rounded-lg px-4 py-3 bg-[#2d2d2d] border border-[#444]">
-                <div class="flex items-center gap-2 text-[#95a5a6]">
-                  <div class="animate-pulse">.</div>
-                  <div class="animate-pulse">.</div>
-                  <div class="animate-pulse">.</div>
-                  <span class="ml-2">Thinking...</span>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -407,6 +556,7 @@
                     type="button"
                     @click="removeAttachment(index)"
                     class="text-[#e74c3c] hover:text-white"
+                    :aria-label="`Remove attachment ${file.name}`"
                   >
                     x
                   </button>
@@ -431,6 +581,7 @@
                   :disabled="!attachmentUploadEnabled || chatStore.sending"
                   class="px-3 py-3 rounded-lg border border-[#555] bg-[#1a1a1a] text-[#d6e0e6] hover:border-accent disabled:opacity-50"
                   :title="attachmentButtonTitle"
+                  :aria-label="attachmentButtonTitle"
                 >
                   <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16.5 6.5l-7.78 7.78a3 3 0 104.24 4.24l8.49-8.49a5 5 0 10-7.07-7.07L5.89 11.45a7 7 0 109.9 9.9l7.07-7.07"></path>
@@ -440,9 +591,10 @@
                   v-model="messageInput"
                   @keydown.enter.exact.prevent="handleSendMessage"
                   placeholder="Type your message... (Enter to send)"
+                  aria-label="Chat message"
                   class="flex-1 px-4 py-3 bg-[#1a1a1a] border border-[#444] rounded-lg focus:ring-2 focus:ring-accent resize-none text-[#e0e0e0] placeholder-[#95a5a6]"
                   rows="2"
-                  :disabled="chatStore.sending"
+                  :disabled="!chatBootstrapReady || chatStore.sending"
                 ></textarea>
                 <button
                   type="submit"
@@ -548,7 +700,7 @@
     <!-- ================== MODALS ================== -->
 
     <!-- System Prompt Modal -->
-    <div v-if="showSystemPromptModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4" @click.self="showSystemPromptModal = false">
+    <div v-if="showSystemPromptModal" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" @click.self="showSystemPromptModal = false">
       <div class="bg-[#2d2d2d] rounded-lg shadow-2xl max-w-lg w-full max-h-[80vh] overflow-y-auto border border-[#444]">
         <div class="border-b border-[#444] px-6 py-4 flex items-center justify-between">
           <h3 class="text-lg font-semibold text-[#e0e0e0]">System Prompt</h3>
@@ -570,10 +722,10 @@
     </div>
 
     <!-- RAG Document Viewer Modal -->
-    <div v-if="showRAGDocModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4" @click.self="showRAGDocModal = false">
+    <div v-if="showRAGDocModal" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" @click.self="showRAGDocModal = false">
       <div class="bg-[#2d2d2d] rounded-lg shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden border border-[#444] flex flex-col">
         <!-- Modal Header -->
-        <div class="border-b border-[#444] px-6 py-4 flex items-center justify-between flex-shrink-0">
+        <div class="border-b border-[#444] px-6 py-4 flex items-center justify-between shrink-0">
           <div class="flex-1 min-w-0">
             <h3 class="text-lg font-semibold text-[#e0e0e0] truncate">{{ viewingRAGDoc?.title || 'Document' }}</h3>
             <div class="flex items-center gap-3 text-xs text-[#95a5a6] mt-1">
@@ -599,7 +751,7 @@
         </div>
 
         <!-- Modal Footer -->
-        <div class="border-t border-[#444] px-6 py-3 flex items-center justify-between flex-shrink-0 bg-[#252525]">
+        <div class="border-t border-[#444] px-6 py-3 flex items-center justify-between shrink-0 bg-[#252525]">
           <div class="text-xs text-[#95a5a6]">
             <span v-if="viewingRAGDoc?.media_url">
               <a :href="viewingRAGDoc.media_url" target="_blank" class="text-accent hover:underline">View Original</a>
@@ -620,7 +772,7 @@
     />
 
     <!-- Topic Modal (simple form fallback) -->
-    <div v-if="showTopicModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div v-if="showTopicModal" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
       <div class="bg-[#2d2d2d] rounded-lg p-6 w-full max-w-lg border-2 border-[#444] max-h-[90vh] overflow-y-auto">
         <h3 class="text-xl font-bold text-[#e0e0e0] mb-4">{{ editingTopic ? 'Edit Topic' : 'New Topic' }}</h3>
         <div class="space-y-4">
@@ -705,13 +857,30 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue';
+import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useChatStore } from '../stores/chat';
 import TopicRefineModal from '../components/TopicRefineModal.vue';
 import MarkdownIt from 'markdown-it';
 import hljs from '@/utils/highlight.js';
+import { selectModelRouteId } from '@/utils/modelRouteBootstrap.js';
+import { normalizeChatToolActivities } from '@/utils/chatToolActivity.js';
+import { isNearScrollBottom, shouldAutoFollow } from '@/utils/chatAutoFollow.js';
 
 const chatStore = useChatStore();
+
+const toolActivities = (message) => normalizeChatToolActivities(message?.tool_calls);
+const toolActivityStatusLabel = (status) => ({
+  running: 'Running',
+  succeeded: 'Succeeded',
+  failed: 'Failed',
+  unknown: 'Recorded',
+}[status] || 'Recorded');
+const toolActivityStatusClass = (status) => ({
+  running: 'bg-[#f39c12] animate-pulse',
+  succeeded: 'bg-[#2ecc71]',
+  failed: 'bg-[#e74c3c]',
+  unknown: 'bg-[#95a5a6]',
+}[status] || 'bg-[#95a5a6]');
 
 // Mode: 'chat' or 'research'
 const mode = ref('chat');
@@ -732,10 +901,23 @@ const fileInput = ref(null);
 const selectedAttachments = ref([]);
 const attachmentNotice = ref('');
 const messagesContainer = ref(null);
+const messagesContent = ref(null);
+const isFollowingMessages = ref(true);
+let messagesResizeObserver = null;
 const lastDetectedIntent = ref(null);
 const showSystemPromptModal = ref(false);
 const editedSystemPrompt = ref('');
 const savingToRAG = ref(null);
+const feedbackSaving = ref(null);
+const feedbackReasonOptions = [
+  { value: 'incorrect', label: 'Incorrect' },
+  { value: 'incomplete', label: 'Incomplete' },
+  { value: 'ignored_instruction', label: 'Ignored instruction' },
+  { value: 'retry_after_failure', label: 'Retry after failure' },
+  { value: 'unrequested_action', label: 'Unrequested action' },
+  { value: 'expressed_frustration', label: 'Frustrating interaction' },
+  { value: 'other', label: 'Other' },
+];
 
 // RAG Document viewer modal state
 const showRAGDocModal = ref(false);
@@ -818,6 +1000,27 @@ const selectedChatMode = computed(() => {
   return chatStore.modelModes.find(item => item.id === chatMode.value) || null;
 });
 
+const groupedModelModes = computed(() => {
+  const groups = [];
+  const byCategory = new Map();
+  chatStore.modelModes.forEach((mode) => {
+    const category = mode.category || 'Chat';
+    if (!byCategory.has(category)) {
+      const group = { category, modes: [] };
+      byCategory.set(category, group);
+      groups.push(group);
+    }
+    byCategory.get(category).modes.push(mode);
+  });
+  return groups;
+});
+
+const chatBootstrapReady = computed(() => {
+  return chatStore.modelModesLoaded
+    && !chatStore.modelModesLoading
+    && chatStore.modelModes.length > 0;
+});
+
 const currentConversationMode = computed(() => {
   if (!chatStore.currentConversation) {
     return null;
@@ -854,9 +1057,20 @@ const attachmentButtonTitle = computed(() => {
     : 'Attachments unavailable for this model';
 });
 
+const requiresAudioVideoAttachment = computed(() => {
+  const mode = activeAttachmentMode.value;
+  return mode?.id === 'audio_transcription' || mode?.profile === 'audio_transcription';
+});
+
+const hasAudioVideoAttachment = computed(() => {
+  return selectedAttachments.value.some(file => ['audio', 'video'].includes(classifyFileMediaType(file)));
+});
+
 const canSend = computed(() => {
-  return (messageInput.value.trim().length > 0 || selectedAttachments.value.length > 0)
+  return chatBootstrapReady.value
+    && (messageInput.value.trim().length > 0 || selectedAttachments.value.length > 0)
     && selectedAttachments.value.every(canAttachFile)
+    && (!requiresAudioVideoAttachment.value || hasAudioVideoAttachment.value)
     && !chatStore.sending;
 });
 
@@ -873,6 +1087,19 @@ const formatDate = (dateStr) => {
   return date.toLocaleDateString();
 };
 
+const citationStatusLabel = (status) => ({
+  source_bound: 'Source linked',
+  locator_only: 'Link available',
+  source_type_only: 'Type only',
+  document_only: 'Indexed copy'
+}[status] || 'Source unknown');
+
+const citationStatusClass = (status) => {
+  if (status === 'source_bound') return 'border-[#2d6a4f] text-[#95d5b2]';
+  if (status === 'locator_only') return 'border-[#3a6d8c] text-[#9cc9e2]';
+  return 'border-[#665c3d] text-[#d8c88f]';
+};
+
 // Intent emoji
 const getIntentEmoji = (intent) => {
   const emojis = {
@@ -886,6 +1113,8 @@ const getIntentEmoji = (intent) => {
 
 // Chat handlers
 const handleNewConversation = async () => {
+  if (!chatBootstrapReady.value || chatStore.sending) return;
+
   if (selectedChatMode.value?.override_required && !modelOverride.value) {
     alert('Check Operator override to use this candidate profile.');
     return;
@@ -903,7 +1132,11 @@ const handleNewConversation = async () => {
 };
 
 const handleSelectConversation = async (id) => {
-  await chatStore.loadConversation(id);
+  if (chatStore.sending) return;
+
+  const result = await chatStore.loadConversation(id);
+  if (!result.success) return;
+
   selectedAttachments.value = selectedAttachments.value.filter(canAttachFile);
   attachmentNotice.value = '';
   await nextTick();
@@ -918,21 +1151,36 @@ const handleSendMessage = async () => {
   selectedAttachments.value = [];
   attachmentNotice.value = '';
   const result = await chatStore.sendMessageStream(content, attachments);
-  if (result.success && result.intent) {
+  if (!result.success) {
+    messageInput.value = content;
+    selectedAttachments.value = attachments.filter(canAttachFile);
+    attachmentNotice.value = result.error || 'Message could not be sent.';
+  } else if (result.intent) {
     lastDetectedIntent.value = result.intent;
   }
   await nextTick();
   scrollToBottom();
 };
 
+const handleCancelStream = () => {
+  chatStore.cancelActiveStream();
+};
+
 const handleAttachmentSelect = (event) => {
   const files = Array.from(event.target.files || []);
-  const supportedFiles = files.filter(canAttachFile);
-  const unsupportedCount = files.length - supportedFiles.length;
+  const nonEmptyFiles = files.filter((file) => Number(file?.size || 0) > 0);
+  const emptyCount = files.length - nonEmptyFiles.length;
+  const supportedFiles = nonEmptyFiles.filter(canAttachFile);
+  const unsupportedCount = nonEmptyFiles.length - supportedFiles.length;
   selectedAttachments.value = [...selectedAttachments.value, ...supportedFiles].slice(0, 12);
-  attachmentNotice.value = unsupportedCount > 0
-    ? `${unsupportedCount} file${unsupportedCount === 1 ? '' : 's'} skipped for this model.`
-    : '';
+  const notices = [];
+  if (emptyCount > 0) {
+    notices.push(`${emptyCount} empty file${emptyCount === 1 ? '' : 's'} skipped.`);
+  }
+  if (unsupportedCount > 0) {
+    notices.push(`${unsupportedCount} file${unsupportedCount === 1 ? '' : 's'} skipped for this model.`);
+  }
+  attachmentNotice.value = notices.join(' ');
   event.target.value = '';
 };
 
@@ -963,6 +1211,8 @@ const classifyFileMediaType = (file) => {
 };
 
 const canAttachFile = (file) => {
+  if (Number(file?.size || 0) <= 0) return false;
+
   const requiredCapability = REQUIRED_INPUT_CAPABILITY_BY_MEDIA_TYPE[classifyFileMediaType(file)] || 'file_input';
   return activeInputCapabilities.value.has(requiredCapability);
 };
@@ -990,14 +1240,14 @@ const formatBytes = (bytes) => {
 };
 
 const handleClearConversation = async () => {
-  if (!chatStore.currentConversation) return;
+  if (!chatStore.currentConversation || chatStore.sending) return;
   if (confirm('Delete this conversation?')) {
     await chatStore.clearConversation(chatStore.currentConversation.id);
   }
 };
 
 const handleClearHistory = async () => {
-  if (!chatStore.currentConversation) return;
+  if (!chatStore.currentConversation || chatStore.sending) return;
   if (confirm('Clear all messages?')) {
     await chatStore.clearMessageHistory(chatStore.currentConversation.id);
     lastDetectedIntent.value = null;
@@ -1013,6 +1263,36 @@ const handleSaveToRAG = async (message) => {
     alert('Failed to save');
   }
   savingToRAG.value = null;
+};
+
+const feedbackButtonClass = (message, value) => {
+  if (message.response_feedback?.value === value) {
+    return value === 'helpful'
+      ? 'bg-[#2ecc71] text-black'
+      : 'bg-[#e74c3c] text-white';
+  }
+
+  return 'bg-[#1a1a1a] text-[#95a5a6] hover:bg-[#34495e] hover:text-white disabled:opacity-50';
+};
+
+const handleResponseFeedback = async (message, value) => {
+  if (!message?.id || feedbackSaving.value === message.id || message.response_feedback?.value === value) return;
+  feedbackSaving.value = message.id;
+  const result = await chatStore.recordResponseFeedback(message.id, value);
+  feedbackSaving.value = null;
+  if (!result.success) {
+    alert(result.error);
+  }
+};
+
+const handleFeedbackReason = async (message, reason) => {
+  if (!message?.id || feedbackSaving.value === message.id) return;
+  feedbackSaving.value = message.id;
+  const result = await chatStore.recordResponseFeedback(message.id, 'unhelpful', reason || null);
+  feedbackSaving.value = null;
+  if (!result.success) {
+    alert(result.error);
+  }
 };
 
 /**
@@ -1065,9 +1345,21 @@ const handleCodeCopy = (event) => {
 };
 
 const scrollToBottom = () => {
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
-  }
+  const viewport = messagesContainer.value;
+  if (!viewport) return;
+
+  viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'auto' });
+  isFollowingMessages.value = true;
+};
+
+const followMessagesIfAllowed = () => {
+  if (!shouldAutoFollow({ isFollowing: isFollowingMessages.value })) return;
+
+  scrollToBottom();
+};
+
+const handleMessagesScroll = () => {
+  isFollowingMessages.value = isNearScrollBottom(messagesContainer.value);
 };
 
 // Research data loading
@@ -1283,8 +1575,18 @@ const formatRuleType = (type) => {
 
 // Watch for new messages
 watch(() => chatStore.messages.length, () => {
-  nextTick(() => scrollToBottom());
+  nextTick(() => followMessagesIfAllowed());
 });
+
+watch(messagesContent, (content) => {
+  messagesResizeObserver?.disconnect();
+  messagesResizeObserver = null;
+
+  if (!content || typeof ResizeObserver === 'undefined') return;
+
+  messagesResizeObserver = new ResizeObserver(() => followMessagesIfAllowed());
+  messagesResizeObserver.observe(content);
+}, { flush: 'post' });
 
 watch(selectedChatMode, (profile) => {
   if (profile?.private) {
@@ -1297,13 +1599,24 @@ watch(selectedChatMode, (profile) => {
   attachmentNotice.value = '';
 });
 
+const loadModelModes = async () => {
+  const result = await chatStore.fetchModelModes();
+  if (!result.success) return;
+
+  chatMode.value = selectModelRouteId(result.modes, chatMode.value);
+};
+
 // Load on mount
 onMounted(async () => {
   await Promise.all([
-    chatStore.fetchModelModes(),
+    loadModelModes(),
     chatStore.fetchConversations(),
     loadResearchData(),
   ]);
+});
+
+onBeforeUnmount(() => {
+  messagesResizeObserver?.disconnect();
 });
 </script>
 
@@ -1315,49 +1628,71 @@ onMounted(async () => {
   min-height: 400px;
 }
 
+@media (max-width: 767px) {
+  .ai-hub-container {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .ai-hub-sidebar {
+    width: 100%;
+    min-height: 22rem;
+    max-height: 22rem;
+    flex: 0 0 auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .ai-hub-main {
+    width: 100%;
+    min-height: 36rem;
+    flex: 0 0 auto;
+  }
+}
+
 .ai-hub-container ::-webkit-scrollbar {
   width: 12px;
 }
 
 .ai-hub-container ::-webkit-scrollbar-track {
-  background: #1a1a1a;
+  background: var(--color-bg-secondary);
 }
 
 .ai-hub-container ::-webkit-scrollbar-thumb {
-  background: #666;
+  background: var(--color-bg-tertiary);
   border-radius: 6px;
-  border: 2px solid #1a1a1a;
+  border: 2px solid var(--color-border);
 }
 
-.prose { max-width: none; color: #e0e0e0; }
+.prose { max-width: none; color: var(--color-text-primary); }
 .prose p { margin-bottom: 0.5rem; }
-.prose code { background-color: rgba(255,255,255,0.1); padding: 0.2rem 0.4rem; border-radius: 0.25rem; }
-.prose pre { background-color: #1a1a1a; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; border: 1px solid #444; }
+.prose code { background-color: var(--color-bg-tertiary); padding: 0.2rem 0.4rem; border-radius: 0.25rem; }
+.prose pre { background-color: var(--color-bg-secondary); padding: 1rem; border-radius: 0.5rem; overflow-x: auto; border: 1px solid var(--color-border); }
 .prose pre code { background-color: transparent; padding: 0; }
 .bg-accent .prose { color: white; }
-.bg-accent .prose code { background-color: rgba(255,255,255,0.2); }
+.bg-accent .prose code { background-color: var(--color-bg-tertiary); }
 
-.label { display: block; font-size: 0.875rem; font-weight: 500; color: #95a5a6; margin-bottom: 0.25rem; }
-.form-input { width: 100%; padding: 0.5rem 1rem; background-color: #1a1a1a; border: 1px solid #444; border-radius: 0.5rem; color: #e0e0e0; }
-.form-input:focus { outline: none; ring: 2px; ring-color: var(--accent); }
-.form-textarea { width: 100%; padding: 0.5rem 1rem; background-color: #1a1a1a; border: 1px solid #444; border-radius: 0.5rem; color: #e0e0e0; resize: vertical; }
-.form-select { width: 100%; padding: 0.5rem 1rem; background-color: #1a1a1a; border: 1px solid #444; border-radius: 0.5rem; color: #e0e0e0; }
+.label { display: block; font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 0.25rem; }
+.form-input { width: 100%; padding: 0.5rem 1rem; background-color: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: 0.5rem; color: var(--color-text-primary); }
+.form-input:focus { outline: none; ring: 2px; ring-color: var(--color-accent); }
+.form-textarea { width: 100%; padding: 0.5rem 1rem; background-color: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: 0.5rem; color: var(--color-text-primary); resize: vertical; }
+.form-select { width: 100%; padding: 0.5rem 1rem; background-color: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: 0.5rem; color: var(--color-text-primary); }
 .form-checkbox { width: 1rem; height: 1rem; }
 
-.btn-primary { padding: 0.5rem 1rem; background-color: var(--accent, #3498db); color: white; border-radius: 0.5rem; font-weight: 500; transition: all 0.15s; }
+.btn-primary { padding: 0.5rem 1rem; background-color: var(--color-accent); color: white; border-radius: 0.5rem; font-weight: 500; transition: all 0.15s; }
 .btn-primary:hover { filter: brightness(1.1); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-secondary { padding: 0.5rem 1rem; background-color: #34495e; color: #e0e0e0; border-radius: 0.5rem; transition: all 0.15s; }
-.btn-secondary:hover { background-color: #2c3e50; }
-.btn-icon { padding: 0.5rem; border-radius: 0.5rem; color: #95a5a6; transition: all 0.15s; }
-.btn-icon:hover { background-color: #34495e; color: #e0e0e0; }
-.btn-success-sm { padding: 0.25rem 0.75rem; background-color: #27ae60; color: white; border-radius: 0.25rem; font-size: 0.875rem; }
-.btn-success-sm:hover { background-color: #229954; }
+.btn-secondary { padding: 0.5rem 1rem; background-color: var(--color-bg-secondary); color: var(--color-text-primary); border-radius: 0.5rem; transition: all 0.15s; }
+.btn-secondary:hover { background-color: var(--color-bg-secondary); }
+.btn-icon { padding: 0.5rem; border-radius: 0.5rem; color: var(--color-text-secondary); transition: all 0.15s; }
+.btn-icon:hover { background-color: var(--color-bg-secondary); color: var(--color-text-primary); }
+.btn-success-sm { padding: 0.25rem 0.75rem; background-color: var(--ops-success); color: white; border-radius: 0.25rem; font-size: 0.875rem; }
+.btn-success-sm:hover { background-color: var(--ops-success); }
 .btn-success-sm:disabled { opacity: 0.5; }
-.btn-danger-sm { padding: 0.25rem 0.75rem; background-color: #e74c3c; color: white; border-radius: 0.25rem; font-size: 0.875rem; }
-.btn-danger-sm:hover { background-color: #c0392b; }
+.btn-danger-sm { padding: 0.25rem 0.75rem; background-color: var(--ops-danger); color: white; border-radius: 0.25rem; font-size: 0.875rem; }
+.btn-danger-sm:hover { background-color: var(--ops-danger); }
 .btn-danger-sm:disabled { opacity: 0.5; }
-.btn-warning-sm { padding: 0.25rem 0.75rem; background-color: #f39c12; color: white; border-radius: 0.25rem; font-size: 0.875rem; }
-.btn-warning-sm:hover { background-color: #d68910; }
+.btn-warning-sm { padding: 0.25rem 0.75rem; background-color: var(--ops-warning); color: white; border-radius: 0.25rem; font-size: 0.875rem; }
+.btn-warning-sm:hover { background-color: var(--ops-warning); }
 .btn-warning-sm:disabled { opacity: 0.5; }
 </style>

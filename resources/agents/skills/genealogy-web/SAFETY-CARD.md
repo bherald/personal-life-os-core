@@ -1,4 +1,6 @@
 # Safety Card: genealogy-web
+
+Public installation scope: these are method and tool declarations, not an enabled schedule or grant of authority. Resolve the installation's registered task, tool, data and network policy before use. Reads require the configured scope; writes, result approval/skip, cleanup, sync, resets, external messages and execution require explicit human approval for the exact action. Keep credentials and private evidence local unless the installation operator explicitly approves that data class and destination. Preserve dry-runs, identity decisions, custody and denials. See `docs/public-methods/skills-and-mcp.md` for setup and qualification.
 **Standard:** MIT 2025 AI Agent Index (arXiv:2602.17753) | **Updated:** 2026-05-12
 
 | Field | Value |
@@ -29,7 +31,7 @@
 - MEDIUM: plausible lead or FAN-supported hypothesis -> review queue
 - LOW: weak or no findings -> log only
 
-**Kill Switches:**
+**Operator-approved recovery options (review exact scope before execution):**
 - Disable corresponding scheduled job in `scheduled_jobs`
 - Redis lock key: `agent_session_lock:genealogy-web`
 

@@ -3,13 +3,14 @@
 namespace App\Console\Commands;
 
 use App\Services\RAGService;
+use App\Services\RagSourceReferenceService;
 use DateTimeInterface;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 
 class RagRetrievalEvidenceCommand extends Command
 {
-    private const EVIDENCE_CONTRACT_VERSION = 1;
+    private const EVIDENCE_CONTRACT_VERSION = 2;
 
     private const QUERY_SET_HASH_BASIS = 'ordered_query_hashes_and_type_filters';
 
@@ -26,7 +27,7 @@ class RagRetrievalEvidenceCommand extends Command
 
     protected $description = 'Run an observe-only RAG retrieval evidence batch without exposing query text by default';
 
-    public function handle(RAGService $ragService): int
+    public function handle(RAGService $ragService, RagSourceReferenceService $sourceReferences): int
     {
         if ($this->option('json') && $this->option('markdown')) {
             $this->error('Choose either --json or --markdown, not both.');
@@ -61,6 +62,7 @@ class RagRetrievalEvidenceCommand extends Command
         $durations = [];
         $failedCount = 0;
         $emptyCount = 0;
+        $sourceEvidenceSummary = $sourceReferences->emptySummary();
 
         foreach ($queries as $querySpec) {
             $queryStarted = microtime(true);
@@ -90,6 +92,8 @@ class RagRetrievalEvidenceCommand extends Command
                 if ($resultCount === 0) {
                     $emptyCount++;
                 }
+                $querySourceEvidence = $sourceReferences->summarizeResults($results);
+                $sourceEvidenceSummary = $sourceReferences->mergeSummaries($sourceEvidenceSummary, $querySourceEvidence);
 
                 $entry = [
                     'status' => $resultCount > 0 ? 'observe_ok' : 'observe_empty',
@@ -100,10 +104,14 @@ class RagRetrievalEvidenceCommand extends Command
                     'result_count' => $resultCount,
                     'top_similarity' => $topSimilarity,
                     'avg_similarity' => $avgSimilarity,
+                    'source_evidence' => $querySourceEvidence,
                 ];
 
                 if ($includeResults) {
-                    $entry['results'] = array_map(fn (array $result): array => $this->jsonResult($result), $results);
+                    $entry['results'] = array_map(
+                        fn (array $result): array => $this->jsonResult($result, $sourceReferences),
+                        $results
+                    );
                 }
 
                 $entries[] = $entry;
@@ -143,6 +151,7 @@ class RagRetrievalEvidenceCommand extends Command
                 'top_similarity_avg' => $topSimilarities !== [] ? round(array_sum($topSimilarities) / count($topSimilarities), 4) : null,
                 'avg_result_count' => $resultCounts !== [] ? round(array_sum($resultCounts) / count($resultCounts), 2) : 0,
             ],
+            'source_evidence_summary' => $sourceEvidenceSummary,
             'latency_summary' => $this->latencySummary($durations),
             'queries' => $entries,
         ];
@@ -330,6 +339,21 @@ class RagRetrievalEvidenceCommand extends Command
         }
 
         $lines[] = '';
+        $lines[] = '## Source Evidence Summary';
+        $lines[] = '';
+
+        $sourceSummary = is_array($payload['source_evidence_summary'] ?? null)
+            ? $payload['source_evidence_summary']
+            : [];
+        foreach ([
+            'result_count', 'citation_ready_count', 'citation_ready_rate', 'source_bound_count',
+            'locator_only_count', 'source_type_only_count', 'document_only_count',
+            'scoped_count', 'global_scope_count',
+        ] as $key) {
+            $lines[] = '- '.$key.': `'.($sourceSummary[$key] ?? 'n/a').'`';
+        }
+
+        $lines[] = '';
         $lines[] = '## Latency Summary';
         $lines[] = '';
 
@@ -392,6 +416,7 @@ class RagRetrievalEvidenceCommand extends Command
             'query_text' => 'redacted_by_default',
             'labels' => 'operator_supplied_public_handles',
             'results' => $includeResults ? 'included_by_operator_option' : 'redacted_by_default',
+            'source_references' => 'hashed_content_free_summary_always',
             'query_traces' => $traceQueries ? 'enabled_default' : 'disabled_by_operator_option',
         ];
     }
@@ -400,7 +425,7 @@ class RagRetrievalEvidenceCommand extends Command
      * @param  array<string, mixed>  $result
      * @return array<string, mixed>
      */
-    private function jsonResult(array $result): array
+    private function jsonResult(array $result, RagSourceReferenceService $sourceReferences): array
     {
         $doc = $result['document'] ?? null;
 
@@ -410,6 +435,7 @@ class RagRetrievalEvidenceCommand extends Command
             'created_at' => is_object($doc) ? $this->formatDate($doc->created_at ?? null) : null,
             'similarity' => round((float) ($result['similarity'] ?? 0), 4),
             'preview' => is_object($doc) ? $this->preview($doc->content ?? '') : '',
+            'source' => $sourceReferences->reference(is_object($doc) ? $doc : null),
         ];
     }
 

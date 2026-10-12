@@ -46,7 +46,7 @@
     </div>
 
     <!-- Dry Run Results Modal -->
-    <div v-if="dryRunResults" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4" @click.self="dryRunResults = null">
+    <div v-if="dryRunResults" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" @click.self="dryRunResults = null">
       <div class="bg-[#2d2d2d] rounded-lg shadow-2xl max-w-lg w-full border-2 border-accent max-h-[70vh] overflow-y-auto">
         <div class="p-4 border-b border-[#444] flex justify-between items-center sticky top-0 bg-[#2d2d2d]">
           <h3 class="text-lg font-bold text-[#e0e0e0]">Dry Run Results</h3>
@@ -358,7 +358,7 @@ const nodeCategories = ref([
     name: 'Logic',
     icon: '⚡',
     color: '#f39c12',
-    nodes: ['Conditional', 'Filter', 'Delay']
+    nodes: ['Approval', 'Conditional', 'Filter', 'Delay']
   },
   {
     name: 'Transform',
@@ -831,8 +831,8 @@ function formatDateTime(dateStr) {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: #1a1a1a;
-  color: #e0e0e0;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
 }
 
 .editor-toolbar {
@@ -840,8 +840,8 @@ function formatDateTime(dateStr) {
   justify-content: space-between;
   align-items: center;
   padding: 1rem 1.5rem;
-  background: #2d2d2d;
-  border-bottom: 2px solid #3498db;
+  background: var(--color-bg-secondary);
+  border-bottom: 2px solid var(--color-border);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
@@ -854,16 +854,16 @@ function formatDateTime(dateStr) {
 .workflow-name-input {
   font-size: 1.2rem;
   padding: 0.5rem 1rem;
-  background: #1a1a1a;
-  border: 2px solid #3498db;
+  background: var(--color-bg-secondary);
+  border: 2px solid var(--color-border);
   border-radius: 4px;
-  color: #fff;
+  color: var(--color-text-primary);
   min-width: 300px;
 }
 
 .workflow-name-input:focus {
   outline: none;
-  border-color: #5dade2;
+  border-color: var(--color-accent);
 }
 
 .badge-active, .badge-inactive {
@@ -874,12 +874,12 @@ function formatDateTime(dateStr) {
 }
 
 .badge-active {
-  background: #27ae60;
+  background: var(--ops-success);
   color: white;
 }
 
 .badge-inactive {
-  background: #7f8c8d;
+  background: var(--color-bg-tertiary);
   color: white;
 }
 
@@ -888,15 +888,15 @@ function formatDateTime(dateStr) {
 }
 
 .status-saving {
-  color: #3498db;
+  color: var(--color-accent);
 }
 
 .status-unsaved {
-  color: #f39c12;
+  color: var(--ops-warning);
 }
 
 .status-saved {
-  color: #27ae60;
+  color: var(--ops-success);
 }
 
 .btn-back, .btn-primary, .btn-secondary, .btn-danger, .btn-icon, .btn-small {
@@ -909,59 +909,59 @@ function formatDateTime(dateStr) {
 }
 
 .btn-back {
-  background: #34495e;
+  background: var(--color-bg-secondary);
   color: white;
 }
 
 .btn-back:hover {
-  background: #2c3e50;
+  background: var(--color-bg-hover);
 }
 
 .btn-primary {
-  background: #3498db;
+  background: var(--color-accent);
   color: white;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #2980b9;
+  background: var(--color-accent);
 }
 
 .btn-primary:disabled {
-  background: #7f8c8d;
+  background: var(--color-bg-tertiary);
   cursor: not-allowed;
 }
 
 .btn-secondary {
-  background: #95a5a6;
+  background: var(--color-bg-tertiary);
   color: white;
 }
 
 .btn-secondary:hover {
-  background: #7f8c8d;
+  background: var(--color-bg-tertiary);
 }
 
 .btn-danger {
-  background: #e74c3c;
+  background: var(--ops-danger);
   color: white;
 }
 
 .btn-danger:hover {
-  background: #c0392b;
+  background: var(--ops-danger);
 }
 
 .btn-icon {
   padding: 0.25rem 0.5rem;
   background: transparent;
-  color: #3498db;
+  color: var(--color-accent);
   font-size: 1rem;
 }
 
 .btn-icon:hover:not(:disabled) {
-  background: rgba(52, 152, 219, 0.1);
+  background: var(--color-bg-tertiary);
 }
 
 .btn-icon:disabled {
-  color: #7f8c8d;
+  color: var(--color-text-secondary);
   cursor: not-allowed;
 }
 
@@ -978,16 +978,16 @@ function formatDateTime(dateStr) {
 
 .editor-sidebar-left {
   width: 250px;
-  background: #2d2d2d;
-  border-right: 1px solid #444;
+  background: var(--color-bg-secondary);
+  border-right: 1px solid var(--color-border);
   overflow-y: auto;
   padding: 1rem;
 }
 
 .editor-sidebar-right {
   width: 400px;
-  background: #2d2d2d;
-  border-left: 1px solid #444;
+  background: var(--color-bg-secondary);
+  border-left: 1px solid var(--color-border);
   overflow-y: auto;
   padding: 1rem;
 }
@@ -996,21 +996,21 @@ function formatDateTime(dateStr) {
   flex: 1;
   overflow-y: auto;
   padding: 2rem;
-  background: #1a1a1a;
+  background: var(--color-bg-secondary);
 }
 
 .canvas-header h2 {
-  color: #3498db;
+  color: var(--color-accent);
   margin-bottom: 0.5rem;
 }
 
 .workflow-description {
-  color: #95a5a6;
+  color: var(--color-text-secondary);
   margin-bottom: 2rem;
 }
 
 .node-categories h3, .config-panel h3 {
-  color: #3498db;
+  color: var(--color-accent);
   margin-bottom: 1rem;
 }
 
@@ -1031,7 +1031,7 @@ function formatDateTime(dateStr) {
 
 .node-item {
   padding: 0.5rem;
-  background: #34495e;
+  background: var(--color-bg-secondary);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.9rem;
@@ -1039,20 +1039,20 @@ function formatDateTime(dateStr) {
 }
 
 .node-item:hover {
-  background: #3498db;
+  background: var(--color-accent);
   transform: translateX(5px);
 }
 
 .nodes-container {
   min-height: 400px;
   padding: 1rem;
-  background: #2d2d2d;
+  background: var(--color-bg-secondary);
   border-radius: 8px;
-  border: 2px dashed #444;
+  border: 2px dashed var(--color-border);
 }
 
 .workflow-node {
-  background: #34495e;
+  background: var(--color-bg-secondary);
   border-radius: 8px;
   padding: 1rem;
   margin-bottom: 1rem;
@@ -1062,12 +1062,12 @@ function formatDateTime(dateStr) {
 }
 
 .workflow-node:hover {
-  background: #3d566e;
-  border-color: #3498db;
+  background: var(--color-bg-hover);
+  border-color: var(--color-border);
 }
 
 .workflow-node.node-selected {
-  border-color: #3498db;
+  border-color: var(--color-accent);
   box-shadow: 0 0 12px rgba(52, 152, 219, 0.5);
 }
 
@@ -1079,7 +1079,7 @@ function formatDateTime(dateStr) {
 
 .node-order {
   font-weight: 700;
-  color: #3498db;
+  color: var(--color-accent);
   font-size: 1.2rem;
   min-width: 30px;
 }
@@ -1097,18 +1097,18 @@ function formatDateTime(dateStr) {
 .node-config-summary {
   margin-top: 0.5rem;
   font-size: 0.85rem;
-  color: #95a5a6;
+  color: var(--color-text-secondary);
 }
 
 .config-header {
   padding: 1rem;
-  background: #34495e;
+  background: var(--color-bg-secondary);
   border-radius: 8px 8px 0 0;
   margin-bottom: 1rem;
 }
 
 .config-header h3 {
-  color: #3498db;
+  color: var(--color-accent);
   margin: 0 0 0.75rem 0;
 }
 
@@ -1120,19 +1120,19 @@ function formatDateTime(dateStr) {
 }
 
 .meta-label {
-  color: #95a5a6;
+  color: var(--color-text-secondary);
   font-weight: 600;
 }
 
 .meta-value {
-  color: #e0e0e0;
+  color: var(--color-text-primary);
   font-family: 'Courier New', monospace;
 }
 
 .empty-state {
   text-align: center;
   padding: 3rem;
-  color: #7f8c8d;
+  color: var(--color-text-secondary);
   font-size: 1.1rem;
 }
 
@@ -1143,7 +1143,7 @@ function formatDateTime(dateStr) {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.8);
+  background: var(--color-bg-tertiary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1151,7 +1151,7 @@ function formatDateTime(dateStr) {
 }
 
 .modal-content {
-  background: #2d2d2d;
+  background: var(--color-bg-secondary);
   border-radius: 8px;
   width: 90%;
   max-width: 700px;
@@ -1166,18 +1166,18 @@ function formatDateTime(dateStr) {
   justify-content: space-between;
   align-items: center;
   padding: 1.5rem;
-  border-bottom: 1px solid #444;
+  border-bottom: 1px solid var(--color-border);
 }
 
 .modal-header h2 {
-  color: #3498db;
+  color: var(--color-accent);
   margin: 0;
 }
 
 .btn-close {
   background: transparent;
   border: none;
-  color: #e0e0e0;
+  color: var(--color-text-primary);
   font-size: 1.5rem;
   cursor: pointer;
   padding: 0;
@@ -1186,7 +1186,7 @@ function formatDateTime(dateStr) {
 }
 
 .btn-close:hover {
-  color: #e74c3c;
+  color: var(--ops-danger);
 }
 
 .modal-body {
@@ -1205,7 +1205,7 @@ function formatDateTime(dateStr) {
   justify-content: space-between;
   align-items: center;
   padding: 1rem;
-  background: #34495e;
+  background: var(--color-bg-secondary);
   border-radius: 4px;
 }
 
@@ -1225,28 +1225,28 @@ function formatDateTime(dateStr) {
 }
 
 .backup-auto {
-  background: #3498db;
+  background: var(--color-accent);
   color: white;
 }
 
 .backup-manual {
-  background: #9b59b6;
+  background: var(--color-bg-tertiary);
   color: white;
 }
 
 .backup-pre_edit {
-  background: #f39c12;
+  background: var(--ops-warning);
   color: white;
 }
 
 .backup-time {
   font-size: 0.9rem;
-  color: #95a5a6;
+  color: var(--color-text-secondary);
 }
 
 .backup-desc {
   font-size: 0.85rem;
-  color: #bdc3c7;
+  color: var(--color-text-secondary);
 }
 
 .backup-actions {
@@ -1257,16 +1257,16 @@ function formatDateTime(dateStr) {
 .loading {
   text-align: center;
   padding: 2rem;
-  color: #95a5a6;
+  color: var(--color-text-secondary);
 }
 
 /* Graph View Styles */
 .graph-container {
   position: relative;
   height: calc(100vh - 200px);
-  background: #1a1a1a;
+  background: var(--color-bg-secondary);
   border-radius: 8px;
-  border: 2px solid #3498db;
+  border: 2px solid var(--color-border);
   overflow: hidden;
 }
 
@@ -1282,7 +1282,7 @@ function formatDateTime(dateStr) {
   transform: translate(-50%, -50%);
   text-align: center;
   padding: 3rem;
-  color: #7f8c8d;
+  color: var(--color-text-secondary);
   font-size: 1.1rem;
   pointer-events: none;
   z-index: 1;
@@ -1294,40 +1294,40 @@ function formatDateTime(dateStr) {
 }
 
 :deep(.vue-flow__node.selected) {
-  box-shadow: 0 0 0 3px #3498db !important;
+  box-shadow: 0 0 0 3px var(--color-accent) !important;
 }
 
 :deep(.vue-flow__edge-path) {
-  stroke: #3498db;
+  stroke: var(--color-accent);
   stroke-width: 2;
 }
 
 :deep(.vue-flow__edge.selected .vue-flow__edge-path) {
-  stroke: #5dade2;
+  stroke: var(--color-accent);
   stroke-width: 3;
 }
 
 :deep(.vue-flow__controls) {
-  background: #2d2d2d;
-  border: 1px solid #444;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
 }
 
 :deep(.vue-flow__controls-button) {
-  background: #34495e;
+  background: var(--color-bg-secondary);
   border: none;
-  color: #e0e0e0;
+  color: var(--color-text-primary);
 }
 
 :deep(.vue-flow__controls-button:hover) {
-  background: #3498db;
+  background: var(--color-accent);
 }
 
 :deep(.vue-flow__minimap) {
-  background: #2d2d2d;
-  border: 1px solid #444;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
 }
 
 :deep(.vue-flow__background) {
-  background: #1a1a1a;
+  background: var(--color-bg-secondary);
 }
 </style>

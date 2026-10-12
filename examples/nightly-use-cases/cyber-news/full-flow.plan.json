@@ -1,0 +1,34 @@
+{
+  "schema": "plos.public_nightly_case_plan.v1",
+  "product_version": "2.1",
+  "case": "cyber-news",
+  "fictional": true,
+  "illustrative_only": true,
+  "native_importable": false,
+  "executable": false,
+  "enabled": false,
+  "schedule": null,
+  "network_performed": false,
+  "model_invoked": false,
+  "writes_performed": false,
+  "sources": [
+    "advisory.md",
+    "correction.md"
+  ],
+  "document_type_for_isolated_demo": "public_demo_cyber",
+  "query": "Compare the fictional guest-view advisory and correction; retain scoped uncertainty.",
+  "steps": [
+    "retain original source bytes and hashes",
+    "operator-approved indexing of only this synthetic source scope",
+    "exact relevant RAG reads and usable source references",
+    "draft retains contradictions/uncertainty and goes to human review",
+    "optional privately configured Joplin after exact body/destination approval",
+    "optional counter-only Pushover after exact recipient/payload approval",
+    "final completion only after every requested delivery/readback is terminal"
+  ],
+  "optional_delivery": {
+    "joplin": false,
+    "pushover": false
+  },
+  "resume_policy": "inspect exact durable identity on unknown outcome; never automatically replay a side effect"
+}

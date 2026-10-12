@@ -1,18 +1,18 @@
 <template>
-  <div class="packet-detail">
+  <div class="packet-detail" :class="{ 'face-packet': isFacePersonSourcePacket }">
     <div class="packet-header">
       <div class="packet-heading-main">
-        <h3 class="packet-title">{{ item.title || packetTitle || 'Genealogy review packet' }}</h3>
-        <div v-if="item.summary" class="packet-summary">{{ item.summary }}</div>
+        <h3 class="packet-title">{{ displayTitle }}</h3>
+        <div v-if="displaySummary" class="packet-summary">{{ displaySummary }}</div>
       </div>
-      <div class="packet-meta">
+      <div v-if="!isFacePersonSourcePacket" class="packet-meta">
         <span class="meta-pill meta-type">packet</span>
         <span class="meta-pill" :class="statusClass">{{ packetStatusLabel }}</span>
         <span v-if="confidencePercent !== null" class="meta-pill" :class="confidenceClass">
           {{ confidencePercent }}%
         </span>
       </div>
-      <div v-if="targetRef" class="target-ref-actions">
+      <div v-if="targetRef && !isFacePersonSourcePacket" class="target-ref-actions">
         <button
           type="button"
           class="target-ref-copy"
@@ -32,19 +32,272 @@
       </div>
     </div>
 
-    <section class="packet-section operator-question-section">
+    <section v-if="isPhotoAuditHold" class="packet-section face-review-overview">
+      <div class="section-heading">
+        <span>Photo review hold</span>
+        <span class="section-status status-warning">awaiting evidence review</span>
+      </div>
+      <p class="face-review-lead">{{ auditHoldReason }}</p>
+      <div class="face-review-boundary">
+        <strong>Identity and photo links remain unchanged.</strong>
+        <span>{{ auditHoldHasRegion ? 'This hold refers to a recorded face region.' : 'This hold refers to the photo; a face region has not been specified.' }}</span>
+      </div>
+      <div v-for="media in auditHoldMedia" :key="media.id" class="audit-hold-evidence">
+        <a v-if="mediaRefHref(media)" class="face-candidate-photo" :href="mediaRefHref(media)" target="_blank" rel="noopener noreferrer">
+          <img v-if="mediaRefThumbnail(media)" :src="mediaRefThumbnail(media)" :alt="media.title || media.local_filename || 'Photo awaiting review'" loading="lazy" />
+          <span v-else>Open full photo</span>
+        </a>
+        <div class="audit-hold-context">
+          <strong>{{ media.title || media.local_filename || 'Photo awaiting review' }}</strong>
+          <p>Review the recorded source and operator decisions below before deciding this hold.</p>
+        </div>
+      </div>
+      <a class="picture-match-link" :href="pictureMatchApprovalHref">Go to picture approvals</a>
+    </section>
+
+    <section v-if="inspectionOnly && !isFacePersonSourcePacket && !isPhotoAuditHold" class="packet-section inspection-only-notice" role="status">
+      <div class="section-heading">
+        <span>Preview only</span>
+        <span class="section-status preview">inspection</span>
+      </div>
+      <p>This packet records a review of the preview; it does not apply the proposed Family Tree change. No approval or rejection action is available here.</p>
+    </section>
+
+    <template v-if="isFacePersonSourcePacket">
+      <section class="packet-section face-review-overview" :class="{ blocked: !faceCandidatePacketReady }">
+        <div class="section-heading">
+          <span>{{ faceCandidatePacketReady ? 'Photo comparison available' : 'No decision needed' }}</span>
+          <span class="section-status" :class="faceCandidatePacketReady ? 'status-ok' : 'status-danger'">
+            {{ faceCandidatePacketReady ? `${faceRepairCandidates.length} candidates` : 'incomplete data' }}
+          </span>
+        </div>
+        <p class="face-review-lead">{{ faceReviewLead }}</p>
+        <div class="face-review-boundary">
+          <strong>{{ faceCandidatePacketReady ? 'Use Picture Match Approval to decide identity.' : 'PLOS maintenance must rebuild this diagnostic.' }}</strong>
+          <span>{{ faceCandidatePacketReady
+            ? 'This packet is supporting context only; it cannot approve or reject a person.'
+            : 'It is missing the two-name comparison needed for a reliable human decision. You do not need to review or close it.' }}</span>
+        </div>
+        <a class="picture-match-link" :href="pictureMatchApprovalHref">Go to picture approvals</a>
+      </section>
+
+      <section v-if="activeFaceCandidate && faceCandidatePacketReady" class="packet-section face-candidate-section">
+        <div class="face-candidate-nav">
+          <button
+            type="button"
+            class="candidate-nav-button"
+            :disabled="activeFaceCandidateIndex <= 0"
+            title="Previous photo candidate"
+            aria-label="Previous photo candidate"
+            @click="activeFaceCandidateIndex--"
+          >
+            &larr;
+          </button>
+          <div>
+            <span>Candidate {{ activeFaceCandidateIndex + 1 }} of {{ faceRepairCandidates.length }}</span>
+            <strong>{{ activeFaceCandidate.filename }}</strong>
+          </div>
+          <button
+            type="button"
+            class="candidate-nav-button"
+            :disabled="activeFaceCandidateIndex >= faceRepairCandidates.length - 1"
+            title="Next photo candidate"
+            aria-label="Next photo candidate"
+            @click="activeFaceCandidateIndex++"
+          >
+            &rarr;
+          </button>
+        </div>
+
+        <div class="face-candidate-evidence">
+          <a
+            v-if="activeFaceCandidate.media && mediaRefHref(activeFaceCandidate.media)"
+            class="face-candidate-photo"
+            :href="mediaRefHref(activeFaceCandidate.media)"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open full photo"
+          >
+            <img
+              v-if="mediaRefThumbnail(activeFaceCandidate.media)"
+              :src="mediaRefThumbnail(activeFaceCandidate.media)"
+              :alt="`Photo candidate ${activeFaceCandidateIndex + 1}: ${activeFaceCandidate.filename}`"
+              loading="lazy"
+              @error="markFaceCandidateThumbError(activeFaceCandidate)"
+            />
+            <span v-else>Open full photo</span>
+          </a>
+          <div v-else class="face-candidate-photo missing">Photo is not available in this packet.</div>
+
+          <div class="face-person-comparison">
+            <div class="person-side current">
+              <span>Currently linked person</span>
+              <strong>{{ activeFaceCandidate.linkedPerson || 'Missing from packet' }}</strong>
+            </div>
+            <div class="comparison-arrow" aria-hidden="true">vs</div>
+            <div class="person-side proposed" :class="{ missing: !activeFaceCandidate.comparedPerson }">
+              <span>Person named by exported record</span>
+              <strong>{{ activeFaceCandidate.comparedPerson || 'Missing from packet' }}</strong>
+            </div>
+            <p class="candidate-explanation" :class="{ blocked: !activeFaceCandidate.ready }">
+              {{ activeFaceCandidate.explanation }}
+            </p>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <section v-if="!isFacePersonSourcePacket && !isPhotoAuditHold && !inspectionOnly" class="packet-section operator-question-section">
       <div class="section-heading">
         <span>Operator question</span>
         <span class="section-status preview">packet-level</span>
       </div>
       <div class="operator-question">
-        Does this source or evidence belong with the target person?
+        {{ operatorQuestion }}
       </div>
       <div class="operator-question-note">
-        Packet actions affect the packet review state. They are not line-item source decisions and do not update accepted FT facts.
-        If any candidate line is uncertain, use Reject, Clarify, or Defer rather than treating packet review as an attach-all action.
+        <template v-if="isFacePersonSourcePacket">
+          This action only changes the packet's workflow status. It never identifies a person, links a face, or changes Family Tree data.
+        </template>
+        <template v-else>
+          Packet actions affect the packet review state. They are not line-item source decisions and do not update accepted FT facts.
+          If any candidate line is uncertain, use Reject, Clarify, or Defer rather than treating packet review as an attach-all action.
+        </template>
       </div>
     </section>
+
+    <section v-if="!isFacePersonSourcePacket && !isPhotoAuditHold && !inspectionOnly" class="packet-section packet-actions decision-dock" aria-labelledby="packet-decision-title">
+      <div class="section-heading">
+        <span id="packet-decision-title">Choose packet outcome</span>
+        <span class="section-status preview">review state only</span>
+      </div>
+
+      <div class="decision-scope" :class="{ 'face-scope': isFacePersonSourcePacket }">
+        <strong>{{ decisionScopeTitle }}</strong>
+        <span>{{ decisionScopeDescription }}</span>
+      </div>
+
+      <div class="decision-readiness" :class="decisionReadinessClass" aria-label="Packet decision readiness">
+        <div class="decision-readiness-state">
+          <span>Decision readiness</span>
+          <strong>{{ decisionReadinessLabel }}</strong>
+        </div>
+        <div v-for="fact in decisionReadinessFacts" :key="fact.key" class="decision-readiness-fact">
+          <span>{{ fact.label }}</span>
+          <strong>{{ fact.value }}</strong>
+        </div>
+      </div>
+
+      <div class="action-buttons decision-primary-actions">
+        <button
+          type="button"
+          class="packet-action primary"
+          :disabled="actioning || !canMarkReviewed"
+          :title="markReviewedDisabledTitle"
+          aria-describedby="packet-decision-scope"
+          @click="submitDecision('approve')"
+        >
+          {{ markReviewedLabel }}
+        </button>
+        <button
+          type="button"
+          class="packet-action danger"
+          :class="{ selected: pendingAlternateAction === 'reject' }"
+          :disabled="actioning || !canAct"
+          title="Add a reason, then confirm rejection"
+          @click="prepareAlternateDecision('reject')"
+        >
+          Reject packet
+        </button>
+        <button
+          type="button"
+          class="packet-action"
+          :class="{ selected: pendingAlternateAction === 'clarify' }"
+          :disabled="actioning || !canAct"
+          title="Add a reason, then confirm the clarification request"
+          @click="prepareAlternateDecision('clarify')"
+        >
+          Request clarification
+        </button>
+        <button
+          type="button"
+          class="packet-action"
+          :class="{ selected: pendingAlternateAction === 'defer' }"
+          :disabled="actioning || !canAct"
+          title="Add a reason, then confirm deferral"
+          @click="prepareAlternateDecision('defer')"
+        >
+          Defer
+        </button>
+        <button type="button" class="packet-action ghost" :disabled="actioning" @click="emit('close')">
+          Close
+        </button>
+      </div>
+
+      <p id="packet-decision-scope" class="decision-effect">
+        {{ markReviewedEffect }}
+      </p>
+
+      <div v-if="pendingAlternateAction" class="decision-options" role="group" aria-label="Confirm alternate packet outcome">
+        <div class="decision-options-heading">
+          <div>
+            <span>Reason and note for an alternate outcome</span>
+            <strong>{{ pendingAlternateActionLabel }}</strong>
+          </div>
+          <button type="button" class="packet-action ghost" :disabled="actioning" @click="cancelAlternateDecision">
+            Cancel
+          </button>
+        </div>
+        <div class="action-fields">
+          <label class="action-field action-reason">
+            <span class="action-label">Reason</span>
+            <select v-model="decisionReasonCode" class="action-select" :disabled="actioning || !canAct">
+              <option value="">Select a reason</option>
+              <option v-for="option in reasonCodeOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <label class="action-field">
+            <span class="action-label">Decision note</span>
+            <textarea
+              v-model="decisionNotes"
+              class="action-notes"
+              :disabled="actioning || !canAct"
+              rows="2"
+              maxlength="1200"
+              placeholder="Optional context for this decision"
+            ></textarea>
+          </label>
+        </div>
+        <div v-if="canAct && !selectedDecisionReasonCode" class="action-hint">
+          Select a reason to enable {{ pendingAlternateActionConfirmLabel }}.
+        </div>
+        <button
+          type="button"
+          class="packet-action alternate-confirm"
+          :class="{ danger: pendingAlternateAction === 'reject' }"
+          :disabled="actioning || !canConfirmAlternateOutcome"
+          @click="confirmAlternateDecision"
+        >
+          {{ pendingAlternateActionConfirmLabel }}
+        </button>
+      </div>
+
+      <div v-if="approvalBlockers.length" class="approval-blockers" role="status">
+        <span class="approval-blockers-label">Review blockers</span>
+        <span v-for="blocker in approvalBlockers" :key="blocker.code || blocker.label" class="approval-blocker">
+          {{ blocker.label || labelize(blocker.code || blocker) }}
+        </span>
+      </div>
+    </section>
+
+    <details
+      class="packet-technical-details"
+      :class="{ 'face-technical-details': isFacePersonSourcePacket }"
+      :open="!isFacePersonSourcePacket"
+    >
+      <summary v-if="isFacePersonSourcePacket">Audit details (optional)</summary>
 
     <section class="packet-section review-focus-section">
       <div class="section-heading">
@@ -277,6 +530,16 @@
               class="media-ref-card"
               :title="media.title || 'Open media item'"
             >
+              <span class="media-ref-thumb" :class="{ empty: !mediaRefThumbnail(media) }">
+                <img
+                  v-if="mediaRefThumbnail(media)"
+                  :src="mediaRefThumbnail(media)"
+                  alt=""
+                  loading="lazy"
+                  @error="markMediaThumbError(mediaRefKey(media, mediaIdx))"
+                />
+                <span v-else>file</span>
+              </span>
               <span class="media-ref-id">{{ mediaDisplayLabel(media, mediaIdx) }}</span>
               <span class="media-ref-main">
                 <span class="media-ref-title">{{ media.title || 'Media item' }}</span>
@@ -288,6 +551,9 @@
               <span class="media-ref-open">Open</span>
             </a>
             <div v-else class="media-ref-card media-ref-disabled" :title="media.title || 'Media item'">
+              <span class="media-ref-thumb empty">
+                <span>file</span>
+              </span>
               <span class="media-ref-id">{{ mediaDisplayLabel(media, mediaIdx) }}</span>
               <span class="media-ref-main">
                 <span class="media-ref-title">{{ media.title || 'Media item' }}</span>
@@ -665,86 +931,8 @@
       <div v-else class="empty-line">No decision log entries yet.</div>
     </section>
 
-    <section class="packet-section packet-actions">
-      <div class="section-heading">
-        <span>Packet action</span>
-        <span class="section-status preview">preview only</span>
-      </div>
+    </details>
 
-      <div class="action-fields">
-        <label class="action-field">
-          <span class="action-label">Notes</span>
-          <textarea
-            v-model="decisionNotes"
-            class="action-notes"
-            :disabled="actioning || !canAct"
-            rows="3"
-            maxlength="1200"
-          ></textarea>
-        </label>
-        <label class="action-field action-reason">
-          <span class="action-label">Reason</span>
-          <select v-model="decisionReasonCode" class="action-select" :disabled="actioning || !canAct">
-            <option value="">None</option>
-            <option v-for="option in reasonCodeOptions" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
-        </label>
-      </div>
-      <div v-if="canAct && !selectedDecisionReasonCode" class="action-hint">
-        Choose a reason before rejecting, clarifying, or deferring this packet.
-      </div>
-
-      <div class="action-buttons">
-        <button
-          type="button"
-          class="packet-action primary"
-          :disabled="actioning || !canMarkReviewed"
-          :title="markReviewedDisabledTitle"
-          @click="submitDecision('approve')"
-        >
-          Mark reviewed - no FT write
-        </button>
-        <button
-          type="button"
-          class="packet-action danger"
-          :disabled="actioning || !canSubmitPacketOutcome"
-          :title="packetOutcomeActionDisabledTitle"
-          @click="submitDecision('reject')"
-        >
-          Reject
-        </button>
-        <button
-          type="button"
-          class="packet-action"
-          :disabled="actioning || !canSubmitPacketOutcome"
-          :title="packetOutcomeActionDisabledTitle"
-          @click="submitDecision('clarify')"
-        >
-          Clarify
-        </button>
-        <button
-          type="button"
-          class="packet-action"
-          :disabled="actioning || !canSubmitPacketOutcome"
-          :title="packetOutcomeActionDisabledTitle"
-          @click="submitDecision('defer')"
-        >
-          Defer
-        </button>
-        <button type="button" class="packet-action ghost" :disabled="actioning" @click="emit('close')">
-          Close
-        </button>
-      </div>
-
-      <div v-if="approvalBlockers.length" class="approval-blockers">
-        <span class="approval-blockers-label">Approval blockers</span>
-        <span v-for="blocker in approvalBlockers" :key="blocker.code || blocker.label" class="approval-blocker">
-          {{ blocker.label || labelize(blocker.code || blocker) }}
-        </span>
-      </div>
-    </section>
   </div>
 </template>
 
@@ -763,8 +951,11 @@ const emit = defineEmits(['approve', 'reject', 'clarify', 'defer', 'close'])
 
 const decisionNotes = ref('')
 const decisionReasonCode = ref('')
+const pendingAlternateAction = ref('')
+const activeFaceCandidateIndex = ref(0)
 const targetRefCopied = ref(false)
 const targetLinkCopied = ref(false)
+const mediaThumbErrors = ref(new Set())
 
 const STATUS_CLASS_BY_STATUS = {
   accepted: 'status-ok',
@@ -1004,22 +1195,135 @@ const outcomeStateClass = computed(() => {
   return 'status-pending'
 })
 
-const canAct = computed(() => String(item.value.status || '').toLowerCase() === 'pending')
-const canMarkReviewed = computed(() => canAct.value && reviewFocusApprovalReady.value)
+const inspectionOnly = computed(() => item.value.ui_schema?.inspection_only === true
+  || reviewFocus.value.operator_review_surface === 'preview'
+  || (reviewFocus.value.preview_only === true && reviewFocus.value.canonical_mutation === false))
+const canAct = computed(() => !inspectionOnly.value && String(item.value.status || '').toLowerCase() === 'pending')
+const auditHold = computed(() => objectValue(packet.value.metadata?.audit_hold))
+const isPhotoAuditHold = computed(() => Object.keys(auditHold.value).length > 0)
+const auditHoldReason = computed(() => {
+  const reasons = arrayValue(auditHold.value.reason_codes).filter((reason) => typeof reason === 'string')
+  return stringOrNull(auditHold.value.reason)
+    || stringOrNull(auditHold.value.hold_reason)
+    || (reasons.length ? reasons.map((reason) => reason.replaceAll('_', ' ')).join('; ') : null)
+    || stringOrNull(auditHold.value.disposition)?.replaceAll('_', ' ')
+    || displaySummary.value
+    || 'The available evidence does not settle this photo association.'
+})
+const auditHoldHasRegion = computed(() => {
+  const region = objectValue(auditHold.value.region, auditHold.value.current_link_region)
+  return ['x', 'y', 'w', 'h'].every((axis) => region[axis] !== null && region[axis] !== undefined)
+})
+const auditHoldMedia = computed(() => {
+  const mediaId = Number(auditHold.value.media_id ?? auditHold.value.media?.id ?? packet.value.media_id)
+  return mediaRefs.value.filter((media) => Number(media.id) === mediaId)
+})
+const isFacePersonSourcePacket = computed(() => {
+  if (isPhotoAuditHold.value) return false
+  return stringOrNull(item.value.finding_type) === 'face_person_source_repair_plan'
+    || stringOrNull(details.value.finding_type) === 'face_person_source_repair_plan'
+    || stringOrNull(packet.value.finding_type) === 'face_person_source_repair_plan'
+})
+const faceRepairPlans = computed(() => {
+  const metadata = objectValue(packet.value.metadata)
+  return arrayValue(metadata.plans).filter(isPlainObject)
+})
+const faceRepairCandidates = computed(() => faceRepairPlans.value.map((plan, index) => {
+  const evidence = objectValue(plan.evidence)
+  const selector = objectValue(plan.selector)
+  const linkedPerson = stringOrNull(evidence.linked_canonical_name) || stringOrNull(evidence.person_name)
+  const comparedPerson = stringOrNull(evidence.matched_export_name) || stringOrNull(evidence.matched_variant_name)
+  const mediaIds = arrayValue(selector.media_ids).map((id) => Number(id)).filter(Number.isFinite)
+  const media = mediaRefs.value.find((candidate) => mediaIds.includes(Number(candidate.id))) || null
+  const ready = Boolean(linkedPerson && comparedPerson && linkedPerson.toLowerCase() !== comparedPerson.toLowerCase() && media)
+  let explanation = 'Both names and the candidate photo are present. Identity approval still belongs in Picture Match Approval.'
+  if (!comparedPerson) {
+    explanation = 'PLOS did not save the different exported person name, so there is no comparison you can judge. This row must be regenerated.'
+  } else if (!linkedPerson) {
+    explanation = 'PLOS did not save the currently linked person, so there is no comparison you can judge. This row must be regenerated.'
+  } else if (!media) {
+    explanation = 'The candidate-specific photo is not attached to this row. This row must be regenerated before review.'
+  } else if (linkedPerson.toLowerCase() === comparedPerson.toLowerCase()) {
+    explanation = 'Both sides name the same person, so the claimed conflict is not explained. This row must be regenerated.'
+  }
+
+  return {
+    key: stringOrNull(plan.plan_key) || `face-candidate-${index}`,
+    filename: stringOrNull(evidence.filename) || stringOrNull(evidence.media_title) || `Photo candidate ${index + 1}`,
+    linkedPerson,
+    comparedPerson,
+    media,
+    ready,
+    explanation,
+  }
+}))
+const activeFaceCandidate = computed(() => faceRepairCandidates.value[activeFaceCandidateIndex.value] || null)
+const faceCandidatePacketReady = computed(() => {
+  const serverReadiness = objectValue(reviewFocus.value.candidate_reviewability)
+  if (typeof serverReadiness.ready === 'boolean') return serverReadiness.ready
+  return faceRepairCandidates.value.length > 0 && faceRepairCandidates.value.every((candidate) => candidate.ready)
+})
+const faceReviewLead = computed(() => {
+  if (faceCandidatePacketReady.value) {
+    return 'PLOS found a possible disagreement between a photo link and an exported name.'
+  }
+
+  const serverReadiness = objectValue(reviewFocus.value.candidate_reviewability)
+  const missing = numberOrNull(serverReadiness.missing_comparison_count)
+  if (missing !== null && missing > 0) {
+    return `PLOS did not retain both names for ${missing} of ${faceRepairCandidates.value.length} photo candidates, so there is nothing reliable for you to decide.`
+  }
+
+  return 'This diagnostic is incomplete, so there is nothing reliable for you to decide.'
+})
+const pictureMatchApprovalHref = computed(() => {
+  if (typeof window === 'undefined') return '/knowledge?source=review&picture_review=matches'
+  const url = new URL(window.location.pathname, window.location.origin)
+  url.searchParams.set('source', 'review')
+  url.searchParams.set('picture_review', 'matches')
+  return `${url.pathname}${url.search}`
+})
+const decisionScopeTitle = computed(() => isFacePersonSourcePacket.value
+  ? 'This does not approve a picture identity'
+  : 'This does not apply genealogy changes')
+const decisionScopeDescription = computed(() => isFacePersonSourcePacket.value
+  ? 'Confirming records that you reviewed this evidence packet. It does not identify a person, link a face, approve a photo match, or write Family Tree data.'
+  : 'Confirming records the packet review outcome only. Candidate facts, links, relationships, sources, and media remain unchanged.')
+const operatorQuestion = computed(() => isFacePersonSourcePacket.value
+  ? (faceCandidatePacketReady.value
+      ? 'After inspecting every candidate, is this diagnostic packet complete?'
+      : 'This packet cannot be closed as reviewed until PLOS supplies the missing comparison evidence.')
+  : 'Does this source or evidence belong with the target person?')
+const markReviewedLabel = computed(() => isFacePersonSourcePacket.value
+  ? 'Close packet as reviewed'
+  : 'Confirm packet reviewed')
+const markReviewedEffect = computed(() => isFacePersonSourcePacket.value
+  ? 'Closing records only that this provenance packet was reviewed. Picture identity remains undecided and must be handled in Match approval.'
+  : 'Confirming closes this review packet as reviewed. It does not apply candidate lines or change accepted genealogy data.')
+const operatorVetable = computed(() => reviewFocus.value.operator_vetable !== false)
+const operatorBlockerLabel = computed(() => stringOrNull(reviewFocus.value.operator_blocker_label))
+const canMarkReviewed = computed(() => canAct.value && reviewFocusApprovalReady.value && operatorVetable.value)
 const selectedDecisionReasonCode = computed(() => {
   const code = safeDecisionCode(decisionReasonCode.value)
   return code && DECISION_REASON_LABELS[code] ? code : null
 })
-const canSubmitPacketOutcome = computed(() => canAct.value && selectedDecisionReasonCode.value !== null)
-
-const packetOutcomeActionDisabledTitle = computed(() => {
-  if (!canAct.value) return 'Packet is not pending.'
-  if (!selectedDecisionReasonCode.value) return 'Choose a reason before rejecting, clarifying, or deferring.'
-  return ''
-})
+const canConfirmAlternateOutcome = computed(() => canAct.value
+  && ['reject', 'clarify', 'defer'].includes(pendingAlternateAction.value)
+  && selectedDecisionReasonCode.value !== null)
+const pendingAlternateActionLabel = computed(() => ({
+  reject: 'Reject this packet',
+  clarify: 'Request clarification',
+  defer: 'Defer this packet',
+})[pendingAlternateAction.value] || 'Alternate outcome')
+const pendingAlternateActionConfirmLabel = computed(() => ({
+  reject: 'Confirm rejection',
+  clarify: 'Confirm clarification request',
+  defer: 'Confirm deferral',
+})[pendingAlternateAction.value] || 'Confirm outcome')
 
 const markReviewedDisabledTitle = computed(() => {
   if (!canAct.value) return 'Packet is not pending.'
+  if (!operatorVetable.value) return operatorBlockerLabel.value || 'No visible evidence is attached.'
   const blockerLabels = approvalBlockerLabels()
   if (blockerLabels.length) return `Approval blockers: ${blockerLabels.slice(0, 3).join(', ')}.`
   if (validationMissing.value) return 'Review packet validation is missing.'
@@ -1038,6 +1342,13 @@ const reviewFocusApprovalReady = computed(() => {
 })
 
 const approvalBlockers = computed(() => {
+  if (!operatorVetable.value) {
+    return [{
+      code: stringOrNull(reviewFocus.value.operator_blocker_code) || 'no_visible_evidence',
+      label: operatorBlockerLabel.value || 'No visible evidence is attached',
+    }]
+  }
+
   const blockers = arrayValue(reviewFocus.value.approval_blockers)
     .map((blocker) => {
       if (typeof blocker === 'string') {
@@ -1064,6 +1375,7 @@ const reviewFocusRows = computed(() => [
   focusRow('target', 'Target ref', targetRefLabel.value, 'mono', targetRef.value),
   focusRow('person', 'Person', reviewFocusPersonLabel.value),
   focusRow('status', 'Packet status', packetStatusLabel.value),
+  focusRow('operator', 'Review action', reviewFocus.value.operator_action_label, operatorVetable.value ? null : 'danger'),
   focusRow('boundary', 'Boundary', reviewFocusBoundaryLabel.value, null, reviewFocusBoundaryLabel.value),
   focusRow('access', 'Access', formatPacketStatus(reviewFocus.value.source_access_class)),
   focusRow('sources', 'Sources', formatCount(reviewFocus.value.source_count ?? sourceLocators.value.length)),
@@ -1213,6 +1525,16 @@ const packetTitle = computed(() => {
     || packet.value.packet_key
     || null
 })
+const displayTitle = computed(() => isFacePersonSourcePacket.value
+  ? 'Photo diagnostic'
+  : item.value.title || packetTitle.value || 'Genealogy review packet')
+const displaySummary = computed(() => {
+  if (!isFacePersonSourcePacket.value) return stringOrNull(item.value.summary)
+  const count = faceRepairCandidates.value.length
+  return faceCandidatePacketReady.value
+    ? `PLOS found ${count} photo ${count === 1 ? 'comparison' : 'comparisons'} to inspect in Picture Match Approval.`
+    : 'This is a maintenance diagnostic, not a person or picture approval.'
+})
 
 const sourceLocators = computed(() => {
   const values = []
@@ -1281,6 +1603,32 @@ const validationStatusClass = computed(() => {
   return 'status-pending'
 })
 
+const decisionReadinessLabel = computed(() => {
+  if (canMarkReviewed.value) return 'Ready to record review'
+  if (!operatorVetable.value) return 'Visible evidence required'
+  if (approvalBlockers.value.length) return 'Needs attention'
+  return 'Review unavailable'
+})
+
+const decisionReadinessClass = computed(() => canMarkReviewed.value ? 'ready' : 'blocked')
+
+const decisionReadinessFacts = computed(() => {
+  const claimCount = numberOrNull(reviewFocus.value.claim_count) ?? claims.value.length
+  const mediaCount = numberOrNull(reviewFocus.value.media_ref_count) ?? 0
+  const visibleMediaCount = numberOrNull(reviewFocus.value.visible_evidence_count)
+    ?? numberOrNull(reviewFocus.value.resolved_media_count)
+    ?? 0
+  const missingMediaCount = numberOrNull(reviewFocus.value.missing_media_count) ?? 0
+
+  return [
+    { key: 'candidates', label: 'Candidates', value: formatCount(claimCount) },
+    { key: 'visible_media', label: 'Visible media', value: `${formatCount(visibleMediaCount)} / ${formatCount(mediaCount)}` },
+    { key: 'missing_media', label: 'Missing media', value: formatCount(missingMediaCount) },
+    { key: 'validation', label: 'Validation', value: validationStatus.value },
+    { key: 'writes', label: 'Accepted-data writes', value: reviewFocusCanonicalMutation.value === false ? 'none' : canonicalMutationLabel.value },
+  ]
+})
+
 const applyPreviewMutates = computed(() => applyPreview.value.mutates_accepted_facts === true)
 const previewOperations = computed(() => arrayValue(applyPreview.value.operations).filter(isPlainObject))
 const applyPreviewIsPreviewOnly = computed(() => {
@@ -1299,6 +1647,15 @@ const applyPreviewIsPreviewOnly = computed(() => {
 })
 
 watch(() => props.context?.item?.unified_id, () => resetDecisionInputs())
+watch(() => props.context?.item?.unified_id, () => {
+  activeFaceCandidateIndex.value = 0
+  mediaThumbErrors.value = new Set()
+})
+watch(() => faceRepairCandidates.value.length, (length) => {
+  if (activeFaceCandidateIndex.value >= length) {
+    activeFaceCandidateIndex.value = Math.max(0, length - 1)
+  }
+})
 watch(() => props.decisionResetToken, () => resetDecisionInputs())
 watch(targetRef, () => {
   targetRefCopied.value = false
@@ -1668,12 +2025,35 @@ function sourcePointerKind(locator) {
 }
 
 function mediaRefHref(media) {
-  if (!media || media.file_exists === false) return null
+  if (!media || media.file_available === false) return null
+  if (media.file_available !== true && media.file_exists === false) return null
   return typeof media.view_url === 'string' && media.view_url.trim() !== '' ? media.view_url : null
 }
 
 function mediaRefKey(media, idx) {
-  return `${media?.view_url || media?.title || 'media'}-${idx}`
+  return `${media?.id || media?.view_url || media?.title || 'media'}-${idx}`
+}
+
+function mediaRefThumbnail(media) {
+  if (!media || media.file_available === false) return null
+  if (media.file_available !== true && media.file_exists === false) return null
+  const url = typeof media.thumbnail_url === 'string' && media.thumbnail_url.trim() !== ''
+    ? media.thumbnail_url.trim()
+    : null
+  if (!url) return null
+  const key = mediaRefKey(media, mediaRefs.value.indexOf(media))
+  return mediaThumbErrors.value.has(key) ? null : url
+}
+
+function markMediaThumbError(key) {
+  const next = new Set(mediaThumbErrors.value)
+  next.add(key)
+  mediaThumbErrors.value = next
+}
+
+function markFaceCandidateThumbError(candidate) {
+  const media = candidate?.media
+  markMediaThumbError(mediaRefKey(media, mediaRefs.value.indexOf(media)))
 }
 
 function mediaDisplayLabel(media, idx) {
@@ -2405,6 +2785,22 @@ function submitDecision(action) {
   emit(action, payload)
 }
 
+function prepareAlternateDecision(action) {
+  if (!canAct.value || !['reject', 'clarify', 'defer'].includes(action)) return
+  pendingAlternateAction.value = action
+}
+
+function confirmAlternateDecision() {
+  if (!canConfirmAlternateOutcome.value) return
+  submitDecision(pendingAlternateAction.value)
+}
+
+function cancelAlternateDecision() {
+  pendingAlternateAction.value = ''
+  decisionNotes.value = ''
+  decisionReasonCode.value = ''
+}
+
 function requiresDecisionReason(action) {
   return action === 'reject' || action === 'clarify' || action === 'defer'
 }
@@ -2446,6 +2842,7 @@ async function copyTargetLink() {
 }
 
 function resetDecisionInputs() {
+  pendingAlternateAction.value = ''
   decisionNotes.value = ''
   decisionReasonCode.value = ''
   targetRefCopied.value = false
@@ -2482,20 +2879,26 @@ function objectKeys(value) {
 
 .packet-heading-main {
   min-width: 0;
-  flex: 1;
+  flex: 1 0 100%;
+}
+
+@media (min-width: 760px) {
+  .packet-heading-main {
+    flex-basis: 0;
+  }
 }
 
 .packet-title {
   font-size: 1.05rem;
   font-weight: 700;
-  color: #ffb47a;
+  color: var(--ops-warning);
   margin: 0;
   overflow-wrap: anywhere;
 }
 
 .packet-summary {
   margin-top: 0.25rem;
-  color: #d4c2f0;
+  color: var(--color-text-primary);
   font-size: 0.8rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -2522,47 +2925,324 @@ function objectKeys(value) {
 }
 
 .meta-type {
-  background: rgba(99, 179, 237, 0.20);
-  color: #bfe1ff;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--color-bg-primary));
+  color: var(--color-text-primary);
 }
 
 .status-ok,
 .conf-high {
-  background: rgba(0, 170, 0, 0.25);
-  color: #b5f5b5;
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
+  color: var(--ops-success);
 }
 
 .status-pending,
 .conf-med,
 .status-warning {
-  background: rgba(204, 136, 0, 0.25);
-  color: #ffd980;
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  color: var(--ops-warning);
 }
 
 .status-danger,
 .conf-low {
-  background: rgba(204, 0, 0, 0.25);
-  color: #ffb5b5;
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
+  color: var(--ops-danger);
 }
 
 .packet-section {
-  background: rgba(0, 0, 0, 0.18);
-  border: 1px solid rgba(102, 102, 102, 0.30);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   padding: 0.7rem 0.8rem;
   min-width: 0;
 }
 
+.inspection-only-notice {
+  border-color: var(--ops-warning);
+  background: color-mix(in srgb, var(--ops-warning) 9%, var(--color-bg-primary));
+}
+
+.inspection-only-notice p {
+  margin: 0;
+  color: var(--color-text-primary);
+  line-height: 1.45;
+}
+
+.face-review-overview {
+  border-color: var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
+}
+
+.face-review-overview.blocked {
+  border-color: var(--ops-danger);
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
+}
+
+.face-review-lead {
+  margin: 0 0 0.65rem;
+  color: var(--color-text-primary);
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.face-review-boundary {
+  display: grid;
+  gap: 0.2rem;
+  border-left: 0.2rem solid var(--color-border);
+  padding: 0.25rem 0.6rem;
+}
+
+.face-review-boundary span,
+.person-side span,
+.face-candidate-nav span {
+  display: block;
+  color: var(--color-accent);
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.face-review-boundary strong {
+  display: block;
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.picture-match-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  margin-top: 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.7rem;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.face-candidate-section {
+  border-color: var(--color-border);
+}
+
+.face-candidate-nav {
+  display: grid;
+  grid-template-columns: 2.4rem minmax(0, 1fr) 2.4rem;
+  gap: 0.65rem;
+  align-items: center;
+  margin-bottom: 0.7rem;
+}
+
+.face-candidate-nav > div {
+  min-width: 0;
+  text-align: center;
+}
+
+.face-candidate-nav strong {
+  display: block;
+  margin-top: 0.12rem;
+  color: var(--color-text-secondary);
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.candidate-nav-button {
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.35rem;
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  font-size: 1.05rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.candidate-nav-button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.audit-hold-evidence {
+  display: grid;
+  grid-template-columns: minmax(0, 20rem) minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: center;
+  min-width: 0;
+}
+
+.audit-hold-context {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.audit-hold-context p {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .audit-hold-evidence {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.face-candidate-evidence {
+  display: grid;
+  grid-template-columns: minmax(13rem, 0.8fr) minmax(16rem, 1.2fr);
+  gap: 0.8rem;
+  align-items: stretch;
+}
+
+.face-candidate-photo {
+  display: grid;
+  place-items: center;
+  min-height: 14rem;
+  max-height: 24rem;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 0.35rem;
+  color: var(--color-text-primary);
+  background: #111;
+  text-decoration: none;
+}
+
+.face-candidate-photo img {
+  width: 100%;
+  height: 100%;
+  min-height: 14rem;
+  max-height: 24rem;
+  object-fit: contain;
+}
+
+.face-candidate-photo.missing {
+  padding: 1rem;
+  color: var(--ops-danger);
+  text-align: center;
+}
+
+.face-person-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.55rem;
+  align-content: center;
+  min-width: 0;
+}
+
+.person-side {
+  min-width: 0;
+  border: 1px solid var(--ops-success);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
+  padding: 0.75rem;
+}
+
+.person-side.proposed {
+  border-color: var(--ops-warning);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+}
+
+.person-side.missing {
+  border-color: var(--ops-danger);
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
+}
+
+.person-side strong {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--color-text-primary);
+  font-size: 0.95rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.comparison-arrow {
+  align-self: center;
+  color: var(--color-accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.candidate-explanation {
+  grid-column: 1 / -1;
+  margin: 0;
+  border-left: 0.2rem solid var(--ops-success);
+  padding: 0.45rem 0.6rem;
+  color: var(--ops-success);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.candidate-explanation.blocked {
+  border-color: var(--ops-danger);
+  color: var(--ops-danger);
+}
+
+.packet-technical-details:not(.face-technical-details) {
+  display: contents;
+}
+
+.face-technical-details {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  background: var(--color-bg-tertiary);
+}
+
+.face-technical-details > summary {
+  color: var(--color-text-primary);
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.face-technical-details[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.face-technical-details[open] > summary {
+  margin-bottom: 0.1rem;
+}
+
+@media (max-width: 760px) {
+  .face-review-steps,
+  .face-candidate-evidence {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .face-person-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .comparison-arrow {
+    justify-self: center;
+  }
+
+  .candidate-explanation {
+    grid-column: auto;
+  }
+}
+
 .status-section {
-  border-color: rgba(99, 179, 237, 0.24);
+  border-color: var(--color-border);
 }
 
 .outcome-progress {
   margin-bottom: 0.6rem;
   padding: 0.55rem 0.6rem;
-  border: 1px solid rgba(99, 179, 237, 0.22);
+  border: 1px solid var(--color-border);
   border-radius: 0.4rem;
-  background: rgba(99, 179, 237, 0.07);
+  background: var(--color-bg-tertiary);
 }
 
 .outcome-head {
@@ -2577,22 +3257,22 @@ function objectKeys(value) {
 .outcome-label {
   font-size: 0.82rem;
   font-weight: 700;
-  color: #ffde9a;
+  color: var(--ops-warning);
 }
 
 .outcome-preview {
   font-size: 0.67rem;
   font-weight: 700;
   text-transform: uppercase;
-  color: #bfe1ff;
+  color: var(--color-text-primary);
 }
 
 .review-focus-section {
-  border-color: rgba(255, 204, 102, 0.26);
+  border-color: var(--ops-warning);
 }
 
 .work-trail-section {
-  border-color: rgba(180, 148, 255, 0.26);
+  border-color: var(--color-border);
 }
 
 .work-trail-summary {
@@ -2604,12 +3284,12 @@ function objectKeys(value) {
 }
 
 .operator-question-section {
-  border-color: rgba(255, 204, 102, 0.35);
-  background: linear-gradient(90deg, rgba(255, 204, 102, 0.10), rgba(99, 179, 237, 0.06));
+  border-color: var(--ops-warning);
+  background: color-mix(in srgb, var(--ops-warning) 10%, var(--color-bg-primary));
 }
 
 .operator-question {
-  color: #ffe5b3;
+  color: var(--ops-warning);
   font-size: 1rem;
   font-weight: 800;
   line-height: 1.35;
@@ -2618,32 +3298,32 @@ function objectKeys(value) {
 
 .operator-question-note {
   margin-top: 0.4rem;
-  color: #d8efff;
+  color: var(--color-text-primary);
   font-size: 0.8rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
 .review-checklist-section {
-  border-color: rgba(99, 179, 237, 0.24);
+  border-color: var(--color-border);
 }
 
 .review-proof-section {
-  border-color: rgba(47, 158, 68, 0.28);
+  border-color: var(--ops-success);
 }
 
 .evidence-lens-section {
-  border-color: rgba(99, 179, 237, 0.28);
+  border-color: var(--color-border);
 }
 
 .proof-row {
-  border-color: rgba(47, 158, 68, 0.22);
-  background: rgba(47, 158, 68, 0.06);
+  border-color: var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
 }
 
 .evidence-lens-row {
-  border-color: rgba(99, 179, 237, 0.22);
-  background: rgba(99, 179, 237, 0.06);
+  border-color: var(--color-border);
+  background: var(--color-bg-tertiary);
 }
 
 .checklist-grid {
@@ -2659,33 +3339,33 @@ function objectKeys(value) {
   gap: 0.4rem;
   align-items: baseline;
   min-width: 0;
-  border: 1px solid rgba(99, 179, 237, 0.18);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
-  background: rgba(99, 179, 237, 0.06);
+  background: var(--color-bg-tertiary);
   padding: 0.42rem 0.5rem;
 }
 
 .checklist-row.check-ok {
-  border-color: rgba(47, 158, 68, 0.35);
-  background: rgba(47, 158, 68, 0.08);
+  border-color: var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
 }
 
 .checklist-row.check-warning,
 .checklist-row.check-missing {
-  border-color: rgba(204, 136, 0, 0.32);
-  background: rgba(204, 136, 0, 0.08);
+  border-color: var(--ops-warning);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
 }
 
 .checklist-row.check-blocked {
-  border-color: rgba(204, 68, 68, 0.45);
-  background: rgba(204, 68, 68, 0.12);
+  border-color: var(--ops-danger);
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
 }
 
 .checklist-state {
   min-width: 2.65rem;
   border-radius: 0.25rem;
-  background: rgba(0, 0, 0, 0.18);
-  color: #bfe1ff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
   font-size: 0.62rem;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -2695,7 +3375,7 @@ function objectKeys(value) {
 }
 
 .checklist-label {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.67rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -2703,7 +3383,7 @@ function objectKeys(value) {
 
 .checklist-value {
   min-width: 0;
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.76rem;
   line-height: 1.3;
   overflow: hidden;
@@ -2722,9 +3402,9 @@ function objectKeys(value) {
 .focus-line,
 .focus-boundary {
   min-width: 0;
-  border: 1px solid rgba(255, 204, 102, 0.18);
+  border: 1px solid var(--ops-warning);
   border-radius: 0.35rem;
-  background: rgba(255, 204, 102, 0.06);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
   padding: 0.45rem 0.5rem;
 }
 
@@ -2735,18 +3415,18 @@ function objectKeys(value) {
 }
 
 .focus-tile.ok {
-  border-color: rgba(47, 158, 68, 0.35);
-  background: rgba(47, 158, 68, 0.10);
+  border-color: var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
 }
 
 .focus-tile.danger,
 .focus-boundary.danger {
-  border-color: rgba(204, 68, 68, 0.45);
-  background: rgba(204, 68, 68, 0.12);
+  border-color: var(--ops-danger);
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
 }
 
 .focus-label {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.64rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -2756,7 +3436,7 @@ function objectKeys(value) {
 .focus-value,
 .focus-line-value,
 .focus-boundary {
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.8rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -2786,10 +3466,10 @@ function objectKeys(value) {
 }
 
 .target-ref-copy {
-  border: 1px solid rgba(99, 179, 237, 0.30);
+  border: 1px solid var(--color-border);
   border-radius: 0.3rem;
-  background: rgba(99, 179, 237, 0.12);
-  color: #bfe1ff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
   cursor: pointer;
   font-size: 0.68rem;
   font-weight: 700;
@@ -2798,7 +3478,7 @@ function objectKeys(value) {
 }
 
 .target-ref-copy:hover {
-  background: rgba(99, 179, 237, 0.22);
+  background: var(--color-bg-tertiary);
 }
 
 .section-heading {
@@ -2808,34 +3488,34 @@ function objectKeys(value) {
   justify-content: space-between;
   gap: 0.4rem;
   margin-bottom: 0.5rem;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.7rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
 }
 
 .section-count {
-  background: rgba(99, 51, 153, 0.30);
-  color: #d4c2f0;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 
 .section-status.preview {
-  background: rgba(99, 179, 237, 0.18);
-  color: #bfe1ff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 
 .subheading {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.68rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
   margin: 0.35rem 0;
 }
 
-.subheading.danger { color: #ffb5b5; }
-.subheading.warning { color: #ffd980; }
+.subheading.danger { color: var(--ops-danger); }
+.subheading.warning { color: var(--ops-warning); }
 
 	.locator-list,
 	.claim-source-list,
@@ -2853,9 +3533,9 @@ function objectKeys(value) {
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
-  color: #bfe1ff;
-  background: rgba(99, 179, 237, 0.08);
-  border: 1px solid rgba(99, 179, 237, 0.22);
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
   padding: 0.4rem 0.5rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -2867,12 +3547,12 @@ function objectKeys(value) {
 
 .locator-kind {
   flex: 0 0 auto;
-  color: #9b8bb5;
+  color: var(--color-text-secondary);
 }
 
 	a.locator-row:hover {
-	  color: #ffffff;
-	  border-color: rgba(99, 179, 237, 0.55);
+	  color: var(--color-text-primary);
+	  border-color: var(--color-border);
 	}
 
 	.claim-source-row {
@@ -2880,9 +3560,9 @@ function objectKeys(value) {
 	  grid-template-columns: minmax(0, 1fr);
 	  gap: 0.55rem;
 	  padding: 0.5rem;
-	  border: 1px solid rgba(99, 179, 237, 0.18);
+	  border: 1px solid var(--color-border);
 	  border-radius: 0.35rem;
-	  background: rgba(99, 179, 237, 0.06);
+	  background: var(--color-bg-tertiary);
 	  min-width: 0;
 	}
 
@@ -2899,7 +3579,7 @@ function objectKeys(value) {
 
 	.claim-source-text {
 	  margin-top: 0.3rem;
-	  color: #f0e6ff;
+	  color: var(--color-text-primary);
 	  font-size: 0.8rem;
 	  line-height: 1.35;
 	  overflow-wrap: anywhere;
@@ -2925,7 +3605,7 @@ function objectKeys(value) {
 	}
 
 	.claim-source-label {
-	  color: #b39ddb;
+	  color: var(--color-accent);
 	  font-size: 0.66rem;
 	  font-weight: 700;
 	  letter-spacing: 0.04em;
@@ -2933,7 +3613,7 @@ function objectKeys(value) {
 	}
 
 	.claim-source-value {
-	  color: #d8efff;
+	  color: var(--color-text-primary);
 	  font-size: 0.76rem;
 	  line-height: 1.3;
 	  overflow-wrap: anywhere;
@@ -2942,13 +3622,13 @@ function objectKeys(value) {
 	}
 
 	.claim-source-link:hover {
-	  color: #ffffff;
+	  color: var(--color-text-primary);
 	}
 
 	.claim-pill.person {
-	  border: 1px solid rgba(99, 179, 237, 0.24);
-	  background: rgba(99, 179, 237, 0.10);
-	  color: #d8efff;
+	  border: 1px solid var(--color-border);
+	  background: var(--color-bg-tertiary);
+	  color: var(--color-text-primary);
 	}
 
 	.claim-media-list {
@@ -2960,10 +3640,10 @@ function objectKeys(value) {
 
 	.claim-media-pill {
 	  max-width: 100%;
-	  border: 1px solid rgba(99, 179, 237, 0.24);
+	  border: 1px solid var(--color-border);
 	  border-radius: 0.25rem;
-	  background: rgba(99, 179, 237, 0.10);
-	  color: #d8efff;
+	  background: var(--color-bg-tertiary);
+	  color: var(--color-text-primary);
 	  font-size: 0.72rem;
 	  line-height: 1.25;
 	  padding: 0.15rem 0.35rem;
@@ -2972,14 +3652,14 @@ function objectKeys(value) {
 	}
 
 	.claim-media-pill:hover {
-	  color: #ffffff;
-	  border-color: rgba(99, 179, 237, 0.55);
+	  color: var(--color-text-primary);
+	  border-color: var(--color-border);
 	}
 
 	.claim-media-pill.disabled {
-	  color: #9b8bb5;
-	  border-color: rgba(102, 102, 102, 0.25);
-	  background: rgba(0, 0, 0, 0.12);
+	  color: var(--color-text-secondary);
+	  border-color: var(--color-border);
+	  background: var(--color-bg-tertiary);
 	}
 
 	.source-payloads {
@@ -2999,12 +3679,12 @@ function objectKeys(value) {
 
 .media-ref-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   gap: 0.5rem;
   align-items: center;
-  color: #bfe1ff;
-  background: rgba(99, 179, 237, 0.08);
-  border: 1px solid rgba(99, 179, 237, 0.22);
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
   padding: 0.42rem 0.5rem;
   text-decoration: none;
@@ -3012,19 +3692,45 @@ function objectKeys(value) {
 }
 
 a.media-ref-card:hover {
-  color: #ffffff;
-  border-color: rgba(99, 179, 237, 0.55);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
 }
 
 .media-ref-disabled {
-  color: #9b8bb5;
-  border-color: rgba(102, 102, 102, 0.25);
-  background: rgba(0, 0, 0, 0.12);
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+  background: var(--color-bg-tertiary);
+}
+
+.media-ref-thumb {
+  display: inline-flex;
+  width: 2.5rem;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 0.3rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.media-ref-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.media-ref-thumb.empty {
+  border-color: var(--color-border);
 }
 
 .media-ref-id,
 .media-ref-open {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.7rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -3037,14 +3743,14 @@ a.media-ref-card:hover {
 }
 
 .media-ref-title {
-  color: #ffe5b3;
+  color: var(--ops-warning);
   font-size: 0.8rem;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
 
 .media-ref-sub {
-  color: #cabde0;
+  color: var(--color-text-primary);
   font-size: 0.72rem;
   overflow-wrap: anywhere;
 }
@@ -3053,7 +3759,7 @@ a.media-ref-card:hover {
 .claim-row,
 .operation-row,
 .decision-row {
-  border-top: 1px solid rgba(102, 102, 102, 0.22);
+  border-top: 1px solid var(--color-border);
   padding-top: 0.45rem;
   min-width: 0;
 }
@@ -3061,7 +3767,7 @@ a.media-ref-card:hover {
 .source-row-title,
 .operation-name,
 .decision-action {
-  color: #ffe5b3;
+  color: var(--ops-warning);
   font-size: 0.82rem;
   font-weight: 700;
   overflow-wrap: anywhere;
@@ -3084,24 +3790,24 @@ a.media-ref-card:hover {
 }
 
 .claim-index {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.72rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .claim-pill {
-  background: rgba(99, 51, 153, 0.28);
-  color: #d4c2f0;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 
 .claim-pill.muted {
-  background: rgba(102, 102, 102, 0.18);
-  color: #d8d0e4;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
 }
 
 .claim-text {
   margin-top: 0.35rem;
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.85rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -3112,7 +3818,7 @@ a.media-ref-card:hover {
 .decision-actor,
 .decision-time,
 .operation-target {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.72rem;
   overflow-wrap: anywhere;
 }
@@ -3148,11 +3854,11 @@ a.media-ref-card:hover {
     grid-template-columns: 8rem 1fr 1.5fr auto;
     gap: 0.75rem;
     padding: 0 0.5rem 0.35rem;
-    color: #b39ddb;
+    color: var(--color-accent);
     font-size: 0.65rem;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    letter-spacing: normal;
+    text-transform: none;
   }
 }
 
@@ -3176,7 +3882,7 @@ a.media-ref-card:hover {
 }
 
 .kv-key {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -3184,7 +3890,7 @@ a.media-ref-card:hover {
 }
 
 .kv-value {
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.78rem;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -3192,7 +3898,7 @@ a.media-ref-card:hover {
 }
 
 .preview-note {
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.82rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -3201,7 +3907,7 @@ a.media-ref-card:hover {
 .preview-note.muted,
 .empty-line,
 .text-muted {
-  color: #9b8bb5;
+  color: var(--color-text-secondary);
 }
 
 .preview-summary {
@@ -3214,9 +3920,9 @@ a.media-ref-card:hover {
   gap: 0.6rem;
   margin-top: 0.65rem;
   padding: 0.6rem;
-  border: 1px solid rgba(99, 179, 237, 0.22);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
-  background: rgba(99, 179, 237, 0.06);
+  background: var(--color-bg-tertiary);
   min-width: 0;
 }
 
@@ -3258,23 +3964,23 @@ a.media-ref-card:hover {
   gap: 0.4rem;
   align-items: baseline;
   padding: 0.3rem 0.4rem;
-  border-left: 3px solid rgba(102, 102, 102, 0.45);
+  border-left: 3px solid var(--color-border);
   border-radius: 0.25rem;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--color-bg-tertiary);
   min-width: 0;
 }
 
 .guard-pass {
-  border-left-color: #2f9e44;
+  border-left-color: var(--ops-success);
 }
 
 .guard-fail {
-  border-left-color: #cc4444;
+  border-left-color: var(--ops-danger);
 }
 
 .guard-name,
 .guard-status {
-  color: #d4c2f0;
+  color: var(--color-text-primary);
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -3282,7 +3988,7 @@ a.media-ref-card:hover {
 }
 
 .guard-status {
-  color: #ffe5b3;
+  color: var(--ops-warning);
 }
 
 .guard-message,
@@ -3290,7 +3996,7 @@ a.media-ref-card:hover {
 .touch-row,
 .locator-group-row,
 .source-resolution-row {
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.76rem;
   line-height: 1.3;
   overflow-wrap: anywhere;
@@ -3309,18 +4015,18 @@ a.media-ref-card:hover {
 .source-resolution-row {
   padding: 0.28rem 0.4rem;
   border-radius: 0.25rem;
-  background: rgba(0, 0, 0, 0.16);
+  background: var(--color-bg-tertiary);
 }
 
 .locator-group-title {
-  color: #ffe5b3;
+  color: var(--ops-warning);
   font-weight: 700;
   overflow-wrap: anywhere;
 }
 
 .locator-group-meta {
   margin-top: 0.1rem;
-  color: #cabde0;
+  color: var(--color-text-primary);
   overflow-wrap: anywhere;
 }
 
@@ -3329,41 +4035,41 @@ a.media-ref-card:hover {
 }
 
 .text-ok {
-  color: #b5f5b5;
+  color: var(--ops-success);
 }
 
 .text-danger {
-  color: #ffb5b5;
+  color: var(--ops-danger);
 }
 
 .issue-row {
-  border-left: 3px solid rgba(102, 102, 102, 0.4);
+  border-left: 3px solid var(--color-border);
   padding: 0.35rem 0.5rem;
-  background: rgba(0, 0, 0, 0.16);
+  background: var(--color-bg-tertiary);
   border-radius: 0.25rem;
   min-width: 0;
 }
 
 .issue-row.danger {
-  border-left-color: #cc4444;
+  border-left-color: var(--ops-danger);
 }
 
 .issue-row.warning {
-  border-left-color: #cc8800;
+  border-left-color: var(--ops-warning);
 }
 
 .issue-gate,
 .issue-code {
   display: inline-block;
   margin-right: 0.3rem;
-  color: #d4c2f0;
+  color: var(--color-text-primary);
   font-size: 0.68rem;
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .issue-message {
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.78rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -3371,7 +4077,7 @@ a.media-ref-card:hover {
 
 .decision-note {
   margin-top: 0.25rem;
-  color: #f0e6ff;
+  color: var(--color-text-primary);
   font-size: 0.78rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -3379,7 +4085,138 @@ a.media-ref-card:hover {
 }
 
 .packet-actions {
-  border-color: rgba(99, 179, 237, 0.24);
+  border-color: var(--color-border);
+}
+
+.decision-dock {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  border-color: var(--color-border);
+  background: var(--color-bg-secondary);
+  box-shadow: 0 0.55rem 1.2rem rgba(0, 0, 0, 0.42);
+}
+
+.decision-scope {
+  display: grid;
+  gap: 0.2rem;
+  border-left: 3px solid var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
+  padding: 0.55rem 0.7rem;
+  color: var(--ops-success);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.decision-scope.face-scope {
+  border-left-color: var(--ops-warning);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  color: var(--ops-warning);
+}
+
+.decision-scope strong {
+  font-size: 0.76rem;
+}
+
+.decision-readiness {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-top: 0.55rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+}
+
+.decision-readiness-state,
+.decision-readiness-fact {
+  display: grid;
+  align-content: center;
+  gap: 0.12rem;
+  min-width: 0;
+  min-height: 3rem;
+  padding: 0.45rem 0.55rem;
+  background: var(--color-bg-secondary);
+}
+
+.decision-readiness-state {
+  grid-column: 1 / -1;
+  border-left: 3px solid var(--ops-warning);
+}
+
+.decision-readiness.ready .decision-readiness-state {
+  border-left-color: var(--ops-success);
+}
+
+.decision-readiness-fact:last-child {
+  grid-column: 1 / -1;
+}
+
+.decision-readiness span {
+  color: var(--color-text-secondary);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.decision-readiness strong {
+  color: var(--color-text-primary);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 900px) {
+  .decision-readiness {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .decision-readiness-state {
+    grid-column: auto;
+  }
+
+  .decision-readiness-fact:last-child {
+    grid-column: auto;
+  }
+}
+
+.decision-effect {
+  margin: 0.55rem 0 0;
+  color: var(--color-text-primary);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.decision-options {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.5rem;
+}
+
+.decision-options-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.decision-options-heading > div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.decision-options-heading span {
+  color: var(--color-text-primary);
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.decision-options-heading strong {
+  color: var(--color-text-primary);
+  font-size: 0.82rem;
+}
+
+.decision-options .action-fields {
+  margin-top: 0.55rem;
 }
 
 .action-fields {
@@ -3393,6 +4230,10 @@ a.media-ref-card:hover {
   .action-fields {
     grid-template-columns: minmax(0, 1fr) minmax(11rem, 0.32fr);
   }
+
+  .decision-options .action-fields {
+    grid-template-columns: minmax(11rem, 0.32fr) minmax(0, 1fr);
+  }
 }
 
 .action-field {
@@ -3403,7 +4244,7 @@ a.media-ref-card:hover {
 }
 
 .action-label {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -3414,9 +4255,9 @@ a.media-ref-card:hover {
 .action-select {
   width: 100%;
   min-width: 0;
-  color: #f0e6ff;
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid rgba(102, 102, 102, 0.38);
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
   font-size: 0.82rem;
 }
@@ -3435,20 +4276,25 @@ a.media-ref-card:hover {
 
 .action-notes:focus,
 .action-select:focus {
-  border-color: rgba(99, 179, 237, 0.70);
+  border-color: var(--color-accent);
   outline: none;
 }
 
 .action-notes:disabled,
 .action-select:disabled {
-  color: #9b8bb5;
-  background: rgba(0, 0, 0, 0.14);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
 }
 
 .action-hint {
   margin-top: 0.5rem;
-  color: rgba(245, 158, 11, 0.9);
+  color: var(--ops-warning);
   font-size: 0.78rem;
+}
+
+.alternate-confirm {
+  width: 100%;
+  margin-top: 0.55rem;
 }
 
 .action-buttons {
@@ -3456,6 +4302,25 @@ a.media-ref-card:hover {
   flex-wrap: wrap;
   gap: 0.45rem;
   margin-top: 0.65rem;
+}
+
+.decision-primary-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.decision-primary-actions .packet-action.primary {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 760px) {
+  .decision-primary-actions {
+    display: flex;
+  }
+
+  .decision-primary-actions .packet-action.primary {
+    grid-column: auto;
+  }
 }
 
 .approval-blockers {
@@ -3468,7 +4333,7 @@ a.media-ref-card:hover {
 }
 
 .approval-blockers-label {
-  color: #b39ddb;
+  color: var(--color-accent);
   font-size: 0.68rem;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -3478,10 +4343,10 @@ a.media-ref-card:hover {
 .approval-blocker {
   max-width: 100%;
   padding: 0.22rem 0.45rem;
-  border: 1px solid rgba(204, 136, 0, 0.42);
+  border: 1px solid var(--ops-warning);
   border-radius: 0.35rem;
-  color: #ffe3b0;
-  background: rgba(204, 136, 0, 0.14);
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
   font-size: 0.72rem;
   font-weight: 700;
   overflow-wrap: anywhere;
@@ -3489,32 +4354,37 @@ a.media-ref-card:hover {
 
 .packet-action {
   min-height: 2.25rem;
-  border: 1px solid rgba(99, 179, 237, 0.28);
+  border: 1px solid var(--color-border);
   border-radius: 0.35rem;
   padding: 0.35rem 0.65rem;
-  color: #d8efff;
-  background: rgba(99, 179, 237, 0.12);
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
   font-size: 0.76rem;
   font-weight: 700;
   cursor: pointer;
 }
 
 .packet-action.primary {
-  border-color: rgba(47, 158, 68, 0.55);
-  color: #d9ffd9;
-  background: rgba(47, 158, 68, 0.22);
+  border-color: var(--ops-success);
+  color: var(--ops-success);
+  background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));
 }
 
 .packet-action.danger {
-  border-color: rgba(204, 68, 68, 0.55);
-  color: #ffd9d9;
-  background: rgba(204, 68, 68, 0.20);
+  border-color: var(--ops-danger);
+  color: var(--ops-danger);
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
 }
 
 .packet-action.ghost {
-  border-color: rgba(102, 102, 102, 0.34);
-  color: #d8d0e4;
-  background: rgba(0, 0, 0, 0.14);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+  background: var(--color-bg-tertiary);
+}
+
+.packet-action.selected {
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
 .packet-action:disabled {
@@ -3523,6 +4393,6 @@ a.media-ref-card:hover {
 }
 
 .packet-action:not(:disabled):hover {
-  border-color: rgba(255, 255, 255, 0.45);
+  border-color: var(--color-border);
 }
 </style>

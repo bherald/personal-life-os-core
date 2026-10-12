@@ -2,9 +2,9 @@
 
 namespace App\Services;
 
+use Exception;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Thunderbird MCP Service
@@ -26,13 +26,18 @@ use Exception;
 class ThunderbirdService
 {
     private string $baseUrl;
+
     private int $timeout;
+
     private int $connectTimeout;
 
     // Error tracking for diagnostics
     private ?string $lastError = null;
+
     private ?string $lastErrorCode = null;
+
     private int $consecutiveFailures = 0;
+
     private const MAX_CONSECUTIVE_FAILURES = 5;
 
     public function __construct()
@@ -60,15 +65,18 @@ class ThunderbirdService
 
             if ($response->successful()) {
                 $this->consecutiveFailures = 0;
+
                 return true;
             }
 
-            $this->recordError('HTTP_ERROR', 'HTTP ' . $response->status());
+            $this->recordError('HTTP_ERROR', 'HTTP '.$response->status());
+
             return false;
 
         } catch (Exception $e) {
             $this->recordError('CONNECTION_FAILED', $e->getMessage());
-            Log::debug('Thunderbird MCP not available: ' . $e->getMessage());
+            Log::debug('Thunderbird MCP not available', ['exception' => $e]);
+
             return false;
         }
     }
@@ -107,7 +115,7 @@ class ThunderbirdService
      */
     public function getLastError(): ?array
     {
-        if (!$this->lastError) {
+        if (! $this->lastError) {
             return null;
         }
 
@@ -126,11 +134,13 @@ class ThunderbirdService
      * List all available mbox folders with sizes
      *
      * @return array Folder information with loaded status
+     *
      * @throws Exception on MCP error
      */
     public function listFolders(): array
     {
         $result = $this->callTool('listFolders', []);
+
         return $this->parseToolContent($result);
     }
 
@@ -138,20 +148,23 @@ class ThunderbirdService
      * List all configured email accounts/mailboxes
      *
      * @return array Mailbox information with SMTP settings
+     *
      * @throws Exception on MCP error
      */
     public function listMailboxes(): array
     {
         $result = $this->callTool('listMailboxes', []);
+
         return $this->parseToolContent($result);
     }
 
     /**
      * Search emails across loaded folders
      *
-     * @param string $query Search query
-     * @param string|null $folder Optional folder filter
+     * @param  string  $query  Search query
+     * @param  string|null  $folder  Optional folder filter
      * @return array Matching emails (max 20)
+     *
      * @throws Exception on MCP error
      */
     public function searchMessages(string $query, ?string $folder = null): array
@@ -162,15 +175,17 @@ class ThunderbirdService
         }
 
         $result = $this->callTool('searchMessages', $params);
+
         return $this->parseToolContent($result);
     }
 
     /**
      * Get recent messages from a folder
      *
-     * @param string $folder Folder name (default: Inbox)
-     * @param int $limit Number of messages (default: 10)
+     * @param  string  $folder  Folder name (default: Inbox)
+     * @param  int  $limit  Number of messages (default: 10)
      * @return array Recent emails
+     *
      * @throws Exception on MCP error
      */
     public function getRecentMessages(string $folder = 'Inbox', int $limit = 10): array
@@ -179,6 +194,7 @@ class ThunderbirdService
             'folder' => $folder,
             'limit' => $limit,
         ]);
+
         return $this->parseToolContent($result);
     }
 
@@ -186,11 +202,13 @@ class ThunderbirdService
      * Get statistics about loaded folders and emails
      *
      * @return array Statistics including folder counts, email counts, mailbox info
+     *
      * @throws Exception on MCP error
      */
     public function getStats(): array
     {
         $result = $this->callTool('getStats', []);
+
         return $this->parseToolContent($result);
     }
 
@@ -204,13 +222,14 @@ class ThunderbirdService
      * Requires Thunderbird running with PLOS extension installed.
      * Falls back gracefully with informative error if unavailable.
      *
-     * @param array $params Email parameters:
-     *   - to: Recipient email (required)
-     *   - subject: Email subject (required)
-     *   - body: Plain text body (required)
-     *   - mailbox: Sender mailbox ID or email (optional, uses default)
-     *   - html: HTML body (optional)
+     * @param  array  $params  Email parameters:
+     *                         - to: Recipient email (required)
+     *                         - subject: Email subject (required)
+     *                         - body: Plain text body (required)
+     *                         - mailbox: Sender mailbox ID or email (optional, uses default)
+     *                         - html: HTML body (optional)
      * @return array Send result with status and message ID
+     *
      * @throws Exception on send failure
      */
     public function sendEmail(array $params): array
@@ -224,7 +243,7 @@ class ThunderbirdService
         }
 
         // Validate email format
-        if (!filter_var($params['to'], FILTER_VALIDATE_EMAIL)) {
+        if (! filter_var($params['to'], FILTER_VALIDATE_EMAIL)) {
             throw new Exception("Invalid email address: {$params['to']}");
         }
 
@@ -300,7 +319,7 @@ class ThunderbirdService
         // Circuit breaker pattern
         if ($this->consecutiveFailures >= self::MAX_CONSECUTIVE_FAILURES) {
             throw new Exception(
-                "Thunderbird MCP circuit open after {$this->consecutiveFailures} failures. " .
+                "Thunderbird MCP circuit open after {$this->consecutiveFailures} failures. ".
                 "Last error: {$this->lastError}"
             );
         }
@@ -317,9 +336,9 @@ class ThunderbirdService
                     'id' => $requestId,
                 ]);
 
-            if (!$response->successful()) {
-                $this->recordError('HTTP_' . $response->status(), 'HTTP error: ' . $response->status());
-                throw new Exception('Thunderbird MCP HTTP error: ' . $response->status());
+            if (! $response->successful()) {
+                $this->recordError('HTTP_'.$response->status(), 'HTTP error: '.$response->status());
+                throw new Exception('Thunderbird MCP HTTP error: '.$response->status());
             }
 
             $data = $response->json();
@@ -366,6 +385,7 @@ class ThunderbirdService
                     'json_error' => json_last_error_msg(),
                     'raw' => substr($json, 0, 500),
                 ]);
+
                 return ['raw' => $json];
             }
 
@@ -395,8 +415,8 @@ class ThunderbirdService
 
         // Hide email body content in logs
         if (isset($sanitized['arguments']['body'])) {
-            $sanitized['arguments']['body'] = '[BODY HIDDEN - ' .
-                strlen($sanitized['arguments']['body']) . ' chars]';
+            $sanitized['arguments']['body'] = '[BODY HIDDEN - '.
+                strlen($sanitized['arguments']['body']).' chars]';
         }
 
         return $sanitized;

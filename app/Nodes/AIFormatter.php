@@ -2,6 +2,7 @@
 
 namespace App\Nodes;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\AIService;
 use Exception;
 
@@ -39,7 +40,7 @@ class AIFormatter extends BaseNode
             $responseFormat = $this->getConfigValue('response_format', 'text');
             $fullPrompt = $this->buildFullPrompt($prompt, $context, $responseFormat);
 
-            // Use AIService with guaranteed fallback chain (Ollama → Claude CLI → alert)
+            // Use AIService with its configured fallback chain and alerting.
             $aiService = app(AIService::class);
             $result = $aiService->process($fullPrompt, $this->config);
 
@@ -54,10 +55,19 @@ class AIFormatter extends BaseNode
                 ]);
             }
 
+            if (($result['fallback_suppressed'] ?? false) === true) {
+                throw new InferenceAdmissionException('AI formatting admission refused; request must not be replayed.',
+                    controllerFailure: is_array($result['controller_failure'] ?? null) ? $result['controller_failure'] : []);
+            }
+
             // AIService exhausted all providers and sent alert
             // Return structured error - don't pass raw JSON to Pushover
             throw new Exception('AI formatting failed after all fallbacks: '.$result['error']);
         } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+
             return $this->standardOutput(null, ['error' => true], $e->getMessage());
         }
     }

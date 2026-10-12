@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "dimensions": {
+    "width": 480,
+    "height": 596
+  },
+  "orientation": 1,
+  "description": "AI-generated demonstration portrait. Morgan Rowan is a fictional label assigned for this metadata example, not an identification of a real person. Fictional catalog event: Demo Workshop, Example Hall, 2000-01-01; no real event, date or location asserted. Photo: Kreavo (kreavo.ai), CC BY 4.0.",
+  "keywords": [
+    "AI-generated",
+    "fictional demonstration",
+    "Morgan Rowan"
+  ],
+  "regions": [
+    {
+      "name": "Morgan Rowan",
+      "approved": true,
+      "x": 0.29,
+      "y": 0.11,
+      "w": 0.425,
+      "h": 0.48
+    }
+  ]
+}

@@ -34,7 +34,8 @@ class FaceCandidateService
                 'frf.region_h',
                 'frf.confidence',
                 'frf.cluster_id',
-                'frf.hidden',
+                'frf.hidden', 'frf.source_current', 'frf.superseded_at', 'frf.source_sha256', 'frf.face_region_convention',
+                'fr.current_path', 'fr.status AS file_status',
                 'fr.date_taken'
             )
             ->where('frf.id', $fileRegistryFaceId)
@@ -56,6 +57,12 @@ class FaceCandidateService
                 'error' => 'face_hidden',
                 'face_id' => $fileRegistryFaceId,
             ];
+        }
+
+        $evidence = app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($face);
+        if (! ($evidence['success'] ?? false)) {
+            return ['success' => false, 'status' => 409, 'error' => $evidence['reason'],
+                'face_id' => $fileRegistryFaceId, 'candidate_state' => 'review_required', 'candidates' => []];
         }
 
         if ($face->genealogy_person_id !== null) {
@@ -153,6 +160,8 @@ class FaceCandidateService
                 DB::table('file_registry_faces')
                     ->select('genealogy_person_id', DB::raw('COUNT(*) AS face_count'))
                     ->whereNotNull('genealogy_person_id')
+                    ->where('source_current', 1)->whereNull('superseded_at')
+                    ->whereNotNull('source_sha256')->where('face_region_convention', 'normalized_top_left')
                     ->groupBy('genealogy_person_id'),
                 'face_counts',
                 'face_counts.genealogy_person_id',
@@ -279,6 +288,8 @@ class FaceCandidateService
             ->leftJoin('genealogy_persons as gp', 'gp.id', '=', 'frf.genealogy_person_id')
             ->leftJoin('genealogy_trees as gt', 'gt.id', '=', 'gp.tree_id')
             ->where('frf.hidden', 0)
+            ->where('frf.source_current', 1)->whereNull('frf.superseded_at')
+            ->whereNotNull('frf.source_sha256')->where('frf.face_region_convention', 'normalized_top_left')
             ->where('frf.id', '<>', $fileRegistryFaceId)
             ->whereRaw("NULLIF(TRIM(frf.person_name), '') IS NOT NULL")
             ->whereRaw("LOWER(TRIM(frf.person_name)) <> 'unknown'")
@@ -294,7 +305,19 @@ class FaceCandidateService
                         ->orWhereRaw('LOWER(gp.surname) LIKE ?', [$like])
                         ->orWhereRaw("LOWER(CONCAT_WS(' ', gp.given_name, gp.surname)) LIKE ?", [$like]);
                 }
-            })
+            });
+        $evidenceRows = (clone $query)->leftJoin('file_registry as fr', 'fr.id', '=', 'frf.file_registry_id')
+            ->select('frf.*', 'fr.current_path', 'fr.status AS file_status')->limit($candidatePoolLimit)->get();
+        $eligibleIds = [];
+        foreach ($evidenceRows as $row) {
+            if (app(FaceLinkBridgeService::class)->validateFaceSourceEvidence($row)['success'] ?? false) {
+                $eligibleIds[] = (int) $row->id;
+            }
+        }
+        if ($eligibleIds === []) {
+            return [];
+        }
+        $query = $query->whereIn('frf.id', $eligibleIds)
             ->select(
                 'frf.person_name',
                 'frf.genealogy_person_id',
@@ -328,11 +351,11 @@ class FaceCandidateService
                 'gt.living_privacy'
             )
             ->orderByRaw(
-                "CASE
+                'CASE
                     WHEN LOWER(frf.person_name) = ? THEN 0
                     WHEN LOWER(frf.person_name) LIKE ? THEN 1
                     ELSE 2
-                END",
+                END',
                 [$normalizedFaceName, $normalizedFaceName.'%']
             )
             ->orderByRaw('COUNT(*) DESC')
@@ -426,6 +449,7 @@ class FaceCandidateService
 
             if (! isset($merged[$key])) {
                 $merged[$key] = $candidate;
+
                 continue;
             }
 
@@ -444,6 +468,7 @@ class FaceCandidateService
                 );
                 $candidate['face_count'] = max((int) ($existing['face_count'] ?? 0), (int) ($candidate['face_count'] ?? 0));
                 $merged[$key] = $candidate;
+
                 continue;
             }
 

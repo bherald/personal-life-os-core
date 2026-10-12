@@ -216,14 +216,14 @@ function isSensitiveEvidenceText(value) {
   grid-template-columns: 8rem 1fr 1.5fr auto;
   gap: 0.75rem;
   padding: 0.6rem 0.5rem;
-  border-bottom: 1px solid rgba(102, 102, 102, 0.20);
+  border-bottom: 1px solid var(--color-border);
   align-items: start;
 }
 .field-row:last-child { border-bottom: none; }
-.row-conflict  { background: rgba(204, 0, 0, 0.06); }
-.row-different { background: rgba(204, 136, 0, 0.05); }
-.row-accepted  { box-shadow: inset 4px 0 0 0 #00aa00; }
-.row-rejected  { box-shadow: inset 4px 0 0 0 #cc0000; opacity: 0.7; }
+.row-conflict  { background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary)); }
+.row-different { background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary)); }
+.row-accepted  { box-shadow: inset 4px 0 0 0 var(--ops-success); }
+.row-rejected  { box-shadow: inset 4px 0 0 0 var(--ops-danger); opacity: 0.7; }
 .field-decision {
   grid-column: 1 / -1;
   display: flex;
@@ -232,35 +232,35 @@ function isSensitiveEvidenceText(value) {
   gap: 0.5rem;
   padding-top: 0.4rem;
   margin-top: 0.4rem;
-  border-top: 1px dashed rgba(102, 102, 102, 0.20);
+  border-top: 1px dashed var(--color-border);
 }
 .decision-toggle { display: inline-flex; gap: 0.15rem; }
 .decision-btn {
   width: 2rem;
   height: 1.6rem;
-  border: 1px solid rgba(102, 102, 102, 0.40);
-  background: rgba(0, 0, 0, 0.20);
-  color: #888;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
   font-weight: 700;
   cursor: pointer;
   border-radius: 0.25rem;
 }
-.decision-btn:hover { background: rgba(0, 0, 0, 0.40); }
-.decision-btn.accept.active { background: rgba(0, 170, 0, 0.30); border-color: #00aa00; color: #b5f5b5; }
-.decision-btn.reject.active { background: rgba(204, 0, 0, 0.30); border-color: #cc0000; color: #ffb5b5; }
+.decision-btn:hover { background: var(--color-bg-tertiary); }
+.decision-btn.accept.active { background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary)); border-color: var(--ops-success); color: var(--ops-success); }
+.decision-btn.reject.active { background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary)); border-color: var(--ops-danger); color: var(--ops-danger); }
 .decision-label {
   font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-weight: 600;
 }
 .decision-select {
   font-size: 0.75rem;
   padding: 0.15rem 0.35rem;
-  background: rgba(0, 0, 0, 0.30);
-  color: #f0e6ff;
-  border: 1px solid rgba(102, 102, 102, 0.40);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
   border-radius: 0.25rem;
 }
 .decision-conflict, .decision-reason { display: inline-flex; align-items: center; gap: 0.35rem; }
@@ -269,32 +269,32 @@ function isSensitiveEvidenceText(value) {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-weight: 600;
   padding-top: 0.15rem;
 }
-.field-on-file, .field-proposed { font-size: 0.85rem; color: #f0e6ff; word-break: break-word; }
-.field-on-file .value { color: #d4d4d4; }
-.field-proposed .value { color: #ffe5b3; }
-.field-link { color: #5da9ff; text-decoration: none; word-break: break-all; }
+.field-on-file, .field-proposed { font-size: 0.85rem; color: var(--color-text-primary); word-break: break-word; }
+.field-on-file .value { color: var(--color-text-primary); }
+.field-proposed .value { color: var(--ops-warning); }
+.field-link { color: var(--color-accent); text-decoration: none; word-break: break-all; }
 .field-link:hover { text-decoration: underline; }
 .mt-1 { margin-top: 0.25rem; display: flex; }
 .field-temporal-warn {
   margin-top: 0.4rem;
   padding: 0.35rem 0.5rem;
-  background: rgba(204, 0, 0, 0.10);
-  border-left: 3px solid #cc0000;
-  color: #ffb5b5;
+  background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));
+  border-left: 3px solid var(--ops-danger);
+  color: var(--ops-danger);
   font-size: 0.7rem;
   border-radius: 0.25rem;
   line-height: 1.3;
 }
-.field-temporal-warn strong { color: #ffb5b5; }
-.muted { color: #555; }
+.field-temporal-warn strong { color: var(--ops-danger); }
+.muted { color: var(--color-text-secondary); }
 .field-evidence {
   margin-top: 0.25rem;
   font-size: 0.7rem;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-style: italic;
   line-height: 1.3;
 }
@@ -307,11 +307,11 @@ function isSensitiveEvidenceText(value) {
 .source-pill {
   display: inline-block;
   font-size: 0.65rem;
-  background: rgba(99, 179, 237, 0.20);
-  color: #bfe1ff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
   padding: 0.05rem 0.4rem;
   border-radius: 0.25rem;
 }
 .field-badge { display: flex; flex-direction: column; align-items: flex-end; gap: 0.25rem; }
-.field-conf { font-size: 0.65rem; color: #b39ddb; }
+.field-conf { font-size: 0.65rem; color: var(--color-accent); }
 </style>

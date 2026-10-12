@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -21,9 +22,11 @@ use Illuminate\Support\Facades\Log;
 class SPLADEService
 {
     private ?ComputeRouterService $computeRouter = null;
-    private ?bool $available = null;
+
+    private const CAPABILITY = 'splade';
 
     private const VOCAB_SIZE = 30522; // BERT vocab size
+
     private const BATCH_SIZE = 10;    // Documents per Python call
 
     private function getComputeRouter(): ComputeRouterService
@@ -31,6 +34,7 @@ class SPLADEService
         if ($this->computeRouter === null) {
             $this->computeRouter = app(ComputeRouterService::class);
         }
+
         return $this->computeRouter;
     }
 
@@ -39,20 +43,21 @@ class SPLADEService
      */
     public function isAvailable(): bool
     {
-        if ($this->available !== null) {
-            return $this->available;
-        }
+        return $this->availabilityStatus()['state'] === 'available';
+    }
 
-        // SPLADE runs on CPU — check if any compute instance can run Python scripts
-        // Use 'nlp' capability as proxy (same Python env)
-        $this->available = $this->getComputeRouter()->route('nlp') !== null;
-        return $this->available;
+    /** @return array<string,mixed> */
+    public function availabilityStatus(bool $recover = false): array
+    {
+        return $recover
+            ? $this->getComputeRouter()->recoverCapability(self::CAPABILITY)
+            : $this->getComputeRouter()->getCapabilityStatus(self::CAPABILITY);
     }
 
     /**
      * Encode text(s) to SPLADE sparse vectors.
      *
-     * @param string|string[] $texts Single text or array of texts
+     * @param  string|string[]  $texts  Single text or array of texts
      * @return array Array of ['indices' => int[], 'weights' => float[]] per text, or empty on failure
      */
     public function encode(string|array $texts): array
@@ -68,40 +73,47 @@ class SPLADEService
         try {
             $input = json_encode(['texts' => $texts], JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_SLASHES);
             $result = $this->getComputeRouter()->executeScript(
-                'nlp', // Use NLP compute instance (CPU, has transformers installed)
+                self::CAPABILITY,
                 'splade_encode.py',
                 $input,
                 [],
                 30 // 30s timeout for batch
             );
 
-            if (!$result['success'] || empty($result['output'])) {
+            if (! $result['success'] || empty($result['output'])) {
                 Log::warning('SPLADEService: encode failed', [
-                    'error' => $result['error'] ?? 'no output',
+                    'failure_code' => $result['error'] ?? 'no_output',
                     'text_count' => count($texts),
                 ]);
+
                 return [];
             }
 
             $output = $this->extractJsonObject($result['output']);
             $parsed = json_decode($output, true);
-            if (!is_array($parsed) || !isset($parsed['vectors'])) {
+            if (! is_array($parsed) || ! isset($parsed['vectors'])) {
                 Log::warning('SPLADEService: invalid output format', [
-                    'output_preview' => mb_substr($result['output'] ?? '', 0, 200),
                     'json_error' => json_last_error_msg(),
+                    'output_bytes' => strlen((string) ($result['output'] ?? '')),
                 ]);
+
                 return [];
             }
 
-            if (!empty($parsed['error'])) {
-                Log::warning('SPLADEService: script returned error', ['error' => $parsed['error']]);
+            if (! empty($parsed['error'])) {
+                Log::warning('SPLADEService: script returned error', ['failure_code' => 'script_error']);
+
                 return [];
             }
 
             return $parsed['vectors'];
 
-        } catch (\Exception $e) {
-            Log::warning('SPLADEService: encode exception', ['error' => $e->getMessage()]);
+        } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
+            Log::warning('SPLADEService: encode exception', ['exception_class' => $e::class]);
+
             return [];
         }
     }
@@ -125,9 +137,9 @@ class SPLADEService
      * Search documents by SPLADE sparse vector similarity.
      * Uses inner product between query sparse vector and stored sparse vectors.
      *
-     * @param string $query Query text
-     * @param int $limit Max results
-     * @param string|null $documentType Filter by document_type
+     * @param  string  $query  Query text
+     * @param  int  $limit  Max results
+     * @param  string|null  $documentType  Filter by document_type
      * @return array Search results: [['document' => object, 'similarity' => float], ...]
      */
     public function search(string $query, int $limit = 10, ?string $documentType = null): array
@@ -167,13 +179,14 @@ class SPLADEService
         try {
             $results = DB::connection('pgsql_rag')->select($sql, $params);
 
-            return array_map(fn($doc) => [
+            return array_map(fn ($doc) => [
                 'document' => $doc,
                 'similarity' => (float) ($doc->sparse_similarity ?? 0),
             ], $results);
 
         } catch (\Exception $e) {
             Log::warning('SPLADEService: search failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -181,19 +194,19 @@ class SPLADEService
     /**
      * Batch encode and store sparse vectors for documents.
      *
-     * @param int $limit Max documents to process
+     * @param  int  $limit  Max documents to process
      * @return array ['indexed' => int, 'failed' => int, 'skipped' => int]
      */
     public function batchIndex(int $limit = 50): array
     {
         // Find documents without sparse embeddings
-        $docs = DB::connection('pgsql_rag')->select("
+        $docs = DB::connection('pgsql_rag')->select('
             SELECT id, title, content
             FROM rag_documents
             WHERE sparse_embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 50
             ORDER BY created_at DESC
             LIMIT ?
-        ", [$limit]);
+        ', [$limit]);
 
         if (empty($docs)) {
             return ['indexed' => 0, 'failed' => 0, 'skipped' => 0];
@@ -205,25 +218,27 @@ class SPLADEService
         // Process in batches
         $batches = array_chunk($docs, self::BATCH_SIZE);
         foreach ($batches as $batch) {
-            $texts = array_map(fn($doc) => mb_substr($doc->title . "\n" . $doc->content, 0, 2000), $batch);
+            $texts = array_map(fn ($doc) => mb_substr($doc->title."\n".$doc->content, 0, 2000), $batch);
             $vectors = $this->encode($texts);
 
             if (empty($vectors) || count($vectors) !== count($batch)) {
                 $failed += count($batch);
+
                 continue;
             }
 
             foreach ($batch as $i => $doc) {
                 $vec = $vectors[$i] ?? null;
-                if (!$vec || empty($vec['indices'])) {
+                if (! $vec || empty($vec['indices'])) {
                     $failed++;
+
                     continue;
                 }
 
                 try {
                     $literal = $this->toSparsevecLiteral($vec);
                     DB::connection('pgsql_rag')->statement(
-                        "UPDATE rag_documents SET sparse_embedding = ?::sparsevec, splade_indexed_at = NOW() WHERE id = ?",
+                        'UPDATE rag_documents SET sparse_embedding = ?::sparsevec, splade_indexed_at = NOW() WHERE id = ?',
                         [$literal, $doc->id]
                     );
                     $indexed++;
@@ -264,6 +279,6 @@ class SPLADEService
             }
         }
 
-        return '{' . implode(',', $parts) . '}/' . self::VOCAB_SIZE;
+        return '{'.implode(',', $parts).'}/'.self::VOCAB_SIZE;
     }
 }

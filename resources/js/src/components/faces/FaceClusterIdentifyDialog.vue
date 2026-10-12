@@ -26,7 +26,7 @@
           v-model="name"
           type="text"
           placeholder="Person name..."
-          class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-none"
+          class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-hidden"
           @input="onNameInput"
           @keydown.enter="submit"
           @keydown.escape="$emit('close')"
@@ -51,7 +51,7 @@
           v-model="genealogySearch"
           type="text"
           placeholder="Search genealogy..."
-          class="w-full bg-black/50 border border-ops-plum/30 rounded px-3 py-1.5 text-sm text-ops-text focus:border-ops-peach focus:outline-none mt-1"
+          class="w-full bg-black/50 border border-ops-plum/30 rounded px-3 py-1.5 text-sm text-ops-text focus:border-ops-peach focus:outline-hidden mt-1"
           @input="onGenealogyInput"
         />
         <div v-if="genealogyResults.length > 0" class="bg-black border border-ops-plum/30 rounded-b max-h-32 overflow-y-auto">

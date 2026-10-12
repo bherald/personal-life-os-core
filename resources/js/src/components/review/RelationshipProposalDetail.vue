@@ -229,7 +229,7 @@ const confidenceClass = computed(() => {
   justify-content: space-between;
   gap: 0.5rem;
 }
-.rel-title { font-size: 1.1rem; font-weight: 700; color: #ffb47a; margin: 0; }
+.rel-title { font-size: 1.1rem; font-weight: 700; color: var(--ops-warning); margin: 0; }
 .rel-meta { display: flex; gap: 0.4rem; align-items: center; }
 .meta-pill {
   font-size: 0.7rem;
@@ -239,23 +239,23 @@ const confidenceClass = computed(() => {
   padding: 0.15rem 0.5rem;
   border-radius: 0.25rem;
 }
-.meta-agent { background: rgba(99, 51, 153, 0.30); color: #d4c2f0; }
-.meta-rel   { background: rgba(99, 179, 237, 0.20); color: #bfe1ff; }
-.conf-high  { background: rgba(0, 170, 0, 0.30);    color: #b5f5b5; }
-.conf-med   { background: rgba(204, 136, 0, 0.30);  color: #ffd980; }
-.conf-low   { background: rgba(204, 0, 0, 0.30);    color: #ffb5b5; }
+.meta-agent { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.meta-rel   { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.conf-high  { background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));    color: var(--ops-success); }
+.conf-med   { background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));  color: var(--ops-warning); }
+.conf-low   { background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));    color: var(--ops-danger); }
 
 .rel-section { display: flex; flex-direction: column; gap: 0.5rem; }
 .rel-heading {
   font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #b39ddb;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--color-accent);
   font-weight: 600;
 }
 .rel-proposed-card {
-  background: rgba(255, 180, 122, 0.08);
-  border: 1px solid rgba(255, 180, 122, 0.25);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  border: 1px solid var(--ops-warning);
   border-radius: 0.5rem;
   padding: 0.75rem;
 }
@@ -265,8 +265,8 @@ const confidenceClass = computed(() => {
   gap: 0.75rem;
 }
 .rel-tree-card {
-  background: rgba(255, 180, 122, 0.08);
-  border: 1px solid rgba(255, 180, 122, 0.25);
+  background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));
+  border: 1px solid var(--ops-warning);
   border-radius: 0.5rem;
   padding: 0.6rem;
   display: flex;
@@ -278,7 +278,7 @@ const confidenceClass = computed(() => {
 .rel-evidence {
   margin-top: 0.25rem;
   font-size: 0.75rem;
-  color: #b39ddb;
+  color: var(--color-accent);
   font-style: italic;
   line-height: 1.3;
 }
@@ -286,8 +286,8 @@ const confidenceClass = computed(() => {
 .source-pill {
   display: inline-block;
   font-size: 0.65rem;
-  background: rgba(99, 179, 237, 0.20);
-  color: #bfe1ff;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
   padding: 0.05rem 0.4rem;
   border-radius: 0.25rem;
 }

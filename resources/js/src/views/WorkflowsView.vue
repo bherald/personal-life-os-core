@@ -76,16 +76,68 @@
       </div>
 
       <!-- Approvals Panel -->
-      <div v-if="showApprovalsPanel && pendingApprovals.length > 0" class="mb-4 space-y-2">
-        <div v-for="approval in pendingApprovals" :key="approval.id" class="card p-4 border border-[#f39c12] flex justify-between items-center">
-          <div>
-            <div class="font-medium text-[#e0e0e0]">{{ approval.workflow_name || `Run #${approval.run_id}` }}</div>
-            <div class="text-sm text-[#95a5a6]">Requested: {{ new Date(approval.requested_at).toLocaleString() }}</div>
-            <div v-if="approval.context" class="text-xs text-[#95a5a6] mt-1">{{ formatApprovalContext(approval.context) }}</div>
+      <div v-if="showApprovalsPanel && pendingApprovals.length > 0" class="mb-4 space-y-3">
+        <div v-for="approval in pendingApprovals" :key="approval.id" class="border border-[#f39c12] bg-[#242424] p-4">
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b border-[#444] pb-3">
+            <div>
+              <div class="font-semibold text-[#e0e0e0]">{{ approvalForm(approval).title || approval.workflow_name || `Run #${approval.run_id}` }}</div>
+              <div class="text-sm text-[#95a5a6]">{{ approval.workflow_name }} · Run #{{ approval.run_id }} · {{ approvalDeadline(approval) }}</div>
+            </div>
+            <span class="badge badge-warning">Awaiting operator</span>
           </div>
-          <div class="flex gap-2">
-            <button @click="approveGate(approval.id)" class="px-3 py-1 text-sm bg-[#27ae60] text-white rounded hover:bg-[#229954]">Approve</button>
-            <button @click="rejectGate(approval.id)" class="px-3 py-1 text-sm bg-[#e74c3c] text-white rounded hover:bg-[#c0392b]">Reject</button>
+
+          <p v-if="approvalForm(approval).instructions" class="my-3 text-sm leading-6 text-[#c7c7c7]">
+            {{ approvalForm(approval).instructions }}
+          </p>
+          <div v-else class="my-3 text-xs text-[#95a5a6]">{{ formatApprovalContext(approval.context) }}</div>
+
+          <div v-if="approvalForm(approval).response_fields?.length" class="grid gap-3 md:grid-cols-2 mb-4">
+            <label v-for="field in approvalForm(approval).response_fields" :key="field.name" class="block text-sm text-[#c7c7c7]">
+              <span class="block mb-1">{{ field.label || field.name }}<span v-if="field.required" class="text-[#e74c3c]"> *</span></span>
+              <select
+                v-if="field.type === 'select'"
+                v-model="approvalInputs[approval.id][field.name]"
+                class="form-select w-full"
+              >
+                <option value="">Select</option>
+                <option v-for="option in field.options" :key="option" :value="option">{{ option }}</option>
+              </select>
+              <textarea
+                v-else-if="field.type === 'textarea'"
+                v-model="approvalInputs[approval.id][field.name]"
+                class="input w-full min-h-24"
+                maxlength="4000"
+              ></textarea>
+              <input
+                v-else-if="field.type === 'boolean'"
+                v-model="approvalInputs[approval.id][field.name]"
+                type="checkbox"
+                class="h-4 w-4"
+              />
+              <input
+                v-else
+                v-model="approvalInputs[approval.id][field.name]"
+                type="text"
+                class="input w-full"
+                maxlength="4000"
+              />
+            </label>
+          </div>
+
+          <div v-if="approvalErrors[approval.id]" class="mb-3 text-sm text-[#ff8a80]" role="alert">
+            {{ approvalErrors[approval.id] }}
+          </div>
+          <div class="flex justify-end gap-2">
+            <button
+              @click="rejectGate(approval.id)"
+              :disabled="approvalSubmitting === approval.id"
+              class="px-3 py-2 text-sm bg-[#3a2525] border border-[#e74c3c] text-white hover:bg-[#4a2b2b] disabled:opacity-50"
+            >Reject</button>
+            <button
+              @click="approveGate(approval.id)"
+              :disabled="approvalSubmitting === approval.id"
+              class="px-3 py-2 text-sm bg-[#1f6f4a] text-white hover:bg-[#248158] disabled:opacity-50"
+            >{{ approvalSubmitting === approval.id ? 'Saving...' : 'Approve & Resume' }}</button>
           </div>
         </div>
       </div>
@@ -196,7 +248,7 @@
     <!-- Delete Confirmation Modal -->
     <div
       v-if="showDeleteModal"
-      class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50 p-4"
+      class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       @click.self="closeDeleteModal"
     >
       <div class="bg-[#2d2d2d] rounded-lg shadow-2xl max-w-md w-full border-2 border-[#e74c3c]">
@@ -265,6 +317,9 @@ const templates = ref([]);
 const showTemplates = ref(false);
 const pendingApprovals = ref([]);
 const showApprovalsPanel = ref(false);
+const approvalInputs = ref({});
+const approvalErrors = ref({});
+const approvalSubmitting = ref(null);
 
 // Computed
 const filteredWorkflows = computed(() => {
@@ -365,22 +420,55 @@ const useTemplate = async (id) => {
 const loadApprovals = async () => {
   try {
     const { data } = await axios.get('/api/workflows/pending-approvals');
-    if (data.success) pendingApprovals.value = data.data || [];
+    if (data.success) {
+      pendingApprovals.value = data.data || [];
+      pendingApprovals.value.forEach((approval) => {
+        if (!approvalInputs.value[approval.id]) approvalInputs.value[approval.id] = {};
+        approvalForm(approval).response_fields?.forEach((field) => {
+          if (approvalInputs.value[approval.id][field.name] === undefined) {
+            approvalInputs.value[approval.id][field.name] = field.type === 'boolean' ? false : '';
+          }
+        });
+      });
+    }
   } catch (err) { console.error('Failed to load approvals:', err); }
 };
 
 const approveGate = async (id) => {
-  try {
-    await axios.post(`/api/workflows/pending-approvals`, { gate_id: id, action: 'approve' });
-    loadApprovals();
-  } catch (err) { console.error('Failed to approve:', err); }
+  await submitGateDecision(id, 'approve');
 };
 
 const rejectGate = async (id) => {
+  await submitGateDecision(id, 'reject');
+};
+
+const submitGateDecision = async (id, action) => {
+  approvalSubmitting.value = id;
+  approvalErrors.value[id] = '';
   try {
-    await axios.post(`/api/workflows/pending-approvals`, { gate_id: id, action: 'reject' });
-    loadApprovals();
-  } catch (err) { console.error('Failed to reject:', err); }
+    await axios.post('/api/workflows/pending-approvals', {
+      gate_id: id,
+      action,
+      inputs: action === 'approve' ? approvalInputs.value[id] : {},
+    });
+    await Promise.all([loadApprovals(), refreshWorkflows()]);
+  } catch (err) {
+    approvalErrors.value[id] = err.response?.data?.error?.message || 'Unable to save the approval decision.';
+  } finally {
+    approvalSubmitting.value = null;
+  }
+};
+
+const approvalForm = (approval) => {
+  if (!approval?.context) return {};
+  if (typeof approval.context === 'object') return approval.context;
+  try { return JSON.parse(approval.context); } catch { return {}; }
+};
+
+const approvalDeadline = (approval) => {
+  const requested = new Date(approval.requested_at).getTime();
+  const deadline = new Date(requested + Number(approval.timeout_minutes || 0) * 60000);
+  return `Respond by ${deadline.toLocaleString()}`;
 };
 
 const formatApprovalContext = (value) => {

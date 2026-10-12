@@ -1,0 +1,64 @@
+[
+  {
+    "title": "Male AI influencer street style, black hoodie, golden hour",
+    "source_page": "https://kreavo.ai/free-ai-influencer-photos",
+    "download_url": "https://api.kreavo.ai/storage/v1/object/public/character-images/generated/free-generation/1789548806019-b8764688-3db7-4ae6-96c9-e886dddebf7c.jpg",
+    "author": "Kreavo",
+    "generator_claim": "Google Nano Banana Pro, per provider",
+    "synthetic_status": "Provider declares AI-generated; no real person depicted. Resemblance independently unverified.",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "attribution": "Photo: Kreavo (kreavo.ai)",
+    "retrieved": "2026-10-12",
+    "original_sha256": "37f52bddd1bef73dbd147c552fd05c481f352f27918a493666e1c278b66d255b",
+    "original_dimensions": [
+      928,
+      1152
+    ],
+    "fictional_label": "Alex Rowan",
+    "changes": "Downscaled to fit 480x600; JPEG re-encoded RGB quality88 without source EXIF/XMP; manual illustrative region and fictional descriptive metadata added to derivative; creator/source/rights attribution retained.",
+    "dimensions": [
+      480,
+      596
+    ],
+    "pixel_preservation_verified": true,
+    "files": {
+      "alex-rowan-plain.jpg": "ab7e87c391c3009b2a7a6680c0bf93e28067e920633dfd62a3638cadd78e4612",
+      "alex-rowan.xmp": "f718cf5b286d8b6e1dffe59deaf5d11959026d7bf4052b52d805ce012c1d16c3",
+      "alex-rowan-embedded.jpg": "801e0e16ce12e8d4d81e4f53520b7a92cae89439fd57632b165e2d00b27b8309",
+      "alex-rowan.json": "93ae24767284b49dc8e2e6751f2716cd68c3ce7b6b7be78c6fb9fee52c7e6045",
+      "alex-rowan-readback.json": "7359f647da70359b879701d9b1f0d6ed6e947dcf3025cf277097d6634bbb8c3e"
+    }
+  },
+  {
+    "title": "Studio portrait of an AI influencer with red hair and freckles",
+    "source_page": "https://kreavo.ai/free-ai-influencer-photos",
+    "download_url": "https://api.kreavo.ai/storage/v1/object/public/character-images/generated/free-generation/1789548879719-7878db96-7ecb-4204-b7d6-ff4779a7ca84.jpg",
+    "author": "Kreavo",
+    "generator_claim": "Google Nano Banana Pro, per provider",
+    "synthetic_status": "Provider declares AI-generated; no real person depicted. Resemblance independently unverified.",
+    "license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "attribution": "Photo: Kreavo (kreavo.ai)",
+    "retrieved": "2026-10-12",
+    "original_sha256": "93d1db3f7dfa108dbe02d1df9c61f96f133239ec184d6b7c3507410985436665",
+    "original_dimensions": [
+      928,
+      1152
+    ],
+    "fictional_label": "Morgan Rowan",
+    "changes": "Downscaled to fit 480x600; JPEG re-encoded RGB quality88 without source EXIF/XMP; manual illustrative region and fictional descriptive metadata added to derivative; creator/source/rights attribution retained.",
+    "dimensions": [
+      480,
+      596
+    ],
+    "pixel_preservation_verified": true,
+    "files": {
+      "morgan-rowan-plain.jpg": "31d478584959f8da59e023bd2760ad74671e1a429ece2df4481a2a2943ac9fb4",
+      "morgan-rowan.xmp": "672e9cecfbf6252a493da56ff1379d76f5c823101734b68020c3611d5678d045",
+      "morgan-rowan-embedded.jpg": "7ff341bf3c11c6014416b8d3f1dde3695e0e214a8794430de024cc6731f39894",
+      "morgan-rowan.json": "974b0396fb8fdf64c4614251411db939f25cfe4d593da9cf20901c1df29109e0",
+      "morgan-rowan-readback.json": "16b5da680b7b9e345391f97ebcff1bd32e567020eac74233c11e6112154b1425"
+    }
+  }
+]

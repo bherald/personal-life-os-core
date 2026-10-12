@@ -7,12 +7,24 @@ use Illuminate\Support\Facades\DB;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use SplFileInfo;
+use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
 class OpsRuntimePolicyLeakAuditCommand extends Command
 {
+    private const FINGERPRINT_SCHEMA = 'plos.runtime_policy_finding.v1';
+
+    private const OVERRIDE_CLASSIFICATIONS = [
+        'runtime_policy_candidate',
+        'table_driven_reference',
+        'intentional_safety_rail',
+        'observability_reference',
+        'runtime_value_reference',
+    ];
+
     protected $signature = 'ops:runtime-policy-leak-audit
                             {--root= : Optional scan root override for local/test audits}
+                            {--findings-limit= : Override the table default for emitted findings and candidate samples}
                             {--json : Emit machine-readable JSON}
                             {--compact : Emit aggregate-only scheduled-output-safe JSON}
                             {--strict : Return non-zero when runtime policy candidates are found}';
@@ -30,15 +42,21 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
             'read_only' => true,
             'mutation_allowed' => false,
             'compact' => (bool) $this->option('compact'),
+            'fingerprint_schema' => self::FINGERPRINT_SCHEMA,
             'summary' => [
                 'files_scanned' => 0,
                 'matches' => 0,
                 'runtime_policy_candidates' => 0,
                 'table_driven_references' => 0,
                 'table_driven_file_contexts' => 0,
+                'intentional_safety_rails' => 0,
+                'observability_references' => 0,
+                'runtime_value_references' => 0,
+                'non_definition_context_references' => 0,
                 'test_fixtures' => 0,
                 'migration_seeds' => 0,
                 'config_defaults' => 0,
+                'finding_classification_overrides' => 0,
             ],
             'by_pattern' => [],
             'by_classification' => [],
@@ -69,7 +87,20 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
         $extensions = $this->stringList($config['extensions'] ?? ['php']);
         $patterns = $this->patterns($config['patterns'] ?? []);
         $classifier = $this->classifier($config['classifier'] ?? []);
-        $maxFindings = $this->positiveInt($config['max_findings'] ?? null) ?? 100;
+        $maxFindings = $this->positiveInt($this->option('findings-limit'))
+            ?? $this->positiveInt($config['max_findings'] ?? null)
+            ?? 100;
+        if ($patterns === []) {
+            $payload['status'] = 'warning';
+            $payload['config_error'] = 'runtime_policy_leak_audit_no_valid_patterns';
+            $payload['pattern_config'] = [
+                'configured' => is_array($config['patterns'] ?? null) ? count($config['patterns']) : 0,
+                'valid' => 0,
+            ];
+            $payload['next_action'] = 'fix_runtime_policy_leak_audit_patterns';
+
+            return $this->emitPayload($payload);
+        }
 
         foreach ($this->scanFiles($root, $includePaths, $excludePaths, $extensions) as $file) {
             $payload['summary']['files_scanned']++;
@@ -110,7 +141,10 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
     private function emitPayload(array $payload): int
     {
         if ((bool) $this->option('json')) {
-            $this->line(json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+            $this->output->writeln(
+                json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+                OutputInterface::OUTPUT_RAW
+            );
         } else {
             $this->line(sprintf(
                 'runtime-policy-leak-audit: status=%s files=%d matches=%d candidates=%d table_refs=%d',
@@ -161,6 +195,12 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
             || ! is_array($decoded['classifier']['file_table_policy_markers'] ?? null)) {
             return ['__error' => 'runtime_policy_leak_audit_config_missing_classifier'];
         }
+
+        $overrides = $this->findingOverrides($decoded['classifier']['finding_overrides'] ?? []);
+        if ($overrides === null) {
+            return ['__error' => 'runtime_policy_leak_audit_invalid_finding_overrides'];
+        }
+        $decoded['classifier']['finding_overrides'] = $overrides;
 
         return $decoded;
     }
@@ -213,7 +253,7 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
 
     /**
      * @param  list<array{name:string,regex:string,severity:string,recommendation:string}>  $patterns
-     * @param  array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>}  $classifier
+     * @param  array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>,line_safety_rail_regexes:list<string>,line_observability_reference_regexes:list<string>,line_runtime_value_reference_regexes:list<string>,line_policy_definition_regexes:list<string>,finding_overrides:array<string,array{classification:string,reason:string}>}  $classifier
      * @param  array<string,mixed>  $payload
      */
     private function scanFile(SplFileInfo $file, string $relativePath, array $patterns, array $classifier, int $maxFindings, array &$payload): void
@@ -239,13 +279,24 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
                     continue;
                 }
 
-                $classification = $this->classifyFinding($relativePath, $line, $classifier, $fileContext);
+                $fingerprint = $this->findingFingerprint($relativePath, $pattern['name'], $lines, $index);
+                $classificationResult = $this->classifyFinding(
+                    $relativePath,
+                    $line,
+                    $classifier,
+                    $fileContext,
+                    $fingerprint
+                );
+                $classification = $classificationResult['classification'];
                 $payload['summary']['matches']++;
                 $payload['by_pattern'][$pattern['name']] = (int) ($payload['by_pattern'][$pattern['name']] ?? 0) + 1;
                 $payload['by_classification'][$classification] = (int) ($payload['by_classification'][$classification] ?? 0) + 1;
                 $summaryKey = match ($classification) {
                     'runtime_policy_candidate' => 'runtime_policy_candidates',
                     'table_driven_reference' => 'table_driven_references',
+                    'intentional_safety_rail' => 'intentional_safety_rails',
+                    'observability_reference' => 'observability_references',
+                    'runtime_value_reference' => 'runtime_value_references',
                     'test_fixture' => 'test_fixtures',
                     'migration_seed' => 'migration_seeds',
                     'config_default' => 'config_defaults',
@@ -254,16 +305,27 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
                 if ($summaryKey !== null) {
                     $payload['summary'][$summaryKey]++;
                 }
+                if ($classificationResult['source'] === 'finding_override') {
+                    $payload['summary']['finding_classification_overrides']++;
+                }
+                if ($classificationResult['source'] === 'non_definition_context') {
+                    $payload['summary']['non_definition_context_references']++;
+                }
 
                 $finding = [
+                    'fingerprint' => $fingerprint,
                     'file' => $relativePath,
                     'line' => $lineNumber,
                     'pattern' => $pattern['name'],
                     'severity' => $pattern['severity'],
                     'classification' => $classification,
+                    'classification_source' => $classificationResult['source'],
                     'recommendation' => $pattern['recommendation'],
                     'snippet' => trim($line),
                 ];
+                if ($classificationResult['reason'] !== null) {
+                    $finding['classification_reason'] = $classificationResult['reason'];
+                }
                 if ($fileContext !== null) {
                     $finding['file_context'] = $fileContext;
                 }
@@ -318,40 +380,74 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
     }
 
     /**
-     * @param  array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>}  $classifier
+     * @param  array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>,line_safety_rail_regexes:list<string>,line_observability_reference_regexes:list<string>,line_runtime_value_reference_regexes:list<string>,line_policy_definition_regexes:list<string>,finding_overrides:array<string,array{classification:string,reason:string}>}  $classifier
+     * @return array{classification:string,source:string,reason:?string}
      */
-    private function classifyFinding(string $relativePath, string $line, array $classifier, ?string $fileContext): string
-    {
+    private function classifyFinding(
+        string $relativePath,
+        string $line,
+        array $classifier,
+        ?string $fileContext,
+        string $fingerprint
+    ): array {
         if (str_starts_with($relativePath, 'tests/')) {
-            return 'test_fixture';
+            return $this->classification('test_fixture', 'path_rule');
         }
 
         if (str_starts_with($relativePath, 'database/migrations/')) {
-            return 'migration_seed';
+            return $this->classification('migration_seed', 'path_rule');
+        }
+
+        if (str_starts_with($relativePath, 'database/seeders/')) {
+            return $this->classification('migration_seed', 'seeder_path_rule');
         }
 
         if (str_starts_with($relativePath, 'config/')) {
-            return 'config_default';
+            return $this->classification('config_default', 'path_rule');
+        }
+
+        if (isset($classifier['finding_overrides'][$fingerprint])) {
+            $override = $classifier['finding_overrides'][$fingerprint];
+
+            return $this->classification($override['classification'], 'finding_override', $override['reason']);
         }
 
         if ($this->containsAnyMarker($line, $classifier['line_table_driven_markers'])) {
-            return 'table_driven_reference';
+            return $this->classification('table_driven_reference', 'line_marker');
         }
 
         if ($fileContext === 'table_driven_policy_owner') {
-            return 'table_driven_reference';
+            return $this->classification('table_driven_reference', 'file_marker');
         }
 
-        return 'runtime_policy_candidate';
+        if ($this->matchesAnyRegex($line, $classifier['line_observability_reference_regexes'])) {
+            return $this->classification('observability_reference', 'observability_regex');
+        }
+
+        if ($this->matchesAnyRegex($line, $classifier['line_safety_rail_regexes'])) {
+            return $this->classification('intentional_safety_rail', 'safety_rail_regex');
+        }
+
+        if ($this->matchesAnyRegex($line, $classifier['line_runtime_value_reference_regexes'])) {
+            return $this->classification('runtime_value_reference', 'runtime_value_regex');
+        }
+
+        if ($classifier['line_policy_definition_regexes'] !== []
+            && ! $this->matchesAnyRegex($line, $classifier['line_policy_definition_regexes'])) {
+            return $this->classification('runtime_value_reference', 'non_definition_context');
+        }
+
+        return $this->classification('runtime_policy_candidate', 'unclassified_match');
     }
 
     /**
-     * @param  array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>}  $classifier
+     * @param  array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>,line_safety_rail_regexes:list<string>,line_observability_reference_regexes:list<string>,line_runtime_value_reference_regexes:list<string>,line_policy_definition_regexes:list<string>}  $classifier
      */
     private function filePolicyContext(string $relativePath, string $contents, array $classifier): ?string
     {
         if (str_starts_with($relativePath, 'tests/')
             || str_starts_with($relativePath, 'database/migrations/')
+            || str_starts_with($relativePath, 'database/seeders/')
             || str_starts_with($relativePath, 'config/')) {
             return null;
         }
@@ -413,7 +509,7 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
     }
 
     /**
-     * @return array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>}
+     * @return array{line_table_driven_markers:list<string>,file_table_policy_markers:list<string>,line_safety_rail_regexes:list<string>,line_observability_reference_regexes:list<string>,line_runtime_value_reference_regexes:list<string>,line_policy_definition_regexes:list<string>,finding_overrides:array<string,array{classification:string,reason:string}>}
      */
     private function classifier(mixed $classifier): array
     {
@@ -421,13 +517,134 @@ class OpsRuntimePolicyLeakAuditCommand extends Command
             return [
                 'line_table_driven_markers' => [],
                 'file_table_policy_markers' => [],
+                'line_safety_rail_regexes' => [],
+                'line_observability_reference_regexes' => [],
+                'line_runtime_value_reference_regexes' => [],
+                'line_policy_definition_regexes' => [],
+                'finding_overrides' => [],
             ];
         }
 
         return [
             'line_table_driven_markers' => $this->stringList($classifier['line_table_driven_markers'] ?? []),
             'file_table_policy_markers' => $this->stringList($classifier['file_table_policy_markers'] ?? []),
+            'line_safety_rail_regexes' => $this->validRegexList($classifier['line_safety_rail_regexes'] ?? []),
+            'line_observability_reference_regexes' => $this->validRegexList(
+                $classifier['line_observability_reference_regexes'] ?? []
+            ),
+            'line_runtime_value_reference_regexes' => $this->validRegexList(
+                $classifier['line_runtime_value_reference_regexes'] ?? []
+            ),
+            'line_policy_definition_regexes' => $this->validRegexList(
+                $classifier['line_policy_definition_regexes'] ?? []
+            ),
+            'finding_overrides' => is_array($classifier['finding_overrides'] ?? null)
+                ? $classifier['finding_overrides']
+                : [],
         ];
+    }
+
+    /**
+     * @return array{classification:string,source:string,reason:?string}
+     */
+    private function classification(string $classification, string $source, ?string $reason = null): array
+    {
+        return [
+            'classification' => $classification,
+            'source' => $source,
+            'reason' => $reason,
+        ];
+    }
+
+    /**
+     * Stable across checkout roots and line insertion. A changed statement or
+     * nearest code context intentionally requires fresh operator triage.
+     *
+     * @param  list<string>  $lines
+     */
+    private function findingFingerprint(string $relativePath, string $patternName, array $lines, int $index): string
+    {
+        return hash('sha256', implode("\n", [
+            self::FINGERPRINT_SCHEMA,
+            $relativePath,
+            $patternName,
+            $this->normalizeFingerprintLine($lines[$index] ?? ''),
+            $this->nearestFingerprintContext($lines, $index, -1),
+            $this->nearestFingerprintContext($lines, $index, 1),
+        ]));
+    }
+
+    /** @param list<string> $lines */
+    private function nearestFingerprintContext(array $lines, int $index, int $direction): string
+    {
+        for ($cursor = $index + $direction; isset($lines[$cursor]); $cursor += $direction) {
+            $candidate = $this->normalizeFingerprintLine($lines[$cursor]);
+            if ($candidate !== '' && ! $this->isCommentOnlyLine($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    private function normalizeFingerprintLine(string $line): string
+    {
+        return trim((string) preg_replace('/\s+/', ' ', trim($line)));
+    }
+
+    /**
+     * @return array<string,array{classification:string,reason:string}>|null
+     */
+    private function findingOverrides(mixed $overrides): ?array
+    {
+        if (! is_array($overrides)) {
+            return null;
+        }
+
+        $normalized = [];
+        foreach ($overrides as $fingerprint => $override) {
+            if (! is_string($fingerprint)
+                || preg_match('/^[a-f0-9]{64}$/', $fingerprint) !== 1
+                || ! is_array($override)) {
+                return null;
+            }
+
+            $classification = $this->cleanCode($override['classification'] ?? null);
+            $reason = is_string($override['reason'] ?? null) ? trim($override['reason']) : '';
+            if (! in_array($classification, self::OVERRIDE_CLASSIFICATIONS, true) || $reason === '') {
+                return null;
+            }
+
+            $normalized[$fingerprint] = [
+                'classification' => $classification,
+                'reason' => $reason,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param  list<string>  $regexes
+     */
+    private function matchesAnyRegex(string $value, array $regexes): bool
+    {
+        foreach ($regexes as $regex) {
+            if (@preg_match($regex, $value) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @return list<string> */
+    private function validRegexList(mixed $values): array
+    {
+        return array_values(array_filter(
+            $this->stringList($values),
+            static fn (string $regex): bool => @preg_match($regex, '') !== false
+        ));
     }
 
     /**

@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Support\JoplinPaths;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -99,7 +100,10 @@ class JoplinYouTubeOrganizer
             $stats += [
                 'extra_folders_found' => 0,
                 'extra_folders_deleted' => 0,
+                'extra_subfolders_deleted' => 0,
                 'ai_categorized' => 0,
+                'source_tags_created' => 0,
+                'source_tags_added' => 0,
                 'per_source' => [],
             ];
         }
@@ -110,7 +114,7 @@ class JoplinYouTubeOrganizer
     /**
      * Run the full organization process
      */
-    public function organize(bool $dryRun = false): array
+    public function organize(bool $dryRun = false, bool $deleteExactDuplicates = false): array
     {
         if (! $this->hasConfiguredWatchLaterFolder()) {
             $this->log('JOPLIN_WATCH_LATER_FOLDER_ID is not configured. Set it to the 32-character Joplin notebook ID before organizing Watch Later notes.', 'warning');
@@ -151,9 +155,9 @@ class JoplinYouTubeOrganizer
             $note = $this->parseNote($content);
             $note['filename'] = $filename;
 
-            if ($note['type'] == 2 && $note['parent_id'] === $this->watchLaterFolderId) {
+            if ($note['type'] == 2 && $note['parent_id'] === '' && array_key_exists($note['title'], $this->categories)) {
                 $existingSubfolders[$note['id']] = $note['title'];
-                $this->log("  Found existing subfolder: {$note['title']}");
+                $this->log("  Found existing topic notebook: {$note['title']}");
             } elseif ($note['type'] == 1 && $note['parent_id'] === $this->watchLaterFolderId) {
                 $watchLaterNotes[] = $note;
             }
@@ -170,7 +174,7 @@ class JoplinYouTubeOrganizer
         $this->log("Found {$stats['duplicates_found']} duplicates, keeping ".count($uniqueNotes).' unique notes');
 
         // Step 4: Delete duplicates
-        if (count($duplicates) > 0 && ! $dryRun) {
+        if ($deleteExactDuplicates && count($duplicates) > 0 && ! $dryRun) {
             $this->log("\nStep 4: Deleting duplicates...");
             foreach ($duplicates as $note) {
                 $success = $this->deleteFile($this->joplinPath.$note['filename']);
@@ -182,13 +186,17 @@ class JoplinYouTubeOrganizer
                 }
             }
             $this->log("Deleted {$stats['duplicates_deleted']} duplicates");
-        } elseif ($dryRun && count($duplicates) > 0) {
+        } elseif ($deleteExactDuplicates && $dryRun && count($duplicates) > 0) {
             $this->log("\nStep 4: Would delete {$stats['duplicates_found']} duplicates (dry run)");
         }
 
+        $notesToOrganize = $deleteExactDuplicates
+            ? $uniqueNotes
+            : array_merge($uniqueNotes, $duplicates);
+
         // Step 5: Categorize notes
         $this->log("\nStep 5: Categorizing notes...");
-        $categorizedNotes = $this->categorizeNotes($uniqueNotes);
+        $categorizedNotes = $this->categorizeNotes($notesToOrganize);
         $this->log('Categories found:');
         foreach ($categorizedNotes as $category => $notes) {
             $this->log("  {$category}: ".count($notes).' notes');
@@ -204,7 +212,7 @@ class JoplinYouTubeOrganizer
                 $categoryToFolderId[$category] = $existingId;
                 $this->log("  Using existing: {$category}");
             } elseif (! $dryRun) {
-                $newId = $this->createNotebook($category, $this->watchLaterFolderId);
+                $newId = $this->createNotebook($category, '');
                 if ($newId) {
                     $categoryToFolderId[$category] = $newId;
                     $stats['categories_created']++;
@@ -257,41 +265,40 @@ class JoplinYouTubeOrganizer
     }
 
     /**
-     * Find duplicates by video ID or normalized title
+     * Find duplicates only by exact YouTube video ID.
+     *
+     * Normalized titles are intentionally not destructive evidence: different
+     * videos and operator-enriched notes can legitimately share a title.
      */
     protected function findDuplicates(array $notes): array
     {
-        $videoIds = [];
-        $titleMap = [];
+        $videoGroups = [];
         $duplicates = [];
         $uniqueNotes = [];
 
         foreach ($notes as $note) {
             $videoId = $this->extractVideoId($note);
-            $normalizedTitle = $this->normalizeTitle($note['title']);
-            $isDuplicate = false;
 
-            if ($videoId) {
-                if (isset($videoIds[$videoId])) {
-                    $isDuplicate = true;
-                } else {
-                    $videoIds[$videoId] = $note;
-                }
-            }
-
-            if (! $isDuplicate && $normalizedTitle) {
-                if (isset($titleMap[$normalizedTitle])) {
-                    $isDuplicate = true;
-                } else {
-                    $titleMap[$normalizedTitle] = $note;
-                }
-            }
-
-            if ($isDuplicate) {
-                $duplicates[] = $note;
-            } else {
+            if (! $videoId) {
                 $uniqueNotes[] = $note;
+
+                continue;
             }
+
+            $videoGroups[$videoId][] = $note;
+        }
+
+        foreach ($videoGroups as $group) {
+            usort($group, function (array $left, array $right): int {
+                $lengthComparison = strlen($right['content'] ?? '') <=> strlen($left['content'] ?? '');
+
+                return $lengthComparison !== 0
+                    ? $lengthComparison
+                    : strcmp((string) ($left['id'] ?? ''), (string) ($right['id'] ?? ''));
+            });
+
+            $uniqueNotes[] = array_shift($group);
+            array_push($duplicates, ...$group);
         }
 
         return [$uniqueNotes, $duplicates];
@@ -655,8 +662,12 @@ class JoplinYouTubeOrganizer
      * Consolidate ALL "YouTube - Watch Later" notebooks into the primary one.
      * Finds duplicate notebooks, collects all notes, dedup, categorize (keyword + optional AI), move, cleanup.
      */
-    public function organizeAll(bool $dryRun = false, bool $useAI = false): array
-    {
+    public function organizeAll(
+        bool $dryRun = false,
+        bool $useAI = false,
+        bool $deleteExactDuplicates = false,
+        bool $deleteEmptyNotebooks = false
+    ): array {
         if (! $this->hasConfiguredWatchLaterFolder()) {
             $this->log('JOPLIN_WATCH_LATER_FOLDER_ID is not configured. Set it to the 32-character Joplin notebook ID before consolidating Watch Later notes.', 'warning');
 
@@ -667,11 +678,14 @@ class JoplinYouTubeOrganizer
             'total_notes' => 0,
             'extra_folders_found' => 0,
             'extra_folders_deleted' => 0,
+            'extra_subfolders_deleted' => 0,
             'duplicates_found' => 0,
             'duplicates_deleted' => 0,
             'categories_created' => 0,
             'notes_moved' => 0,
             'ai_categorized' => 0,
+            'source_tags_created' => 0,
+            'source_tags_added' => 0,
             'failed_operations' => 0,
             'dry_run' => $dryRun,
             'per_source' => [],
@@ -696,11 +710,16 @@ class JoplinYouTubeOrganizer
         $watchLaterFolderIds = [];
         $allParsedNotes = [];
         $existingSubfolders = [];
+        $notebooksById = [];
 
         foreach ($allContents as $filename => $content) {
             $note = $this->parseNote($content);
             $note['filename'] = $filename;
             $allParsedNotes[$filename] = $note;
+
+            if ($note['type'] == 2) {
+                $notebooksById[$note['id']] = $note;
+            }
 
             // Find all notebooks named "YouTube - Watch Later"
             if ($note['type'] == 2 && stripos($note['title'], 'YouTube - Watch Later') !== false) {
@@ -712,26 +731,30 @@ class JoplinYouTubeOrganizer
                 }
             }
 
-            // Track existing subfolders of primary notebook
-            if ($note['type'] == 2 && $note['parent_id'] === $this->watchLaterFolderId) {
+            // Topic notebooks are root-level. The Watch Later notebook is only
+            // an ingestion inbox and must not become a source-first hierarchy.
+            if ($note['type'] == 2 && $note['parent_id'] === '' && array_key_exists($note['title'], $this->categories)) {
                 $existingSubfolders[$note['id']] = $note['title'];
-                $this->log("  Subfolder: {$note['title']}");
+                $this->log("  Topic notebook: {$note['title']}");
             }
         }
 
         $extraFolderIds = array_diff(array_keys($watchLaterFolderIds), [$this->watchLaterFolderId]);
+        $extraDescendants = $this->descendantNotebookIds($extraFolderIds, $notebooksById);
         $stats['extra_folders_found'] = count($extraFolderIds);
         $this->log("\nFound ".count($watchLaterFolderIds).' Watch Later notebooks ('.count($extraFolderIds).' extras)');
 
         // Step 3: Collect notes from ALL Watch Later notebooks (primary + extras)
         $this->log("\nStep 3: Collecting notes from all Watch Later notebooks...");
         $allWatchLaterNotes = [];
-        $allTargetFolderIds = array_merge([$this->watchLaterFolderId], $extraFolderIds);
+        $allTargetFolderIds = array_merge([$this->watchLaterFolderId], $extraFolderIds, $extraDescendants);
+        $extraSourceRoots = $this->sourceRootByFolderId($extraFolderIds, $notebooksById);
 
         foreach ($allParsedNotes as $filename => $note) {
             if ($note['type'] == 1 && in_array($note['parent_id'], $allTargetFolderIds)) {
                 $allWatchLaterNotes[] = $note;
-                $source = $note['parent_id'] === $this->watchLaterFolderId ? 'primary' : 'extra:'.substr($note['parent_id'], 0, 8);
+                $sourceRoot = $extraSourceRoots[$note['parent_id']] ?? $note['parent_id'];
+                $source = $note['parent_id'] === $this->watchLaterFolderId ? 'primary' : 'extra:'.substr($sourceRoot, 0, 8);
                 if (! isset($stats['per_source'][$source])) {
                     $stats['per_source'][$source] = 0;
                 }
@@ -749,13 +772,13 @@ class JoplinYouTubeOrganizer
         $this->log("\nStep 4: Identifying duplicates across all folders...");
         [$uniqueNotes, $duplicates] = $this->findDuplicates($allWatchLaterNotes);
         $stats['duplicates_found'] = count($duplicates);
-        $this->log("Found {$stats['duplicates_found']} duplicates, keeping ".count($uniqueNotes).' unique notes');
+        $this->log("Found {$stats['duplicates_found']} exact-video duplicates; automatic deletion is ".($deleteExactDuplicates ? 'enabled' : 'disabled'));
 
         // Track filenames of notes that were moved or deleted, so step 9 can detect truly empty folders
         $processedFilenames = [];
 
         // Step 5: Delete duplicates
-        if (count($duplicates) > 0) {
+        if ($deleteExactDuplicates && count($duplicates) > 0) {
             $this->log("\nStep 5: ".($dryRun ? 'Would delete' : 'Deleting').' duplicates...');
             foreach ($duplicates as $note) {
                 if ($dryRun) {
@@ -778,9 +801,13 @@ class JoplinYouTubeOrganizer
             }
         }
 
+        $notesToOrganize = $deleteExactDuplicates
+            ? $uniqueNotes
+            : array_merge($uniqueNotes, $duplicates);
+
         // Step 6: Categorize notes (keyword + optional AI)
         $this->log("\nStep 6: Categorizing notes...");
-        $categorizedNotes = $this->categorizeNotes($uniqueNotes);
+        $categorizedNotes = $this->categorizeNotes($notesToOrganize);
 
         // AI fallback for uncategorized notes
         if ($useAI && isset($categorizedNotes['Uncategorized']) && count($categorizedNotes['Uncategorized']) > 0) {
@@ -814,7 +841,7 @@ class JoplinYouTubeOrganizer
                 $categoryToFolderId[$category] = $existingId;
                 $this->log("  Using existing: {$category}");
             } elseif (! $dryRun) {
-                $newId = $this->createNotebook($category, $this->watchLaterFolderId);
+                $newId = $this->createNotebook($category, '');
                 if ($newId) {
                     $categoryToFolderId[$category] = $newId;
                     $stats['categories_created']++;
@@ -863,32 +890,68 @@ class JoplinYouTubeOrganizer
             }
         }
 
-        // Step 9: Delete empty extra Watch Later folders
-        $this->log("\nStep 9: Cleaning up empty extra folders...");
-        foreach ($extraFolderIds as $extraId) {
-            // Check if any notes still reference this folder that weren't moved/deleted
+        $youtubeTags = [];
+        foreach ($notesToOrganize as $note) {
+            $youtubeTags[$note['id']] = ['source-youtube'];
+        }
+        if ($youtubeTags !== []) {
+            $this->applySourceTags($youtubeTags, $dryRun, $stats);
+        }
+
+        // Empty notebook deletion is never part of the scheduled default.
+        $this->log("\nStep 9: Empty-notebook cleanup is ".($deleteEmptyNotebooks ? 'enabled' : 'disabled'));
+        foreach ($deleteEmptyNotebooks ? $extraFolderIds : [] as $extraId) {
+            $subtreeFolderIds = array_merge([$extraId], $this->descendantNotebookIds([$extraId], $notebooksById));
+
+            // Check the full subtree, not only notes directly under the duplicate root.
             $hasNotes = false;
             foreach ($allParsedNotes as $note) {
-                if ($note['type'] == 1 && $note['parent_id'] === $extraId && ! isset($processedFilenames[$note['filename']])) {
+                if ($note['type'] == 1 && in_array($note['parent_id'], $subtreeFolderIds, true) && ! isset($processedFilenames[$note['filename']])) {
                     $hasNotes = true;
                     break;
                 }
             }
 
             $extraNote = $watchLaterFolderIds[$extraId];
-            if ($dryRun) {
-                $this->log("  Would delete folder: {$extraNote['title']} (ID: {$extraId})".($hasNotes ? ' [still has notes - skipped in live run]' : ''));
-            } elseif (! $hasNotes) {
-                $success = $this->deleteFile($this->joplinPath.$extraNote['filename']);
-                if ($success) {
-                    $stats['extra_folders_deleted']++;
-                    $this->log("  <info>Deleted:</info> {$extraNote['title']}");
+            if ($hasNotes) {
+                $this->log("  Skipped (still has notes): {$extraNote['title']}");
+
+                continue;
+            }
+
+            $descendants = array_values(array_diff($subtreeFolderIds, [$extraId]));
+            usort($descendants, fn (string $left, string $right) => $this->notebookDepth($right, $notebooksById) <=> $this->notebookDepth($left, $notebooksById));
+
+            $descendantDeleteFailed = false;
+            foreach ($descendants as $descendantId) {
+                $descendant = $notebooksById[$descendantId] ?? null;
+                if (! $descendant) {
+                    continue;
+                }
+
+                if ($dryRun) {
+                    $this->log("  Would delete empty subfolder: {$descendant['title']} (ID: {$descendantId})");
+
+                    continue;
+                }
+
+                if ($this->deleteFile($this->joplinPath.$descendant['filename'])) {
+                    $stats['extra_subfolders_deleted']++;
                 } else {
                     $stats['failed_operations']++;
-                    $this->log("  <error>FAILED:</error> {$extraNote['title']}");
+                    $descendantDeleteFailed = true;
+                    $this->log("  <error>FAILED:</error> {$descendant['title']}");
                 }
-            } else {
-                $this->log("  Skipped (still has notes): {$extraNote['title']}");
+            }
+
+            if ($dryRun) {
+                $this->log("  Would delete folder: {$extraNote['title']} (ID: {$extraId})");
+            } elseif (! $descendantDeleteFailed && $this->deleteFile($this->joplinPath.$extraNote['filename'])) {
+                $stats['extra_folders_deleted']++;
+                $this->log("  <info>Deleted:</info> {$extraNote['title']}");
+            } elseif (! $descendantDeleteFailed) {
+                $stats['failed_operations']++;
+                $this->log("  <error>FAILED:</error> {$extraNote['title']}");
             }
         }
 
@@ -896,6 +959,7 @@ class JoplinYouTubeOrganizer
         $this->log("Total notes processed: {$stats['total_notes']}");
         $this->log("Extra folders found: {$stats['extra_folders_found']}");
         $this->log("Extra folders deleted: {$stats['extra_folders_deleted']}");
+        $this->log("Extra subfolders deleted: {$stats['extra_subfolders_deleted']}");
         $this->log("Duplicates removed: {$stats['duplicates_deleted']}");
         $this->log("AI categorized: {$stats['ai_categorized']}");
         $this->log("Notes moved: {$stats['notes_moved']}");
@@ -903,6 +967,414 @@ class JoplinYouTubeOrganizer
         $this->log("Failed operations: {$stats['failed_operations']}");
 
         return $stats;
+    }
+
+    /**
+     * Restructure the complete library into the operator-approved topic roots.
+     * Notes and notebooks are moved only; nothing is deleted.
+     */
+    public function organizeLibraryToTopics(bool $dryRun = true, bool $applySourceTags = true): array
+    {
+        $topics = (array) config('joplin_topics.notebooks', []);
+        $legacyMap = (array) config('joplin_topics.legacy_notebooks', []);
+        $sourceNotebookMap = (array) config('joplin_topics.source_notebooks', []);
+        $stats = [
+            'total_notes' => 0,
+            'topics_created' => 0,
+            'notes_moved' => 0,
+            'notebooks_archived' => 0,
+            'source_tags_created' => 0,
+            'source_tags_added' => 0,
+            'failed_operations' => 0,
+            'dry_run' => $dryRun,
+            'by_topic' => array_fill_keys($topics, 0),
+        ];
+
+        $files = $this->listDirectory($this->joplinPath);
+        $contents = $this->getFileContentsBatch($files, 50);
+        $items = [];
+        $notebooks = [];
+
+        foreach ($contents as $filename => $content) {
+            $item = $this->parseNote($content);
+            $item['filename'] = $filename;
+            $items[$filename] = $item;
+            if ($item['type'] === 2) {
+                $notebooks[$item['id']] = $item;
+            }
+        }
+
+        $topicIds = [];
+        foreach ($notebooks as $notebook) {
+            if ($notebook['parent_id'] === '' && in_array($notebook['title'], $topics, true)) {
+                $topicIds[$notebook['title']] = $notebook['id'];
+            }
+        }
+
+        foreach ($topics as $topic) {
+            if (isset($topicIds[$topic])) {
+                continue;
+            }
+
+            if ($dryRun) {
+                $topicIds[$topic] = 'DRY_RUN_'.md5($topic);
+                $stats['topics_created']++;
+
+                continue;
+            }
+
+            $id = $this->createNotebook($topic, '');
+            if ($id) {
+                $topicIds[$topic] = $id;
+                $stats['topics_created']++;
+            } else {
+                $stats['failed_operations']++;
+            }
+        }
+
+        $noteTags = [];
+        foreach ($items as $item) {
+            if ($item['type'] !== 1) {
+                continue;
+            }
+
+            $stats['total_notes']++;
+            $ancestors = $this->notebookAncestorTitles($item['parent_id'], $notebooks);
+            $topic = $this->libraryTopicForNote($item, $ancestors, $legacyMap, $topics);
+            $stats['by_topic'][$topic] = ($stats['by_topic'][$topic] ?? 0) + 1;
+            $targetId = $topicIds[$topic] ?? $topicIds['Inbox'] ?? null;
+
+            if ($targetId && $item['parent_id'] !== $targetId) {
+                if ($dryRun) {
+                    $stats['notes_moved']++;
+                } else {
+                    $updated = $this->updateNoteParent($item, $targetId);
+                    if ($this->putFileContent($this->joplinPath.$item['filename'], $updated)) {
+                        $stats['notes_moved']++;
+                    } else {
+                        $stats['failed_operations']++;
+                    }
+                }
+            }
+
+            if ($applySourceTags) {
+                $tags = $this->sourceTagsForNote($item, $ancestors, $sourceNotebookMap);
+                if ($tags !== []) {
+                    $noteTags[$item['id']] = $tags;
+                }
+            }
+        }
+
+        $archiveId = $topicIds['Archive'] ?? null;
+        if ($archiveId) {
+            foreach ($notebooks as $notebook) {
+                if ($notebook['parent_id'] !== '' || in_array($notebook['id'], $topicIds, true)) {
+                    continue;
+                }
+
+                if ($dryRun) {
+                    $stats['notebooks_archived']++;
+
+                    continue;
+                }
+
+                $updated = $this->updateNoteParent($notebook, $archiveId);
+                if ($this->putFileContent($this->joplinPath.$notebook['filename'], $updated)) {
+                    $stats['notebooks_archived']++;
+                } else {
+                    $stats['failed_operations']++;
+                }
+            }
+        }
+
+        if ($applySourceTags && $noteTags !== []) {
+            $this->applySourceTags($noteTags, $dryRun, $stats);
+        }
+
+        return $stats;
+    }
+
+    /**
+     * Restore truncated Joplin transcript sections from stored source rows.
+     */
+    public function repairStoredTranscripts(bool $dryRun = true, float $minimumRatio = 0.8): array
+    {
+        $stored = DB::table('youtube_transcripts')
+            ->whereNotNull('content')
+            ->where('content', '<>', '')
+            ->pluck('content', 'video_id')
+            ->map(fn ($content) => trim((string) $content))
+            ->all();
+
+        $stats = [
+            'stored_transcripts' => count($stored),
+            'youtube_notes' => 0,
+            'matched_notes' => 0,
+            'repair_candidates' => 0,
+            'repaired' => 0,
+            'unchanged' => 0,
+            'unrepairable' => 0,
+            'failed_operations' => 0,
+            'dry_run' => $dryRun,
+        ];
+
+        $files = $this->listDirectory($this->joplinPath);
+        foreach ($this->getFileContentsBatch($files, 50) as $filename => $content) {
+            $note = $this->parseNote($content);
+            if ($note['type'] !== 1 || ! ($videoId = $this->extractVideoId($note))) {
+                continue;
+            }
+
+            $stats['youtube_notes']++;
+            if (! isset($stored[$videoId])) {
+                continue;
+            }
+
+            $stats['matched_notes']++;
+            $current = $this->extractTranscriptBody($note['raw']);
+            if ($current === null) {
+                $stats['unrepairable']++;
+
+                continue;
+            }
+
+            $source = $stored[$videoId];
+            $ratio = strlen($source) > 0 ? strlen(trim($current)) / strlen($source) : 1.0;
+            $placeholder = trim($current) === '' || str_contains(strtolower($current), 'transcript not available');
+            if (! $placeholder && $ratio >= $minimumRatio) {
+                $stats['unchanged']++;
+
+                continue;
+            }
+
+            $stats['repair_candidates']++;
+            if ($dryRun) {
+                continue;
+            }
+
+            $updated = $this->replaceTranscriptBody($note['raw'], $source);
+            if ($updated !== null && $this->putFileContent($this->joplinPath.$filename, $updated)) {
+                $stats['repaired']++;
+            } else {
+                $stats['failed_operations']++;
+            }
+        }
+
+        return $stats;
+    }
+
+    /** @return array<int, string> */
+    private function notebookAncestorTitles(string $parentId, array $notebooks): array
+    {
+        $titles = [];
+        $seen = [];
+        while ($parentId !== '' && isset($notebooks[$parentId]) && ! isset($seen[$parentId])) {
+            $seen[$parentId] = true;
+            $titles[] = strtolower(trim($notebooks[$parentId]['title']));
+            $parentId = $notebooks[$parentId]['parent_id'];
+        }
+
+        return $titles;
+    }
+
+    private function libraryTopicForNote(array $note, array $ancestors, array $legacyMap, array $topics): string
+    {
+        $broadFallback = null;
+        foreach ($ancestors as $ancestor) {
+            if (isset($legacyMap[$ancestor])) {
+                if ($legacyMap[$ancestor] === 'Inbox') {
+                    $broadFallback = 'Inbox';
+                } else {
+                    return $legacyMap[$ancestor];
+                }
+            }
+
+            foreach ($topics as $topic) {
+                if (strtolower($topic) === $ancestor) {
+                    return $topic;
+                }
+            }
+        }
+
+        $keywordTopic = $this->categorizeNote($note);
+
+        return $keywordTopic === 'Uncategorized'
+            ? ($broadFallback ?? 'Inbox')
+            : $keywordTopic;
+    }
+
+    /** @return array<int, string> */
+    private function sourceTagsForNote(array $note, array $ancestors, array $sourceNotebookMap): array
+    {
+        $tags = [];
+        if ($this->extractVideoId($note)) {
+            $tags[] = 'source-youtube';
+        }
+
+        foreach ($ancestors as $ancestor) {
+            if (isset($sourceNotebookMap[$ancestor])) {
+                $tags[] = $sourceNotebookMap[$ancestor];
+            }
+        }
+
+        return array_values(array_unique($tags));
+    }
+
+    private function applySourceTags(array $noteTags, bool $dryRun, array &$stats): void
+    {
+        $tagService = app(JoplinTagsService::class);
+        $tagIds = [];
+        foreach ($tagService->getAllTags() as $tag) {
+            $tagIds[strtolower($tag['title'])] = $tag['id'];
+        }
+
+        $required = array_values(array_unique(array_merge(...array_values($noteTags))));
+        foreach ($required as $title) {
+            if (isset($tagIds[strtolower($title)])) {
+                continue;
+            }
+
+            if ($dryRun) {
+                $tagIds[strtolower($title)] = 'DRY_RUN_'.md5($title);
+                $stats['source_tags_created']++;
+
+                continue;
+            }
+
+            $created = $tagService->createTag($title);
+            $tagIds[strtolower($title)] = $created['tag_id'];
+            $stats['source_tags_created']++;
+        }
+
+        $existing = [];
+        foreach ($tagService->getAllTagRelations() as $relation) {
+            $existing[$relation['note_id'].'|'.$relation['tag_id']] = true;
+        }
+
+        foreach ($noteTags as $noteId => $titles) {
+            foreach ($titles as $title) {
+                $tagId = $tagIds[strtolower($title)];
+                if (isset($existing[$noteId.'|'.$tagId])) {
+                    continue;
+                }
+
+                if ($dryRun) {
+                    $stats['source_tags_added']++;
+
+                    continue;
+                }
+
+                $tagService->addTagToNote($noteId, $tagId);
+                $stats['source_tags_added']++;
+            }
+        }
+    }
+
+    private function extractTranscriptBody(string $raw): ?string
+    {
+        if (! preg_match('/## Full Transcript.*?- Language:[^\r\n]*\R\R(.*?)(?=\R\R---\R\R## Metadata)/s', $raw, $matches)) {
+            return null;
+        }
+
+        return $matches[1];
+    }
+
+    private function replaceTranscriptBody(string $raw, string $source): ?string
+    {
+        $updated = preg_replace_callback(
+            '/(## Full Transcript.*?- Language:[^\r\n]*\R\R)(.*?)(\R\R---\R\R## Metadata)/s',
+            fn (array $matches) => $matches[1].$source.$matches[3],
+            $raw,
+            1,
+            $count
+        );
+
+        if ($updated === null || $count !== 1) {
+            return null;
+        }
+
+        return preg_replace('/^updated_time:\s*.*$/m', 'updated_time: '.date('Y-m-d\TH:i:s.v\Z'), $updated) ?? $updated;
+    }
+
+    /**
+     * Return every notebook nested beneath the supplied roots.
+     *
+     * @param  array<int, string>  $rootIds
+     * @param  array<string, array>  $notebooksById
+     * @return array<int, string>
+     */
+    protected function descendantNotebookIds(array $rootIds, array $notebooksById): array
+    {
+        $childrenByParent = [];
+        foreach ($notebooksById as $notebook) {
+            $childrenByParent[$notebook['parent_id']][] = $notebook['id'];
+        }
+
+        $descendants = [];
+        $pending = array_values($rootIds);
+        while ($pending !== []) {
+            $parentId = array_shift($pending);
+            foreach ($childrenByParent[$parentId] ?? [] as $childId) {
+                if (isset($descendants[$childId])) {
+                    continue;
+                }
+
+                $descendants[$childId] = true;
+                $pending[] = $childId;
+            }
+        }
+
+        return array_keys($descendants);
+    }
+
+    /**
+     * Map each duplicate-root descendant back to the duplicate root that owns it.
+     *
+     * @param  array<int, string>  $rootIds
+     * @param  array<string, array>  $notebooksById
+     * @return array<string, string>
+     */
+    protected function sourceRootByFolderId(array $rootIds, array $notebooksById): array
+    {
+        $rootLookup = array_fill_keys($rootIds, true);
+        $sources = [];
+
+        foreach ($rootIds as $rootId) {
+            $sources[$rootId] = $rootId;
+        }
+
+        foreach ($notebooksById as $notebookId => $notebook) {
+            $currentId = $notebookId;
+            $seen = [];
+            while (isset($notebooksById[$currentId]) && ! isset($seen[$currentId])) {
+                $seen[$currentId] = true;
+                if (isset($rootLookup[$currentId])) {
+                    $sources[$notebookId] = $currentId;
+                    break;
+                }
+                $currentId = $notebooksById[$currentId]['parent_id'];
+            }
+        }
+
+        return $sources;
+    }
+
+    /**
+     * Calculate notebook depth for bottom-up empty subtree deletion.
+     *
+     * @param  array<string, array>  $notebooksById
+     */
+    protected function notebookDepth(string $notebookId, array $notebooksById): int
+    {
+        $depth = 0;
+        $seen = [];
+        while (isset($notebooksById[$notebookId]) && ! isset($seen[$notebookId])) {
+            $seen[$notebookId] = true;
+            $depth++;
+            $notebookId = $notebooksById[$notebookId]['parent_id'];
+        }
+
+        return $depth;
     }
 
     /**
@@ -938,14 +1410,14 @@ class JoplinYouTubeOrganizer
                 }
             }
 
-            return 'Uncategorized';
+            return 'Inbox';
         } catch (\Exception $e) {
             Log::warning('[JoplinYouTubeOrganizer] AI categorization failed', [
                 'note_title' => $note['title'],
                 'error' => $e->getMessage(),
             ]);
 
-            return 'Uncategorized';
+            return 'Inbox';
         }
     }
 

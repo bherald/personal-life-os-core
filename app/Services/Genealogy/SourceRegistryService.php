@@ -28,9 +28,11 @@ class SourceRegistryService
         'ellis_island_search' => true,
         'freedmens_bureau_search' => true,
         'german_church_records_search' => true,
+        'internet_archive_search' => true,
         'nara_search' => true,
         'newspaper_search' => true,
         'newspaper_search_obituaries' => true,
+        'europeana_search' => true,
         'wikitree_search' => true,
     ];
 
@@ -233,10 +235,11 @@ class SourceRegistryService
     }
 
     /**
-     * Validate active registry rows against the current public/manual source posture.
+     * Validate active registry rows against the current public/provider posture.
      *
-     * This is intentionally read-only: manual-only sources remain visible as
-     * operator research targets, but they must not advertise an automated tool.
+     * This is intentionally read-only: provider-specific sources remain visible
+     * as operator research targets. Strict/public mode can require them not to
+     * advertise an automated tool unless a reviewed private adapter owns it.
      *
      * @return array{valid: bool, summary: array{checked: int, errors: int}, errors: array<int, array<string, mixed>>}
      */
@@ -274,8 +277,8 @@ class SourceRegistryService
                 continue;
             }
 
-            if ($toolName !== null && $this->isManualOnlyHost($domain)) {
-                $errors[] = $this->postureError($row, $domain, $toolName, 'manual_only_domain_has_tool');
+            if ($toolName !== null && $this->isProviderSpecificHost($domain)) {
+                $errors[] = $this->postureError($row, $domain, $toolName, 'provider_specific_domain_has_tool_without_private_adapter');
 
                 continue;
             }
@@ -335,13 +338,17 @@ class SourceRegistryService
         return is_string($host) && trim($host) !== '' ? strtolower(trim($host)) : null;
     }
 
-    private function isManualOnlyHost(?string $host): bool
+    private function isProviderSpecificHost(?string $host): bool
     {
+        if (! $this->shouldEnforceProviderSpecificDomains()) {
+            return false;
+        }
+
         if ($host === null || $host === '') {
             return false;
         }
 
-        foreach ((array) config('scraping.manual_only_domains', []) as $domain) {
+        foreach ((array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', [])) as $domain) {
             $domain = $this->nullableString($domain);
             if ($domain === null) {
                 continue;
@@ -354,6 +361,11 @@ class SourceRegistryService
         }
 
         return false;
+    }
+
+    private function shouldEnforceProviderSpecificDomains(): bool
+    {
+        return (bool) config('scraping.enforce_provider_specific_domains', config('scraping.enforce_manual_only_domains', false));
     }
 
     private function isNonPublicArchiveHost(?string $host): bool

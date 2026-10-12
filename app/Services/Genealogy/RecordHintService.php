@@ -535,26 +535,52 @@ class RecordHintService
             return [];
         }
 
-        // Get existing external record IDs for this person
-        $existing = DB::select("
-            SELECT external_record_id, record_source
-            FROM genealogy_research_hints
-            WHERE person_id = ?
-              AND external_record_id IS NOT NULL
-        ", [$personId]);
+        $existing = DB::table('genealogy_research_hints')
+            ->where('person_id', $personId)
+            ->get(['tree_id', 'person_id', 'hint_type', 'external_record_id', 'record_source', 'record_url', 'source_info']);
 
         $existingKeys = [];
         foreach ($existing as $row) {
-            $existingKeys[$row->record_source . ':' . $row->external_record_id] = true;
+            $key = $this->recordHintIdentity((array) $row);
+            if ($key !== null) {
+                $existingKeys[$key] = true;
+            }
         }
 
-        return array_filter($hints, function ($hint) use ($existingKeys) {
-            if (empty($hint['external_record_id'])) {
+        return array_filter($hints, function ($hint) use (&$existingKeys) {
+            $key = $this->recordHintIdentity($hint);
+            if ($key === null) {
                 return true;
             }
-            $key = ($hint['record_source'] ?? '') . ':' . $hint['external_record_id'];
-            return !isset($existingKeys[$key]);
+            if (isset($existingKeys[$key])) {
+                return false;
+            }
+            $existingKeys[$key] = true;
+
+            return true;
         });
+    }
+
+    private function recordHintIdentity(array $hint): ?string
+    {
+        $sourceInfo = $hint['source_info'] ?? [];
+        if (is_string($sourceInfo)) {
+            $sourceInfo = json_decode($sourceInfo, true);
+        }
+        $sourceInfo = is_array($sourceInfo) ? $sourceInfo : [];
+        $provider = trim((string) ($hint['record_source'] ?? $sourceInfo['provider'] ?? ''));
+        if ($provider === '' || $provider === 'unknown' || empty($hint['tree_id']) || empty($hint['person_id'])) {
+            return null;
+        }
+        $recordId = trim((string) ($hint['external_record_id'] ?? ''));
+        $recordUrl = trim((string) ($hint['record_url'] ?? $sourceInfo['record_url'] ?? $sourceInfo['url'] ?? ''));
+        if ($recordId === '' && (! filter_var($recordUrl, FILTER_VALIDATE_URL)
+            || ! in_array(strtolower((string) parse_url($recordUrl, PHP_URL_SCHEME)), ['http', 'https'], true))) {
+            return null;
+        }
+
+        return json_encode([(int) $hint['tree_id'], (int) $hint['person_id'], $hint['hint_type'] ?? 'record_match',
+            $provider, $recordId !== '' ? 'id' : 'url', $recordId !== '' ? $recordId : $recordUrl], JSON_THROW_ON_ERROR);
     }
 
     /**

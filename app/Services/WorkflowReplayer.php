@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -17,13 +16,13 @@ class WorkflowReplayer
 
     public function __construct(?WorkflowEventService $eventService = null)
     {
-        $this->eventService = $eventService ?? new WorkflowEventService();
+        $this->eventService = $eventService ?? new WorkflowEventService;
     }
 
     /**
      * Rebuild execution state from events
      *
-     * @param string $executionId UUID for the workflow execution
+     * @param  string  $executionId  UUID for the workflow execution
      * @return ExecutionState Reconstructed state object
      */
     public function rebuild(string $executionId): ExecutionState
@@ -48,8 +47,8 @@ class WorkflowReplayer
     /**
      * Apply a single event to the state
      *
-     * @param ExecutionState $state State to modify
-     * @param object $event Event to apply
+     * @param  ExecutionState  $state  State to modify
+     * @param  object  $event  Event to apply
      */
     private function applyEvent(ExecutionState $state, object $event): void
     {
@@ -84,7 +83,7 @@ class WorkflowReplayer
     /**
      * Get resume point for a failed execution
      *
-     * @param string $executionId UUID for the workflow execution
+     * @param  string  $executionId  UUID for the workflow execution
      * @return array Resume info with last_completed_node, failed_node, and context
      */
     public function getResumePoint(string $executionId): array
@@ -92,31 +91,39 @@ class WorkflowReplayer
         $state = $this->rebuild($executionId);
 
         $lastCompleted = $this->eventService->getLastCompletedNode($executionId);
-        $lastFailed = $this->eventService->getLastFailedNode($executionId);
+        $failedNodeId = $state->getLastFailedNodeId();
+        $failedNode = $failedNodeId !== null ? $state->getFailedNode($failedNodeId) : null;
+        $hasApprovalSignal = $state->hasSignal('workflow_approval');
+        $hasApprovalResume = $state->hasSignal('workflow_approval', 'approve');
+        $approvalBlocksResume = $hasApprovalSignal && ! $hasApprovalResume;
 
         return [
             'execution_id' => $executionId,
             'last_completed_node' => $lastCompleted,
-            'failed_node' => $lastFailed?->node_id,
-            'failed_error' => $lastFailed?->payload['error'] ?? null,
+            'failed_node' => $failedNodeId,
+            'failed_error' => $failedNode['error'] ?? null,
             'completed_nodes' => $state->getCompletedNodes(),
             'context' => $state->getContext(),
             'variables' => $state->getVariables(),
-            'can_resume' => $lastFailed !== null,
+            'can_resume' => ! $approvalBlocksResume && ($failedNodeId !== null || $hasApprovalResume),
         ];
     }
 
     /**
      * Check if an execution can be resumed
      *
-     * @param string $executionId UUID for the workflow execution
+     * @param  string  $executionId  UUID for the workflow execution
      * @return bool True if execution has events and can potentially resume
      */
     public function canResume(string $executionId): bool
     {
-        $stats = $this->eventService->getExecutionStats($executionId);
-        return ($stats['total_events'] ?? 0) > 0
-            && ($stats['nodes_failed'] ?? 0) > 0;
+        $state = $this->rebuild($executionId);
+
+        $hasApprovalSignal = $state->hasSignal('workflow_approval');
+        $hasApprovalResume = $state->hasSignal('workflow_approval', 'approve');
+
+        return ! ($hasApprovalSignal && ! $hasApprovalResume)
+            && ($state->getFailedNodes() !== [] || $hasApprovalResume);
     }
 }
 
@@ -128,12 +135,19 @@ class WorkflowReplayer
 class ExecutionState
 {
     private string $executionId;
+
     private array $completedNodes = [];
+
     private array $failedNodes = [];
+
     private array $startedNodes = [];
+
     private array $nodeOutputs = [];
+
     private array $variables = [];
+
     private array $signals = [];
+
     private array $context = [];
 
     public function __construct(string $executionId)
@@ -158,6 +172,7 @@ class ExecutionState
 
     public function markNodeCompleted(string $nodeId, array $output): void
     {
+        unset($this->failedNodes[$nodeId]);
         $this->completedNodes[$nodeId] = [
             'completed_at' => now()->toISOString(),
         ];
@@ -168,6 +183,7 @@ class ExecutionState
 
     public function markNodeFailed(string $nodeId, string $error, ?string $exception = null): void
     {
+        unset($this->completedNodes[$nodeId], $this->nodeOutputs[$nodeId]);
         $this->failedNodes[$nodeId] = [
             'failed_at' => now()->toISOString(),
             'error' => $error,
@@ -197,6 +213,17 @@ class ExecutionState
     public function getFailedNodes(): array
     {
         return array_keys($this->failedNodes);
+    }
+
+    public function getLastFailedNodeId(): ?string
+    {
+        return $this->failedNodes === [] ? null : array_key_last($this->failedNodes);
+    }
+
+    /** @return array{failed_at: string, error: string, exception: string|null}|null */
+    public function getFailedNode(string $nodeId): ?array
+    {
+        return $this->failedNodes[$nodeId] ?? null;
     }
 
     public function getStartedNodes(): array
@@ -229,6 +256,20 @@ class ExecutionState
         return $this->signals;
     }
 
+    public function hasSignal(string $name, ?string $action = null): bool
+    {
+        for ($index = count($this->signals) - 1; $index >= 0; $index--) {
+            $signal = $this->signals[$index];
+            if ($signal['name'] !== $name) {
+                continue;
+            }
+
+            return $action === null || ($signal['data']['action'] ?? null) === $action;
+        }
+
+        return false;
+    }
+
     public function getContext(): array
     {
         return $this->context;
@@ -249,13 +290,14 @@ class ExecutionState
         if (empty($this->completedNodes)) {
             return null;
         }
+
         return array_key_last($this->completedNodes);
     }
 
     /**
      * Get context for resuming from a specific node
      *
-     * @param string $resumeFromNodeId Node to resume from
+     * @param  string  $resumeFromNodeId  Node to resume from
      * @return array Context/input for the resume node
      */
     public function getResumeContext(string $resumeFromNodeId): array

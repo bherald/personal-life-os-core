@@ -4,7 +4,6 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Claim Verification Service
@@ -22,8 +21,12 @@ use Exception;
 class ClaimVerificationService
 {
     private AIService $aiService;
+
     private SearXNGService $searxngService;
+
     private ?DomainCredibilityService $domainCredibilityService = null;
+
+    private ?EvidenceVerdictPolicyService $evidenceVerdictPolicy = null;
 
     /** @var int Default number of search queries per claim */
     private const DEFAULT_QUERY_COUNT = 3;
@@ -51,17 +54,27 @@ class ClaimVerificationService
         if ($this->domainCredibilityService === null) {
             $this->domainCredibilityService = app(DomainCredibilityService::class);
         }
+
         return $this->domainCredibilityService;
+    }
+
+    private function getEvidenceVerdictPolicy(): EvidenceVerdictPolicyService
+    {
+        if ($this->evidenceVerdictPolicy === null) {
+            $this->evidenceVerdictPolicy = app(EvidenceVerdictPolicyService::class);
+        }
+
+        return $this->evidenceVerdictPolicy;
     }
 
     /**
      * Verify an array of claims against web evidence
      *
-     * @param array $claims Array of claims to verify (objects with 'id', 'normalized_claim')
-     * @param array $options Options:
-     *   - query_count: int - Number of search queries per claim
-     *   - persist: bool - Save evidence and verdicts to database
-     *   - max_evidence: int - Maximum evidence per claim
+     * @param  array  $claims  Array of claims to verify (objects with 'id', 'normalized_claim')
+     * @param  array  $options  Options:
+     *                          - query_count: int - Number of search queries per claim
+     *                          - persist: bool - Save evidence and verdicts to database
+     *                          - max_evidence: int - Maximum evidence per claim
      * @return array Verification results with verdicts
      */
     public function verify(array $claims, array $options = []): array
@@ -98,7 +111,7 @@ class ClaimVerificationService
                 foreach ($queries as $query) {
                     $searchResults = $this->searxngService->search($query, 5);
 
-                    if ($searchResults['success'] && !empty($searchResults['results'])) {
+                    if ($searchResults['success'] && ! empty($searchResults['results'])) {
                         foreach ($searchResults['results'] as $rank => $result) {
                             $evidence[] = [
                                 'snippet' => $result['snippet'] ?? $result['title'] ?? '',
@@ -219,8 +232,8 @@ class ClaimVerificationService
     /**
      * Generate search queries for a claim
      *
-     * @param string $claim The claim to generate queries for
-     * @param int $count Number of queries to generate
+     * @param  string  $claim  The claim to generate queries for
+     * @param  int  $count  Number of queries to generate
      * @return array Array of search queries
      */
     public function generateQueries(string $claim, int $count = 3): array
@@ -246,28 +259,28 @@ PROMPT;
             'max_tokens' => 200,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             // Fallback: use claim as query
             return [$claim];
         }
 
         $parsed = $this->parseJsonResponse($result['response'], true);
 
-        if (empty($parsed) || !is_array($parsed)) {
+        if (empty($parsed) || ! is_array($parsed)) {
             return [$claim];
         }
 
         // Ensure we have string queries
         $queries = array_filter($parsed, 'is_string');
 
-        return !empty($queries) ? array_slice($queries, 0, $count) : [$claim];
+        return ! empty($queries) ? array_slice($queries, 0, $count) : [$claim];
     }
 
     /**
      * Verify a claim against collected evidence using NLI
      *
-     * @param string $claim The claim to verify
-     * @param array $evidence Array of evidence snippets
+     * @param  string  $claim  The claim to verify
+     * @param  array  $evidence  Array of evidence snippets
      * @return array Verdict with confidence and summary
      */
     public function verifyAgainstEvidence(string $claim, array $evidence): array
@@ -317,7 +330,7 @@ PROMPT;
         }
 
         // Determine verdict
-        $verdict = $this->determineVerdict($supporting, $contradicting, $neutral, $factuality);
+        $verdict = $this->getEvidenceVerdictPolicy()->determine($supporting, $contradicting, $neutral, $factuality);
 
         // Generate evidence summary
         $summary = $this->generateEvidenceSummary($claim, $nliResults, $verdict);
@@ -337,8 +350,8 @@ PROMPT;
     /**
      * Classify evidence snippet relative to claim (NLI)
      *
-     * @param string $claim The claim
-     * @param string $evidence The evidence snippet
+     * @param  string  $claim  The claim
+     * @param  string  $evidence  The evidence snippet
      * @return array ['label' => string, 'score' => float]
      */
     private function classifyEvidence(string $claim, string $evidence): array
@@ -368,14 +381,14 @@ PROMPT;
             'max_tokens' => 150,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return ['label' => 'neutral', 'score' => 0.5];
         }
 
         $parsed = $this->parseJsonResponse($result['response']);
 
         $label = $parsed['label'] ?? 'neutral';
-        if (!in_array($label, ['supported', 'contradicted', 'neutral'])) {
+        if (! in_array($label, ['supported', 'contradicted', 'neutral'])) {
             $label = 'neutral';
         }
 
@@ -386,112 +399,41 @@ PROMPT;
     }
 
     /**
-     * Determine final verdict based on evidence counts
-     *
-     * @param int $supporting Count of supporting evidence
-     * @param int $contradicting Count of contradicting evidence
-     * @param int $neutral Count of neutral evidence
-     * @param float|null $factuality Factuality score
-     * @return array ['verdict' => string, 'confidence' => float]
-     */
-    /**
-     * FC-8: 5-Class Verdict System (PolitiFact/FACT5 standard)
-     *
-     * Maps evidence counts and factuality score to one of:
-     *   true, mostly_true, half_true, mostly_false, false
-     *
-     * Falls back to 'inconclusive' when evidence is insufficient.
-     */
-    private function determineVerdict(int $supporting, int $contradicting, int $neutral, ?float $factuality): array
-    {
-        $total = $supporting + $contradicting + $neutral;
-
-        if ($total === 0) {
-            return ['verdict' => 'inconclusive', 'confidence' => 0];
-        }
-
-        // Calculate evidence ratio
-        $evidenceRatio = ($supporting + $contradicting) / $total;
-
-        // Not enough decisive evidence
-        if ($supporting + $contradicting < 2 || $evidenceRatio < 0.3) {
-            $confidence = max(0.1, $evidenceRatio);
-            return ['verdict' => 'inconclusive', 'confidence' => round($confidence, 3)];
-        }
-
-        // Use factuality score for 5-class determination
-        if ($factuality !== null) {
-            if ($factuality >= 0.85 && $supporting >= 2) {
-                $confidence = min(0.95, 0.5 + ($factuality * 0.4) + ($supporting * 0.05));
-                return ['verdict' => 'true', 'confidence' => round($confidence, 3)];
-            }
-            if ($factuality >= 0.65 && $supporting > $contradicting) {
-                $confidence = min(0.85, 0.4 + ($factuality * 0.4) + ($supporting * 0.05));
-                return ['verdict' => 'mostly_true', 'confidence' => round($confidence, 3)];
-            }
-            if ($factuality <= 0.15 && $contradicting >= 2) {
-                $confidence = min(0.95, 0.5 + ((1 - $factuality) * 0.4) + ($contradicting * 0.05));
-                return ['verdict' => 'false', 'confidence' => round($confidence, 3)];
-            }
-            if ($factuality <= 0.35 && $contradicting > $supporting) {
-                $confidence = min(0.85, 0.4 + ((1 - $factuality) * 0.4) + ($contradicting * 0.05));
-                return ['verdict' => 'mostly_false', 'confidence' => round($confidence, 3)];
-            }
-        }
-
-        // Mixed or moderate evidence → half_true
-        if ($supporting > 0 && $contradicting > 0) {
-            $confidence = max(0.2, min(0.6, $evidenceRatio * 0.5));
-            return ['verdict' => 'half_true', 'confidence' => round($confidence, 3)];
-        }
-
-        // Some evidence but not strong enough for true/false
-        if ($supporting > $contradicting) {
-            return ['verdict' => 'mostly_true', 'confidence' => round(0.4 + ($evidenceRatio * 0.3), 3)];
-        }
-        if ($contradicting > $supporting) {
-            return ['verdict' => 'mostly_false', 'confidence' => round(0.4 + ($evidenceRatio * 0.3), 3)];
-        }
-
-        return ['verdict' => 'half_true', 'confidence' => round(max(0.2, $evidenceRatio * 0.4), 3)];
-    }
-
-    /**
      * Generate a summary of evidence for/against the claim
      *
-     * @param string $claim The claim
-     * @param array $evidence Evidence with NLI labels
-     * @param array $verdict The determined verdict
+     * @param  string  $claim  The claim
+     * @param  array  $evidence  Evidence with NLI labels
+     * @param  array  $verdict  The determined verdict
      * @return string Summary text
      */
     private function generateEvidenceSummary(string $claim, array $evidence, array $verdict): string
     {
-        $supporting = array_filter($evidence, fn($e) => ($e['nli_label'] ?? '') === 'supported');
-        $contradicting = array_filter($evidence, fn($e) => ($e['nli_label'] ?? '') === 'contradicted');
+        $supporting = array_filter($evidence, fn ($e) => ($e['nli_label'] ?? '') === 'supported');
+        $contradicting = array_filter($evidence, fn ($e) => ($e['nli_label'] ?? '') === 'contradicted');
 
         $parts = [];
 
-        if (!empty($supporting)) {
-            $sources = array_map(fn($e) => $e['source_domain'] ?? 'unknown', array_slice($supporting, 0, 3));
-            $parts[] = 'Supporting evidence from: ' . implode(', ', $sources);
+        if (! empty($supporting)) {
+            $sources = array_map(fn ($e) => $e['source_domain'] ?? 'unknown', array_slice($supporting, 0, 3));
+            $parts[] = 'Supporting evidence from: '.implode(', ', $sources);
         }
 
-        if (!empty($contradicting)) {
-            $sources = array_map(fn($e) => $e['source_domain'] ?? 'unknown', array_slice($contradicting, 0, 3));
-            $parts[] = 'Contradicting evidence from: ' . implode(', ', $sources);
+        if (! empty($contradicting)) {
+            $sources = array_map(fn ($e) => $e['source_domain'] ?? 'unknown', array_slice($contradicting, 0, 3));
+            $parts[] = 'Contradicting evidence from: '.implode(', ', $sources);
         }
 
         if (empty($parts)) {
             return 'No definitive supporting or contradicting evidence found.';
         }
 
-        return implode('. ', $parts) . '.';
+        return implode('. ', $parts).'.';
     }
 
     /**
      * Get credibility score for a domain (from shared domain_credibility table)
      *
-     * @param string|null $domain Domain name
+     * @param  string|null  $domain  Domain name
      * @return float Credibility score 0-1
      */
     private function getCredibilityScore(?string $domain): float
@@ -502,8 +444,8 @@ PROMPT;
     /**
      * Deduplicate evidence by URL
      *
-     * @param array $evidence Evidence array
-     * @param int $maxCount Maximum evidence to keep
+     * @param  array  $evidence  Evidence array
+     * @param  int  $maxCount  Maximum evidence to keep
      * @return array Deduplicated evidence
      */
     private function deduplicateEvidence(array $evidence, int $maxCount): array
@@ -513,7 +455,7 @@ PROMPT;
 
         foreach ($evidence as $item) {
             $url = $item['source_url'] ?? '';
-            if (!empty($url) && !isset($seen[$url])) {
+            if (! empty($url) && ! isset($seen[$url])) {
                 $seen[$url] = true;
                 $unique[] = $item;
 
@@ -529,19 +471,19 @@ PROMPT;
     /**
      * Persist evidence to database
      *
-     * @param int $claimId Claim ID
-     * @param array $evidence Evidence with NLI labels
-     * @param array $verdict Verdict data
+     * @param  int  $claimId  Claim ID
+     * @param  array  $evidence  Evidence with NLI labels
+     * @param  array  $verdict  Verdict data
      */
     private function persistEvidence(int $claimId, array $evidence, array $verdict): void
     {
         foreach ($evidence as $item) {
-            DB::connection('pgsql_rag')->insert("
+            DB::connection('pgsql_rag')->insert('
                 INSERT INTO evidence (
                     claim_id, snippet, source_url, source_title, source_domain,
                     nli_label, nli_score, credibility_score, retrieval_query, retrieval_rank
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ", [
+            ', [
                 $claimId,
                 $item['snippet'] ?? '',
                 $item['source_url'] ?? '',
@@ -559,13 +501,13 @@ PROMPT;
     /**
      * Persist verdict to database
      *
-     * @param int $claimId Claim ID
-     * @param array $verdict Verdict data
+     * @param  int  $claimId  Claim ID
+     * @param  array  $verdict  Verdict data
      */
     private function persistVerdict(int $claimId, array $verdict): void
     {
         // Use upsert pattern (INSERT ... ON CONFLICT UPDATE)
-        DB::connection('pgsql_rag')->statement("
+        DB::connection('pgsql_rag')->statement('
             INSERT INTO verdicts (
                 claim_id, verdict, confidence, factuality_score, evidence_summary,
                 supporting_count, contradicting_count, neutral_count
@@ -579,7 +521,7 @@ PROMPT;
                 contradicting_count = EXCLUDED.contradicting_count,
                 neutral_count = EXCLUDED.neutral_count,
                 updated_at = CURRENT_TIMESTAMP
-        ", [
+        ', [
             $claimId,
             $verdict['verdict'],
             $verdict['confidence'],
@@ -681,70 +623,70 @@ PROMPT;
     /**
      * Get verification status for a claim
      *
-     * @param int $claimId Claim ID
+     * @param  int  $claimId  Claim ID
      * @return array|null Verdict data or null if not verified
      */
     public function getVerdict(int $claimId): ?array
     {
-        $result = DB::connection('pgsql_rag')->select("
+        $result = DB::connection('pgsql_rag')->select('
             SELECT v.*, c.normalized_claim
             FROM verdicts v
             JOIN claims c ON c.id = v.claim_id
             WHERE v.claim_id = ?
-        ", [$claimId]);
+        ', [$claimId]);
 
-        return !empty($result) ? (array) $result[0] : null;
+        return ! empty($result) ? (array) $result[0] : null;
     }
 
     /**
      * Get evidence for a claim
      *
-     * @param int $claimId Claim ID
+     * @param  int  $claimId  Claim ID
      * @return array Evidence records
      */
     public function getEvidence(int $claimId): array
     {
-        return DB::connection('pgsql_rag')->select("
+        return DB::connection('pgsql_rag')->select('
             SELECT * FROM evidence
             WHERE claim_id = ?
             ORDER BY nli_score DESC, credibility_score DESC
-        ", [$claimId]);
+        ', [$claimId]);
     }
 
     /**
      * Get claims pending human review
      *
-     * @param int $limit Maximum claims to return
+     * @param  int  $limit  Maximum claims to return
      * @return array Verdicts needing review
      */
     public function getPendingReview(int $limit = 50): array
     {
-        return DB::connection('pgsql_rag')->select("
+        return DB::connection('pgsql_rag')->select('
             SELECT v.*, c.normalized_claim, c.source_text, c.checkworthiness_score
             FROM verdicts v
             JOIN claims c ON c.id = v.claim_id
             WHERE v.human_reviewed = FALSE
             ORDER BY v.confidence ASC, c.checkworthiness_score DESC
             LIMIT ?
-        ", [$limit]);
+        ', [$limit]);
     }
 
     /**
      * Submit human review for a verdict
      *
-     * @param int $claimId Claim ID
-     * @param string $verdict Human-determined verdict
-     * @param string $reviewer Reviewer identifier
-     * @param string|null $notes Review notes
+     * @param  int  $claimId  Claim ID
+     * @param  string  $verdict  Human-determined verdict
+     * @param  string  $reviewer  Reviewer identifier
+     * @param  string|null  $notes  Review notes
      * @return bool Success
      */
     public function submitReview(int $claimId, string $verdict, string $reviewer, ?string $notes = null): bool
     {
-        if (!in_array($verdict, ['supported', 'refuted', 'inconclusive'])) {
+        if (! in_array($verdict, ['supported', 'refuted', 'inconclusive'])) {
             return false;
         }
 
-        $affected = DB::connection('pgsql_rag')->update("
+        $affected = DB::connection('pgsql_rag')->update('
             UPDATE verdicts SET
                 verdict = ?,
                 human_reviewed = TRUE,
@@ -753,7 +695,7 @@ PROMPT;
                 reviewed_at = CURRENT_TIMESTAMP,
                 updated_at = CURRENT_TIMESTAMP
             WHERE claim_id = ?
-        ", [$verdict, $reviewer, $notes, $claimId]);
+        ', [$verdict, $reviewer, $notes, $claimId]);
 
         return $affected > 0;
     }
@@ -771,9 +713,9 @@ PROMPT;
      * 2. A devil's advocate prompt that actively tries to disprove the claim
      * Then builds a consensus verdict weighted by agreement.
      *
-     * @param string $claim The claim text
-     * @param array $evidence Evidence collected for this claim
-     * @param array $primaryVerdict The initial single-provider verdict
+     * @param  string  $claim  The claim text
+     * @param  array  $evidence  Evidence collected for this claim
+     * @param  array  $primaryVerdict  The initial single-provider verdict
      * @return array Consensus result with final_verdict, provider_details, agreement
      */
     public function verifyWithConsensus(string $claim, array $evidence, array $primaryVerdict): array
@@ -841,14 +783,17 @@ PROMPT;
         $parts = [];
         $count = 0;
         foreach ($evidence as $item) {
-            if ($count >= 5) break;
+            if ($count >= 5) {
+                break;
+            }
             $snippet = $item['snippet'] ?? '';
             $domain = $item['source_domain'] ?? 'unknown';
-            if (!empty($snippet)) {
-                $parts[] = "[{$domain}] " . substr($snippet, 0, 200);
+            if (! empty($snippet)) {
+                $parts[] = "[{$domain}] ".substr($snippet, 0, 200);
                 $count++;
             }
         }
+
         return implode("\n\n", $parts);
     }
 
@@ -879,22 +824,23 @@ PROMPT;
             'suppressAlert' => true,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             Log::warning('ClaimVerification: Secondary provider failed', [
                 'error' => $result['error'] ?? 'unknown',
             ]);
+
             return null;
         }
 
         $parsed = $this->parseJsonResponse($result['response']);
         $verdict = $parsed['verdict'] ?? null;
 
-        if (!in_array($verdict, ['supported', 'contradicted', 'inconclusive'])) {
+        if (! in_array($verdict, ['supported', 'contradicted', 'inconclusive'])) {
             return null;
         }
 
         return [
-            'provider' => 'secondary_' . ($result['provider'] ?? 'external'),
+            'provider' => 'secondary_'.($result['provider'] ?? 'external'),
             'verdict' => $verdict,
             'confidence' => (float) ($parsed['confidence'] ?? 0.5),
             'reasoning' => $parsed['reasoning'] ?? '',
@@ -941,22 +887,23 @@ PROMPT;
             'suppressAlert' => true,
         ]);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             Log::warning('ClaimVerification: Devil\'s advocate failed', [
                 'error' => $result['error'] ?? 'unknown',
             ]);
+
             return null;
         }
 
         $parsed = $this->parseJsonResponse($result['response']);
         $verdict = $parsed['verdict'] ?? null;
 
-        if (!in_array($verdict, ['supported', 'contradicted', 'inconclusive'])) {
+        if (! in_array($verdict, ['supported', 'contradicted', 'inconclusive'])) {
             return null;
         }
 
         return [
-            'provider' => 'devils_advocate_' . ($result['provider'] ?? 'default'),
+            'provider' => 'devils_advocate_'.($result['provider'] ?? 'default'),
             'verdict' => $verdict,
             'confidence' => (float) ($parsed['confidence'] ?? 0.5),
             'counterarguments' => $parsed['counterarguments'] ?? '',
@@ -1036,7 +983,9 @@ PROMPT;
         $agreeing = 0;
         foreach ($providerResults as $result) {
             $v = $result['verdict'] ?? 'inconclusive';
-            if ($v === 'refuted') $v = 'contradicted';
+            if ($v === 'refuted') {
+                $v = 'contradicted';
+            }
             if ($v === $winningVerdict) {
                 $agreeing++;
             }
@@ -1052,7 +1001,9 @@ PROMPT;
         foreach ($providerResults as $result) {
             if (str_starts_with($result['provider'], 'devils_advocate')) {
                 $daVerdict = $result['verdict'] ?? 'inconclusive';
-                if ($daVerdict === 'refuted') $daVerdict = 'contradicted';
+                if ($daVerdict === 'refuted') {
+                    $daVerdict = 'contradicted';
+                }
                 if ($daVerdict !== $winningVerdict && ($result['confidence'] ?? 0) > 0.7) {
                     $consensusConfidence = round($consensusConfidence * 0.8, 3);
                 }
@@ -1082,14 +1033,14 @@ PROMPT;
     private function persistConsensusVerdict(int $claimId, array $consensus): void
     {
         try {
-            DB::connection('pgsql_rag')->insert("
+            DB::connection('pgsql_rag')->insert('
                 INSERT INTO consensus_verdicts (
                     claim_id, provider_count, agreement_ratio,
                     consensus_verdict, consensus_confidence,
                     devil_advocate_verdict, devil_advocate_confidence,
                     provider_details
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?::jsonb)
-            ", [
+            ', [
                 $claimId,
                 $consensus['provider_count'],
                 $consensus['agreement_ratio'],
@@ -1110,8 +1061,8 @@ PROMPT;
     /**
      * Parse JSON response from AI
      *
-     * @param string $response AI response text
-     * @param bool $expectArray Whether to expect an array
+     * @param  string  $response  AI response text
+     * @param  bool  $expectArray  Whether to expect an array
      * @return array Parsed JSON
      */
     private function parseJsonResponse(string $response, bool $expectArray = false): array
@@ -1127,6 +1078,7 @@ PROMPT;
                 'error' => json_last_error_msg(),
                 'response' => substr($response, 0, 200),
             ]);
+
             return $expectArray ? [] : [];
         }
 

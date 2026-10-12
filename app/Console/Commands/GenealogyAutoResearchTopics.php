@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Services\AIService;
+use App\Support\SensitiveTextTelemetry;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -17,6 +18,8 @@ use Illuminate\Support\Facades\Log;
  */
 class GenealogyAutoResearchTopics extends Command
 {
+    private const PRIVATE_TEXT_TELEMETRY_SCOPE = 'genealogy-auto-research-topic';
+
     /**
      * The name and signature of the console command.
      *
@@ -68,28 +71,29 @@ class GenealogyAutoResearchTopics extends Command
         $this->info("\n1. Scanning for persons with missing parents...");
         $missingParents = $this->findPersonsWithMissingParents($treeId, $limit);
         $topics = array_merge($topics, $missingParents);
-        $this->info("   Found: " . count($missingParents) . " persons");
+        $this->info('   Found: '.count($missingParents).' persons');
 
         $this->info("\n2. Scanning for deceased persons with missing death date...");
         $missingDeath = $this->findPersonsWithMissingDeathDate($treeId, $limit);
         $topics = array_merge($topics, $missingDeath);
-        $this->info("   Found: " . count($missingDeath) . " persons");
+        $this->info('   Found: '.count($missingDeath).' persons');
 
         $this->info("\n3. Scanning for families with missing marriage location...");
         $missingMarriage = $this->findFamiliesWithMissingMarriageLocation($treeId, $limit);
         $topics = array_merge($topics, $missingMarriage);
-        $this->info("   Found: " . count($missingMarriage) . " families");
+        $this->info('   Found: '.count($missingMarriage).' families');
 
         $this->info("\n4. Scanning for persons with approximate birth dates...");
         $approxBirth = $this->findPersonsWithApproximateBirthDates($treeId, $limit);
         $topics = array_merge($topics, $approxBirth);
-        $this->info("   Found: " . count($approxBirth) . " persons");
+        $this->info('   Found: '.count($approxBirth).' persons');
 
-        $this->info("\n" . str_repeat('-', 50));
-        $this->info("Total potential topics: " . count($topics));
+        $this->info("\n".str_repeat('-', 50));
+        $this->info('Total potential topics: '.count($topics));
 
         if (count($topics) === 0) {
             $this->info("\nNo gaps found to create research topics for.");
+
             return Command::SUCCESS;
         }
 
@@ -97,15 +101,16 @@ class GenealogyAutoResearchTopics extends Command
             $this->info("\nTopics that would be created:");
             $this->table(
                 ['Type', 'Description', 'Content'],
-                array_map(fn($t) => [
+                array_map(fn ($t) => [
                     $t['type'],
-                    substr($t['description'], 0, 40) . '...',
-                    substr($t['topic_content'], 0, 50) . '...'
+                    substr($t['description'], 0, 40).'...',
+                    substr($t['topic_content'], 0, 50).'...',
                 ], array_slice($topics, 0, 20))
             );
             if (count($topics) > 20) {
-                $this->info("... and " . (count($topics) - 20) . " more topics");
+                $this->info('... and '.(count($topics) - 20).' more topics');
             }
+
             return Command::SUCCESS;
         }
 
@@ -141,26 +146,22 @@ class GenealogyAutoResearchTopics extends Command
 
     /**
      * Find persons who are not children in any family (missing parents).
-     *
-     * @param int|null $treeId
-     * @param int $limit
-     * @return array
      */
     private function findPersonsWithMissingParents(?int $treeId, int $limit): array
     {
-        $query = "
+        $query = '
             SELECT p.id, p.given_name, p.surname, p.birth_date, p.birth_place
             FROM genealogy_persons p
             LEFT JOIN genealogy_children c ON p.id = c.person_id
             WHERE c.id IS NULL
             AND p.living = 0
-        ";
+        ';
 
         if ($treeId) {
-            $query .= " AND p.tree_id = ?";
+            $query .= ' AND p.tree_id = ?';
         }
 
-        $query .= " ORDER BY p.surname, p.given_name LIMIT ?";
+        $query .= ' ORDER BY p.surname, p.given_name LIMIT ?';
 
         $params = $treeId ? [$treeId, $limit] : [$limit];
         $persons = DB::select($query, $params);
@@ -180,10 +181,6 @@ class GenealogyAutoResearchTopics extends Command
 
     /**
      * Find deceased persons with missing death date.
-     *
-     * @param int|null $treeId
-     * @param int $limit
-     * @return array
      */
     private function findPersonsWithMissingDeathDate(?int $treeId, int $limit): array
     {
@@ -196,10 +193,10 @@ class GenealogyAutoResearchTopics extends Command
         ";
 
         if ($treeId) {
-            $query .= " AND p.tree_id = ?";
+            $query .= ' AND p.tree_id = ?';
         }
 
-        $query .= " ORDER BY p.birth_date DESC LIMIT ?";
+        $query .= ' ORDER BY p.birth_date DESC LIMIT ?';
 
         $params = $treeId ? [$treeId, $limit] : [$limit];
         $persons = DB::select($query, $params);
@@ -219,10 +216,6 @@ class GenealogyAutoResearchTopics extends Command
 
     /**
      * Find families with marriage date but no marriage location.
-     *
-     * @param int|null $treeId
-     * @param int $limit
-     * @return array
      */
     private function findFamiliesWithMissingMarriageLocation(?int $treeId, int $limit): array
     {
@@ -239,10 +232,10 @@ class GenealogyAutoResearchTopics extends Command
         ";
 
         if ($treeId) {
-            $query .= " AND f.tree_id = ?";
+            $query .= ' AND f.tree_id = ?';
         }
 
-        $query .= " ORDER BY f.marriage_date DESC LIMIT ?";
+        $query .= ' ORDER BY f.marriage_date DESC LIMIT ?';
 
         $params = $treeId ? [$treeId, $limit] : [$limit];
         $families = DB::select($query, $params);
@@ -265,10 +258,6 @@ class GenealogyAutoResearchTopics extends Command
 
     /**
      * Find persons with approximate birth dates (ABT, BEF, AFT, etc.).
-     *
-     * @param int|null $treeId
-     * @param int $limit
-     * @return array
      */
     private function findPersonsWithApproximateBirthDates(?int $treeId, int $limit): array
     {
@@ -289,10 +278,10 @@ class GenealogyAutoResearchTopics extends Command
         ";
 
         if ($treeId) {
-            $query .= " AND p.tree_id = ?";
+            $query .= ' AND p.tree_id = ?';
         }
 
-        $query .= " ORDER BY p.surname, p.given_name LIMIT ?";
+        $query .= ' ORDER BY p.surname, p.given_name LIMIT ?';
 
         $params = $treeId ? [$treeId, $limit] : [$limit];
         $persons = DB::select($query, $params);
@@ -414,7 +403,6 @@ class GenealogyAutoResearchTopics extends Command
     /**
      * Create a research topic in the database.
      *
-     * @param array $topic
      * @return string 'created' or 'skipped'
      */
     private function createTopic(array $topic): string
@@ -423,11 +411,11 @@ class GenealogyAutoResearchTopics extends Command
 
         // Check if similar topic already exists
         $existing = DB::connection($conn)->select(
-            "SELECT id FROM research_topics WHERE description = ? AND rag_category = ?",
+            'SELECT id FROM research_topics WHERE description = ? AND rag_category = ?',
             [$topic['description'], self::RAG_CATEGORY]
         );
 
-        if (!empty($existing)) {
+        if (! empty($existing)) {
             return 'skipped';
         }
 
@@ -454,8 +442,12 @@ class GenealogyAutoResearchTopics extends Command
             return 'created';
         } catch (\Throwable $e) {
             Log::error('Failed to create research topic', [
-                'description' => $topic['description'],
-                'error' => $e->getMessage(),
+                ...SensitiveTextTelemetry::content(
+                    (string) $topic['description'],
+                    self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                    'research_topic_description'
+                ),
+                'exception_class' => $e::class,
             ]);
 
             return 'skipped';
@@ -505,14 +497,25 @@ PROMPT;
                 'data_class' => 'genealogy_auto_research_topic',
             ]);
 
-            if ($result['success'] && !empty($result['response'])) {
-                Log::info('GenealogyAutoResearch: AI refined topic', ['description' => $description]);
+            if ($result['success'] && ! empty($result['response'])) {
+                Log::info('GenealogyAutoResearch: AI refined topic', [
+                    ...SensitiveTextTelemetry::content(
+                        $description,
+                        self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                        'research_topic_description'
+                    ),
+                ]);
+
                 return $result['response'];
             }
         } catch (\Throwable $e) {
             Log::warning('GenealogyAutoResearch: AI refine failed, using basic content', [
-                'description' => $description,
-                'error' => $e->getMessage(),
+                ...SensitiveTextTelemetry::content(
+                    $description,
+                    self::PRIVATE_TEXT_TELEMETRY_SCOPE,
+                    'research_topic_description'
+                ),
+                'exception_class' => $e::class,
             ]);
         }
 

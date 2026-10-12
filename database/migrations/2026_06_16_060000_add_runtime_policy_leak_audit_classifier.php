@@ -66,7 +66,7 @@ return new class extends Migration
                 ],
                 [
                     'name' => 'model_or_capacity_role_policy',
-                    'regex' => '/\\b(capacity_model_roles|role_fit|model_roles|quality|standard|fast|gpu_target|host_affinity|max_concurrent)\\b/i',
+                    'regex' => '/\\b(capacity_model_roles|role_fit|model_roles|gpu_target|host_affinity|max_concurrent)\\b|\\b(modelRole|model_role|model-role)\\b.*\\b(quality|standard|fast)\\b|\\b(quality|standard|fast)\\b.*\\b(modelRole|model_role|model-role)\\b/i',
                     'severity' => 'high',
                     'recommendation' => 'Route model and hardware capacity through llm_instances, model telemetry, and system_configs policy.',
                 ],

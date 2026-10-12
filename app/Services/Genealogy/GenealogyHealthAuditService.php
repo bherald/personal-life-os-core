@@ -22,8 +22,8 @@ class GenealogyHealthAuditService
     ];
 
     private const SECTION_QUERY_GROUPS = [
-        'links' => 8,
-        'dates' => 3,
+        'links' => 9,
+        'dates' => 7,
         'conflicts' => 3,
         'media' => 8,
         'rag' => 3,
@@ -535,11 +535,13 @@ class GenealogyHealthAuditService
                 $limit,
                 'Treat as orphan/disconnected candidates; accepted source-gap and branch-anchor reviews are suppressed.'
             );
+
+            $issues[] = $this->unrelatedToTreeRootIssue($treeId, $limit);
         }
 
         $issues[] = $this->nonFtPersonCandidateIssue($treeId, $limit);
 
-        return $issues;
+        return array_values(array_filter($issues));
     }
 
     private function dateIssues(int $treeId, int $limit): array
@@ -613,9 +615,168 @@ class GenealogyHealthAuditService
 
         if ($this->hasTables(['genealogy_children', 'genealogy_families', 'genealogy_persons'])) {
             $issues[] = $this->parentAgeIssue($treeId, $limit);
+            array_push($issues, ...$this->grampsCompatibleDateIssues($treeId, $limit));
         }
 
-        return $issues;
+        return array_values(array_filter($issues));
+    }
+
+    private function unrelatedToTreeRootIssue(int $treeId, int $limit): ?array
+    {
+        if (! Schema::hasTable('genealogy_trees') || ! Schema::hasColumn('genealogy_trees', 'root_person_id')) {
+            return null;
+        }
+
+        $rootPersonId = (int) DB::table('genealogy_trees')->where('id', $treeId)->value('root_person_id');
+        if ($rootPersonId <= 0) {
+            return null;
+        }
+
+        $people = DB::table('genealogy_persons')
+            ->select('id', 'given_name', 'surname', 'birth_date', 'death_date')
+            ->where('tree_id', $treeId)
+            ->get()
+            ->keyBy('id');
+        if (! $people->has($rootPersonId)) {
+            return null;
+        }
+
+        $adjacent = [];
+        $connect = static function (array &$graph, int $left, int $right): void {
+            $graph[$left][$right] = true;
+            $graph[$right][$left] = true;
+        };
+
+        foreach (DB::table('genealogy_families')->where('tree_id', $treeId)->get(['id', 'husband_id', 'wife_id']) as $family) {
+            $husbandId = (int) ($family->husband_id ?? 0);
+            $wifeId = (int) ($family->wife_id ?? 0);
+            if ($husbandId > 0 && $wifeId > 0 && $people->has($husbandId) && $people->has($wifeId)) {
+                $connect($adjacent, $husbandId, $wifeId);
+            }
+
+            foreach (DB::table('genealogy_children')->where('family_id', $family->id)->pluck('person_id') as $childId) {
+                $childId = (int) $childId;
+                if (! $people->has($childId)) {
+                    continue;
+                }
+                if ($husbandId > 0 && $people->has($husbandId)) {
+                    $connect($adjacent, $husbandId, $childId);
+                }
+                if ($wifeId > 0 && $people->has($wifeId)) {
+                    $connect($adjacent, $wifeId, $childId);
+                }
+            }
+        }
+
+        $reachable = [$rootPersonId => true];
+        $queue = [$rootPersonId];
+        while ($queue !== []) {
+            $personId = array_shift($queue);
+            foreach (array_keys($adjacent[$personId] ?? []) as $relatedId) {
+                if (! isset($reachable[$relatedId])) {
+                    $reachable[$relatedId] = true;
+                    $queue[] = $relatedId;
+                }
+            }
+        }
+
+        $unrelated = [];
+        foreach ($people as $personId => $person) {
+            if (! isset($reachable[(int) $personId])) {
+                $unrelated[] = [
+                    'person_id' => (int) $personId,
+                    'name' => $this->personName($person),
+                    'birth_date' => $person->birth_date,
+                    'death_date' => $person->death_date,
+                    'root_person_id' => $rootPersonId,
+                    'reachable_from_root' => false,
+                ];
+            }
+        }
+
+        return $this->issueFromRows(
+            'unrelated_to_tree_root',
+            'People are not connected to the configured tree root by parent, child, sibling, or spouse links.',
+            'links',
+            'medium',
+            'strong',
+            $unrelated,
+            $limit,
+            'Treat each disconnected component as a research lead; add a relationship only when source evidence proves the bridge.'
+        );
+    }
+
+    private function grampsCompatibleDateIssues(int $treeId, int $limit): array
+    {
+        $relationshipColumns = Schema::hasColumn('genealogy_children', 'father_relationship')
+            && Schema::hasColumn('genealogy_children', 'mother_relationship');
+        $relationshipSelect = $relationshipColumns
+            ? ', c.father_relationship, c.mother_relationship'
+            : '';
+        $rows = DB::select(
+            'SELECT c.id AS child_link_id, c.family_id, child.id AS child_id, child.given_name AS child_given_name, child.surname AS child_surname, child.birth_date AS child_birth_date,
+                    father.id AS father_id, father.birth_date AS father_birth_date, father.death_date AS father_death_date,
+                    mother.id AS mother_id, mother.birth_date AS mother_birth_date, mother.death_date AS mother_death_date'
+                .$relationshipSelect.'
+             FROM genealogy_children c
+             JOIN genealogy_families f ON f.id = c.family_id AND f.tree_id = ?
+             JOIN genealogy_persons child ON child.id = c.person_id AND child.tree_id = f.tree_id
+             LEFT JOIN genealogy_persons father ON father.id = f.husband_id AND father.tree_id = f.tree_id
+             LEFT JOIN genealogy_persons mother ON mother.id = f.wife_id AND mother.tree_id = f.tree_id',
+            [$treeId]
+        );
+
+        $unborn = [];
+        $dead = [];
+        $young = [];
+        foreach ($rows as $row) {
+            $childDate = $this->exactGedcomDate($row->child_birth_date ?? null);
+            if ($childDate === null) {
+                continue;
+            }
+            $sample = [
+                'child_link_id' => (int) $row->child_link_id,
+                'family_id' => (int) $row->family_id,
+                'child_id' => (int) $row->child_id,
+                'child_name' => trim(($row->child_given_name ?? '').' '.($row->child_surname ?? '')),
+                'child_birth_date' => $row->child_birth_date,
+            ];
+
+            foreach ([
+                ['role' => 'father', 'id' => $row->father_id ?? null, 'birth' => $row->father_birth_date ?? null, 'death' => $row->father_death_date ?? null, 'minimum_age' => 18],
+                ['role' => 'mother', 'id' => $row->mother_id ?? null, 'birth' => $row->mother_birth_date ?? null, 'death' => $row->mother_death_date ?? null, 'minimum_age' => 17],
+            ] as $parent) {
+                $parentId = (int) ($parent['id'] ?? 0);
+                if ($parentId <= 0) {
+                    continue;
+                }
+                $birthDate = $this->exactGedcomDate($parent['birth']);
+                if ($birthDate !== null) {
+                    $ageDays = $birthDate->diff($childDate)->days;
+                    if ($birthDate > $childDate) {
+                        $unborn[] = $sample + ['parent_id' => $parentId, 'parent_role' => $parent['role'], 'parent_birth_date' => $parent['birth']];
+                    } elseif ($ageDays < ($parent['minimum_age'] * 365)) {
+                        $young[] = $sample + ['parent_id' => $parentId, 'parent_role' => $parent['role'], 'parent_birth_date' => $parent['birth'], 'parent_age_years' => round($ageDays / 365, 1)];
+                    }
+                }
+
+                $deathDate = $this->exactGedcomDate($parent['death']);
+                $birthRelationship = ! $relationshipColumns
+                    || strtoupper((string) ($row->{$parent['role'].'_relationship'} ?? 'NATURAL')) === 'NATURAL';
+                $latestPossibleBirth = $parent['role'] === 'father'
+                    ? $deathDate?->modify('+294 days')
+                    : $deathDate;
+                if ($birthRelationship && $latestPossibleBirth !== null && $latestPossibleBirth < $childDate) {
+                    $dead[] = $sample + ['parent_id' => $parentId, 'parent_role' => $parent['role'], 'parent_death_date' => $parent['death']];
+                }
+            }
+        }
+
+        return array_values(array_filter([
+            $this->issueFromRows('gramps_unborn_parent', 'A parent has an exact birth date after a child birth date (Gramps-compatible fatal check).', 'dates', 'high', 'strong', $unborn, $limit, 'Review source evidence for the parent, child, and child-family link before changing dates or relationships.'),
+            $this->issueFromRows('gramps_dead_parent', 'A natural parent died before a recorded child birth, allowing 294 days after a father death (Gramps-compatible fatal check).', 'dates', 'high', 'strong', $dead, $limit, 'Review source evidence for the parent, child, and relationship qualifier before changing dates or relationships.'),
+            $this->issueFromRows('gramps_young_parent', 'A parent was below Gramps default parent-age review thresholds using exact dates (17 mother, 18 father).', 'dates', 'medium', 'strong', $young, $limit, 'Treat as an evidence-review signal, not an automatic correction.'),
+        ]));
     }
 
     private function conflictIssues(int $treeId, int $limit): array
@@ -1770,7 +1931,7 @@ class GenealogyHealthAuditService
                 'allowed_tool' => 'genealogy.proposal_queue',
                 'safe_auto_fix' => false,
             ],
-            'conflicting_relationship_proposals', 'broken_family_spouse_links', 'broken_child_links', 'self_spouse_family_links', 'self_child_links', 'duplicate_child_family_links', 'implausible_parent_age' => [
+            'conflicting_relationship_proposals', 'broken_family_spouse_links', 'broken_child_links', 'self_spouse_family_links', 'self_child_links', 'duplicate_child_family_links', 'implausible_parent_age', 'gramps_unborn_parent', 'gramps_dead_parent', 'gramps_young_parent' => [
                 'mode' => 'relationship_review_required',
                 'default_action' => 'review_relationship_context_and_create_source_backed_proposal_or_remediation_preview',
                 'allowed_tool' => 'genealogy.relationship_audit',
@@ -1782,7 +1943,7 @@ class GenealogyHealthAuditService
                 'allowed_tool' => 'genealogy.person_fact_extract',
                 'safe_auto_fix' => false,
             ],
-            'non_ft_person_name_memory_hits', 'disconnected_people' => [
+            'non_ft_person_name_memory_hits', 'disconnected_people', 'unrelated_to_tree_root' => [
                 'mode' => 'person_cleanup_review_required',
                 'default_action' => 'review branch_context_sources_and_media_before_delete_or_move_decision',
                 'allowed_tool' => 'genealogy.person_profile',
@@ -1948,6 +2109,22 @@ class GenealogyHealthAuditService
         }
 
         return (int) $matches[1];
+    }
+
+    private function exactGedcomDate(?string $date): ?\DateTimeImmutable
+    {
+        $date = strtoupper(trim((string) $date));
+        if (preg_match('/^(\d{1,2}) (JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC) (\d{4})$/', $date) !== 1) {
+            return null;
+        }
+
+        $parsed = \DateTimeImmutable::createFromFormat('!j M Y', $date);
+        $errors = \DateTimeImmutable::getLastErrors();
+        if ($parsed === false || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            return null;
+        }
+
+        return $parsed;
     }
 
     private function personName(object $person): string

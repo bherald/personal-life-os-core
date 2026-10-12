@@ -2,6 +2,7 @@
 
 namespace App\Nodes\YouTube;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Nodes\BaseNode;
 use App\Services\SystemConfigService;
 use App\Services\YouTubeTranscriptLanguagePolicy;
@@ -53,12 +54,12 @@ class YouTubeTranscript extends BaseNode
             if (empty($videos)) {
                 Log::warning('YouTubeTranscript: No videos in input');
 
-                return $this->standardOutput([
+                return $this->standardOutput(array_merge($input['data'] ?? $input, [
                     'videos' => [],
                     'count' => 0,
                     'transcripts_fetched' => 0,
                     'transcripts_failed' => 0,
-                ], [
+                ]), [
                     'language' => $language,
                     'include_timestamps' => $includeTimestamps,
                     'batch_size' => $batchSize,
@@ -72,12 +73,14 @@ class YouTubeTranscript extends BaseNode
                 'batch_size' => $batchSize,
             ]);
 
-            $transcriptService = new YouTubeTranscriptService;
+            $transcriptService = app(YouTubeTranscriptService::class);
             $enrichedVideos = [];
             $successCount = 0;
             $failureCount = 0;
             $ipBlocked = false;
             $ipBlockedError = null;
+            $startedAt = microtime(true);
+            $maxSeconds = $this->configuredPositiveInt('max_seconds');
 
             // Process videos in batches
             $batches = array_chunk($videos, $batchSize);
@@ -90,6 +93,10 @@ class YouTubeTranscript extends BaseNode
                 ]);
 
                 foreach ($batch as $videoIndex => $video) {
+                    if ($maxSeconds !== null && microtime(true) - $startedAt >= $maxSeconds) {
+                        break 2;
+                    }
+
                     $videoId = $video['video_id'] ?? null;
                     if (! $videoId) {
                         Log::warning('Video missing video_id', ['video' => $video]);
@@ -109,7 +116,9 @@ class YouTubeTranscript extends BaseNode
 
                     // Fetch transcript with enhanced retry logic and multiple methods
                     // Uses exponential backoff to avoid rate limiting
-                    $maxRetries = $this->runtimePolicyInt('max_retries');
+                    $configuredRetries = filter_var($this->getConfigValue('max_retries'), FILTER_VALIDATE_INT);
+                    $maxRetries = $configuredRetries !== false && $configuredRetries >= 0
+                        ? $configuredRetries : $this->runtimePolicyInt('max_retries');
                     $baseDelay = $this->runtimePolicyInt('base_delay_seconds');
                     $maxDelay = $this->runtimePolicyInt('max_delay_seconds');
                     $minRequestGap = $this->runtimePolicyInt('min_request_gap_seconds');
@@ -128,6 +137,10 @@ class YouTubeTranscript extends BaseNode
                     }
 
                     while ($attempt <= $maxRetries) {
+                        if ($maxSeconds !== null && microtime(true) - $startedAt >= $maxSeconds) {
+                            break 3;
+                        }
+
                         // Use the enhanced method with multiple fallbacks
                         $transcriptResult = $transcriptService->getTranscriptWithBackoff(
                             $videoId,
@@ -254,17 +267,19 @@ class YouTubeTranscript extends BaseNode
                 'total_videos' => count($videos),
                 'transcripts_fetched' => $successCount,
                 'transcripts_failed' => $failureCount,
+                'transcripts_deferred' => count($videos) - count($enrichedVideos),
                 'ip_blocked' => $ipBlocked,
             ]);
 
-            return $this->standardOutput([
+            return $this->standardOutput(array_merge($input['data'] ?? $input, [
                 'videos' => $enrichedVideos,
                 'count' => count($enrichedVideos),
                 'transcripts_fetched' => $successCount,
                 'transcripts_failed' => $failureCount,
+                'transcripts_deferred' => count($videos) - count($enrichedVideos),
                 'ip_blocked' => $ipBlocked,
                 'ip_block_error' => $ipBlockedError,
-            ], [
+            ]), [
                 'language' => $language,
                 'include_timestamps' => $includeTimestamps,
                 'batch_size' => $batchSize,
@@ -272,6 +287,9 @@ class YouTubeTranscript extends BaseNode
             ]);
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('YouTubeTranscript: Execution failed', [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),

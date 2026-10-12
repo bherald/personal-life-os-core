@@ -4,44 +4,103 @@ namespace App\Console\Commands;
 
 use App\Services\AgentEpisodicMemoryService;
 use App\Services\AIService;
+use App\Services\EpisodicMemoryMaintenanceRuntimePolicyService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 
 class EpisodicMemoryCommand extends Command
 {
     protected $signature = 'episodic:memory
         {--stats : Show episodic memory statistics}
         {--archive : Archive old low-importance episodes}
+        {--prune-archived-embeddings : Find or remove embeddings for already archived summaries}
         {--backfill : Generate summaries from existing agent_episodes}
-        {--days=30 : Days to look back for backfill}
-        {--limit=50 : Maximum sessions to backfill per run, capped at 500}
+        {--days= : Days to look back for backfill; defaults from system_configs}
+        {--limit= : Maximum work items; preview defaults and write maxima come from system_configs}
         {--agent= : Filter by agent ID}
-        {--dry-run : Preview backfill candidate counts without writing summaries}
-        {--confirm : Confirm summary creation for backfill}
-        {--json : Emit JSON output for read-only stats}
-        {--compact : Emit compact JSON for read-only stats}';
+        {--dry-run : Preview supported maintenance without writing}
+        {--confirm : Confirm supported archive, backfill, or prune writes}
+        {--json : Emit machine-readable output}
+        {--compact : Emit compact JSON; requires --json}';
 
-    protected $description = 'Manage agent episodic memory — stats, archival, backfill from existing episodes';
+    protected $description = 'Manage agent episodic memory stats, archival, backfill, and embedding integrity';
 
-    public function handle(AgentEpisodicMemoryService $service): int
-    {
-        if (($this->option('json') || $this->option('compact')) && $this->option('archive')) {
-            $this->error('The --json/--compact options are only supported for stats and bounded backfill.');
+    public function handle(
+        AgentEpisodicMemoryService $service,
+        EpisodicMemoryMaintenanceRuntimePolicyService $runtimePolicy,
+    ): int {
+        if ($this->option('compact') && ! $this->option('json')) {
+            $this->error('The --compact option requires --json.');
 
-            return 1;
+            return self::FAILURE;
         }
 
-        if ($this->option('archive')) {
-            return $this->runArchive($service);
+        $maintenanceModes = array_filter([
+            'archive' => (bool) $this->option('archive'),
+            'prune' => (bool) $this->option('prune-archived-embeddings'),
+            'backfill' => (bool) $this->option('backfill'),
+        ]);
+        if (count($maintenanceModes) > 1 || ($this->option('stats') && $maintenanceModes !== [])) {
+            $this->error('Choose exactly one episodic memory mode.');
+
+            return self::FAILURE;
         }
 
-        if ($this->option('backfill')) {
-            return $this->runBackfill($service);
+        if ($maintenanceModes === []) {
+            if (
+                $this->option('dry-run')
+                || $this->option('confirm')
+                || $this->option('limit') !== null
+                || $this->option('days') !== null
+                || $this->option('agent') !== null
+            ) {
+                $this->error('Maintenance options require --archive, --backfill, or --prune-archived-embeddings.');
+
+                return self::FAILURE;
+            }
+
+            return $this->showStats($service);
         }
 
-        // Default: show stats
-        return $this->showStats($service);
+        $mode = array_key_first($maintenanceModes);
+        if ($mode !== 'backfill' && ($this->option('days') !== null || $this->option('agent') !== null)) {
+            $this->error('--days and --agent are supported only with --backfill.');
+
+            return self::FAILURE;
+        }
+
+        $dryRun = (bool) $this->option('dry-run');
+        $confirmed = (bool) $this->option('confirm');
+        if ($dryRun && $confirmed) {
+            $this->error('Choose either --dry-run or --confirm, not both.');
+
+            return self::FAILURE;
+        }
+        if (! $dryRun && ! $confirmed) {
+            $this->error('Maintenance requires --dry-run or --confirm. Preview with --dry-run first.');
+
+            return self::FAILURE;
+        }
+
+        try {
+            $policy = $runtimePolicy->required();
+
+            return match ($mode) {
+                'archive' => $this->runArchive($service, $runtimePolicy, $policy['archive']),
+                'prune' => $this->runArchivedEmbeddingPrune($service, $runtimePolicy, $policy['prune']),
+                'backfill' => $this->runBackfill($service, $runtimePolicy, $policy['backfill']),
+            };
+        } catch (RuntimeException $e) {
+            $this->error($e->getMessage());
+
+            return self::FAILURE;
+        } catch (\Throwable $e) {
+            $this->error('Episodic memory maintenance failed: '.$e::class);
+
+            return self::FAILURE;
+        }
     }
 
     private function showStats(AgentEpisodicMemoryService $service): int
@@ -175,46 +234,126 @@ class EpisodicMemoryCommand extends Command
         return json_encode($payload, $flags) ?: '{}';
     }
 
-    private function runArchive(AgentEpisodicMemoryService $service): int
-    {
-        $this->info('Running episodic memory archival...');
-        $result = $service->archiveOldEpisodes();
-
-        if (isset($result['error'])) {
-            $this->error("Error: {$result['error']}");
-
-            return 1;
-        }
-
-        $this->table(
-            ['Metric', 'Value'],
-            [
-                ['Archived this run', $result['archived']],
-                ['Embeddings removed', $result['embeddings_removed']],
-                ['Total active', $result['total_active']],
-                ['Total archived', $result['total_archived']],
-                ['Retention days', $result['retention_days']],
-            ]
+    /** @param array{retention_days:int,importance_below:float,preview_default_limit:int,max_limit:int} $policy */
+    private function runArchive(
+        AgentEpisodicMemoryService $service,
+        EpisodicMemoryMaintenanceRuntimePolicyService $runtimePolicy,
+        array $policy,
+    ): int {
+        $dryRun = (bool) $this->option('dry-run');
+        $limit = $runtimePolicy->resolveLimit($this->option('limit'), $policy, ! $dryRun);
+        $result = $service->archiveOldEpisodes(
+            $policy['retention_days'],
+            $policy['importance_below'],
+            $limit,
+            ! $dryRun,
+            $policy,
         );
 
-        $this->info('Archival complete.');
+        if (isset($result['error'])) {
+            $this->error('Episodic memory archive failed.');
 
-        return 0;
+            return self::FAILURE;
+        }
+
+        $payload = [
+            'generated_at' => now()->toIso8601String(),
+            'command' => 'episodic:memory',
+            'mode' => 'archive',
+            'compact' => (bool) $this->option('compact'),
+            'status' => 'pass',
+            'dry_run' => $dryRun,
+            'confirmed' => ! $dryRun && (bool) $this->option('confirm'),
+            'summary' => [
+                'candidates_selected' => (int) ($result['candidates_selected'] ?? 0),
+                'summaries_archived' => (int) ($result['archived'] ?? 0),
+                'embeddings_removed' => (int) ($result['embeddings_removed'] ?? 0),
+                'total_active' => (int) ($result['total_active'] ?? 0),
+                'total_archived' => (int) ($result['total_archived'] ?? 0),
+                'retention_days' => $policy['retention_days'],
+                'importance_below' => $policy['importance_below'],
+                'limit' => $limit,
+                'more_possible' => (bool) ($result['more_possible'] ?? false),
+            ],
+        ];
+
+        if ($this->option('json')) {
+            $this->line($this->encodeJson($payload));
+
+            return self::SUCCESS;
+        }
+
+        $this->line(sprintf(
+            'Episodic archive: PASS dry_run=%s selected=%d archived=%d embeddings_removed=%d limit=%d more_possible=%s',
+            $dryRun ? 'true' : 'false',
+            $payload['summary']['candidates_selected'],
+            $payload['summary']['summaries_archived'],
+            $payload['summary']['embeddings_removed'],
+            $limit,
+            $payload['summary']['more_possible'] ? 'true' : 'false',
+        ));
+
+        return self::SUCCESS;
     }
 
-    private function runBackfill(AgentEpisodicMemoryService $service): int
-    {
-        $days = (int) $this->option('days');
-        $agentFilter = $this->option('agent');
-        $limit = max(1, min(500, (int) $this->option('limit')));
+    /** @param array{preview_default_limit:int,max_limit:int,scan_batch:int,scan_cap:int,delete_batch:int} $policy */
+    private function runArchivedEmbeddingPrune(
+        AgentEpisodicMemoryService $service,
+        EpisodicMemoryMaintenanceRuntimePolicyService $runtimePolicy,
+        array $policy,
+    ): int {
         $dryRun = (bool) $this->option('dry-run');
-        $cutoff = date('Y-m-d H:i:s', strtotime("-{$days} days"));
+        $limit = $runtimePolicy->resolveLimit($this->option('limit'), $policy, ! $dryRun);
+        $result = $service->pruneArchivedEmbeddings($limit, ! $dryRun, $policy);
+        $payload = [
+            'generated_at' => now()->toIso8601String(),
+            'command' => 'episodic:memory',
+            'mode' => 'prune_archived_embeddings',
+            'compact' => (bool) $this->option('compact'),
+            'status' => (string) ($result['status'] ?? 'error'),
+            'dry_run' => $dryRun,
+            'confirmed' => ! $dryRun && (bool) $this->option('confirm'),
+            'summary' => [
+                'embeddings_scanned' => (int) ($result['scan_count'] ?? 0),
+                'archived_embedding_candidates' => (int) ($result['candidate_count'] ?? 0),
+                'embeddings_deleted' => (int) ($result['deleted_count'] ?? 0),
+                'limit' => $limit,
+                'more_possible' => (bool) ($result['more_possible'] ?? false),
+                'summaries_changed' => (int) ($result['summaries_changed'] ?? 0),
+                'memory_links_changed' => (int) ($result['memory_links_changed'] ?? 0),
+            ],
+        ];
 
-        if (! $dryRun && ! $this->option('confirm')) {
-            $this->error('Backfill writes agent_episode_summaries and requires --confirm. Use --dry-run first to preview candidates.');
-
-            return 1;
+        if (isset($result['error'])) {
+            $payload['error'] = (string) $result['error'];
         }
+
+        if ($this->option('json')) {
+            $this->line($this->encodeJson($payload));
+        } else {
+            $this->line(sprintf(
+                'Archived embedding prune: %s scanned=%d candidates=%d deleted=%d summaries_changed=0 links_changed=0',
+                strtoupper($payload['status']),
+                $payload['summary']['embeddings_scanned'],
+                $payload['summary']['archived_embedding_candidates'],
+                $payload['summary']['embeddings_deleted'],
+            ));
+        }
+
+        return $payload['status'] === 'pass' ? self::SUCCESS : self::FAILURE;
+    }
+
+    /** @param array{default_days:int,max_days:int,preview_default_limit:int,max_limit:int} $policy */
+    private function runBackfill(
+        AgentEpisodicMemoryService $service,
+        EpisodicMemoryMaintenanceRuntimePolicyService $runtimePolicy,
+        array $policy,
+    ): int {
+        $days = $runtimePolicy->resolveBackfillDays($this->option('days'), $policy);
+        $agentFilter = $this->option('agent');
+        $dryRun = (bool) $this->option('dry-run');
+        $limit = $runtimePolicy->resolveLimit($this->option('limit'), $policy, ! $dryRun);
+        $cutoff = date('Y-m-d H:i:s', strtotime("-{$days} days"));
 
         if (! $this->option('json')) {
             $this->info(($dryRun ? 'Previewing' : 'Backfilling')." episodic summaries from agent_episodes (last {$days} days, limit {$limit})...");
@@ -244,7 +383,7 @@ class EpisodicMemoryCommand extends Command
               AND ae.session_id IS NOT NULL
               {$whereAgent}
             GROUP BY ae.agent_id, ae.session_id
-            ORDER BY ended_at DESC
+            ORDER BY ended_at ASC
             LIMIT {$limit}
         ", $bindings);
 
@@ -528,6 +667,7 @@ class EpisodicMemoryCommand extends Command
                 'summaries_created' => $created,
                 'failed' => $failed,
                 'agent_filter_applied' => $agentFilter !== null,
+                'selection_policy' => 'oldest_undistilled_first',
                 'agent_rollup_count' => count($agentRollup),
             ],
         ];

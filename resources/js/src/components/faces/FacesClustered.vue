@@ -69,7 +69,7 @@
               {{ clusterDisplayName(cluster) }}
             </span>
           </div>
-          <div class="flex items-center gap-2 flex-shrink-0">
+          <div class="flex items-center gap-2 shrink-0">
             <span :class="statusBadgeClass(cluster.status)" class="px-1.5 py-0.5 rounded text-[10px] uppercase font-semibold">
               {{ statusLabel(cluster.status) }}
             </span>

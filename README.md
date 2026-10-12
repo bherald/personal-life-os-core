@@ -1,57 +1,57 @@
-# PLOS
+# PLOS — Personal Life Operating System
 
-PLOS is a local-first personal automation platform for workflows, file
-indexing, RAG/GraphRAG search, review queues, and operator-guided agents that
-run on hardware the operator controls.
+A local-first research and automation workbench. PLOS brings documents, web
+sources, AI-assisted analysis, workflows and human review into one system on
+hardware you control.
 
-Status: alpha public-core extraction. Current public release:
-[`v0.1.1`](releases/tag/v0.1.1), published 2026-06-21. License: MIT.
-Primary stack: Laravel 12, Vue, MySQL/MariaDB, PostgreSQL 16 + pgvector,
-Redis, Docker, and optional Ollama-compatible local AI.
+**Release status:** v2.1 source update, October 12, 2026.
+The latest tagged release remains v0.1.1. [Source release notes](docs/releases/v2.1.md)
+and [verification status](docs/public-release-readiness.md) distinguish shipped
+source from tested installation and research outcomes.
 
-Watch the guided system tour: [I Built a Personal Life Operating System—Here Is What It Actually Controls](https://www.youtube.com/watch?v=mSYMaGAlPYo).
+Laravel 12 · Vue · MySQL/MariaDB · PostgreSQL + pgvector · Redis · Docker ·
+operator-configured local AI. Application code is MIT licensed; third-party
+components and demo assets retain their [separate terms](THIRD_PARTY.md).
 
-Earlier engineering perspective: [From Apple II to AI Agents: 5 Lessons That Still Matter](https://youtu.be/JAS4IoRm4sw).
+## Research with sources you can inspect
 
-## Current Public Release
+PLOS provides the working parts of a research process: persistent questions,
+source retrieval, local corpus search, model-assisted synthesis and a place to
+review the evidence. It can support recurring topic monitoring, technical
+investigation, document comparison and family-history research.
 
-`v0.1.1` refreshes the public core with the June 2026 scheduler, agent,
-runtime-policy, face-provenance, media/chat, and dependency-audit updates from
-the private source tree. The release was generated from a history-free public
-export, not from private repository history. Verification for this release
-included the public audit, dependency provenance guard, license audit, npm
-audits, public GitHub Actions, and a full public smoke run with 366 focused
-tests.
+| Research need | PLOS capability |
+| --- | --- |
+| Work from your own documents | File indexing, hybrid RAG/GraphRAG retrieval and source-bound references. |
+| Investigate a question over time | Research topics and missions with scheduling, execution history and review context. |
+| Bring in current material | Configured multi-source web retrieval, deduplication and visible partial coverage. |
+| Inspect a proposed answer | Retained source context, citation-readiness states and research review queues. |
+| Keep the operator in control | Policy-gated AI/tool routes and human approval for sensitive changes. |
+| Reuse work across tools | Workflow nodes, application APIs and optional MCP adapters. |
 
-## What You Can Do
+Start with the [research workbench walkthrough](docs/research-workbench.md).
+Source references help you check an answer; they do not make the answer correct.
+The release does not claim benchmarked research accuracy or autonomous scientific
+discovery. Models, embedding routes and external source access are configured
+by the operator.
 
-- Index local files and run hybrid RAG/GraphRAG search across them.
-- Run scheduled workflows with human review queues before sensitive actions.
-- Route AI calls to local Ollama-compatible hosts by default, with optional
-  external providers behind explicit policy gates.
-- Use agent and MCP tooling with offline/hybrid policy checks and audit
-  receipts.
-- Work with public preview surfaces for genealogy research, family-tree review
-  UI, source-backed review packets, and operator-approved data quality queues.
-- Enable optional media, face-region metadata, browser automation, Joplin,
-  Nextcloud, Thunderbird, YouTube, research, and notification modules.
+## More than a chat window
 
-The public extraction ships code and docs, not private data. Genealogy,
-connector, agent, and media workflows are local/operator-configured surfaces;
-destructive or sensitive changes should stay behind explicit human approval.
+The same framework supports scheduled workflows, review queues, file/media
+extraction, source-backed genealogy packets and optional Joplin, Nextcloud,
+browser, YouTube, transcription and notification adapters. The current review
+UI uses Decision Desk controls. Photos can retain operator-approved names and
+face-region metadata; mathematical face embeddings are separate private data.
 
-## Tip this work
+PLOS ships application source and synthetic/permitted examples. It does not ship
+the maintainer's databases, private model routes, accounts, family records,
+photos, credentials or runtime sessions.
 
-If Personal Life OS Core has helped you, you may leave an [optional one-time tip](https://github.com/sponsors/bherald?frequency=one-time). Tips help offset hardware, storage, electricity, hosting, and testing. A tip does not purchase support, consulting, access, priority, or any deliverable.
-
-## Quick Start: Docker
-
-Docker is the preferred public proof path for the core stack.
+## Quick start: Docker core
 
 ```bash
 cp .env.example .env
-# Edit .env now: set WEB_UI_MASTER_PASSWORD to a real local value.
-# The placeholder WEB_UI_MASTER_PASSWORD=change-me intentionally fails setup doctor.
+# Set WEB_UI_MASTER_PASSWORD and database passwords in .env.
 docker compose build app
 docker compose run --rm app php artisan key:generate
 docker compose run --rm app php artisan passport:keys --force --no-interaction
@@ -63,198 +63,66 @@ docker compose exec app php artisan setup:doctor --profile=core
 docker compose up -d worker scheduler vite
 ```
 
-Open `http://localhost:8000`. Change placeholder passwords in `.env` before
-exposing the stack outside a private development machine.
+Open `http://localhost:8000`. The core doctor should report zero failures before
+you add research/model/media services. Placeholder passwords intentionally fail
+the configuration checks. See [quick start](docs/quickstart.md) and
+[Docker setup](docker/README.md) for host ports and schema/migration guidance.
 
-In the Docker core path, `setup:doctor --profile=core` should have zero
-failures. Warnings for host-owned tools such as Node/npm or the Docker binary
-can be normal inside the PHP app container; use `docker/README.md` for the
-profile-specific interpretation.
+## Add the services you need
 
-Run normal `php artisan migrate` afterward only when applying migrations beyond
-the shipped schema dumps. See [docker/README.md](docker/README.md) for host-port
-remaps, optional service profiles, and private compose overlays.
+| Profile | Adds |
+| --- | --- |
+| Core | App, scheduler, queues, review queues and basic retrieval infrastructure. |
+| Media | Thumbnails, extraction, OCR, face detection and metadata tooling. |
+| GPU | Optional heavier local inference/transcription dependencies. |
+| Full | Configured research, search and connector services. |
+| Personal | Operator-owned mail, sync and notification adapters. |
 
-## Install Tiers
+Use `php artisan setup:doctor --profile=<profile>` to inspect prerequisites.
+For the current AI contracts and separately reported live configuration, run
+`php artisan codex:offline-pipeline-tools --json`. Installing a package does not
+activate its route, download model weights or grant permission for an action.
 
-| Tier | Adds | Setup Doctor |
-| --- | --- | --- |
-| Core | Laravel app, scheduler, queues, review queues, setup doctor, basic RAG | `php artisan setup:doctor --profile=core` |
-| Media | File/media extraction, thumbnails, OCR, face detection, metadata checks | `php artisan setup:doctor --profile=media` |
-| GPU | PyTorch, Transformers, Whisper, heavier local AI workloads | `php artisan setup:doctor --profile=gpu` |
-| Full | Core + media/GPU plus Tika, SearXNG, Ollama, Nextcloud-style services | `php artisan setup:doctor --profile=full` |
-| Personal | Operator-only paths and adapters such as Pushover, private Joplin/Nextcloud, Thunderbird bridge | `php artisan setup:doctor --profile=personal` |
-
-`personal` is for private installs. Public CI and public examples should use
-`core`, `media`, `gpu`, or `full`.
-Media can run against the default stack when local assets are present. Full
-expects optional services such as Tika, SearXNG, Ollama, and optional
-Nextcloud-style surfaces to be started first. GPU remains host-specific and
-needs matching PyTorch/CUDA setup before its doctor result is release evidence.
-
-## Bare-Metal Install
-
-Preflight:
-
-1. Install PHP 8.3, Composer 2, Node.js 20+, npm, Python 3.10+, MySQL/MariaDB,
-   PostgreSQL 16 with `pgvector`, Redis, and `ripgrep`.
-2. Create the MySQL/MariaDB database and user named in `.env`.
-3. Create the PostgreSQL RAG database and role named by `RAG_DB_DATABASE` and
-   `RAG_DB_USERNAME`; enable `CREATE EXTENSION IF NOT EXISTS vector;`.
-4. Start Redis.
-5. Set `WEB_UI_MASTER_PASSWORD` to a real local value. The example `change-me`
-   intentionally fails setup checks.
-
-```bash
-composer install
-npm install
-python3 -m venv .venv
-.venv/bin/python -m pip install -c requirements-core.constraints.txt -r requirements-core.txt
-cp .env.example .env
-sed -i 's#^PYTHON_BINARY=.*#PYTHON_BINARY=.venv/bin/python#' .env
-php artisan key:generate
-php artisan passport:keys --force --no-interaction
-php artisan migrate --schema-path=database/schema/mysql-schema.sql
-PGPASSWORD="${RAG_DB_PASSWORD}" psql -U "${RAG_DB_USERNAME:-plos_rag}" -h "${RAG_DB_HOST:-127.0.0.1}" "${RAG_DB_DATABASE:-plos_rag}" < database/schema/pgsql-schema.sql
-php artisan db:seed --class=PublicBaselineSeeder --force
-php artisan setup:doctor --profile=core
-npm run build
-```
-
-For media/genealogy work, install with `-c requirements-media.constraints.txt
--r requirements-media.txt`. GPU/transformer workloads need host-specific
-PyTorch/CUDA setup before using `requirements-gpu.constraints.txt` with
-`requirements-gpu.txt`; that snapshot was generated on Linux x86_64 with
-Python 3.12 and default PyPI indexes.
-
-## Setup Doctor
-
-`php artisan setup:doctor` is read-only. It checks env, PHP extensions,
-binaries, Python modules, services, Passport keys, database features, browser
-runtimes, runtime assets, and Docker assets. It exits `1` on failures; with
-`--strict`, warnings also exit `1`.
-
-```bash
-php artisan setup:doctor --profile=core --json
-php artisan setup:doctor --profile=media --skip-services
-php artisan setup:doctor --profile=full --only=python,services,database
-```
-
-Use `--skip-services` or a narrower `--only=...` slice when optional services
-are not running. The public smoke currently proves `core --skip-services` and
-the media `assets,browser,docker` slice; GPU and full evidence remain
-clean-host/tag-gate work.
-
-## Local AI
-
-PLOS is designed to stay useful without internet access. Local
-Ollama-compatible hosts provide model inference, embeddings, and vision where
-configured. External providers are optional and should remain behind explicit
-routing, sensitivity, and offline-mode policy checks.
-
-## Local-First Connectors
-
-The public repo ships placeholders and adapter contracts. Operators attach real
-paths and credentials through `.env` and ignored local overlays.
-
-- **Nextcloud**: same-host or same-LAN file/calendar/contact/media sync.
-  `NEXTCLOUD_DATA_PATH` enables fast filesystem-first scans; WebDAV remains the
-  compatibility path for sharing, file IDs, calendar, contacts, and remote
-  deployments.
-- **Joplin**: optional operator-managed notes surface, typically synced through
-  local Nextcloud. PLOS reads `NEXTCLOUD_JOPLIN_PATH`; it does not run Joplin
-  sync or bundle Joplin application code.
-- **Thunderbird**: local mail bridge via `THUNDERBIRD_MCP_URL`. Mail is treated
-  as a local-device surface, not a general cloud mailbox sync.
-- **Pushover**: optional notification/review adapter, seeded disabled until an
-  operator provides credentials and enables it; it is not a required public dependency.
-
-Use [docker-compose.personal.example.yml](docker-compose.personal.example.yml)
-as the template for private bind mounts. Keep the real
-`docker-compose.personal.yml` out of git. See
-[docs/personal-connectors.md](docs/personal-connectors.md).
-
-## What Stays Private
-
-Do not publish private history or this private working tree directly. The
-public release should be a fresh, history-free repository generated from the
-reviewed allowlist.
-
-Never include real credentials, real Nextcloud/Joplin/Thunderbird paths,
-personal genealogy data, email/finance archives, private browser profiles,
-operator deployment scripts, `.env`, `.mcp.json`, `.claude.json`, `CLAUDE.md`,
-or `docker-compose.personal.yml` in the public repo.
-
-FamilySearch, Ancestry, Fold3, NEHGS/AmericanAncestors, and FindMyPast
-automation is intentionally absent. Keep them as manual/browser-only source
-references. Newspapers.com and MyHeritage belong behind private opt-in
-configuration for operator-owned access, not public defaults.
-
-## Provenance And Licensing
-
-PLOS source is MIT-licensed unless a file states otherwise. Projects such as
-Gramps, Gramps Web, webtrees, PhotoPrism, LibrePhotos, and Joplin are workflow,
-data-model, and interoperability references only. Do not copy GPL/AGPL
-implementation code into a permissive PLOS extraction unless the license
-strategy intentionally changes.
-
-Face-region metadata writeback is standards-oriented: ExifTool-compatible
-XMP/MWG/IPTC metadata paths, not copied photo-manager implementation code.
-
-Release references:
-
-- [NOTICE.md](NOTICE.md): compact third-party notices.
-- [THIRD_PARTY.md](THIRD_PARTY.md): dependency and provenance watch items.
-- [docs/research-provenance.md](docs/research-provenance.md): research and
-  project citation map.
-- [tests/Fixtures/PROVENANCE.md](tests/Fixtures/PROVENANCE.md): fixture source
-  and license/status register.
-
-## Public Release Tools
-
-Maintainers preparing a public extraction from a private working tree should
-run:
-
-```bash
-scripts/guards/public-release-audit.sh
-scripts/audit-licenses.sh
-scripts/public-smoke.sh --force "$HOME/tmp/personal-life-os-core-smoke"
-```
-
-Seed a fresh public-candidate tree with:
-
-```bash
-scripts/public-export.sh --force "$HOME/tmp/personal-life-os-core"
-```
-
-See [docs/public-release-readiness.md](docs/public-release-readiness.md).
+Recent source-preservation, review-ownership and uncertain-operation repairs are described in the [v2.1 notes](docs/releases/v2.1.md). Their synthetic source tests do not certify configured runtime delivery.
+Explicit Codex preference retains privacy and routing admission. The cancelled privileged maintenance adapter is excluded from the candidate.
 
 ## Documentation
 
-- [docs/README.md](docs/README.md): canonical documentation map.
-- [docs/quickstart.md](docs/quickstart.md): shortest Docker-first first boot.
-- [docs/public-install-prerequisites.md](docs/public-install-prerequisites.md):
-  dependency and setup inventory.
-- [docs/operation.md](docs/operation.md): public operation and maintenance.
-- [docs/troubleshooting.md](docs/troubleshooting.md): common install and runtime failures.
-- [docs/security-privacy.md](docs/security-privacy.md): local-first privacy and public audit guidance.
-- [docs/roadmap.md](docs/roadmap.md): public-core direction.
-- [docs/clean-room-references.md](docs/clean-room-references.md): reference-project non-derivation rules.
-- [docs/python-constraints-license-snapshot.md](docs/python-constraints-license-snapshot.md):
-  Python package license watch items.
-- [docs/public-release-readiness.md](docs/public-release-readiness.md): release
-  checklist and remaining validation.
-- [docs/schema-reference.md](docs/schema-reference.md): database schema
-  reference.
-- [docs/FACE-RECOGNITION.md](docs/FACE-RECOGNITION.md): dlib model setup and
-  face-recognition safety.
-- [docs/face-metadata-writeback.md](docs/face-metadata-writeback.md): portable
-  face/person metadata writeback.
-- [docs/AGENT-SAFETY-CARDS.md](docs/AGENT-SAFETY-CARDS.md): agent safety and
-  operator rules.
+- [Research workbench](docs/research-workbench.md)
+- [Portable photo knowledge demo](docs/photo-knowledge-demo.md)
+- [UI and connectors](docs/connectors-and-ui.md), [four fictional nightly use cases](docs/nightly-use-cases.md) and [inactive retrieval example](docs/nightly-review-example.md) and [portable methods](docs/portable-methods.md)
+- [Public skills and MCP scope](docs/public-methods/skills-and-mcp.md)
+- [Offline controller contracts](examples/offline-controller/README.md) and [release article](docs/articles/plos-v2.1.md)
+- [Quick start](docs/quickstart.md) and [installation prerequisites](docs/public-install-prerequisites.md)
+- [Operation](docs/operation.md) and [troubleshooting](docs/troubleshooting.md)
+- [Architecture](docs/architecture.md)
+- [Security and privacy](docs/security-privacy.md)
+- [Research and upstream provenance](docs/research-provenance.md)
+- [Contributor guide](CONTRIBUTING.md), [notices](NOTICE.md) and [third-party terms](THIRD_PARTY.md)
 
-## Security
+## Contribute and support
 
-For public releases, run the public audit and keep real credentials, private
-paths, personal data, and operator-only deployment files out of git. See
-[SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+Use synthetic or explicitly permitted data in examples and bug reports. Preserve
+source content and operator decisions. Keep sensitive actions and face identity
+under human review.
+
+PLOS is free. Optional one-time tips through the repository's GitHub Sponsors
+button help cover hardware, storage, electricity, hosting and testing. A tip
+does not purchase support, access, priority or a deliverable.
+
+## Release verification
+
+Run `scripts/guards/public-release-audit.sh`,
+`scripts/guards/dependency-provenance-check.sh` and `scripts/audit-licenses.sh`
+before preparing a public update. Use the correct optional setup profile:
+
+```bash
+php artisan setup:doctor --profile=core
+php artisan setup:doctor --profile=media
+php artisan setup:doctor --profile=gpu
+php artisan setup:doctor --profile=full
+```
+
+Pushover is optional, not a required public dependency.
+
+The v2.1 web build requires modern browsers: Safari 16.4+, Chrome 111+ or Firefox 128+. See [frontend/dependency qualification](docs/public-release/ui-dependency-upgrade-2026-10-12.md).

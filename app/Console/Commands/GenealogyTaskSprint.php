@@ -9,11 +9,11 @@ class GenealogyTaskSprint extends Command
 {
     protected $signature = 'genealogy:task-sprint
                             {--tree=4 : Tree ID to target}
-                            {--stale-hours=72 : Recover processing tasks older than this many hours}
+                            {--stale-hours=72 : Report processing tasks older than this many hours without reclaiming them}
                             {--triage=5 : Number of quality triage candidates to show}
                             {--cleanup-only : Skip triage output}';
 
-    protected $description = 'Clean up stale current-table genealogy tasks and show the best current triage candidates';
+    protected $description = 'Report held stale genealogy tasks and show the best current triage candidates';
 
     public function handle(ScheduledJobService $jobs): int
     {
@@ -24,8 +24,8 @@ class GenealogyTaskSprint extends Command
         $cleanup = $jobs->cleanupGenealogyTaskBacklog($treeId, $staleHours);
 
         $this->info("Genealogy task sprint complete for tree {$treeId}");
-        $this->line("Recovered stale tasks: {$cleanup['stale_task_count']}");
-        $this->line("Reset queue items: {$cleanup['released_queue_count']}");
+        $this->line("Held stale tasks: {$cleanup['held_task_count']}");
+        $this->line('Reset queue items: 0 (owner liveness is unproven)');
 
         if (! empty($cleanup['stale_task_ids'])) {
             $this->line('Recovered task IDs: '.implode(', ', $cleanup['stale_task_ids']));

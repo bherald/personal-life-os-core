@@ -6,11 +6,12 @@
       <p class="text-sm mt-1">Name faces in the "New" tab to see them here</p>
     </div>
 
-    <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3">
+    <div class="face-people-grid grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-3" :class="{ 'has-global-people': recognized.some(isGlobal) }">
       <div
         v-for="person in recognized"
         :key="person.identity_key || person.person_name"
         class="group relative bg-ops-plum/20 rounded-lg overflow-hidden border border-transparent hover:border-ops-peach/40 transition-colors cursor-pointer"
+        :class="{ 'global-person-card': isGlobal(person) }"
         @click="handleClick(person)"
       >
         <!-- Face image -->
@@ -41,13 +42,18 @@
             <button
               @click.stop="$emit('edit', person)"
               class="shrink-0 w-6 h-6 rounded border border-ops-peach/25 text-ops-text-muted hover:text-ops-peach hover:border-ops-peach/60 transition-colors"
-              title="Rename face label"
-              aria-label="Rename face label"
+              :title="isGlobal(person) ? 'Person names and aliases' : 'Rename face label'"
+              :aria-label="isGlobal(person) ? 'Person names and aliases' : 'Rename face label'"
             >
               <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
               </svg>
             </button>
+          </div>
+          <div v-if="isGlobal(person)" class="global-person-details">
+            <span>Confirmed person</span>
+            <span v-if="person.aliases?.length">Aliases: {{ person.aliases.join(', ') }}</span>
+            <small>Record {{ person.identity_uuid?.slice(-8) }}</small>
           </div>
           <div class="mt-1 flex flex-wrap gap-1">
             <span
@@ -127,12 +133,26 @@ function handleClick(person) {
 }
 
 function personImageSrc(person) {
+  if (isGlobal(person)) {
+    try {
+      const url = new URL(person.representative_crop_url, location.origin)
+      const keys = [...url.searchParams.keys()]
+      if (url.origin === location.origin && !url.hash && !url.username && !url.password
+        && url.pathname === `/api/media/faces/registry-crop/${person.representative_face_id}`
+        && keys.length === 2 && keys.includes('source_sha256') && keys.includes('region_fingerprint')
+        && /^[a-f0-9]{64}$/.test(url.searchParams.get('source_sha256') || '')
+        && /^[a-f0-9]{64}$/.test(url.searchParams.get('region_fingerprint') || '')) return url.href
+    } catch {}
+    return placeholderImage()
+  }
   if (person?.representative_face_id) {
     return `/api/media/faces/registry-crop/${person.representative_face_id}`
   }
 
   return person?.representative_thumbnail_url || placeholderImage()
 }
+
+function isGlobal(person) { return person?.scope_type === 'global_identity' || person?.identity_key?.startsWith('global:') }
 
 function onImgError(e) {
   e.target.src = placeholderImage()
@@ -142,3 +162,13 @@ function placeholderImage() {
   return 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%23333" width="100" height="100"/><text x="50" y="55" text-anchor="middle" fill="%23666" font-size="14">?</text></svg>'
 }
 </script>
+
+<style scoped>
+.global-person-card { background: var(--desk-paper); border-color: var(--desk-line); color: var(--desk-ink); }
+.global-person-card:hover { border-color: var(--desk-teal); }
+.global-person-card .text-ops-text { color: var(--desk-ink); }
+.global-person-card .text-sm { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+.global-person-card button { min-width: 44px; min-height: 44px; border-color: var(--desk-line); color: var(--desk-ink); }
+.global-person-details { display: grid; gap: 3px; margin-top: 6px; font-size: 11px; color: var(--desk-muted); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .face-people-grid.has-global-people { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>

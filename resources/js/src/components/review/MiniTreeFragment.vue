@@ -116,18 +116,18 @@ const roleLabel = computed(() => {
 .tree-label {
   font-size: 12px;
   font-weight: 600;
-  fill: #f0e6ff;
+  fill: var(--color-text-primary);
   font-family: inherit;
 }
-.tree-label-proposed { fill: #ffe5b3; }
+.tree-label-proposed { fill: var(--ops-warning); }
 .tree-sub {
   font-size: 10px;
-  fill: #b39ddb;
+  fill: var(--color-accent);
   font-family: inherit;
 }
 .tree-edge-label {
   font-size: 10px;
-  fill: #b39ddb;
+  fill: var(--color-accent);
   font-family: inherit;
   text-transform: uppercase;
   letter-spacing: 0.04em;

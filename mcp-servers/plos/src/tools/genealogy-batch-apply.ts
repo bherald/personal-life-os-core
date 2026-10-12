@@ -2,6 +2,17 @@ import { randomUUID } from 'node:crypto';
 import mysql from 'mysql2/promise';
 import { z } from 'zod';
 import { mysqlTransaction } from '../db/mysql.js';
+import {
+  buildGraphSnapshot,
+  evaluateGraphGuard,
+  inactiveGraphGuard,
+  plannedGraphGuard,
+  resolveOptionalReference,
+  type GraphChild,
+  type GraphFamily,
+  type GraphGuardReport,
+  type GraphSnapshot,
+} from './genealogy-write-safety.js';
 
 type Row = Record<string, any>;
 
@@ -28,6 +39,7 @@ export const genealogyBatchApplyInput = z.object({
   })).max(50).optional(),
   media_updates: z.array(z.object({
     id: z.number().int().positive(),
+    media_date: z.string().max(50).optional(),
     media_type: z.enum(['photo', 'document', 'certificate', 'census', 'military', 'obituary', 'headstone', 'video', 'audio', 'other']).optional(),
     analysis_status: z.enum(['pending', 'processing', 'completed', 'failed', 'skipped']).optional(),
     enrichment_status: z.enum(['pending', 'processing', 'completed', 'failed', 'skipped']).optional(),
@@ -45,13 +57,17 @@ export const genealogyBatchApplyInput = z.object({
     birth_place: z.string().max(1000).optional(),
     death_date: z.string().max(50).optional(),
     death_place: z.string().max(1000).optional(),
+    burial_date: z.string().max(50).optional(),
+    burial_place: z.string().max(1000).optional(),
     notes_append: z.string().max(20000).optional(),
     living: z.boolean().optional(),
-  })).max(300).optional(),
+  }).strict()).max(300).optional(),
   families: z.array(keyRef.extend({
-    husband_id: z.number().int().positive().optional(),
+    husband_id: z.number().int().positive().nullable().optional()
+      .describe('Omit to preserve an existing husband link; null explicitly clears it.'),
     husband_key: z.string().min(1).max(100).optional(),
-    wife_id: z.number().int().positive().optional(),
+    wife_id: z.number().int().positive().nullable().optional()
+      .describe('Omit to preserve an existing wife link; null explicitly clears it.'),
     wife_key: z.string().min(1).max(100).optional(),
     marriage_date: z.string().max(50).optional(),
     marriage_place: z.string().max(1000).optional(),
@@ -109,10 +125,11 @@ type Summary = {
   dry_run: boolean;
   tree_id: number;
   reason: string;
-  inserted: Record<'sources' | 'persons' | 'families' | 'children' | 'citations' | 'person_media' | 'family_media', number>;
+  inserted: Record<'sources' | 'persons' | 'families' | 'children' | 'citations' | 'person_sources' | 'person_media' | 'family_media', number>;
   updated: Record<'sources' | 'persons' | 'families' | 'media', number>;
   touched_for_rag: Record<'persons' | 'sources' | 'media', number>;
   keys: Record<string, number>;
+  graph_guard: GraphGuardReport;
   planned?: ReturnType<typeof plannedCounts>;
 };
 
@@ -122,10 +139,11 @@ export async function genealogyBatchApply(input: GenealogyBatchApplyInput): Prom
     dry_run: dryRun,
     tree_id: input.tree_id,
     reason: input.reason,
-    inserted: { sources: 0, persons: 0, families: 0, children: 0, citations: 0, person_media: 0, family_media: 0 },
+    inserted: { sources: 0, persons: 0, families: 0, children: 0, citations: 0, person_sources: 0, person_media: 0, family_media: 0 },
     updated: { sources: 0, persons: 0, families: 0, media: 0 },
     touched_for_rag: { persons: 0, sources: 0, media: 0 },
     keys: {},
+    graph_guard: dryRun ? plannedGraphGuard() : inactiveGraphGuard(),
   };
 
   if (dryRun) {
@@ -138,7 +156,10 @@ export async function genealogyBatchApply(input: GenealogyBatchApplyInput): Prom
   }
 
   await mysqlTransaction(async (conn) => {
-    await assertTreeExists(conn, input.tree_id);
+    const graphMutation = hasGraphMutation(input);
+    const beforeGraph = graphMutation ? await captureGraphSnapshot(conn, input.tree_id) : null;
+    if (!graphMutation) await assertTreeExists(conn, input.tree_id);
+    if (beforeGraph) evaluateGraphGuard(beforeGraph, beforeGraph);
 
     let nextPersonGedcom = await nextGedcomNumber(conn, 'genealogy_persons', input.tree_id, 'I');
     let nextFamilyGedcom = await nextGedcomNumber(conn, 'genealogy_families', input.tree_id, 'F');
@@ -152,7 +173,7 @@ export async function genealogyBatchApply(input: GenealogyBatchApplyInput): Prom
     for (const media of input.media_updates ?? []) {
       await assertMediaInTree(conn, input.tree_id, media.id);
       const fields = pickDefined(media, [
-        'media_type', 'analysis_status', 'enrichment_status', 'enrichment_error',
+        'media_date', 'media_type', 'analysis_status', 'enrichment_status', 'enrichment_error',
         'ai_description', 'transcription_text', 'transcription_source',
       ]);
       if (Object.keys(fields).length > 0) {
@@ -262,6 +283,16 @@ export async function genealogyBatchApply(input: GenealogyBatchApplyInput): Prom
         );
         summary.inserted.citations++;
       }
+
+      if (personId) {
+        const [personSourceResult] = await conn.query<mysql.ResultSetHeader>(
+          `INSERT IGNORE INTO genealogy_person_sources
+           (person_id, source_id, page, quality, created_at)
+           VALUES (?, ?, ?, ?, NOW())`,
+          [personId, sourceId, citation.page ?? null, citation.quality === undefined ? null : String(citation.quality)]
+        );
+        summary.inserted.person_sources += personSourceResult.affectedRows;
+      }
     }
 
     const touch = collectRagTouch(input, summary.keys);
@@ -276,6 +307,13 @@ export async function genealogyBatchApply(input: GenealogyBatchApplyInput): Prom
     if (touch.mediaIds.length > 0) {
       await conn.query('UPDATE genealogy_media SET rag_indexed_at = NULL, updated_at = NOW() WHERE tree_id = ? AND id IN (?)', [input.tree_id, touch.mediaIds]);
       summary.touched_for_rag.media = touch.mediaIds.length;
+    }
+
+    if (beforeGraph) {
+      summary.graph_guard = evaluateGraphGuard(
+        beforeGraph,
+        await captureGraphSnapshot(conn, input.tree_id)
+      );
     }
   });
 
@@ -292,6 +330,7 @@ function plannedCounts(input: GenealogyBatchApplyInput) {
     person_media: input.person_media?.length ?? 0,
     family_media: input.family_media?.length ?? 0,
     citations: input.citations?.length ?? 0,
+    person_sources: input.citations?.filter((citation) => citation.person_id || citation.person_key).length ?? 0,
   };
 }
 
@@ -350,7 +389,7 @@ async function upsertPerson(
 ): Promise<number> {
   const fields = pickDefined(person, [
     'given_name', 'surname', 'sex', 'nickname', 'birth_date', 'birth_place',
-    'death_date', 'death_place',
+    'death_date', 'death_place', 'burial_date', 'burial_place',
   ]);
   if (person.living !== undefined) fields.living = person.living ? 1 : 0;
   fields.rag_indexed_at = null;
@@ -380,6 +419,8 @@ async function upsertPerson(
       birth_place: person.birth_place ?? '',
       death_date: person.death_date ?? '',
       death_place: person.death_place ?? '',
+      burial_date: person.burial_date ?? '',
+      burial_place: person.burial_place ?? '',
       notes: person.notes_append ?? '',
       living: person.living === undefined ? null : (person.living ? 1 : 0),
       rag_indexed_at: null,
@@ -397,17 +438,15 @@ async function upsertFamily(
   keyMap: Record<string, number>,
   nextGedcom: () => string
 ): Promise<number> {
-  const husbandSupplied = family.husband_id !== undefined || family.husband_key !== undefined;
-  const wifeSupplied = family.wife_id !== undefined || family.wife_key !== undefined;
-  const husbandId = husbandSupplied ? resolveId(family.husband_id, family.husband_key, keyMap, 'husband') : null;
-  const wifeId = wifeSupplied ? resolveId(family.wife_id, family.wife_key, keyMap, 'wife') : null;
+  const husband = resolveOptionalReference(family, 'husband_id', 'husband_key', keyMap, 'husband');
+  const wife = resolveOptionalReference(family, 'wife_id', 'wife_key', keyMap, 'wife');
 
-  if (husbandId) await assertPersonInTree(conn, treeId, husbandId);
-  if (wifeId) await assertPersonInTree(conn, treeId, wifeId);
+  if (husband.id) await assertPersonInTree(conn, treeId, husband.id);
+  if (wife.id) await assertPersonInTree(conn, treeId, wife.id);
 
   const fields = pickDefined(family, ['marriage_date', 'marriage_place', 'notes']);
-  if (husbandSupplied) fields.husband_id = husbandId;
-  if (wifeSupplied) fields.wife_id = wifeId;
+  if (husband.specified) fields.husband_id = husband.id;
+  if (wife.specified) fields.wife_id = wife.id;
   fields.updated_at = new Date();
 
   if (family.id) {
@@ -416,10 +455,10 @@ async function upsertFamily(
     return family.id;
   }
 
-  if (!husbandId && !wifeId) throw new Error('New family requires husband or wife reference');
+  if (!husband.id && !wife.id) throw new Error('New family requires husband or wife reference');
   const [existing] = await conn.query<mysql.RowDataPacket[]>(
     'SELECT id FROM genealogy_families WHERE tree_id = ? AND husband_id <=> ? AND wife_id <=> ? LIMIT 1',
-    [treeId, husbandId, wifeId]
+    [treeId, husband.id, wife.id]
   );
   if (existing.length > 0) {
     await conn.query('UPDATE genealogy_families SET ? WHERE tree_id = ? AND id = ?', [fields, treeId, existing[0].id]);
@@ -431,8 +470,8 @@ async function upsertFamily(
     [{
       ...fields,
       tree_id: treeId,
-      husband_id: husbandId,
-      wife_id: wifeId,
+      husband_id: husband.id,
+      wife_id: wife.id,
       gedcom_id: nextGedcom(),
       uid: randomUUID(),
       created_at: new Date(),
@@ -548,6 +587,48 @@ async function assertTreeExists(conn: mysql.PoolConnection, treeId: number): Pro
   if (!(await exists(conn, 'SELECT id FROM genealogy_trees WHERE id = ?', [treeId]))) {
     throw new Error(`Genealogy tree not found: ${treeId}`);
   }
+}
+
+function hasGraphMutation(input: GenealogyBatchApplyInput): boolean {
+  return Boolean(input.families?.length || input.children?.length);
+}
+
+async function captureGraphSnapshot(conn: mysql.PoolConnection, treeId: number): Promise<GraphSnapshot> {
+  const [treeRows] = await conn.query<mysql.RowDataPacket[]>(
+    'SELECT id, root_person_id FROM genealogy_trees WHERE id = ? FOR UPDATE',
+    [treeId]
+  );
+  if (!treeRows.length) throw new Error(`Genealogy tree not found: ${treeId}`);
+
+  const [personRows] = await conn.query<mysql.RowDataPacket[]>(
+    'SELECT id FROM genealogy_persons WHERE tree_id = ?',
+    [treeId]
+  );
+  const [familyRows] = await conn.query<mysql.RowDataPacket[]>(
+    'SELECT id, husband_id, wife_id FROM genealogy_families WHERE tree_id = ?',
+    [treeId]
+  );
+  const [childRows] = await conn.query<mysql.RowDataPacket[]>(
+    `SELECT c.family_id, c.person_id
+       FROM genealogy_children c
+       JOIN genealogy_families f ON f.id = c.family_id
+      WHERE f.tree_id = ?`,
+    [treeId]
+  );
+
+  return buildGraphSnapshot(
+    treeRows[0].root_person_id === null ? null : Number(treeRows[0].root_person_id),
+    personRows.map((row) => Number(row.id)),
+    familyRows.map((row) => ({
+      id: Number(row.id),
+      husband_id: row.husband_id === null ? null : Number(row.husband_id),
+      wife_id: row.wife_id === null ? null : Number(row.wife_id),
+    } satisfies GraphFamily)),
+    childRows.map((row) => ({
+      family_id: Number(row.family_id),
+      person_id: Number(row.person_id),
+    } satisfies GraphChild))
+  );
 }
 
 async function assertPersonInTree(conn: mysql.PoolConnection, treeId: number, personId: number): Promise<void> {

@@ -20,9 +20,13 @@ class GenealogyMediaIntakeRunService
     {
         $treeId = (int) ($options['tree_id'] ?? 4);
         $dryRun = (bool) ($options['dry_run'] ?? false);
+        $retainOutput = (bool) ($options['retain_output'] ?? false);
+        $compact = (bool) ($options['compact'] ?? false);
+        if ($retainOutput && $compact) {
+            throw new \InvalidArgumentException('Retained intake output cannot be combined with compact output.');
+        }
         $root = $this->normalizeRoot($treeId, $options['root'] ?? null, inferFromMedia: ! $dryRun);
         $limit = max(1, min(200, (int) ($options['limit'] ?? 50)));
-        $compact = (bool) ($options['compact'] ?? false);
         $stage = (bool) ($options['stage'] ?? false);
         $saveRun = (bool) ($options['save_run'] ?? false);
         $confirmNoncanonicalWrite = (bool) ($options['confirm_noncanonical_write'] ?? false);
@@ -69,11 +73,15 @@ class GenealogyMediaIntakeRunService
 
         if ($payload['blocked'] !== []) {
             $payload['status'] = 'blocked';
+            if ($retainOutput) {
+                $payload['success'] = false;
+            }
 
             return $compact ? $this->compactPayload($payload) : $payload;
         }
 
-        $payload['report'] = $this->report->compactPayload($this->report->collect($treeId, $root, $limit, $dryRun));
+        $report = $this->report->collect($treeId, $root, $limit, $dryRun);
+        $payload['report'] = $retainOutput ? $report : $this->report->compactPayload($report);
         $plannedSteps = $this->plannedSteps(
             $treeId,
             $root,
@@ -84,22 +92,29 @@ class GenealogyMediaIntakeRunService
             $enrichDryRun || $postCaptureDryRun,
             $evidenceAssets,
             $capturePreflight || $postCaptureDryRun,
-            $postCaptureDryRun
+            $postCaptureDryRun,
+            (bool) ($options['inventory_only'] ?? false)
         );
 
         if ($dryRun || $plannedSteps === []) {
             $payload['status'] = $dryRun ? 'dry_run' : 'no_steps_selected';
             $payload['steps'] = array_map(fn (array $step): array => $this->plannedStepPayload($step), $plannedSteps);
+            if ($retainOutput) {
+                $payload['success'] = true;
+            }
 
             return $compact ? $this->compactPayload($payload) : $payload;
         }
 
         foreach ($plannedSteps as $step) {
-            $payload['steps'][] = $this->executeStep($step, $compact);
+            $payload['steps'][] = $this->executeStep($step, $compact, $retainOutput);
         }
 
         $failed = array_values(array_filter($payload['steps'], static fn (array $step): bool => ($step['exit_code'] ?? 0) !== 0));
         $payload['status'] = $failed === [] ? 'completed' : 'completed_with_errors';
+        if ($retainOutput) {
+            $payload['success'] = $failed === [];
+        }
 
         return $compact ? $this->compactPayload($payload) : $payload;
     }
@@ -145,12 +160,16 @@ class GenealogyMediaIntakeRunService
         bool $enrichDryRun,
         bool $evidenceAssets,
         bool $capturePreflight,
-        bool $postCaptureDryRun
+        bool $postCaptureDryRun,
+        bool $inventoryOnly
     ): array {
         $steps = [];
 
         if ($stage) {
             $args = ['--stage' => true, '--tree' => $treeId, '--folder' => $root, '--limit' => $limit, '--unprocessed-only' => true];
+            if ($inventoryOnly) {
+                $args['--inventory-only'] = true;
+            }
             if ($saveRun) {
                 $args['--save-run'] = true;
             }
@@ -160,7 +179,7 @@ class GenealogyMediaIntakeRunService
                 'label' => $saveRun ? 'Stage unprocessed media and persist a resumable intake run.' : 'Stage unprocessed media without persisting a run.',
                 'command' => 'genealogy:ingest-documents',
                 'args' => $args,
-                'command_template' => 'php artisan genealogy:ingest-documents --stage'.($saveRun ? ' --save-run' : '').' --tree={tree} --folder={root} --limit={limit} --unprocessed-only',
+                'command_template' => 'php artisan genealogy:ingest-documents --stage'.($inventoryOnly ? ' --inventory-only' : '').($saveRun ? ' --save-run' : '').' --tree={tree} --folder={root} --limit={limit} --unprocessed-only',
                 'write_required' => $saveRun,
                 'canonical_write' => false,
             ];
@@ -237,7 +256,7 @@ class GenealogyMediaIntakeRunService
     /**
      * @param  array<string, mixed>  $step
      */
-    private function executeStep(array $step, bool $compact): array
+    private function executeStep(array $step, bool $compact, bool $retainOutput): array
     {
         $exitCode = Artisan::call((string) $step['command'], (array) $step['args']);
         $output = (string) Artisan::output();
@@ -246,7 +265,12 @@ class GenealogyMediaIntakeRunService
         $result['status'] = $exitCode === 0 ? 'completed' : 'failed';
         $result['exit_code'] = $exitCode;
 
-        if (! $compact) {
+        if ($retainOutput) {
+            $result['output_base64'] = base64_encode($output);
+            $result['output_bytes'] = strlen($output);
+            $result['output_sha256'] = hash('sha256', $output);
+            $result['output'] = mb_check_encoding($output, 'UTF-8') ? $output : null;
+        } elseif (! $compact) {
             $result['output_preview'] = mb_substr($output, 0, 4000);
         }
 

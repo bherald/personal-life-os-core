@@ -68,7 +68,7 @@ class JoplinTagsService
                 $content = $this->getFileContent($this->joplinPath.$file);
                 if ($content) {
                     $parsed = $this->parseFile($content);
-                    if ($parsed && $parsed['type'] == 5) { // Type 5 = Tag
+                    if (($parsed['type'] ?? null) === 5) { // Type 5 = Tag
                         $tags[] = [
                             'id' => $parsed['id'],
                             'title' => $parsed['title'],
@@ -92,7 +92,11 @@ class JoplinTagsService
         $tagId = $this->generateJoplinId();
         $now = $this->getJoplinTimestamp();
 
-        $tagContent = sprintf("%s\n\nid: %s\ncreated_time: %s\nupdated_time: %s\ntype_: 5\n---\n\n",
+        // Joplin parses sync-item properties backwards from EOF. The type_
+        // property must therefore be the final bytes in the file: a trailing
+        // separator or newline makes current desktop/mobile clients report
+        // "Missing required property: type_".
+        $tagContent = sprintf("%s\n\nid: %s\ncreated_time: %s\nupdated_time: %s\ntype_: 5",
             $title,
             $tagId,
             $now,
@@ -127,7 +131,7 @@ class JoplinTagsService
         $relationId = $this->generateJoplinId();
         $now = $this->getJoplinTimestamp();
 
-        $relationContent = sprintf("\n\nid: %s\nnote_id: %s\ntag_id: %s\ncreated_time: %s\nupdated_time: %s\ntype_: 6\n---\n\n",
+        $relationContent = sprintf("id: %s\nnote_id: %s\ntag_id: %s\ncreated_time: %s\nupdated_time: %s\ntype_: 6",
             $relationId,
             $noteId,
             $tagId,
@@ -164,7 +168,7 @@ class JoplinTagsService
                 $content = $this->getFileContent($this->joplinPath.$file);
                 if ($content) {
                     $parsed = $this->parseFile($content);
-                    if ($parsed && $parsed['type'] == 6) { // Type 6 = Note-Tag relation
+                    if (($parsed['type'] ?? null) === 6) { // Type 6 = Note-Tag relation
                         if (($parsed['note_id'] ?? null) === $noteId) {
                             $tagIds[] = $parsed['tag_id'] ?? null;
                         }
@@ -184,6 +188,39 @@ class JoplinTagsService
         }
 
         return $tags;
+    }
+
+    /**
+     * Return all note-to-tag relations in one scan for bulk organizers.
+     *
+     * @return array<int, array{note_id:string,tag_id:string}>
+     */
+    public function getAllTagRelations(): array
+    {
+        $relations = [];
+
+        foreach ($this->listDirectory($this->joplinPath) as $file) {
+            if (! preg_match('/^[a-f0-9]{32}\.md$/', $file)) {
+                continue;
+            }
+
+            $content = $this->getFileContent($this->joplinPath.$file);
+            if (! $content) {
+                continue;
+            }
+
+            $parsed = $this->parseFile($content);
+            if (($parsed['type'] ?? null) !== 6 || empty($parsed['note_id']) || empty($parsed['tag_id'])) {
+                continue;
+            }
+
+            $relations[] = [
+                'note_id' => $parsed['note_id'],
+                'tag_id' => $parsed['tag_id'],
+            ];
+        }
+
+        return $relations;
     }
 
     // Helper methods

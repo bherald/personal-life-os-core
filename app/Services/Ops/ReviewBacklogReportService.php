@@ -694,6 +694,7 @@ class ReviewBacklogReportService
             'commands_included' => false,
             'apply_controls_included' => false,
         ];
+        $summary = array_merge($summary, $this->agedReviewFocusSummary($candidates));
 
         if ($focus === 'source-backed-packet' || $focus === 'face-photo-repair-packet') {
             return array_merge($summary, $this->sourcePacketFocusSummary($candidates));
@@ -704,7 +705,7 @@ class ReviewBacklogReportService
         }
 
         if ($focus === 'aged-review') {
-            return array_merge($summary, $this->agedReviewFocusSummary($candidates));
+            return $summary;
         }
 
         return $summary;
@@ -922,7 +923,8 @@ class ReviewBacklogReportService
                 $this->inlineCountMap($summary['packet_pass_state_counts'] ?? []),
                 $this->inlineCountMap($summary['packet_pass_blocker_code_counts'] ?? []),
             );
-        } elseif (($summary['stale_rows'] ?? null) !== null) {
+        }
+        if (($summary['stale_rows'] ?? null) !== null) {
             $text .= sprintf(
                 ' stale_rows=%d high_priority_rows=%d age_buckets=%s classifications=%s',
                 (int) ($summary['stale_rows'] ?? 0),
@@ -1024,7 +1026,8 @@ class ReviewBacklogReportService
             $lines[] = '- Canonical-mutation rows: `'.((int) ($summary['canonical_mutation_rows'] ?? 0)).'`';
             $lines[] = '- Packet pass states: `'.$this->inlineCountMap($summary['packet_pass_state_counts'] ?? []).'`';
             $lines[] = '- Packet blockers: `'.$this->inlineCountMap($summary['packet_pass_blocker_code_counts'] ?? []).'`';
-        } elseif (($summary['stale_rows'] ?? null) !== null) {
+        }
+        if (($summary['stale_rows'] ?? null) !== null) {
             $lines[] = '- Stale rows: `'.((int) ($summary['stale_rows'] ?? 0)).'`';
             $lines[] = '- High-priority rows: `'.((int) ($summary['high_priority_rows'] ?? 0)).'`';
             $lines[] = '- Age buckets: `'.$this->inlineCountMap($summary['age_bucket_counts'] ?? []).'`';

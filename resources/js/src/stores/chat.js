@@ -1,5 +1,26 @@
 import { defineStore } from 'pinia';
+import { markRaw } from 'vue';
 import api from '../utils/api';
+import { normalizeModelRouteResponse } from '../utils/modelRouteBootstrap';
+import { SseEventDecoder } from '../utils/sseEventDecoder';
+import {
+  applyChatStreamEvent,
+  createChatStreamActivity,
+  formatChatStreamStatus,
+} from '../utils/chatStreamActivity';
+import {
+  applyChatToolEvent,
+  normalizeChatToolActivities,
+} from '../utils/chatToolActivity';
+import {
+  createLocalChatRunFailure,
+  normalizeChatRunFailure,
+  normalizeChatRunId,
+} from '../utils/chatRunFailure';
+import {
+  invalidateConversationLoads,
+  loadLatestConversation,
+} from '../utils/latestConversationLoad';
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
@@ -7,11 +28,20 @@ export const useChatStore = defineStore('chat', {
     currentConversation: null,
     messages: [],
     modelModes: [],
+    modelModesLoading: false,
+    modelModesLoaded: false,
+    modelModesError: null,
     privateSupported: false,
     overrideSupported: false,
     loading: false,
     sending: false,
+    streamStatus: '',
+    activeStreamController: null,
+    activeStreamRunId: null,
+    activeStreamServerCancelable: false,
+    activeStreamCancellationRequested: false,
     error: null,
+    conversationLoadGeneration: 0,
   }),
 
   getters: {
@@ -48,15 +78,34 @@ export const useChatStore = defineStore('chat', {
      * Fetch model profiles and capability metadata for the selector.
      */
     async fetchModelModes() {
+      this.modelModesLoading = true;
+      this.modelModesError = null;
       try {
         const response = await api.get('/chat/model-modes');
-        this.modelModes = response.modes || [];
-        this.privateSupported = !!response.private_supported;
-        this.overrideSupported = !!response.override_supported;
+        const routes = normalizeModelRouteResponse(response);
+        const modes = routes.modes;
+        if (!modes.length) {
+          this.modelModes = [];
+          this.modelModesLoaded = false;
+          this.privateSupported = false;
+          this.overrideSupported = false;
+          this.modelModesError = 'No model routes are available';
+          return { success: false, error: this.modelModesError };
+        }
+        this.modelModes = modes;
+        this.modelModesLoaded = true;
+        this.privateSupported = routes.privateSupported;
+        this.overrideSupported = routes.overrideSupported;
         return { success: true, modes: this.modelModes };
       } catch (error) {
-        this.error = error.response?.data?.message || 'Failed to fetch model modes';
-        return { success: false, error: this.error };
+        this.modelModes = [];
+        this.modelModesLoaded = false;
+        this.privateSupported = false;
+        this.overrideSupported = false;
+        this.modelModesError = error.response?.data?.message || 'Failed to load model routes';
+        return { success: false, error: this.modelModesError };
+      } finally {
+        this.modelModesLoading = false;
       }
     },
 
@@ -82,6 +131,12 @@ export const useChatStore = defineStore('chat', {
      * Create a new conversation
      */
     async createConversation(title = null, modelMode = 'standard', isPrivate = false, modelOverride = false) {
+      if (this.sending) {
+        return { success: false, error: 'Wait for the active response to finish' };
+      }
+
+      invalidateConversationLoads(this);
+      const generation = this.conversationLoadGeneration;
       this.loading = true;
       this.error = null;
       try {
@@ -91,6 +146,10 @@ export const useChatStore = defineStore('chat', {
           is_private: isPrivate || modelMode === 'uncensored',
           model_override: modelOverride,
         });
+        if (this.conversationLoadGeneration !== generation) {
+          return { success: false, stale: true };
+        }
+
         if (response.success) {
           this.currentConversation = response.conversation;
           this.messages = [];
@@ -98,10 +157,16 @@ export const useChatStore = defineStore('chat', {
           return { success: true, conversation: response.conversation };
         }
       } catch (error) {
+        if (this.conversationLoadGeneration !== generation) {
+          return { success: false, stale: true };
+        }
+
         this.error = error.response?.data?.message || 'Failed to create conversation';
         return { success: false, error: this.error };
       } finally {
-        this.loading = false;
+        if (this.conversationLoadGeneration === generation) {
+          this.loading = false;
+        }
       }
     },
 
@@ -109,43 +174,46 @@ export const useChatStore = defineStore('chat', {
      * Load a conversation with its messages
      */
     async loadConversation(id) {
-      this.loading = true;
-      this.error = null;
-      try {
-        const response = await api.get(`/chat/conversations/${id}`);
-        if (response.success) {
-          this.currentConversation = response.conversation;
-          // Parse metadata to extract ragSources and intent for each message
-          this.messages = response.messages.map(msg => {
-            if (msg.metadata) {
-              try {
-                const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata;
-                if (meta.ragSources) {
-                  msg.ragSources = meta.ragSources;
-                }
-                if (meta.intent) {
-                  msg.intent = meta.intent;
-                }
-              } catch (e) {
-                console.warn('Failed to parse message metadata:', e);
-              }
-            }
-            return msg;
-          });
-          return { success: true };
-        }
-      } catch (error) {
-        this.error = error.response?.data?.message || 'Failed to load conversation';
-        return { success: false, error: this.error };
-      } finally {
-        this.loading = false;
+      if (this.sending) {
+        return { success: false, error: 'Wait for the active response to finish' };
       }
+
+      return loadLatestConversation(
+        this,
+        id,
+        conversationId => api.get(`/chat/conversations/${conversationId}`),
+        messages => messages.map(msg => {
+          // Parse metadata to extract ragSources and intent for each message
+          msg.tool_calls = normalizeChatToolActivities(msg.tool_calls);
+          if (msg.metadata) {
+            try {
+              const meta = typeof msg.metadata === 'string' ? JSON.parse(msg.metadata) : msg.metadata;
+              if (meta.ragSources) {
+                msg.ragSources = meta.ragSources;
+              }
+              if (meta.intent) {
+                msg.intent = meta.intent;
+              }
+              if (meta.stream_interruption) {
+                msg.streamInterruption = meta.stream_interruption;
+              }
+            } catch (e) {
+              console.warn('Failed to parse message metadata:', e);
+            }
+          }
+          return msg;
+        }),
+      );
     },
 
     /**
      * Clear a conversation (soft delete)
      */
     async clearConversation(id) {
+      if (this.sending) {
+        return { success: false, error: 'Wait for the active response to finish' };
+      }
+
       this.loading = true;
       this.error = null;
       try {
@@ -171,6 +239,10 @@ export const useChatStore = defineStore('chat', {
      * Clear all messages in a conversation (keep conversation, delete messages)
      */
     async clearMessageHistory(id) {
+      if (this.sending) {
+        return { success: false, error: 'Wait for the active response to finish' };
+      }
+
       this.loading = true;
       this.error = null;
       try {
@@ -246,6 +318,10 @@ export const useChatStore = defineStore('chat', {
       }
 
       this.sending = true;
+      const streamController = markRaw(new AbortController());
+      this.activeStreamController = streamController;
+      let streamActivity = createChatStreamActivity();
+      this.streamStatus = formatChatStreamStatus(streamActivity);
       this.error = null;
 
       try {
@@ -276,9 +352,61 @@ export const useChatStore = defineStore('chat', {
         const assistantMessageIndex = this.messages.length - 1;
 
         let toolCallsData = [];
+        let streamStarted = false;
 
         // Use fetch with ReadableStream for POST support
-        return new Promise(async (resolve, reject) => {
+        return new Promise(async (resolve) => {
+          const statusTimer = setInterval(() => {
+            this.streamStatus = this.activeStreamCancellationRequested
+              ? 'Cancellation requested — waiting for the local runtime'
+              : formatChatStreamStatus(streamActivity);
+          }, 1000);
+          const observeStreamEvent = (event) => {
+            streamActivity = applyChatStreamEvent(streamActivity, event);
+            this.streamStatus = formatChatStreamStatus(streamActivity);
+          };
+          const finishStream = () => {
+            clearInterval(statusTimer);
+            this.streamStatus = '';
+            if (this.activeStreamController === streamController) {
+              this.activeStreamController = null;
+              this.activeStreamRunId = null;
+              this.activeStreamServerCancelable = false;
+              this.activeStreamCancellationRequested = false;
+            }
+          };
+          const failStream = (failure, localTransport = false) => {
+            finishStream();
+            const assistantIndex = this.messages.indexOf(assistantMessage);
+            const streamFailure = localTransport
+              ? createLocalChatRunFailure(failure.error_code, failure.retryable)
+              : normalizeChatRunFailure(failure, assistantMessage.runId);
+            if (assistantIndex !== -1) {
+              this.messages.splice(assistantIndex, 1, {
+                ...assistantMessage,
+                streaming: undefined,
+                streamFailure,
+              });
+            }
+
+            if (!streamStarted) {
+              const userIndex = this.messages.indexOf(userMessage);
+              if (userIndex !== -1) {
+                this.messages.splice(userIndex, 1);
+              }
+            }
+
+            this.error = streamFailure.message;
+            this.sending = false;
+            resolve({
+              success: false,
+              error: streamFailure.message,
+              error_code: streamFailure.error_code,
+              run_id: streamFailure.run_id,
+              retryable: streamFailure.retryable,
+            });
+          };
+
           try {
             const hasAttachments = attachments.length > 0;
             const response = await fetch(
@@ -291,45 +419,56 @@ export const useChatStore = defineStore('chat', {
                 body: hasAttachments
                   ? this.buildMessageFormData(content, attachments)
                   : JSON.stringify({ content }),
+                signal: streamController.signal,
               }
             );
 
             if (!response.ok) {
-              throw new Error(`HTTP error! status: ${response.status}`);
+              const errorCode = response.status === 429
+                ? 'provider_rate_limited'
+                : [408, 504].includes(response.status)
+                  ? 'provider_timeout'
+                  : response.status >= 500
+                    ? 'provider_unavailable'
+                    : [401, 403].includes(response.status)
+                      ? 'provider_authentication_failed'
+                      : 'provider_request_failed';
+              failStream({
+                error_code: errorCode,
+                retryable: response.status === 429 || [408, 504].includes(response.status) || response.status >= 500,
+              }, true);
+              return;
             }
 
             const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
+            const eventDecoder = new SseEventDecoder();
 
             while (true) {
               const { done, value } = await reader.read();
+              const events = done ? eventDecoder.finish() : eventDecoder.feed(value);
 
-              if (done) {
-                this.sending = false;
-                break;
-              }
-
-              // Decode chunk and add to buffer
-              buffer += decoder.decode(value, { stream: true });
-
-              // Process complete SSE messages in buffer
-              const lines = buffer.split('\n');
-              buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-              for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
+              for (const event of events) {
 
                 try {
-                  const data = JSON.parse(line.slice(6)); // Remove 'data: ' prefix
+                  const data = JSON.parse(event.data);
+                  observeStreamEvent(data);
 
                   switch (data.type) {
                     case 'start':
                       // Update user message with real ID from server
+                      streamStarted = true;
+                      assistantMessage.runId = normalizeChatRunId(data.run_id);
+                      this.activeStreamRunId = assistantMessage.runId;
                       userMessage.id = data.user_message_id;
                       if (data.user_attachments) {
                         userMessage.attachments = data.user_attachments;
                       }
+                      break;
+
+                    case 'provider':
+                      this.activeStreamServerCancelable = data.fallback_enabled === false
+                        && typeof data.provider === 'string'
+                        && data.provider.length > 0;
                       break;
 
                     case 'content':
@@ -342,23 +481,23 @@ export const useChatStore = defineStore('chat', {
                       this.messages[assistantMessageIndex].content = data.content;
                       break;
 
-                    case 'tool_start':
-                      toolCallsData = [];
-                      break;
-
                     case 'tool_call':
-                      toolCallsData.push({
-                        server: data.server,
-                        tool: data.tool,
-                        arguments: data.arguments,
-                      });
+                    case 'tool_result':
+                    case 'tool_error':
+                      toolCallsData = applyChatToolEvent(toolCallsData, data);
+                      this.messages[assistantMessageIndex].tool_calls = toolCallsData;
                       break;
 
                     case 'tool_end':
-                      // Update assistant message with tool calls
-                      if (toolCallsData.length > 0) {
-                        this.messages[assistantMessageIndex].tool_calls = JSON.stringify(toolCallsData);
-                      }
+                      break;
+
+                    case 'stream_interrupted':
+                      this.messages[assistantMessageIndex].streamInterruption = {
+                        message: data.message || 'Response interrupted after partial output.',
+                        fallback_suppressed: data.fallback_suppressed !== false,
+                        commit_kind: data.commit_kind || null,
+                        correlation_id: data.correlation_id || null,
+                      };
                       break;
 
                     case 'intent_detected':
@@ -378,6 +517,7 @@ export const useChatStore = defineStore('chat', {
                       break;
 
                     case 'complete':
+                      finishStream();
                       // Update assistant message with real ID and final data
                       // Use Vue-reactive update by replacing the entire message object
                       const completedMessage = {
@@ -386,6 +526,7 @@ export const useChatStore = defineStore('chat', {
                         tokens: data.tokens,
                         intent: data.intent || this.messages[assistantMessageIndex].intent,
                         attachmentProcessing: data.attachment_processing || [],
+                        tool_calls: normalizeChatToolActivities(data.tool_calls || toolCallsData),
                         streaming: undefined, // Remove streaming flag
                       };
 
@@ -396,6 +537,9 @@ export const useChatStore = defineStore('chat', {
                       }
                       if (data.assistant_attachments && data.assistant_attachments.length > 0) {
                         completedMessage.attachments = data.assistant_attachments;
+                      }
+                      if (data.stream_interruption) {
+                        completedMessage.streamInterruption = data.stream_interruption;
                       }
 
                       // Replace the message using splice to guarantee Vue reactivity
@@ -412,13 +556,12 @@ export const useChatStore = defineStore('chat', {
                       });
                       return;
 
-                    case 'error':
-                      this.error = data.message || data.content || 'Streaming error';
-                      this.sending = false;
-                      reject({ success: false, error: this.error });
+                    case 'run_error':
+                      failStream(data);
                       return;
 
                     case 'done':
+                      finishStream();
                       // Fallback completion event
                       delete this.messages[assistantMessageIndex].streaming;
                       this.sending = false;
@@ -433,19 +576,96 @@ export const useChatStore = defineStore('chat', {
                   console.error('Error parsing SSE event:', error);
                 }
               }
+
+              if (done) break;
             }
+
+            failStream({
+              type: 'run_error',
+              schema: 'plos.chat_run_failure.v1',
+              run_id: assistantMessage.runId,
+              error_code: 'chat_run_failed',
+              retryable: true,
+              raw_error_included: false,
+            }, assistantMessage.runId == null);
           } catch (error) {
+            if (error?.name === 'AbortError') {
+              finishStream();
+              const assistantIndex = this.messages.indexOf(assistantMessage);
+              if (assistantIndex !== -1) {
+                this.messages.splice(assistantIndex, 1, {
+                  ...this.messages[assistantIndex],
+                  streaming: undefined,
+                  streamInterruption: {
+                    message: this.messages[assistantIndex].content
+                      ? 'The browser disconnected. Partial output remains only in this browser until the conversation is reloaded.'
+                      : 'The browser disconnected before response content was received.',
+                    fallback_suppressed: true,
+                    commit_kind: this.messages[assistantIndex].content ? 'content' : null,
+                    correlation_id: null,
+                  },
+                });
+              }
+              this.sending = false;
+              resolve({
+                success: true,
+                cancelled: true,
+                userMessage,
+                assistantMessage: assistantIndex !== -1 ? this.messages[assistantIndex] : null,
+              });
+              return;
+            }
             console.error('Fetch error:', error);
-            this.error = 'Connection error during streaming';
-            this.sending = false;
-            reject({ success: false, error: this.error });
+            failStream({
+              error_code: 'provider_connection_failed',
+              retryable: true,
+            }, true);
           }
         });
       } catch (error) {
         this.error = error.message || 'Failed to send message';
         this.sending = false;
+        this.streamStatus = '';
+        if (this.activeStreamController === streamController) {
+          this.activeStreamController = null;
+        }
         return { success: false, error: this.error };
       }
+    },
+
+    async cancelActiveStream() {
+      if (!this.activeStreamController) {
+        return false;
+      }
+      this.streamStatus = 'Cancelling response';
+
+      if (
+        this.activeStreamServerCancelable
+        && this.activeStreamRunId
+        && this.currentConversation?.id
+        && !this.activeStreamCancellationRequested
+      ) {
+        this.activeStreamCancellationRequested = true;
+        try {
+          const response = await fetch(
+            `/api/chat/conversations/${this.currentConversation.id}/runs/${this.activeStreamRunId}/cancel`,
+            {
+              method: 'POST',
+              headers: { 'Accept': 'application/json' },
+            }
+          );
+          if (response.ok) {
+            this.streamStatus = 'Cancellation requested — waiting for the local runtime';
+            return true;
+          }
+        } catch (error) {
+          console.warn('Server-aware stream cancellation failed; disconnecting the browser stream.', error);
+        }
+        this.activeStreamCancellationRequested = false;
+      }
+
+      this.activeStreamController.abort();
+      return true;
     },
 
     /**
@@ -459,8 +679,16 @@ export const useChatStore = defineStore('chat', {
      * Reset current conversation state
      */
     resetCurrentConversation() {
+      invalidateConversationLoads(this);
       this.currentConversation = null;
       this.messages = [];
+      this.loading = false;
+      this.streamStatus = '';
+      this.activeStreamController?.abort();
+      this.activeStreamController = null;
+      this.activeStreamRunId = null;
+      this.activeStreamServerCancelable = false;
+      this.activeStreamCancellationRequested = false;
       this.error = null;
     },
 
@@ -588,6 +816,34 @@ export const useChatStore = defineStore('chat', {
       } catch (error) {
         const errorMsg = error.response?.data?.message || 'Failed to save to knowledge base';
         return { success: false, error: errorMsg };
+      }
+    },
+
+    async recordResponseFeedback(messageId, value, reason = null) {
+      if (!this.currentConversation) {
+        return { success: false, error: 'No active conversation' };
+      }
+
+      try {
+        const response = await api.post(
+          `/chat/conversations/${this.currentConversation.id}/messages/${messageId}/feedback`,
+          { value, reason }
+        );
+
+        if (response.success) {
+          const message = this.messages.find(item => item.id === messageId);
+          if (message) {
+            message.response_feedback = response.feedback;
+          }
+          return { success: true, feedback: response.feedback };
+        }
+
+        return { success: false, error: response.message || 'Failed to record feedback' };
+      } catch (error) {
+        return {
+          success: false,
+          error: error.response?.data?.message || 'Failed to record feedback',
+        };
       }
     },
 

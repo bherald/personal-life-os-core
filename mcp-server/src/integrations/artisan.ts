@@ -15,6 +15,13 @@ export class ArtisanExecutor {
     { command: 'schedule:list', description: 'List scheduled tasks', category: 'System' },
     { command: 'db:show', description: 'Show database information', category: 'Database' },
     { command: 'route:list', description: 'List all routes', category: 'System' },
+    { command: 'codex:offline-capabilities', description: 'Report local/offline Codex, PLOS automation, and sidecar capabilities', category: 'Offline AI' },
+    { command: 'codex:offline-pipeline-tools', description: 'List PLOS AI pipeline functions, tools, and options in execution order', category: 'Offline AI' },
+    { command: 'os-tools:discover', description: 'Discover current-environment executable names and packages without running discovered programs', category: 'Local Tools' },
+    { command: 'os-tools:review', description: 'Read local documentation and prepare a tool approval candidate without enabling it', category: 'Local Tools' },
+    { command: 'os-tools:inventory', description: 'Observe known local tool categories and dependencies without executing scanners', category: 'Local Tools' },
+    { command: 'codex:offline-sidecar', description: 'Plan or run a read-only multi-model offline Codex sidecar split', category: 'Offline AI' },
+    { command: 'review:lookup', description: 'Read one Review Desk item by exact reference or known alias', category: 'Review' },
   ];
 
   // Blacklisted commands (never allowed)
@@ -46,6 +53,10 @@ export class ArtisanExecutor {
     }
 
     // Check whitelist
+    // OS discovery commands accept separate typed arguments, never prefix variants.
+    if (command.startsWith('os-tools:') || command.startsWith('review:')) {
+      return this.allowedCommands.some(cmd => command === cmd.command);
+    }
     return this.allowedCommands.some(cmd => command.startsWith(cmd.command));
   }
 

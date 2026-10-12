@@ -2,9 +2,12 @@
 
 namespace App\Services;
 
+use App\DTOs\TrustEnvelope;
+use App\Exceptions\AI\InferenceAdmissionException;
+use App\Support\SensitiveTextTelemetry;
+use Exception;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-use Exception;
 
 /**
  * Contextual Retrieval Service for RAG
@@ -81,63 +84,58 @@ PROMPT;
      * Uses fast/cheap LLM call to generate semantic context.
      * Results are cached to avoid re-processing identical chunks.
      *
-     * @param string $fullDocument The complete source document
-     * @param string $chunk The chunk to contextualize
-     * @param array $options Optional settings:
-     *   - use_cache: bool (default true) - Whether to use caching
-     *   - max_tokens: int (default 150) - Max tokens for context generation
-     *   - truncate_document: int (default 4000) - Truncate document to this many chars for context
+     * @param  string  $fullDocument  The complete source document
+     * @param  string  $chunk  The chunk to contextualize
+     * @param  array  $options  Optional settings:
+     *                          - use_cache: bool (default true) - Whether to use caching
+     *                          - max_tokens: int (default 150) - Max tokens for context generation
+     *                          - truncate_document: retained for compatibility; complete source is always preserved
      * @return string Context prefix to prepend to chunk
      */
     public function contextualizeChunk(string $fullDocument, string $chunk, array $options = []): string
     {
         $useCache = $options['use_cache'] ?? true;
         $maxTokens = $options['max_tokens'] ?? 150;
-        $truncateDocument = $options['truncate_document'] ?? 4000;
 
         // Generate cache key from document + chunk hash
         $cacheKey = $this->getCacheKey($fullDocument, $chunk);
 
-        // Check cache first
-        if ($useCache) {
-            $cached = Cache::get($cacheKey);
-            if ($cached !== null) {
-                Log::debug('ContextualRetrieval: Cache hit', [
-                    'cache_key' => substr($cacheKey, 0, 50),
-                ]);
-                return $cached;
-            }
-        }
-
+        // The task cache is retained as a receipt only. Reuse must pass through
+        // AIService's exact identity and current admission, including cache hits.
         try {
-            // Truncate document if too long (context generation doesn't need full doc)
-            $truncatedDoc = $fullDocument;
-            if (strlen($fullDocument) > $truncateDocument) {
-                // Keep beginning and end, which often have the most context
-                $halfSize = (int)($truncateDocument / 2);
-                $truncatedDoc = substr($fullDocument, 0, $halfSize) .
-                    "\n\n[... document truncated ...]\n\n" .
-                    substr($fullDocument, -$halfSize);
+            $formatter = app(TrustBoundaryFormatterService::class);
+            $documentEnvelope = $formatter->format(new TrustEnvelope(
+                sourceType: 'rag_document', contentType: 'text/plain', origin: 'contextual_retrieval',
+                payload: $fullDocument, preservePayload: true,
+            ));
+            $chunkEnvelope = $formatter->format(new TrustEnvelope(
+                sourceType: 'rag_chunk', contentType: 'text/plain', origin: 'contextual_retrieval',
+                payload: $chunk, preservePayload: true,
+            ));
+            $userPrompt = sprintf(self::CONTEXT_USER_TEMPLATE, $documentEnvelope, $chunkEnvelope);
+            $config = array_replace([
+                'max_tokens' => $maxTokens, 'temperature' => 0.3,
+                'model_role' => 'fast', 'task_type' => 'contextual_retrieval',
+            ], $options);
+            unset($config['truncate_document']);
+            $config['system'] = self::CONTEXT_SYSTEM_PROMPT;
+            $config['use_cache'] = $useCache;
+            $config['contextual_retrieval_source'] = [
+                'document_sha256' => hash('sha256', $fullDocument),
+                'chunk_sha256' => hash('sha256', $chunk),
+            ];
+            $result = $this->aiService->process($userPrompt, $config);
+
+            if (($result['fallback_suppressed'] ?? false) === true) {
+                throw new InferenceAdmissionException('Context generation admission refused; request must not be replayed.',
+                    controllerFailure: is_array($result['controller_failure'] ?? null) ? $result['controller_failure'] : []);
             }
 
-            // Build prompt
-            $userPrompt = sprintf(self::CONTEXT_USER_TEMPLATE, $truncatedDoc, $chunk);
-
-            // Call AI service with fast profile for efficiency
-            $result = $this->aiService->process(
-                $userPrompt,
-                [
-                    'system' => self::CONTEXT_SYSTEM_PROMPT,
-                    'max_tokens' => $maxTokens,
-                    'temperature' => 0.3,
-                    'model_role' => 'fast',
-                ]
-            );
-
-            if (!$result['success']) {
+            if (! $result['success']) {
                 Log::warning('ContextualRetrieval: AI call failed, returning empty context', [
                     'error' => $result['error'] ?? 'unknown',
                 ]);
+
                 return '';
             }
 
@@ -146,25 +144,30 @@ PROMPT;
             // Validate context isn't too long or empty
             if (empty($context)) {
                 Log::warning('ContextualRetrieval: Generated empty context');
+
                 return '';
             }
 
             // Cache the result
-            if ($useCache && !empty($context)) {
+            if ($useCache && ! empty($context)) {
                 Cache::put($cacheKey, $context, self::CONTEXT_CACHE_TTL);
             }
 
             Log::debug('ContextualRetrieval: Generated context', [
                 'context_length' => strlen($context),
-                'chunk_preview' => substr($chunk, 0, 50),
+                ...SensitiveTextTelemetry::query($chunk, 'contextual_retrieval'),
             ]);
 
             return $context;
 
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::error('ContextualRetrieval: Exception during context generation', [
                 'error' => $e->getMessage(),
             ]);
+
             return '';
         }
     }
@@ -174,8 +177,8 @@ PROMPT;
      *
      * Format: "[Context] <context>\n\n<chunk>"
      *
-     * @param string $context The context prefix
-     * @param string $chunk The original chunk content
+     * @param  string  $context  The context prefix
+     * @param  string  $chunk  The original chunk content
      * @return string Contextualized chunk ready for embedding
      */
     public function prependContext(string $context, string $chunk): string
@@ -192,9 +195,9 @@ PROMPT;
      *
      * Convenience method that generates context and returns structured result.
      *
-     * @param string $fullDocument The complete source document
-     * @param string $chunk The chunk to contextualize
-     * @param array $options Optional settings (see contextualizeChunk)
+     * @param  string  $fullDocument  The complete source document
+     * @param  string  $chunk  The chunk to contextualize
+     * @param  array  $options  Optional settings (see contextualizeChunk)
      * @return array ['context' => string, 'original_chunk' => string, 'contextualized' => string]
      */
     public function contextualizeWithParts(string $fullDocument, string $chunk, array $options = []): array
@@ -214,9 +217,9 @@ PROMPT;
      * More efficient than calling contextualizeChunk repeatedly as it
      * can potentially batch API calls in the future.
      *
-     * @param string $fullDocument The complete source document
-     * @param array $chunks Array of chunk strings
-     * @param array $options Optional settings (see contextualizeChunk)
+     * @param  string  $fullDocument  The complete source document
+     * @param  array  $chunks  Array of chunk strings
+     * @param  array  $options  Optional settings (see contextualizeChunk)
      * @return array Array of contextualized results, same order as input
      */
     public function batchContextualize(string $fullDocument, array $chunks, array $options = []): array
@@ -236,10 +239,10 @@ PROMPT;
     }
 
     /**
-     * Check if a chunk has cached context
+     * Check for a retained task receipt; this is not inference admission
      *
-     * @param string $fullDocument The source document
-     * @param string $chunk The chunk to check
+     * @param  string  $fullDocument  The source document
+     * @param  string  $chunk  The chunk to check
      * @return bool True if context is cached
      */
     public function hasCachedContext(string $fullDocument, string $chunk): bool
@@ -248,10 +251,10 @@ PROMPT;
     }
 
     /**
-     * Clear cached context for a specific chunk
+     * Clear the retained receipt; use_cache=false requests fresh generation
      *
-     * @param string $fullDocument The source document
-     * @param string $chunk The chunk whose cache to clear
+     * @param  string  $fullDocument  The source document
+     * @param  string  $chunk  The chunk whose cache to clear
      * @return bool True if cache was cleared
      */
     public function clearCachedContext(string $fullDocument, string $chunk): bool
@@ -262,20 +265,17 @@ PROMPT;
     /**
      * Generate cache key for document+chunk pair
      *
-     * Uses hash of document title/beginning + full chunk content
-     * to create unique but collision-resistant key.
+     * Bind complete source and chunk separately; never read legacy prefix keys.
      *
-     * @param string $fullDocument The source document
-     * @param string $chunk The chunk
+     * @param  string  $fullDocument  The source document
+     * @param  string  $chunk  The chunk
      * @return string Cache key
      */
     private function getCacheKey(string $fullDocument, string $chunk): string
     {
-        // Use first 500 chars of document + chunk content for hash
-        $docSignature = substr($fullDocument, 0, 500);
-        $hash = hash('sha256', $docSignature . '||' . $chunk);
+        $identity = hash('sha256', $fullDocument).'|'.hash('sha256', $chunk);
 
-        return self::CACHE_PREFIX . $hash;
+        return self::CACHE_PREFIX.'v2:'.hash('sha256', $identity);
     }
 
     /**

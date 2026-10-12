@@ -33,19 +33,20 @@ class SkillVersionService
         $version = $frontmatter['version'] ?? '1.0.0';
 
         // Check if this exact content already tracked
-        $existing = DB::select("
+        $existing = DB::select('
             SELECT id, version, is_active
             FROM skill_versions
             WHERE skill_name = ? AND content_hash = ?
             LIMIT 1
-        ", [$skillName, $contentHash]);
+        ', [$skillName, $contentHash]);
 
-        if (!empty($existing)) {
+        if (! empty($existing)) {
             $record = $existing[0];
             // Ensure it's marked active (might have been rolled back and re-deployed)
-            if (!$record->is_active) {
+            if (! $record->is_active) {
                 $this->activateVersion($skillName, $record->id);
             }
+
             return [
                 'version_id' => $record->id,
                 'version' => $record->version,
@@ -57,9 +58,9 @@ class SkillVersionService
         $changeSummary = $this->detectChanges($skillName, $frontmatter, $body);
 
         // Deactivate all previous versions for this skill
-        DB::update("
+        DB::update('
             UPDATE skill_versions SET is_active = 0 WHERE skill_name = ?
-        ", [$skillName]);
+        ', [$skillName]);
 
         // Insert new version
         DB::insert("
@@ -82,7 +83,7 @@ class SkillVersionService
 
         $versionId = (int) DB::getPdo()->lastInsertId();
 
-        Log::info("SkillVersionService: New version tracked", [
+        Log::info('SkillVersionService: New version tracked', [
             'skill' => $skillName,
             'version' => $version,
             'version_id' => $versionId,
@@ -101,14 +102,14 @@ class SkillVersionService
      */
     public function getHistory(string $skillName, int $limit = 20): array
     {
-        return DB::select("
+        return DB::select('
             SELECT id, version, content_hash, change_summary, changed_by,
                    is_active, tools_count, tool_phases_count, created_at
             FROM skill_versions
             WHERE skill_name = ?
             ORDER BY id DESC
             LIMIT ?
-        ", [$skillName, $limit]);
+        ', [$skillName, $limit]);
     }
 
     /**
@@ -116,13 +117,13 @@ class SkillVersionService
      */
     public function getActiveVersion(string $skillName): ?object
     {
-        $result = DB::select("
+        $result = DB::select('
             SELECT id, version, content_hash, frontmatter, body_text, full_content,
                    change_summary, changed_by, tools_count, tool_phases_count, created_at
             FROM skill_versions
             WHERE skill_name = ? AND is_active = 1
             LIMIT 1
-        ", [$skillName]);
+        ', [$skillName]);
 
         return $result[0] ?? null;
     }
@@ -132,14 +133,14 @@ class SkillVersionService
      */
     public function getVersion(int $versionId): ?object
     {
-        $result = DB::select("
+        $result = DB::select('
             SELECT id, skill_name, version, content_hash, frontmatter, body_text,
                    full_content, change_summary, changed_by, is_active,
                    tools_count, tool_phases_count, created_at
             FROM skill_versions
             WHERE id = ?
             LIMIT 1
-        ", [$versionId]);
+        ', [$versionId]);
 
         return $result[0] ?? null;
     }
@@ -152,22 +153,36 @@ class SkillVersionService
      */
     public function rollback(string $skillName, int $versionId): bool
     {
+        if (! SkillLoaderService::isDiscoverableSkillName($skillName)) {
+            Log::error('SkillVersionService: Rollback rejected non-canonical skill identifier');
+
+            return false;
+        }
+
+        if (! app(SkillLoaderService::class)->skillExists($skillName)) {
+            Log::error('SkillVersionService: Rollback rejected inactive skill');
+
+            return false;
+        }
+
         $version = $this->getVersion($versionId);
 
-        if (!$version || $version->skill_name !== $skillName) {
-            Log::error("SkillVersionService: Rollback failed — version not found or skill mismatch", [
+        if (! $version || $version->skill_name !== $skillName) {
+            Log::error('SkillVersionService: Rollback failed — version not found or skill mismatch', [
                 'skill' => $skillName,
                 'version_id' => $versionId,
             ]);
+
             return false;
         }
 
         $skillFile = SkillLoaderService::configuredSkillsBasePath().'/'.$skillName.'/SKILL.md';
 
-        if (!is_dir(dirname($skillFile))) {
-            Log::error("SkillVersionService: Rollback failed — skill directory missing", [
+        if (! is_dir(dirname($skillFile))) {
+            Log::error('SkillVersionService: Rollback failed — skill directory missing', [
                 'skill' => $skillName,
             ]);
+
             return false;
         }
 
@@ -175,17 +190,18 @@ class SkillVersionService
         $written = file_put_contents($skillFile, $version->full_content);
 
         if ($written === false) {
-            Log::error("SkillVersionService: Rollback failed — could not write file", [
+            Log::error('SkillVersionService: Rollback failed — could not write file', [
                 'skill' => $skillName,
                 'path' => $skillFile,
             ]);
+
             return false;
         }
 
         // Activate this version, deactivate others
         $this->activateVersion($skillName, $versionId);
 
-        Log::info("SkillVersionService: Rolled back skill", [
+        Log::info('SkillVersionService: Rolled back skill', [
             'skill' => $skillName,
             'to_version' => $version->version,
             'version_id' => $versionId,
@@ -202,7 +218,7 @@ class SkillVersionService
         $a = $this->getVersion($versionIdA);
         $b = $this->getVersion($versionIdB);
 
-        if (!$a || !$b) {
+        if (! $a || ! $b) {
             return null;
         }
 
@@ -243,7 +259,7 @@ class SkillVersionService
             $fullContent = file_get_contents($skill['path']);
             $parsed = $loader->loadSkill($skillName);
 
-            if (!$parsed) {
+            if (! $parsed) {
                 continue;
             }
 
@@ -265,11 +281,11 @@ class SkillVersionService
      */
     public function getStats(): array
     {
-        $totalVersions = DB::select("SELECT COUNT(*) as cnt FROM skill_versions")[0]->cnt;
-        $uniqueSkills = DB::select("SELECT COUNT(DISTINCT skill_name) as cnt FROM skill_versions")[0]->cnt;
-        $activeVersions = DB::select("SELECT COUNT(*) as cnt FROM skill_versions WHERE is_active = 1")[0]->cnt;
+        $totalVersions = DB::select('SELECT COUNT(*) as cnt FROM skill_versions')[0]->cnt;
+        $uniqueSkills = DB::select('SELECT COUNT(DISTINCT skill_name) as cnt FROM skill_versions')[0]->cnt;
+        $activeVersions = DB::select('SELECT COUNT(*) as cnt FROM skill_versions WHERE is_active = 1')[0]->cnt;
 
-        $perSkill = DB::select("
+        $perSkill = DB::select('
             SELECT skill_name,
                    COUNT(*) as version_count,
                    MAX(version) as latest_version,
@@ -277,7 +293,7 @@ class SkillVersionService
             FROM skill_versions
             GROUP BY skill_name
             ORDER BY skill_name
-        ");
+        ');
 
         return [
             'total_versions' => (int) $totalVersions,
@@ -292,8 +308,8 @@ class SkillVersionService
      */
     private function activateVersion(string $skillName, int $versionId): void
     {
-        DB::update("UPDATE skill_versions SET is_active = 0 WHERE skill_name = ?", [$skillName]);
-        DB::update("UPDATE skill_versions SET is_active = 1 WHERE id = ?", [$versionId]);
+        DB::update('UPDATE skill_versions SET is_active = 0 WHERE skill_name = ?', [$skillName]);
+        DB::update('UPDATE skill_versions SET is_active = 1 WHERE id = ?', [$versionId]);
     }
 
     /**
@@ -303,7 +319,7 @@ class SkillVersionService
     {
         $previous = $this->getActiveVersion($skillName);
 
-        if (!$previous) {
+        if (! $previous) {
             return 'Initial version';
         }
 
@@ -322,11 +338,11 @@ class SkillVersionService
         $newTools = $newFrontmatter['tools'] ?? [];
         $added = array_diff($newTools, $oldTools);
         $removed = array_diff($oldTools, $newTools);
-        if (!empty($added)) {
-            $changes[] = 'added tools: ' . implode(', ', $added);
+        if (! empty($added)) {
+            $changes[] = 'added tools: '.implode(', ', $added);
         }
-        if (!empty($removed)) {
-            $changes[] = 'removed tools: ' . implode(', ', $removed);
+        if (! empty($removed)) {
+            $changes[] = 'removed tools: '.implode(', ', $removed);
         }
 
         // Permission changes
@@ -338,7 +354,7 @@ class SkillVersionService
 
         // Mode change
         if (($oldFm['workflow_mode'] ?? null) !== ($newFrontmatter['workflow_mode'] ?? null)) {
-            $changes[] = 'workflow_mode changed to ' . ($newFrontmatter['workflow_mode'] ?? 'unset');
+            $changes[] = 'workflow_mode changed to '.($newFrontmatter['workflow_mode'] ?? 'unset');
         }
 
         // Body changes
@@ -350,6 +366,6 @@ class SkillVersionService
             $changes[] = "instructions updated ({$sign}{$diff} chars)";
         }
 
-        return !empty($changes) ? implode('; ', $changes) : 'Content changed (minor)';
+        return ! empty($changes) ? implode('; ', $changes) : 'Content changed (minor)';
     }
 }

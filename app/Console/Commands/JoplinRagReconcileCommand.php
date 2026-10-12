@@ -14,6 +14,7 @@ class JoplinRagReconcileCommand extends Command
                             {--limit= : Maximum number of candidate RAG documents to delete}
                             {--max-delete-candidates= : Block execute when total delete candidates exceed this count}
                             {--max-dependent-rows= : Block execute when selected dependent rows exceed this count}
+                            {--source-ids-file= : Private JSON array of exact Joplin note IDs allowed for reconciliation}
                             {--event-hours=72 : Include open retrieved-context reconcile events from the recent window}
                             {--triggered-only : Select only delete candidates recently surfaced by retrieved-context fencing}
                             {--json : Emit machine-readable JSON}
@@ -29,8 +30,9 @@ class JoplinRagReconcileCommand extends Command
         $maxDeleteCandidates = $this->parseOptionalPositiveIntOption('max-delete-candidates');
         $maxDependentRows = $this->parseOptionalPositiveIntOption('max-dependent-rows');
         $compact = (bool) $this->option('compact');
+        $sourceIds = $this->parseSourceIdsFile();
 
-        if ($limit === false || $eventHours === false || $maxDeleteCandidates === false || $maxDependentRows === false) {
+        if ($limit === false || $eventHours === false || $maxDeleteCandidates === false || $maxDependentRows === false || $sourceIds === false) {
             return self::FAILURE;
         }
 
@@ -40,7 +42,8 @@ class JoplinRagReconcileCommand extends Command
                 $eventHours,
                 (bool) $this->option('triggered-only'),
                 $maxDeleteCandidates,
-                $maxDependentRows
+                $maxDependentRows,
+                $sourceIds,
             );
             $blockedByThreshold = $execute && ! (bool) ($report['thresholds']['execute_allowed'] ?? true);
 
@@ -120,6 +123,7 @@ class JoplinRagReconcileCommand extends Command
             'delete_candidates' => (int) ($report['delete_candidates'] ?? 0),
             'refresh_candidates' => (int) ($report['refresh_candidates'] ?? 0),
             'selected_candidates' => (int) ($report['selected_candidates'] ?? 0),
+            'source_filter' => is_array($report['source_filter'] ?? null) ? $report['source_filter'] : [],
             'limited' => (bool) ($report['limited'] ?? false),
             'limit' => $report['limit'] ?? null,
             'breakdown' => is_array($report['breakdown'] ?? null) ? $report['breakdown'] : [],
@@ -211,6 +215,43 @@ class JoplinRagReconcileCommand extends Command
         return (int) $value;
     }
 
+    /** @return array<int, string>|false|null */
+    private function parseSourceIdsFile(): array|false|null
+    {
+        $path = $this->option('source-ids-file');
+        if ($path === null || $path === '') {
+            return null;
+        }
+        if (! is_string($path) || ! is_file($path) || filesize($path) > 1024 * 1024) {
+            $this->error('--source-ids-file must name a readable JSON file no larger than 1 MiB.');
+
+            return false;
+        }
+        try {
+            $decoded = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            $this->error('--source-ids-file must contain a JSON array.');
+
+            return false;
+        }
+        if (! is_array($decoded) || ! array_is_list($decoded) || $decoded === [] || count($decoded) > 5000) {
+            $this->error('--source-ids-file must contain 1 to 5000 exact note IDs.');
+
+            return false;
+        }
+        $ids = [];
+        foreach ($decoded as $id) {
+            if (! is_string($id) || ! preg_match('/^[a-f0-9]{32}$/D', $id)) {
+                $this->error('--source-ids-file contains an invalid Joplin note ID.');
+
+                return false;
+            }
+            $ids[$id] = true;
+        }
+
+        return array_keys($ids);
+    }
+
     /**
      * @param  array<int, string>  $preferred
      * @return array<int, string>
@@ -233,7 +274,8 @@ class JoplinRagReconcileCommand extends Command
         int $eventHours,
         bool $triggeredOnly,
         ?int $maxDeleteCandidates,
-        ?int $maxDependentRows
+        ?int $maxDependentRows,
+        ?array $sourceIds
     ): array {
         $contextSignals = app(AgentContextReconcileSignalService::class)->recentSignals($eventHours);
         $signalsByDocumentId = $this->signalsByDocumentId($contextSignals);
@@ -265,7 +307,7 @@ class JoplinRagReconcileCommand extends Command
             })
             ->get();
 
-        $sourceIds = $documents
+        $documentSourceIds = $documents
             ->pluck('source_id')
             ->filter(fn ($id): bool => is_string($id) && trim($id) !== '')
             ->unique()
@@ -273,7 +315,7 @@ class JoplinRagReconcileCommand extends Command
             ->all();
 
         $cacheRows = collect();
-        foreach (array_chunk($sourceIds, 500) as $chunk) {
+        foreach (array_chunk($documentSourceIds, 500) as $chunk) {
             $cacheRows = $cacheRows->merge(DB::table('joplin_metadata_cache')
                 ->select(['id', 'title', 'type', 'is_deleted', 'updated_time', 'cached_at'])
                 ->whereIn('id', $chunk)
@@ -355,9 +397,26 @@ class JoplinRagReconcileCommand extends Command
         $candidatePool = $triggeredOnly
             ? array_values(array_filter($candidates, fn (array $candidate): bool => (bool) ($candidate['context_event_seen'] ?? false)))
             : $candidates;
+        if ($sourceIds !== null) {
+            $allowedSourceIds = array_fill_keys($sourceIds, true);
+            $candidatePool = array_values(array_filter(
+                $candidatePool,
+                fn (array $candidate): bool => isset($allowedSourceIds[$candidate['source_id_private'] ?? ''])
+            ));
+        }
         $selected = $limit === null ? $candidatePool : array_slice($candidatePool, 0, $limit);
         $selectedIds = array_values(array_map(fn (array $candidate): int => $candidate['id'], $selected));
         $dependentCounts = $this->dependentCounts($selectedIds);
+        $thresholds = $this->thresholds(
+            count($candidatePool),
+            array_sum($dependentCounts),
+            $maxDeleteCandidates,
+            $maxDependentRows
+        );
+        if (($dependentCounts['knowledge_graph_source_refs'] ?? 0) > 0) {
+            $thresholds['execute_allowed'] = false;
+            $thresholds['execute_block_reasons'][] = 'knowledge_graph_source_refs_present';
+        }
         $contextReconcile = $this->contextReconcileSummary(
             $contextSignals,
             $candidates,
@@ -371,6 +430,12 @@ class JoplinRagReconcileCommand extends Command
             'delete_candidates' => count($candidates),
             'refresh_candidates' => count($refreshCandidates),
             'selected_candidates' => count($selected),
+            'source_filter' => [
+                'enabled' => $sourceIds !== null,
+                'requested_source_ids' => count($sourceIds ?? []),
+                'matched_candidates' => count($candidatePool),
+                'matched_source_ids' => count(array_unique(array_filter(array_column($candidatePool, 'source_id_private')))),
+            ],
             'limited' => $limit !== null && count($candidatePool) > count($selected),
             'limit' => $limit,
             'breakdown' => [
@@ -381,14 +446,9 @@ class JoplinRagReconcileCommand extends Command
                 'refresh_recommended' => count($refreshCandidates),
             ],
             'dependent_counts' => $dependentCounts,
-            'thresholds' => $this->thresholds(
-                count($candidates),
-                array_sum($dependentCounts),
-                $maxDeleteCandidates,
-                $maxDependentRows
-            ),
+            'thresholds' => $thresholds,
             'context_reconcile' => $contextReconcile,
-            'samples' => array_slice($selected, 0, 10),
+            'samples' => array_map(fn (array $candidate): array => array_diff_key($candidate, ['source_id_private' => true]), array_slice($selected, 0, 10)),
             'selected_ids' => $selectedIds,
             'deleted' => [
                 'rag_chunk_hypotheticals' => 0,
@@ -449,7 +509,7 @@ class JoplinRagReconcileCommand extends Command
     }
 
     /**
-     * @return array{id: int, source_ref: ?string, reason: string, title_hash: ?string}
+     * @return array{id: int, source_ref: ?string, source_id_private: ?string, reason: string, title_hash: ?string}
      */
     private function candidate(object $document, string $reason): array
     {
@@ -459,6 +519,7 @@ class JoplinRagReconcileCommand extends Command
         return [
             'id' => (int) $document->id,
             'source_ref' => $sourceId === '' ? null : substr(hash('sha256', $sourceId), 0, 12),
+            'source_id_private' => $sourceId === '' ? null : $sourceId,
             'reason' => $reason,
             'title_hash' => $title === null ? null : substr(hash('sha256', $title), 0, 12),
         ];
@@ -613,6 +674,7 @@ class JoplinRagReconcileCommand extends Command
             'rag_chunk_hypotheticals' => $this->countRows('rag_chunk_hypotheticals', 'document_id', $documentIds),
             'rag_propositions' => $this->countRows('rag_propositions', 'document_id', $documentIds),
             'rag_dedup_log' => $this->countRows('rag_dedup_log', 'matched_document_id', $documentIds),
+            'knowledge_graph_source_refs' => $this->countRows('knowledge_graph', 'source_document_id', $documentIds),
         ];
     }
 

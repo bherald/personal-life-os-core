@@ -16,8 +16,8 @@ class YouTubeTranscriptStorageService
     /**
      * Store a transcript in the database.
      *
-     * @param string $videoId YouTube video ID
-     * @param array $transcriptData Transcript data from YouTubeTranscriptService
+     * @param  string  $videoId  YouTube video ID
+     * @param  array  $transcriptData  Transcript data from YouTubeTranscriptService
      * @return int Inserted/updated row ID
      */
     public function store(string $videoId, array $transcriptData): int
@@ -39,23 +39,25 @@ class YouTubeTranscriptStorageService
             // Update existing record
             DB::update(
                 'UPDATE youtube_transcripts
-                 SET content = ?, timed_content = ?, source_method = ?,
+                 SET rag_indexed_at = CASE WHEN BINARY content = BINARY ? THEN rag_indexed_at ELSE NULL END,
+                     content = ?, timed_content = ?, source_method = ?,
                      duration_seconds = ?, word_count = ?, fetched_at = NOW()
                  WHERE id = ?',
                 [
+                    $content,
                     $content,
                     $timedContent ? json_encode($timedContent) : null,
                     $sourceMethod,
                     $durationSeconds,
                     $wordCount,
-                    $existing->id
+                    $existing->id,
                 ]
             );
 
             Log::info('YouTubeTranscriptStorageService: Updated transcript', [
                 'video_id' => $videoId,
                 'language' => $language,
-                'word_count' => $wordCount
+                'word_count' => $wordCount,
             ]);
 
             return (int) $existing->id;
@@ -73,7 +75,7 @@ class YouTubeTranscriptStorageService
                 $timedContent ? json_encode($timedContent) : null,
                 $sourceMethod,
                 $durationSeconds,
-                $wordCount
+                $wordCount,
             ]
         );
 
@@ -83,7 +85,7 @@ class YouTubeTranscriptStorageService
             'video_id' => $videoId,
             'language' => $language,
             'word_count' => $wordCount,
-            'id' => $id
+            'id' => $id,
         ]);
 
         return $id;
@@ -92,8 +94,8 @@ class YouTubeTranscriptStorageService
     /**
      * Get a stored transcript.
      *
-     * @param string $videoId YouTube video ID
-     * @param string $language Language code
+     * @param  string  $videoId  YouTube video ID
+     * @param  string  $language  Language code
      * @return object|null Transcript record or null
      */
     public function get(string $videoId, string $language = 'en'): ?object
@@ -113,9 +115,8 @@ class YouTubeTranscriptStorageService
     /**
      * Check if a transcript exists in storage.
      *
-     * @param string $videoId YouTube video ID
-     * @param string $language Language code
-     * @return bool
+     * @param  string  $videoId  YouTube video ID
+     * @param  string  $language  Language code
      */
     public function exists(string $videoId, string $language = 'en'): bool
     {
@@ -130,9 +131,8 @@ class YouTubeTranscriptStorageService
     /**
      * Delete transcript(s) for a video.
      *
-     * @param string $videoId YouTube video ID
-     * @param string|null $language Specific language, or null for all languages
-     * @return bool
+     * @param  string  $videoId  YouTube video ID
+     * @param  string|null  $language  Specific language, or null for all languages
      */
     public function delete(string $videoId, ?string $language = null): bool
     {
@@ -151,7 +151,7 @@ class YouTubeTranscriptStorageService
         Log::info('YouTubeTranscriptStorageService: Deleted transcript(s)', [
             'video_id' => $videoId,
             'language' => $language,
-            'deleted_count' => $deleted
+            'deleted_count' => $deleted,
         ]);
 
         return $deleted > 0;
@@ -197,18 +197,18 @@ class YouTubeTranscriptStorageService
 
         return [
             'total' => (int) $total->count,
-            'by_language' => array_map(fn($r) => ['language' => $r->language, 'count' => (int) $r->count], $byLanguage),
-            'by_source' => array_map(fn($r) => ['source' => $r->source_method, 'count' => (int) $r->count], $bySource),
+            'by_language' => array_map(fn ($r) => ['language' => $r->language, 'count' => (int) $r->count], $byLanguage),
+            'by_source' => array_map(fn ($r) => ['source' => $r->source_method, 'count' => (int) $r->count], $bySource),
             'avg_word_count' => $avgWordCount ? (int) $avgWordCount->avg_words : 0,
             'max_word_count' => $avgWordCount ? (int) $avgWordCount->max_words : 0,
-            'recent_activity' => array_map(fn($r) => ['date' => $r->date, 'count' => (int) $r->count], $recentActivity),
+            'recent_activity' => array_map(fn ($r) => ['date' => $r->date, 'count' => (int) $r->count], $recentActivity),
         ];
     }
 
     /**
      * Clean up old transcripts.
      *
-     * @param int $daysOld Delete transcripts older than this many days
+     * @param  int  $daysOld  Delete transcripts older than this many days
      * @return int Number of deleted records
      */
     public function cleanupOld(int $daysOld = 365): int
@@ -220,7 +220,7 @@ class YouTubeTranscriptStorageService
 
         Log::info('YouTubeTranscriptStorageService: Cleaned up old transcripts', [
             'days_old' => $daysOld,
-            'deleted_count' => $deleted
+            'deleted_count' => $deleted,
         ]);
 
         return $deleted;
@@ -229,15 +229,15 @@ class YouTubeTranscriptStorageService
     /**
      * Get transcript as array format compatible with YouTubeTranscriptService.
      *
-     * @param string $videoId YouTube video ID
-     * @param string $language Language code
+     * @param  string  $videoId  YouTube video ID
+     * @param  string  $language  Language code
      * @return array|null Transcript data or null
      */
     public function getAsTranscriptResult(string $videoId, string $language = 'en'): ?array
     {
         $record = $this->get($videoId, $language);
 
-        if (!$record) {
+        if (! $record) {
             return null;
         }
 
@@ -263,30 +263,30 @@ class YouTubeTranscriptStorageService
     /**
      * Search transcripts by content (uses LIKE since FULLTEXT not available).
      *
-     * @param string $query Search query
-     * @param int $limit Max results
+     * @param  string  $query  Search query
+     * @param  int  $limit  Max results
      * @return array Matching transcripts
      */
     public function search(string $query, int $limit = 20): array
     {
         // Use LIKE for basic search (FULLTEXT requires separate index)
         $results = DB::select(
-            "SELECT video_id, language, word_count, source_method, fetched_at,
+            'SELECT video_id, language, word_count, source_method, fetched_at,
                     SUBSTRING(content, 1, 500) as content_preview
              FROM youtube_transcripts
              WHERE content LIKE ?
              ORDER BY fetched_at DESC
-             LIMIT ?",
-            ['%' . $query . '%', $limit]
+             LIMIT ?',
+            ['%'.$query.'%', $limit]
         );
 
-        return array_map(fn($r) => (array) $r, $results);
+        return array_map(fn ($r) => (array) $r, $results);
     }
 
     /**
      * Normalize source method name.
      *
-     * @param string $method Raw method name
+     * @param  string  $method  Raw method name
      * @return string Normalized method
      */
     private function normalizeSourceMethod(string $method): string
@@ -304,14 +304,15 @@ class YouTubeTranscriptStorageService
         ];
 
         $normalized = strtolower(trim($method));
+
         return $map[$normalized] ?? $normalized;
     }
 
     /**
      * Get videos missing transcripts from a list.
      *
-     * @param array $videoIds List of video IDs to check
-     * @param string $language Language code
+     * @param  array  $videoIds  List of video IDs to check
+     * @param  string  $language  Language code
      * @return array Video IDs not in storage
      */
     public function getMissing(array $videoIds, string $language = 'en'): array
@@ -329,7 +330,7 @@ class YouTubeTranscriptStorageService
             $params
         );
 
-        $existingIds = array_map(fn($r) => $r->video_id, $existing);
+        $existingIds = array_map(fn ($r) => $r->video_id, $existing);
 
         return array_values(array_diff($videoIds, $existingIds));
     }

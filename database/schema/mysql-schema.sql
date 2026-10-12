@@ -1498,6 +1498,7 @@ CREATE TABLE `file_registry` (
   `ai_analyzed_at` timestamp NULL DEFAULT NULL COMMENT 'When AI analysis was last performed',
   `ai_analysis_version` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Model/pipeline version used for analysis',
   `date_taken` timestamp NULL DEFAULT NULL,
+  `date_taken_precision` varchar(16) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `date_taken_source` enum('exif_original','exif_digitized','exif_modified','path_extracted','filename_extracted','ai_estimated','user_manual','file_modified','scan_exif','ai_visual_high','ai_visual_medium','ai_visual_low') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `date_taken_confidence` decimal(3,2) DEFAULT NULL,
   `date_taken_reasoning` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
@@ -1563,6 +1564,7 @@ CREATE TABLE `file_registry` (
   KEY `idx_file_registry_chunked_at` (`chunked_at`),
   KEY `idx_file_registry_thumb_gen` (`thumbnail_generated_at`),
   KEY `file_registry_date_taken_index` (`date_taken`),
+  KEY `file_registry_date_precision_idx` (`date_taken_precision`),
   KEY `file_registry_date_taken_source_index` (`date_taken_source`),
   KEY `file_registry_date_extracted_at_index` (`date_extracted_at`),
   KEY `idx_file_registry_video_hash` (`video_hash`),
@@ -2781,6 +2783,7 @@ CREATE TABLE `genealogy_person_coverage` (
   `research_exhaustion_score` decimal(4,3) NOT NULL DEFAULT '0.000' COMMENT '0.0=never searched, 1.0=all repos tried with no results',
   `pending_hint_count` smallint unsigned NOT NULL DEFAULT '0',
   `last_searched_at` timestamp NULL DEFAULT NULL,
+  `agent_last_worked_at` timestamp NULL DEFAULT NULL,
   `search_count_30d` smallint unsigned NOT NULL DEFAULT '0',
   `negative_count_30d` smallint unsigned NOT NULL DEFAULT '0',
   `priority_score` decimal(6,4) NOT NULL DEFAULT '0.0000' COMMENT 'Composite: tier×0.40 + gap×0.35 + staleness×0.25',
@@ -2792,7 +2795,8 @@ CREATE TABLE `genealogy_person_coverage` (
   UNIQUE KEY `uq_tree_person` (`tree_id`,`person_id`),
   KEY `idx_tree_priority` (`tree_id`,`priority_score` DESC),
   KEY `idx_tree_tier` (`tree_id`,`bloodline_tier`,`priority_score` DESC),
-  KEY `idx_last_searched` (`tree_id`,`last_searched_at`)
+  KEY `idx_last_searched` (`tree_id`,`last_searched_at`),
+  KEY `idx_tree_agent_last_worked` (`tree_id`,`agent_last_worked_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 DROP TABLE IF EXISTS `genealogy_person_external_links`;
@@ -4315,7 +4319,7 @@ CREATE TABLE `node_executions` (
   `executed_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `branch_index` int unsigned DEFAULT '0',
   `parent_fan_out_id` varchar(255) DEFAULT NULL,
-  `state` enum('pending','running','success','failed','skipped') DEFAULT 'running',
+  `state` enum('pending','running','awaiting_approval','success','failed','skipped') DEFAULT 'running',
   `timeout_seconds` int unsigned DEFAULT NULL COMMENT 'Timeout applied for this execution',
   `timed_out` tinyint(1) DEFAULT '0' COMMENT 'Whether execution was terminated due to timeout',
   `input` json DEFAULT NULL,
@@ -5360,6 +5364,8 @@ CREATE TABLE `workflow_approval_gates` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `workflow_run_id` int unsigned NOT NULL,
   `node_execution_id` bigint unsigned DEFAULT NULL,
+  `execution_id` char(36) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `node_id` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `approval_type` enum('manual','condition') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'manual',
   `status` enum('pending','approved','rejected','expired') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'pending',
   `requested_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
@@ -5367,8 +5373,10 @@ CREATE TABLE `workflow_approval_gates` (
   `responded_by` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `timeout_minutes` int unsigned NOT NULL DEFAULT '1440',
   `context` json DEFAULT NULL,
+  `decision_payload` json DEFAULT NULL,
   `response_notes` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_gate_execution_node` (`execution_id`,`node_id`),
   KEY `idx_gates_run` (`workflow_run_id`),
   KEY `idx_gates_status` (`status`),
   KEY `idx_gates_requested` (`requested_at`)
@@ -5649,7 +5657,7 @@ DROP TABLE IF EXISTS `workflow_runs`;
 CREATE TABLE `workflow_runs` (
   `id` int unsigned NOT NULL AUTO_INCREMENT,
   `workflow_id` int unsigned NOT NULL,
-  `status` enum('running','completed','failed') NOT NULL,
+  `status` enum('running','awaiting_approval','completed','failed') NOT NULL,
   `error_message` text,
   `started_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `completed_at` timestamp NULL DEFAULT NULL,

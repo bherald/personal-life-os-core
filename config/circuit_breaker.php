@@ -3,11 +3,9 @@
 /**
  * Circuit Breaker Configuration (SC-2.1)
  *
- * Single source of truth for circuit breaker behavior across:
- * - AIService (provider-level circuits)
- * - LLMPoolManagerService (pool-level circuits)
- *
- * All services read from config() with local constant fallback.
+ * Bootstrap defaults for the table-owned LLM circuit policy. Runtime AIService
+ * and LLMPoolManager behavior resolves from
+ * system_configs.llm.circuit_breaker_runtime_policy.
  */
 
 return [

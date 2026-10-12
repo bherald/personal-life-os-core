@@ -41,6 +41,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
+        name: 'plos_review_lookup',
+        description: 'Read an exact Review Desk reference or known alias, including closed history; never approve or mutate',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            reference: { type: 'string', minLength: 1, maxLength: 255, pattern: '^[^-\\u0000-\\u001F\\u007F][^\\u0000-\\u001F\\u007F]*$' },
+          },
+          required: ['reference'],
+          additionalProperties: false,
+        },
+      },
+      {
         name: 'workflow_list',
         description: 'List all workflows in the database',
         inputSchema: {
@@ -222,7 +234,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'genealogy_batch_apply',
-        description: 'Apply guarded genealogy batch changes in one transaction; defaults to dry_run, requires confirm=true for writes, and supports compact keys for new records',
+        description: 'Apply guarded genealogy batch changes in one transaction; defaults to dry_run, requires confirm=true for writes, preserves omitted family links, and rolls back protected-root ancestor or reachability regressions',
         inputSchema: {
           type: 'object',
           properties: {
@@ -281,6 +293,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                   birth_place: { type: 'string' },
                   death_date: { type: 'string' },
                   death_place: { type: 'string' },
+                  burial_date: { type: 'string' },
+                  burial_place: { type: 'string' },
                   notes_append: { type: 'string' },
                   living: { type: 'boolean' },
                 },
@@ -293,9 +307,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 properties: {
                   id: { type: 'number' },
                   key: { type: 'string' },
-                  husband_id: { type: 'number' },
+                  husband_id: { type: ['number', 'null'], description: 'Omit to preserve an existing husband link; null explicitly clears it and remains graph-guarded' },
                   husband_key: { type: 'string' },
-                  wife_id: { type: 'number' },
+                  wife_id: { type: ['number', 'null'], description: 'Omit to preserve an existing wife link; null explicitly clears it and remains graph-guarded' },
                   wife_key: { type: 'string' },
                   marriage_date: { type: 'string' },
                   marriage_place: { type: 'string' },
@@ -389,10 +403,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
-  logger.logToolUse(name, args || {});
+  logger.logToolUse(name, name === 'plos_review_lookup' ? { reference_supplied: true } : args || {});
 
   try {
     switch (name) {
+      case 'plos_review_lookup':
+        return await toolHandlers.handleReviewLookup(
+          validateInput(schemas.reviewLookup, args)
+        );
+
       case 'workflow_list':
         return await toolHandlers.handleWorkflowList(
           validateInput(schemas.workflowList, args)
@@ -473,7 +492,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error) {
-    logger.logError(name, error as Error);
+    if (name === 'plos_review_lookup') {
+      logger.log('error', { action: name, error: 'lookup_failed' });
+    } else {
+      logger.logError(name, error as Error);
+    }
     throw error;
   }
 });

@@ -60,7 +60,7 @@
             v-model="inputValues[face.face_id]"
             type="text"
             placeholder="Name..."
-            class="w-full bg-black/40 border-t border-ops-plum/30 px-2 py-1.5 text-xs text-ops-text placeholder-ops-text-muted/40 focus:outline-none focus:border-ops-peach"
+            class="w-full bg-black/40 border-t border-ops-plum/30 px-2 py-1.5 text-xs text-ops-text placeholder-ops-text-muted/40 focus:outline-hidden focus:border-ops-peach"
             @input="onInput(face.face_id)"
             @keydown.enter="onSubmit(face.face_id)"
             @keydown.escape="closeDropdown(face.face_id)"

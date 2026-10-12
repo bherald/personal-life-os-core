@@ -23,16 +23,18 @@ class DataRemovalToolsCommand extends Command
 {
     protected $signature = 'data-removal:tools
         {--health-check : Run health checks on data broker opt-out pages}
-        {--sync-badbool : Sync broker list from BADBOOL GitHub repository}
+        {--sync-badbool : Review or sync the Eraser broker source (legacy flag name)}
         {--relisting-scan : Scan for data broker relistings}
         {--breach-scan : Scan subjects for data breaches via HIBP API}
         {--effectiveness : Generate effectiveness report}
         {--proof-stats : Show proof archive statistics}
         {--subject= : Data subject ID for relisting/breach scan}
         {--broker= : Specific broker ID}
-        {--dry-run : Preview without changes}';
+        {--dry-run : Fetch and compare the source without changes}
+        {--broken-only : Limit source comparison or repair to active broken brokers}
+        {--confirm : Confirm source-backed database writes}';
 
-    protected $description = 'Data removal tools: health checks, BADBOOL sync, relisting detection, effectiveness reporting';
+    protected $description = 'Data removal tools: health checks, Eraser source review, relisting detection, effectiveness reporting';
 
     public function handle(): int
     {
@@ -84,16 +86,74 @@ class DataRemovalToolsCommand extends Command
     private function syncBadbool(): int
     {
         $service = app(BrokerListSyncService::class);
+        $brokenOnly = (bool) $this->option('broken-only');
 
         if ($this->option('dry-run')) {
-            $status = $service->getSyncStatus();
-            $this->info("Current: {$status['total_brokers']} brokers, {$status['badbool_brokers']} from BADBOOL");
-            $this->info("Last sync: " . ($status['last_sync'] ?? 'never'));
-            $this->warn('Dry run - no sync performed.');
+            $preview = $service->previewSync($brokenOnly);
+            if (($preview['success'] ?? false) !== true) {
+                $this->error('Source preview failed: '.($preview['error'] ?? 'unknown error'));
+
+                return self::FAILURE;
+            }
+
+            $summary = $preview['summary'];
+            $this->info(sprintf(
+                'Source: %s (%s), rows: %d, domains: %d, matched: %d, unmatched: %d, URL changes: %d',
+                $preview['source']['repository'],
+                $preview['source']['license'],
+                $summary['source_rows'],
+                $summary['source_domains'],
+                $summary['matched'],
+                $summary['unmatched'],
+                $summary['url_changes']
+            ));
+            if ($preview['url_changes'] !== []) {
+                $this->table(
+                    ['Broker ID', 'Domain', 'Current URL', 'Source URL'],
+                    array_map(static fn (array $change): array => [
+                        $change['broker_id'],
+                        $change['domain'],
+                        $change['current_url'],
+                        $change['source_url'],
+                    ], $preview['url_changes'])
+                );
+            }
+            if ($preview['unmatched_brokers'] !== []) {
+                $this->table(
+                    ['Broker ID', 'Domain', 'Current URL', 'Health'],
+                    array_map(static fn (array $broker): array => [
+                        $broker['broker_id'],
+                        $broker['domain'],
+                        $broker['current_url'],
+                        $broker['health_status'],
+                    ], $preview['unmatched_brokers'])
+                );
+            }
+            $this->warn('Dry run: no database writes performed.');
+
             return self::SUCCESS;
         }
 
-        $this->info('Syncing broker list from BADBOOL...');
+        if (! $this->option('confirm')) {
+            $this->error('Source sync requires --confirm. Use --dry-run first.');
+
+            return self::FAILURE;
+        }
+
+        if ($brokenOnly) {
+            $result = $service->repairBrokenUrls(true);
+            if (($result['success'] ?? false) !== true) {
+                $this->error('Broken URL repair failed: '.($result['error'] ?? 'unknown error'));
+
+                return self::FAILURE;
+            }
+
+            $this->info("Source-backed broken URL repairs applied: {$result['updated']} of {$result['previewed']} previewed.");
+
+            return self::SUCCESS;
+        }
+
+        $this->info('Syncing broker list from the configured Eraser source...');
         $result = $service->syncBADBOOL();
 
         if (($result['skipped'] ?? false) === true) {

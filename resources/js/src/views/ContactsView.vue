@@ -24,7 +24,7 @@
           <!-- Address Book Selector -->
           <select
             v-model="selectedAddressBook"
-            class="px-4 py-2 bg-[#2d2d2d] border border-[#444] rounded-lg text-[#e0e0e0] focus:outline-none focus:ring-2 focus:ring-accent"
+            class="px-4 py-2 bg-[#2d2d2d] border border-[#444] rounded-lg text-[#e0e0e0] focus:outline-hidden focus:ring-2 focus:ring-accent"
           >
             <option value="all">All Address Books</option>
             <option v-for="book in addressBooks" :key="book.id" :value="book.id">
@@ -65,7 +65,7 @@
             v-model="searchQuery"
             type="text"
             placeholder="Search contacts by name, email, phone, or address..."
-            class="w-full pl-10 pr-4 py-3 bg-[#2d2d2d] border border-[#444] rounded-lg text-[#e0e0e0] focus:outline-none focus:ring-2 focus:ring-accent placeholder-[#666]"
+            class="w-full pl-10 pr-4 py-3 bg-[#2d2d2d] border border-[#444] rounded-lg text-[#e0e0e0] focus:outline-hidden focus:ring-2 focus:ring-accent placeholder-[#666]"
           />
         </div>
       </div>
@@ -201,7 +201,7 @@
       </div>
 
       <!-- Contact Detail Modal -->
-      <div v-if="selectedContact" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" @click.self="selectedContact = null">
+      <div v-if="selectedContact" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="selectedContact = null">
         <div class="bg-[#2d2d2d] rounded-lg shadow-xl max-w-lg w-full mx-4 border border-[#444]">
           <div class="p-6">
             <div class="flex justify-between items-start mb-6">

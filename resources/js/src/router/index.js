@@ -2,8 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
 
 const reviewHubRedirect = (to) => ({
-  path: '/knowledge',
-  query: { ...to.query, source: 'review' },
+  path: '/reviews',
+  query: { ...to.query, source: undefined },
 });
 
 const routes = [
@@ -28,9 +28,16 @@ const routes = [
     path: '/knowledge',
     name: 'KnowledgeHub',
     component: () => import('../views/KnowledgeHubView.vue'),
+    beforeEnter: (to) => to.query.source === 'review' ? reviewHubRedirect(to) : true,
     meta: { requiresAuth: true }
   },
   // Backwards compatibility redirects
+  {
+    path: '/reviews/source',
+    name: 'ReviewSourceDetails',
+    component: () => import('../views/ResearchHubView.vue'),
+    meta: { requiresAuth: true }
+  },
   {
     path: '/chat',
     redirect: '/ai'
@@ -236,7 +243,6 @@ const routes = [
     component: () => import('../views/AIObservabilityView.vue'),
     meta: { requiresAuth: true }
   },
-  // Hub consolidated into Knowledge → Review tab
   {
     path: '/hub',
     redirect: reviewHubRedirect
@@ -247,7 +253,9 @@ const routes = [
   },
   {
     path: '/reviews',
-    redirect: reviewHubRedirect
+    name: 'Reviews',
+    component: () => import('../views/ReviewDeskView.vue'),
+    meta: { requiresAuth: true }
   },
   {
     path: '/research-hub',

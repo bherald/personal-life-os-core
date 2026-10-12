@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\NextcloudFileApiService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
@@ -19,13 +20,15 @@ class NextcloudMaintenanceCommand extends Command
     protected $signature = 'nextcloud:maintenance
                             {--status : Show Nextcloud health status}
                             {--scan : Rescan filesystem for new/changed/deleted files}
+                            {--path= : With --scan, rescan one existing configured Nextcloud library file}
                             {--cleanup : Clean orphaned filecache and mount entries}
                             {--repair : Run maintenance:repair}
                             {--db-check : Check and add missing DB indices/columns/keys}
                             {--mimetype : Update MIME type mappings}
-                            {--trashbin : Clean up and expire trashbin}
+                            {--trashbin : Expire the configured user\'s trashbin using its retention policy}
+                            {--purge-trashbin : Permanently remove all deleted files for the configured user; excluded from --full}
                             {--previews : Clean up old generated previews}
-                            {--full : Run all maintenance tasks in sequence}
+                            {--full : Run routine maintenance in sequence, excluding trashbin purge}
                             {--dry-run : Show what would be done without executing}';
 
     protected $description = 'Nextcloud Docker maintenance — file scans, cleanup, repair, DB checks';
@@ -39,6 +42,8 @@ class NextcloudMaintenanceCommand extends Command
     private const DOCKER_INSPECT_TIMEOUT_SECONDS = 30;
 
     private const DOCKER_INSPECT_RETRIES = 2;
+
+    private const DOCKER_STATUS_TIMEOUT_SECONDS = 30;
 
     private int $tasksPassed = 0;
 
@@ -60,12 +65,29 @@ class NextcloudMaintenanceCommand extends Command
     {
         $dryRun = $this->option('dry-run');
         $full = $this->option('full');
+        $scanPath = $this->option('path');
+        $scopedScanArgs = null;
+
+        if ($scanPath !== null) {
+            if (! $this->option('scan') || $full) {
+                $this->error('--path requires --scan and cannot be combined with --full.');
+
+                return Command::FAILURE;
+            }
+
+            $scopedScanArgs = $this->buildScopedScanArgs((string) $scanPath);
+            if ($scopedScanArgs === null) {
+                $this->error('The requested scan path is not a contained, readable Nextcloud source file.');
+
+                return Command::FAILURE;
+            }
+        }
 
         // Default to --status if no options given
         $hasOption = $full || $this->option('status') || $this->option('scan')
             || $this->option('cleanup') || $this->option('repair')
             || $this->option('db-check') || $this->option('mimetype')
-            || $this->option('trashbin') || $this->option('previews');
+            || $this->option('trashbin') || $this->option('purge-trashbin') || $this->option('previews');
 
         if (! $hasOption) {
             $this->info('No option specified — running --status. Use --full for complete maintenance.');
@@ -98,7 +120,11 @@ class NextcloudMaintenanceCommand extends Command
         }
 
         if ($full || $this->option('scan')) {
-            $this->runTask('File Scan', 'files:scan '.$this->getOccUser().' --no-interaction', $dryRun);
+            $this->runTask(
+                'File Scan',
+                $scopedScanArgs ?? 'files:scan '.$this->getOccUser().' --no-interaction',
+                $dryRun
+            );
         }
 
         if ($full || $this->option('cleanup')) {
@@ -107,8 +133,11 @@ class NextcloudMaintenanceCommand extends Command
         }
 
         if ($full || $this->option('trashbin')) {
-            $this->runTask('Trashbin Expire', 'trashbin:expire', $dryRun);
-            $this->runTask('Trashbin Cleanup', 'trashbin:cleanup '.$this->getOccUser(), $dryRun);
+            $this->runTask('Trashbin Expire', 'trashbin:expire '.$this->getOccUser(), $dryRun);
+        }
+
+        if ($this->option('purge-trashbin')) {
+            $this->runTask('Trashbin Purge', 'trashbin:cleanup '.$this->getOccUser(), $dryRun);
         }
 
         if ($full || $this->option('previews')) {
@@ -213,13 +242,7 @@ class NextcloudMaintenanceCommand extends Command
         // Not all NC versions support --count, so just show if available
 
         // Docker disk
-        $dockerDf = Process::timeout(30)->run([
-            'docker',
-            'system',
-            'df',
-            '--format',
-            'table {{.Type}}\t{{.Size}}\t{{.Reclaimable}}',
-        ])->output();
+        $dockerDf = $this->dockerSystemDf();
         if ($dockerDf) {
             $this->line('');
             $this->info('━━━ Docker Disk ━━━');
@@ -267,13 +290,44 @@ class NextcloudMaintenanceCommand extends Command
         return Command::SUCCESS;
     }
 
-    private function runTask(string $name, string $occCommand, bool $dryRun): void
+    private function dockerSystemDf(): ?string
+    {
+        try {
+            $result = Process::timeout(self::DOCKER_STATUS_TIMEOUT_SECONDS)->run([
+                'docker',
+                'system',
+                'df',
+                '--format',
+                'table {{.Type}}\t{{.Size}}\t{{.Reclaimable}}',
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('nextcloud:maintenance docker disk status timed out', [
+                'timeout_seconds' => self::DOCKER_STATUS_TIMEOUT_SECONDS,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        if (! $result->successful()) {
+            Log::warning('nextcloud:maintenance docker disk status failed', [
+                'exit_code' => $result->exitCode(),
+                'error' => trim($result->errorOutput() ?: $result->output()),
+            ]);
+
+            return null;
+        }
+
+        return $result->output();
+    }
+
+    private function runTask(string $name, string|array $occCommand, bool $dryRun): void
     {
         $this->line('');
         $this->info("► {$name}");
 
         if ($dryRun) {
-            $this->line("  [dry-run] would execute: occ {$occCommand}");
+            $this->line('  [dry-run] would execute: occ '.$this->formatOccCommand($occCommand));
             $this->results[$name] = 'dry-run';
             $this->tasksPassed++;
 
@@ -321,9 +375,10 @@ class NextcloudMaintenanceCommand extends Command
         $this->tasksPassed++;
     }
 
-    private function resolveOccTimeout(string $command): int
+    private function resolveOccTimeout(string|array $command): int
     {
-        if (str_starts_with($command, 'files:scan')) {
+        $commandName = is_array($command) ? ($command[0] ?? '') : $command;
+        if (str_starts_with($commandName, 'files:scan')) {
             return self::FILE_SCAN_TIMEOUT_SECONDS;
         }
 
@@ -333,9 +388,9 @@ class NextcloudMaintenanceCommand extends Command
     /**
      * Execute an occ command inside the Nextcloud container.
      */
-    private function occ(string $command, ?int $timeoutSeconds = null, ?string &$errorOutput = null): ?string
+    private function occ(string|array $command, ?int $timeoutSeconds = null, ?string &$errorOutput = null): ?string
     {
-        $args = preg_split('/\s+/', trim($command)) ?: [];
+        $args = is_array($command) ? array_values($command) : (preg_split('/\s+/', trim($command)) ?: []);
         $result = Process::timeout($timeoutSeconds ?? self::DEFAULT_OCC_TIMEOUT_SECONDS)->run(array_merge([
             'docker',
             'exec',
@@ -347,7 +402,7 @@ class NextcloudMaintenanceCommand extends Command
         if (! $result->successful()) {
             $errorOutput = trim($result->errorOutput() ?: $result->output());
             Log::warning('nextcloud:maintenance occ failed', [
-                'command' => $command,
+                'command' => is_array($command) ? $this->formatOccCommand($command) : $command,
                 'timeout_seconds' => $timeoutSeconds ?? self::DEFAULT_OCC_TIMEOUT_SECONDS,
                 'exit_code' => $result->exitCode(),
                 'error' => $errorOutput,
@@ -359,6 +414,69 @@ class NextcloudMaintenanceCommand extends Command
         $errorOutput = trim($result->errorOutput());
 
         return rtrim($result->output());
+    }
+
+    /** Build an OCC argv for one existing file below the configured library root. */
+    private function buildScopedScanArgs(string $requestedPath): ?array
+    {
+        if ($requestedPath === '' || strlen($requestedPath) > 4096
+            || $requestedPath[0] !== '/' || str_contains($requestedPath, "\0")
+            || str_contains($requestedPath, '\\') || preg_match('/[\x00-\x1f\x7f]/', $requestedPath)
+            || str_contains($requestedPath, '//') || str_ends_with($requestedPath, '/')) {
+            return null;
+        }
+
+        $libraryRoot = config('services.nextcloud.library_root');
+        if (! is_string($libraryRoot) || $libraryRoot === '' || $libraryRoot[0] !== '/' || $libraryRoot === '/'
+            || str_contains($libraryRoot, '\\') || str_contains($libraryRoot, '//')
+            || preg_match('/[\x00-\x20\x7f]/', $libraryRoot)) {
+            return null;
+        }
+        $libraryParts = explode('/', trim($libraryRoot, '/'));
+        if (in_array('', $libraryParts, true) || in_array('.', $libraryParts, true) || in_array('..', $libraryParts, true)) {
+            return null;
+        }
+        $libraryPrefix = rtrim($libraryRoot, '/');
+        if (strlen($requestedPath) <= strlen($libraryPrefix)
+            || strncasecmp($requestedPath, $libraryPrefix, strlen($libraryPrefix)) !== 0
+            || $requestedPath[strlen($libraryPrefix)] !== '/') {
+            return null;
+        }
+        $parts = explode('/', ltrim($requestedPath, '/'));
+        if (in_array('.', $parts, true) || in_array('..', $parts, true)) {
+            return null;
+        }
+
+        $user = $this->getOccUser();
+        if ($user === '' || strpbrk($user, '/\\') !== false || preg_match('/[\x00-\x20\x7f]/', $user)) {
+            return null;
+        }
+
+        $localPath = app(NextcloudFileApiService::class)->localPath($requestedPath);
+        $configuredRoot = config('services.nextcloud.data_path');
+        if (! is_string($configuredRoot) || $configuredRoot === '' || $localPath === null) {
+            return null;
+        }
+
+        $root = realpath($configuredRoot);
+        $resolved = realpath($localPath);
+        if ($root === false || $resolved === false || ! is_file($resolved) || ! is_readable($resolved)
+            || ! str_starts_with($resolved, rtrim($root, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR)) {
+            return null;
+        }
+
+        return ['files:scan', '--path='.$user.'/files'.$requestedPath, '--no-interaction'];
+    }
+
+    private function formatOccCommand(string|array $command): string
+    {
+        if (! is_array($command)) {
+            return $command;
+        }
+
+        return implode(' ', array_map(static function (string $argument): string {
+            return preg_match('/\s/', $argument) ? escapeshellarg($argument) : $argument;
+        }, $command));
     }
 
     private function isContainerRunning(string $container = self::CONTAINER): bool

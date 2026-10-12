@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execCommand, type ExecCommandError } from '../util/exec.js';
 
 import {
   ALLOWED_COMMANDS,
@@ -9,6 +10,8 @@ import {
   allowlistFreshness,
   extractAllowlistRevision,
   plosArtisan,
+  resolveAllowedCommand,
+  resolveDynamicAllowedCommand,
   selectAllowlistPolicy,
 } from './plos-artisan.js';
 
@@ -45,6 +48,258 @@ export const ALLOWED_COMMANDS = { 'ops:first --json': { description: 'First', ti
 export const ALLOWED_COMMANDS = { 'ops:second --json': { description: 'Second', timeout: 1_000 } };`;
 
   assert.notEqual(allowlistContentFingerprint(first), allowlistContentFingerprint(second));
+});
+
+test('face coverage admits and lists only the exact read-only aggregate status form', async () => {
+  const command = 'files:face-coverage --status --json';
+  assert.deepEqual(resolveAllowedCommand(command), { command, meta: ALLOWED_COMMANDS[command] });
+  const listing = await plosArtisan({ command: 'list', on_prod: false });
+  assert.match(listing, /php artisan files:face-coverage --status --json\n/);
+  assert.match(listing, /Read-only aggregate anonymous photo coverage status without detection or identity decisions/);
+
+  for (const rejected of [
+    'files:face-coverage',
+    'files:face-coverage --json',
+    'files:face-coverage --status',
+    'files:face-coverage --json --status',
+    'files:face-coverage --slice --scheduler-run=1 --json',
+    `${command} --slice`,
+    `${command} --scheduler-run=1`,
+    `${command} --json`,
+    `${command} --status`,
+    `${command} --compact`,
+    `${command} --no-interaction`,
+    `${command}; echo bad`,
+    `${command} && echo bad`,
+    `${command} | cat`,
+    `${command} $(echo bad)`,
+    `${command}\necho bad`,
+  ]) {
+    assert.equal(resolveAllowedCommand(rejected), null, `${rejected} must not reach execution`);
+    assert.match(await plosArtisan({ command: rejected, on_prod: false }), /^Blocked:/);
+  }
+});
+
+test('image audit admits only exact aggregate status and blocks workers or conflicting options', async () => {
+  const command = 'files:image-audit --status --json';
+  assert.deepEqual(resolveAllowedCommand(command), { command, meta: ALLOWED_COMMANDS[command] });
+  assert.equal(ALLOWED_COMMANDS[command].timeout, 30_000);
+  const listing = await plosArtisan({ command: 'list', on_prod: false });
+  assert.match(listing, /php artisan files:image-audit --status --json\n/);
+  assert.match(listing, /Read-only aggregate image audit status without starting a worker or changing sources or identities/);
+
+  for (const rejected of [
+    'files:image-audit',
+    'files:image-audit --json',
+    'files:image-audit --status',
+    'files:image-audit --json --status',
+    'files:image-audit --slice --json',
+    `${command} --slice`,
+    `${command} --status=0`,
+    `${command} --status=false`,
+    `${command} --status`,
+    `${command} --json`,
+    `${command} --no-interaction`,
+    `${command} --force`,
+    `${command}; echo bad`,
+    `${command} && echo bad`,
+    `${command} | cat`,
+    `${command} $(echo bad)`,
+    `${command}\necho bad`,
+  ]) {
+    assert.equal(resolveAllowedCommand(rejected), null, `${rejected} must not reach execution`);
+    assert.match(await plosArtisan({ command: rejected, on_prod: false }), /^Blocked:/);
+  }
+});
+
+test('face preview resolver admits only canonical bounded explicit selectors', () => {
+  const one = 'files:enrich --type=faces --face-preview --media-id=16576 --tree-id=4 --dry-run --json';
+  const resolved = resolveDynamicAllowedCommand(one);
+
+  assert.deepEqual(resolved, {
+    command: one,
+    meta: {
+      description: 'Bounded anonymous face preview for 1–5 explicit media/review IDs; no identity decisions or database writes',
+      timeout: 120_000,
+    },
+  });
+  assert.equal(ALLOWED_COMMANDS[one], undefined, 'dynamic selectors stay outside the exact static allowlist');
+  assert.equal(resolveAllowedCommand(one)?.command, one, 'the tool command matcher admits the resolved dynamic command');
+
+  const five = 'files:enrich --type=faces --face-preview --media-id=16576 --face-review-id=2201 --media-id=2202 --face-review-id=2203 --media-id=2204 --tree-id=4 --json';
+  assert.equal(resolveDynamicAllowedCommand(five)?.command, five);
+
+  const withoutDryRun = 'files:enrich --type=faces --face-preview --face-review-id=2201 --tree-id=4 --json';
+  assert.equal(resolveDynamicAllowedCommand(withoutDryRun)?.command, withoutDryRun);
+
+  for (const command of [
+    'files:enrich --type=faces --face-preview --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --media-id=2 --media-id=3 --media-id=4 --media-id=5 --media-id=6 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --face-review-id=1 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=0 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=01 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=9223372036854775808 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --tree-id=0 --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --tree-id=4 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --tree-id=4 --dry-run --dry-run --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --tree-id=4 --json --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --dry-run --tree-id=4 --json',
+    'files:enrich --face-preview --type=faces --media-id=1 --tree-id=4 --json',
+    'files:enrich --type=all --face-preview --media-id=1 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --tree-id=4 --status --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --tree-id=4 --worker-id=x --json',
+    'files:enrich --type=faces --face-preview --media-id=1;echo bad --tree-id=4 --json',
+    'files:enrich  --type=faces --face-preview --media-id=1 --tree-id=4 --json',
+    'files:enrich --type=faces --face-preview --media-id=1 --tree-id=4 --json ',
+  ]) {
+    assert.equal(resolveDynamicAllowedCommand(command), null, `${command} must be rejected`);
+    assert.equal(resolveAllowedCommand(command), null, `${command} must not reach command execution`);
+  }
+});
+
+test('face reference readiness resolver admits only bounded canonical IDs for the current executor', async () => {
+  const one = 'files:face-reference-readiness --face-id=17 --json';
+  assert.equal(Object.hasOwn(ALLOWED_COMMANDS, one), false);
+  assert.equal(resolveDynamicAllowedCommand(one), null, 'old loaded executors do not inherit the new form');
+  assert.equal(resolveDynamicAllowedCommand(one, { boundedExecutor: false }), null);
+  assert.deepEqual(resolveAllowedCommand(one), {
+    command: one,
+    meta: {
+      description: 'Read private benchmark-readiness evidence for 1–5 explicit face IDs; no identity decisions or writes',
+      timeout: 60_000,
+      maxBuffer: 262144,
+    },
+  });
+  const five = 'files:face-reference-readiness --face-id=17 --face-id=29 --face-id=31 --face-id=41 --face-id=53 --json';
+  assert.equal(resolveAllowedCommand(five)?.command, five);
+
+  for (const rejected of [
+    'files:face-reference-readiness --json',
+    `${one} --face-id=29`,
+    `${one} --face-id=17`,
+    'files:face-reference-readiness --face-id=0 --json',
+    'files:face-reference-readiness --face-id=01 --json',
+    'files:face-reference-readiness --face-id=9007199254740992 --json',
+    'files:face-reference-readiness --face-id=9223372036854775808 --json',
+    `${five} --face-id=59`,
+    'files:face-reference-readiness --face-id=17',
+    'files:face-reference-readiness --json --face-id=17',
+    `${one} --compact`, `${one} --execute`, `${one}; echo unsafe`,
+    `${one} && echo unsafe`, `${one} | cat`, `${one} $(echo unsafe)`, `${one}\\necho unsafe`,
+    'files:face-reference-readiness  --face-id=17 --json',
+    `${one} `,
+  ]) {
+    assert.equal(resolveAllowedCommand(rejected), null, `${rejected} must be rejected`);
+    let calls = 0;
+    assert.match(await plosArtisan({ command: rejected, on_prod: false }, undefined, async () => {
+      calls++; throw new Error('executor must not run');
+    }), /^Blocked:/);
+    assert.equal(calls, 0);
+  }
+
+  const listing = await plosArtisan({ command: 'list', on_prod: false }, undefined, async () => {
+    throw new Error('list must not execute a command');
+  });
+  assert.match(listing, /face-reference-readiness \[1–5 unique --face-id=<positive-id>\] --json/);
+});
+
+test('face reference readiness passes exact report only within timeout and aggregate output bounds', async () => {
+  const command = 'files:face-reference-readiness --face-id=17 --face-id=29 --json';
+  const report = { read_only: true, identity_assignments: false, items: [
+    { face_id: 17, holds: ['held-private'], benchmark_holds: ['checkpoint_unknown'], benchmark_eligible: false },
+    { face_id: 29, holds: [], benchmark_holds: [], benchmark_eligible: true },
+  ] };
+  const stdout = JSON.stringify(report);
+  let calls = 0;
+  const response = await plosArtisan({ command, on_prod: false }, undefined, async (assembled, options) => {
+    calls++;
+    assert.match(assembled, /php artisan files:face-reference-readiness --face-id=17 --face-id=29 --json$/);
+    assert.equal(options?.timeout, 60_000);
+    assert.equal(options?.maxBuffer, 262144);
+    return { stdout, stderr: '' };
+  });
+  assert.equal(calls, 1);
+  assert.equal(response.split('\n\n').slice(1).join('\n\n'), stdout);
+
+  const overflow = await plosArtisan({ command: 'files:face-reference-readiness --face-id=17 --json', on_prod: false }, undefined,
+    async (_assembled, options) => {
+      assert.equal(options?.timeout, 60_000);
+      assert.equal(options?.maxBuffer, 262144);
+      return { stdout: 'private report secret', stderr: 'x'.repeat(262144) };
+    });
+  assert.deepEqual(JSON.parse(overflow), {
+    schema: 'plos.face-reference-readiness.transport.v1', success: false,
+    status: 'incomplete', complete: false, read_only: true, identity_assignments: false,
+    items: [], reason_code: 'review_transport_output_limit', raw_failed_report_returned: false,
+  });
+  assert.doesNotMatch(overflow, /private report secret|sha256|x{32}/);
+});
+
+test('face reference readiness transport errors return a fixed incomplete holder without diagnostics', async () => {
+  const response = await plosArtisan({
+    command: 'files:face-reference-readiness --face-id=17 --json', on_prod: false,
+  }, undefined, async () => { throw Object.assign(new Error('private transport diagnostic'), {
+    code: 'ETIMEDOUT', stdout: '{"person_name":"private partial"}', stderr: 'private transport diagnostic',
+  }); });
+  const holder = JSON.parse(response);
+  assert.equal(holder.status, 'incomplete');
+  assert.equal(holder.complete, false);
+  assert.equal(holder.reason_code, 'review_transport_unavailable');
+  assert.equal(holder.raw_failed_report_returned, false);
+  assert.doesNotMatch(response, /private partial|private transport diagnostic|sha256/);
+});
+
+test('face reference readiness rejects malformed, unsafe-eligible, or reordered item reports', async () => {
+  const command = 'files:face-reference-readiness --face-id=17 --face-id=29 --json';
+  const valid = { read_only: true, identity_assignments: false, items: [
+    { face_id: 17, holds: [], benchmark_holds: [], benchmark_eligible: true },
+    { face_id: 29, holds: [], benchmark_holds: [], benchmark_eligible: true },
+  ] };
+  const invalidReports = [
+    { ...valid, items: [{ face_id: 17, benchmark_holds: [], benchmark_eligible: false }, valid.items[1]] },
+    { ...valid, items: [{ face_id: 17, holds: [], benchmark_eligible: false }, valid.items[1]] },
+    { ...valid, items: [{ face_id: 17, holds: [17], benchmark_holds: [], benchmark_eligible: false }, valid.items[1]] },
+    { ...valid, items: [{ face_id: 17, holds: ['current_reference_held'], benchmark_holds: [], benchmark_eligible: true }, valid.items[1]] },
+    { ...valid, items: [...valid.items].reverse() },
+  ];
+
+  for (const report of invalidReports) {
+    const response = await plosArtisan({ command, on_prod: false }, undefined, async () => ({
+      stdout: JSON.stringify(report), stderr: '',
+    }));
+    assert.deepEqual(JSON.parse(response), {
+      schema: 'plos.face-reference-readiness.transport.v1', success: false,
+      status: 'incomplete', complete: false, read_only: true, identity_assignments: false,
+      items: [], reason_code: 'review_transport_unavailable', raw_failed_report_returned: false,
+    });
+  }
+});
+
+test('stale policy freshness candidate can supply its bounded dynamic resolver', () => {
+  const distResolver = (command: string) => command === 'dist-preview'
+    ? { command, meta: { description: 'dist preview', timeout: 1_000 } }
+    : null;
+  const policy = selectAllowlistPolicy({
+    loadedRevision: 'loaded-old',
+    loadedCommands: { 'ops:loaded-only --json': { description: 'Loaded command', timeout: 1_000 } },
+    loadedDynamicCommandResolver: resolveDynamicAllowedCommand,
+    freshness: {
+      status: 'stale',
+      loaded_revision: 'loaded-old',
+      source_revision: 'dist-new',
+      dist_revision: 'dist-new',
+      mismatched_revision_count: 2,
+    },
+    candidate: {
+      ALLOWLIST_REVISION: 'dist-new',
+      ALLOWED_COMMANDS: { 'ops:dist-only --json': { description: 'Dist command', timeout: 2_000 } },
+      resolveDynamicAllowedCommand: distResolver,
+    },
+  });
+
+  assert.equal(policy.source, 'dist');
+  assert.equal(policy.dynamicCommandResolver, distResolver);
+  assert.equal(policy.dynamicCommandResolver('dist-preview')?.meta.description, 'dist preview');
 });
 
 
@@ -171,9 +426,24 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'plos:agent-trace-tail --limit=20 --since=24 --json --compact',
     'ops:mcp-health --compact',
     'ops:mcp-health --json --compact',
+    'ops:mcp-tool-contract-audit --json --compact --fail-on-violations',
     'llm:sync-providers --json --compact',
     'llm:sync-providers --json --compact --no-live',
     'codex:exec-smoke --json',
+    'codex:offline-capabilities --json',
+    'codex:offline-capabilities --json --probe-sidecars',
+    'codex:offline-pipeline-tools --json',
+    'codex:offline-pipeline-tools --json --compact',
+    'codex:offline-sidecar --json --dry-run',
+    'codex:offline-improvement --json --example',
+    'codex:offline-prompt-candidate-eval --json --compact --example --fail-on-ineligible',
+    'content:ocr-candidate-eval --example --json --compact --fail-on-ineligible',
+    'content:extraction-provenance-audit --json --compact',
+    'codex:offline-improvement-review --json --compact',
+    'codex:offline-improvement-review --json --compact --stage-review',
+    'audio:tts --json --probe',
+    'rag:rerank --json --example --no-embeddings',
+    'rag:rerank-eval --json --compact --fail-on-regression',
     'ops:local-runtime-scorecard --json --compact',
     'ops:scheduled-output-audit --json --compact --fail-on-violations',
     'ops:scheduled-output-audit --json --compact',
@@ -193,6 +463,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:runtime-diagnostics --window=24h --focus=all --json --compact',
     'ops:queue-fit-audit --json --compact',
     'ops:runtime-policy-leak-audit --json --compact',
+    'ops:runtime-policy-leak-audit --json --findings-limit=40',
+    'ops:runtime-policy-leak-audit --json --compact --findings-limit=40',
     'ops:face-telemetry-report --json',
     'ops:face-telemetry-report --markdown --hours=168',
     'ops:face-telemetry-report --compact',
@@ -204,18 +476,6 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'ops:face-integrity-audit --json --compact --limit=20',
     'ops:face-named-only-slice --limit=10 --json',
     'ops:face-named-only-slice --limit=10 --cluster-scope=mixed --sort=oldest --compact --json',
-    'ops:face-bridge-alignment-report --tree=4 --json --compact --limit=20',
-    'ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=10 --seed-limit=20 --scan-per-seed=50 --json --compact',
-    'ops:face-person-source-provenance-report --tree=4 --json --compact --limit=10',
-    'ops:face-person-source-repair-plan --tree=4 --status=face_export_person_conflict --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=face_linked_display_mismatch --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=face_trusted_export_no_source --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=face_no_export_provenance --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_confirmed --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=person_media_unbacked_unconfirmed --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=person_media_source_backed_unconfirmed --limit=25 --json',
-    'ops:face-person-source-repair-packet-refill --tree=4 --json --compact --dry-run',
     'ops:audit-privacy-routing --json --compact',
     'ops:dba-telemetry-report --compact',
     'ops:dba-telemetry-report --json --compact',
@@ -227,7 +487,6 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:reject-codes --json --days=30',
     'genealogy:reject-codes --compact',
     'genealogy:reject-codes --json --compact',
-    'genealogy:manager --tree=4 --json --compact',
     'genealogy:review-feedback --days=30 --json',
     'genealogy:review-feedback --compact',
     'genealogy:review-feedback --json --compact',
@@ -247,21 +506,16 @@ test('read-only planning evidence commands stay allowlisted', async () => {
     'genealogy:evidence-asset-capture-review --json --compact',
     'genealogy:evidence-asset-capture-executor --json --compact',
     'genealogy:media-intake-report --json --compact',
-    'genealogy:media-intake-report --tree=4 --json --compact',
     'genealogy:media-intake-report --markdown --compact',
     'genealogy:media-intake-report --dry-run --json --compact',
     'genealogy:media-intake-run --dry-run --json --compact',
     'genealogy:media-intake-run --dry-run --json --compact --stage --transcribe-dry-run --enrich-dry-run --evidence-assets',
     'genealogy:enrich-media --status',
     'genealogy:transcribe-media --status',
-    'genealogy:media-rag-index --tree=4 --stats',
-    'genealogy:media-rag-index --tree=4 --limit=20 --dry-run',
-    'genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45',
     'genealogy:agent-triage --json',
     'genealogy:agent-triage --compact',
     'genealogy:agent-triage --json --compact',
     'genealogy:agent-triage --days=30 --json --compact',
-    'genealogy:health-audit --tree=4 --json --aggregate --compact',
     'genealogy:source-registry --validate',
     'genealogy:source-registry --validate --json --compact',
     'awo:replay --window=7d --json',
@@ -326,6 +580,8 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   );
   assert.match(listing, new RegExp(`Allowlist entries: ${Object.keys(ALLOWED_COMMANDS).length}`));
   assert.match(listing, /Compact scorecard commands \(exact forms only\):/);
+  assert.match(listing, /Bounded dynamic command form \(canonical order only\):/);
+  assert.match(listing, /files:enrich --type=faces --face-preview \[1–5 unique --media-id=<positive-id> or --face-review-id=<positive-id>\]/);
   assert.match(
     listing,
     /No reordered flags, wider windows, trace ids, detail output, archive\/consolidate, or writeback variants are allowlisted\./,
@@ -368,6 +624,19 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan llm:sync-providers --json --compact/);
   assert.match(listing, /php artisan llm:sync-providers --json --compact --no-live/);
   assert.match(listing, /php artisan codex:exec-smoke --json/);
+  assert.match(listing, /php artisan codex:offline-capabilities --json/);
+  assert.match(listing, /php artisan codex:offline-capabilities --json --probe-sidecars/);
+  assert.match(listing, /php artisan codex:offline-pipeline-tools --json/);
+  assert.match(listing, /php artisan codex:offline-pipeline-tools --json --compact/);
+  assert.match(listing, /php artisan codex:offline-sidecar --json --dry-run/);
+  assert.match(listing, /php artisan codex:offline-improvement --json --example/);
+  assert.match(listing, /php artisan codex:offline-prompt-candidate-eval --json --compact --example --fail-on-ineligible/);
+  assert.match(listing, /php artisan content:ocr-candidate-eval --example --json --compact --fail-on-ineligible/);
+  assert.match(listing, /php artisan codex:offline-improvement-review --json --compact/);
+  assert.match(listing, /php artisan codex:offline-improvement-review --json --compact --stage-review/);
+  assert.match(listing, /php artisan audio:tts --json --probe/);
+  assert.match(listing, /php artisan rag:rerank --json --example --no-embeddings/);
+  assert.match(listing, /php artisan rag:rerank-eval --json --compact --fail-on-regression/);
   assert.match(listing, /php artisan bitllm:privacy-gate --eval --json/);
   assert.match(listing, /php artisan ops:local-runtime-scorecard --json --compact/);
   assert.match(listing, /php artisan ops:scheduled-output-audit --json --compact --fail-on-violations/);
@@ -389,10 +658,6 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan ops:face-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:face-mixed-cluster-report --limit=5 --sample-faces=3 --json/);
   assert.match(listing, /php artisan ops:face-named-only-slice --limit=10 --json/);
-  assert.match(listing, /php artisan ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=10 --seed-limit=20 --scan-per-seed=50 --json --compact/);
-  assert.match(listing, /php artisan ops:face-person-source-provenance-report --tree=4 --json --compact --limit=10/);
-  assert.match(listing, /php artisan ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --json/);
-  assert.match(listing, /php artisan ops:face-person-source-repair-packet-refill --tree=4 --json --compact --dry-run/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --compact/);
   assert.match(listing, /php artisan ops:dba-telemetry-report --markdown --dry-run/);
   assert.match(listing, /php artisan files:reconcile-lifecycle --compact/);
@@ -409,8 +674,6 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan rag:scale-review --markdown/);
   assert.match(listing, /php artisan rag:scale-review --compact/);
   assert.match(listing, /php artisan rag:scale-review --json --compact/);
-  assert.match(listing, /php artisan genealogy:media-intake-report --tree=4 --json --compact/);
-  assert.match(listing, /php artisan genealogy:health-audit --tree=4 --json --aggregate --compact/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --json --compact/);
   assert.match(listing, /php artisan genealogy:evidence-sprint-report --markdown --compact/);
@@ -425,9 +688,6 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:media-intake-run --dry-run --json --compact/);
   assert.match(listing, /php artisan genealogy:enrich-media --status/);
   assert.match(listing, /php artisan genealogy:transcribe-media --status/);
-  assert.match(listing, /php artisan genealogy:media-rag-index --tree=4 --stats/);
-  assert.match(listing, /php artisan genealogy:media-rag-index --tree=4 --limit=20 --dry-run/);
-  assert.match(listing, /php artisan genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45/);
   assert.match(listing, /php artisan genealogy:agent-triage --json/);
   assert.match(listing, /php artisan genealogy:agent-triage --compact/);
   assert.match(listing, /php artisan genealogy:agent-triage --json --compact/);
@@ -436,7 +696,6 @@ test('read-only planning evidence commands stay allowlisted', async () => {
   assert.match(listing, /php artisan genealogy:packet-reason-codes --days=30 --json/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --compact/);
   assert.match(listing, /php artisan genealogy:packet-reason-codes --json --compact/);
-  assert.match(listing, /php artisan genealogy:manager --tree=4 --json --compact/);
   assert.match(listing, /php artisan genealogy:review-feedback --compact/);
   assert.match(listing, /php artisan genealogy:review-feedback --json --compact/);
   assert.match(listing, /php artisan genealogy:reject-codes --compact/);
@@ -499,6 +758,13 @@ test('next-target focus variants stay blocked unless they are canonical allowlis
   }
 });
 
+
+test('public allowlist excludes embedded personal tree, person and research boundaries', () => {
+  for (const command of Object.keys(ALLOWED_COMMANDS)) {
+    assert.doesNotMatch(command, /--tree=\d+|--person-id=\d+|--boundary=/);
+  }
+});
+
 test('near-miss write commands remain blocked by exact allowlist matching', async () => {
   for (const command of [
     'files:reconcile-lifecycle --samples --json',
@@ -524,14 +790,6 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
     'ops:face-mixed-cluster-report --limit=5 --sample-faces=10 --json',
     'ops:face-named-only-slice --limit=25 --json',
     'ops:face-named-only-slice --limit=10 --json --cluster=80',
-    'ops:face-same-person-candidates --tree=4 --person-id=2203 --limit=25 --json --compact',
-    'ops:face-person-source-provenance-report --tree=4 --json --limit=25',
-    'ops:face-person-source-repair-plan --tree=4 --limit=25 --json',
-    'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --json --limit=25',
-    'ops:face-person-source-repair-plan --tree=4 --status=face_untrusted_export_review --limit=25 --write --confirm --json',
-    'ops:face-person-source-repair-packet-refill --tree=4 --write --confirm --json --compact',
-    'ops:face-person-source-repair-packet-refill --tree=4 --json --compact',
-    'ops:face-person-source-repair-packet-refill --tree=4 --dry-run --json --compact',
     'ops:scheduled-output-audit --compact --json --fail-on-violations',
     'ops:scheduled-output-audit --json --fail-on-violations --compact',
     'ops:scheduled-output-audit --json --compact --details --fail-on-violations',
@@ -541,14 +799,33 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
     'ops:capacity-utilization-manager --dry-run --compact --json',
     'ops:runtime-policy-leak-audit --compact --json',
     'ops:runtime-policy-leak-audit --json --compact --strict',
-    'genealogy:manager --tree=4 --execute --json --compact',
-    'genealogy:manager --json --compact --tree=4',
-    'genealogy:manager --tree=4 --json',
     'ops:operator-evidence --json',
     'ops:offline-smoke --json',
     'ops:agent-doctor --json --since=24',
     'ops:agent-doctor-history --json --days=7',
     'ops:dba-telemetry-report --json',
+    'codex:offline-sidecar --json',
+    'codex:offline-sidecar --json --execute',
+    'codex:offline-sidecar --json --dry-run --prompt-b64=dGVzdA==',
+    'codex:offline-sidecar --json --prompt-b64=dGVzdA== --dry-run',
+    'codex:offline-capabilities --probe-sidecars --json',
+    'codex:offline-capabilities --json --probe-sidecars --details',
+    'codex:offline-pipeline-tools --compact --json',
+    'codex:offline-pipeline-tools --json --task=source_triage',
+    'codex:offline-improvement --json --summary-b64=dGVzdA==',
+    'codex:offline-prompt-candidate-eval --json --example',
+    'codex:offline-prompt-candidate-eval --json --compact --example',
+    'codex:offline-prompt-candidate-eval --json --compact --example --fail-on-ineligible --artifact=test.json',
+    'content:ocr-candidate-eval --json --compact --example',
+    'content:ocr-candidate-eval --example --json --compact',
+    'content:ocr-candidate-eval --example --json --compact --fail-on-ineligible --artifact=test.json',
+    'content:extraction-provenance-audit --compact --json',
+    'content:extraction-provenance-audit --json --compact --limit=100',
+    'codex:offline-improvement --json --example --write-report',
+    'codex:offline-improvement-review --json --compact --queue-review',
+    'codex:offline-improvement-review --json --stage-review --compact',
+    'audio:tts --json --execute --text-b64=dGVzdA==',
+    'rag:rerank --json --example --use-embeddings',
     'graph:audit-provenance --json',
     'graph:audit-provenance --compact --json',
     'graph:audit-provenance --json --compact --samples=50',
@@ -1012,12 +1289,7 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
   assert.match(materializeExecuteResult, /Use command "list"/);
 
   for (const command of [
-    'genealogy:media-rag-index --tree=4 --limit=40 --max-seconds=90',
-    'genealogy:media-rag-index --tree=4 --max-seconds=45 --limit=20',
-    'genealogy:media-rag-index --limit=20 --tree=4 --max-seconds=45',
     'genealogy:media-rag-index --tree=5 --limit=20 --max-seconds=45',
-    'genealogy:media-rag-index --tree=4 --limit=20 --max-seconds=45 --reindex',
-    'genealogy:media-rag-index --tree=4 --limit=20',
     'genealogy:media-rag-index --stats',
   ]) {
     const result = await plosArtisan({ command, on_prod: false });
@@ -1189,4 +1461,153 @@ test('near-miss write commands remain blocked by exact allowlist matching', asyn
 
   assert.match(graphQualityRunResult, /Blocked:/);
   assert.match(graphQualityRunResult, /Use command "list"/);
+});
+
+
+test('YouTube rerun admits one exact scheduled job and rejects wider execution or overrides', async () => {
+  const command = 'scheduler:run --job=workflow_youtube_watch_later --sync';
+  assert.deepEqual(resolveAllowedCommand(command), { command, meta: ALLOWED_COMMANDS[command] });
+  assert.equal(ALLOWED_COMMANDS[command].timeout, 30_000);
+  for (const rejected of [
+    'workflow:run youtube_watch_later', 'scheduler:run',
+    'scheduler:run --job=other --sync', 'scheduler:run --job=28 --sync',
+    'scheduler:run --sync --job=workflow_youtube_watch_later',
+    `${command} --force`, `${command} --worker-id=1`, `${command} --input={}`,
+    `${command}; echo bad`, `${command} && echo bad`, `${command}\necho bad`,
+  ]) {
+    assert.equal(resolveAllowedCommand(rejected), null);
+    assert.match(await plosArtisan({ command: rejected, on_prod: true }), /^Blocked:/);
+  }
+});
+
+
+test('OS review bridge requires explicit bounded executor support and only two exact forms', async () => {
+  for (const tool of ['python3', 'prlimit']) {
+    const command = `os-tools:review ${tool} --json`;
+    assert.equal(Object.hasOwn(ALLOWED_COMMANDS, command), false);
+    assert.equal(resolveDynamicAllowedCommand(command), null); // Actual old loaded call signature.
+    assert.equal(resolveDynamicAllowedCommand(command, { boundedExecutor: false }), null);
+    assert.equal(resolveAllowedCommand(command)?.meta.maxBuffer, 262144);
+    for (const rejected of [
+      `os-tools:review ${tool}`, `os-tools:review --json ${tool}`, `${command} --compact`,
+      `${command} --against=${'a'.repeat(64)}`, `${command} --no-interaction`, `${command} --json`,
+      `${command}; echo unsafe`, `${command} && echo unsafe`, `${command} | cat`,
+      `${command} $(echo unsafe)`, `${command}\necho unsafe`, `os-tools:review /usr/bin/${tool} --json`,
+    ]) {
+      assert.equal(resolveAllowedCommand(rejected), null);
+      let calls = 0;
+      assert.match(await plosArtisan({ command: rejected, on_prod: false }, undefined, async () => {
+        calls++; throw new Error('must not execute');
+      }), /^Blocked:/);
+      assert.equal(calls, 0);
+    }
+  }
+  assert.equal(resolveAllowedCommand('os-tools:review shellcheck --json'), null);
+  assert.equal(resolveAllowedCommand('os-tools:discover --json'), null);
+  const listing = await plosArtisan({ command: 'list', on_prod: false });
+  assert.match(listing, /os-tools:review python3 --json \(bounded read-only evidence\)/);
+});
+
+test('OS read passes maxBuffer and preserves entire pretty JSON report binding', async () => {
+  const report = { success: true, review_binding_complete: true, evidence_sha256: 'a'.repeat(64),
+    evidence_binding: { complete: true, executables: [{ content_sha256: 'b'.repeat(64) }],
+      execution_environment: { host_fingerprint: 'c'.repeat(64) }, documents: ['retained'.repeat(1000)] } };
+  const stdout = JSON.stringify(report, null, 2);
+  let calls = 0;
+  const response = await plosArtisan({ command: 'os-tools:review python3 --json', on_prod: false }, undefined,
+    async (command, options) => {
+      calls++; assert.match(command, /php artisan os-tools:review python3 --json$/);
+      assert.equal(options?.maxBuffer, 262144); assert.equal(options?.timeout, 60000);
+      return { stdout, stderr: '' };
+    });
+  assert.equal(calls, 1);
+  assert.equal(response.split('\n\n').slice(1).join('\n\n'), stdout);
+  assert.deepEqual(JSON.parse(response.split('\n\n').slice(1).join('\n\n')), report);
+});
+
+test('OS read failed/overflow transport never forwards partial JSON as complete', async () => {
+  for (const code of ['ERR_CHILD_PROCESS_STDIO_MAXBUFFER', 'ETIMEDOUT']) {
+    const response = await plosArtisan({ command: 'os-tools:review prlimit --json', on_prod: false }, undefined,
+      async () => { throw Object.assign(new Error('private diagnostic'), {
+        code, stdout: '{"evidence_sha256":"partial-private', stderr: 'private diagnostic',
+      }); });
+    const receipt = JSON.parse(response);
+    assert.equal(receipt.success, false); assert.equal(receipt.review_binding_complete, false);
+    assert.equal(receipt.evidence_binding.complete, false);
+    assert.equal(receipt.reason_code, code === 'ETIMEDOUT' ? 'review_transport_unavailable' : 'review_transport_output_limit');
+    assert.equal(Object.hasOwn(receipt, 'evidence_sha256'), false);
+    assert.doesNotMatch(response, /partial-private|private diagnostic/);
+  }
+});
+
+test('OS read checks UTF-8 bytes on resolved outputs and leaves ordinary commands unchanged', async () => {
+  const response = await plosArtisan({ command: 'os-tools:review python3 --json', on_prod: false }, undefined,
+    async () => ({ stdout: 'é'.repeat(131073), stderr: '' }));
+  assert.equal(JSON.parse(response).reason_code, 'review_transport_output_limit');
+  const ordinary = await plosArtisan({ command: 'ops:validate-sql', on_prod: false }, undefined,
+    async (_command, options) => { assert.equal(Object.hasOwn(options ?? {}, 'maxBuffer'), false);
+      return { stdout: 'ordinary result', stderr: '' }; });
+  assert.match(ordinary, /ordinary result$/);
+});
+
+
+test('actual Node exec maxBuffer overflow produces incomplete OS read receipt', async () => {
+  let partialBytes = 0;
+  const response = await plosArtisan({ command: 'os-tools:review python3 --json', on_prod: false }, undefined,
+    async (_command, options) => {
+      // Synthetic local Node only; never run the assembled artisan/SSH command.
+      try {
+        return await execCommand(`"${process.execPath}" -e "process.stdout.write('x'.repeat(262145))"`, options);
+      } catch (error) {
+        partialBytes = Buffer.byteLength((error as ExecCommandError).stdout ?? '', 'utf8');
+        assert.equal((error as ExecCommandError).code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+        throw error;
+      }
+    });
+  assert.ok(partialBytes > 0 && partialBytes <= 262144);
+  const receipt = JSON.parse(response);
+  assert.equal(receipt.success, false);
+  assert.equal(receipt.reason_code, 'review_transport_output_limit');
+  assert.equal(receipt.review_binding_complete, false);
+  assert.equal(Object.hasOwn(receipt, 'evidence_sha256'), false);
+});
+
+test('actual old executor lookup cannot admit new refreshed dynamic read form', () => {
+  const command = 'os-tools:review python3 --json';
+  const oldLookup = (value: string) => ALLOWED_COMMANDS[value] ?? resolveDynamicAllowedCommand(value);
+  assert.equal(oldLookup(command), null);
+  assert.equal(resolveAllowedCommand(command)?.meta.maxBuffer, 262144);
+  assert.ok(oldLookup('ops:validate-sql'));
+});
+
+
+test('OS read caps aggregate stdout plus stderr and accepts the exact combined boundary', async () => {
+  const held = await plosArtisan({ command: 'os-tools:review python3 --json', on_prod: false }, undefined,
+    async () => ({ stdout: 'x'.repeat(204800), stderr: 'y'.repeat(204800) }));
+  const receipt = JSON.parse(held);
+  assert.equal(receipt.reason_code, 'review_transport_output_limit');
+  assert.equal(receipt.observed_output.stdout_utf8_bytes, 204800);
+  assert.equal(receipt.observed_output.stderr_utf8_bytes, 204800);
+  assert.equal(receipt.observed_output.diagnostic_only, true);
+  assert.equal(receipt.observed_output.complete, false);
+  assert.equal(receipt.raw_failed_report_returned, false);
+  assert.equal(receipt.raw_failed_report_durably_retained, false);
+  assert.equal(Object.hasOwn(receipt, 'evidence_sha256'), false);
+  const boundary = await plosArtisan({ command: 'os-tools:review python3 --json', on_prod: false }, undefined,
+    async () => ({ stdout: 'x'.repeat(131072), stderr: 'y'.repeat(131072) }));
+  assert.match(boundary, /^\[DEV\]/);
+  const over = await plosArtisan({ command: 'os-tools:review python3 --json', on_prod: false }, undefined,
+    async () => ({ stdout: 'x'.repeat(131073), stderr: 'y'.repeat(131072) }));
+  assert.equal(JSON.parse(over).reason_code, 'review_transport_output_limit');
+});
+
+test('pure stdout complete JSON at exact byte cap is preserved without relabeling', async () => {
+  const template = JSON.stringify({ success: true, evidence_binding: { complete: true }, padding: '' });
+  const stdout = JSON.stringify({ success: true, evidence_binding: { complete: true },
+    padding: 'x'.repeat(262144 - Buffer.byteLength(template)) });
+  assert.equal(Buffer.byteLength(stdout), 262144);
+  const response = await plosArtisan({ command: 'os-tools:review prlimit --json', on_prod: false }, undefined,
+    async () => ({ stdout, stderr: '' }));
+  assert.equal(response.split('\n\n').slice(1).join('\n\n'), stdout);
+  assert.equal(JSON.parse(response.split('\n\n').slice(1).join('\n\n')).evidence_binding.complete, true);
 });

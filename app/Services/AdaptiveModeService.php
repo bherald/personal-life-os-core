@@ -32,7 +32,9 @@ class AdaptiveModeService
 
     // Scoring weights (must sum to 1.0)
     private const QUALITY_WEIGHT = 0.70;
+
     private const SPEED_WEIGHT = 0.25;
+
     private const SPECULATIVE_WEIGHT = 0.05;
 
     // Override cache key prefix
@@ -42,12 +44,12 @@ class AdaptiveModeService
     private const DEFAULT_TASK_KEYWORDS = [
         'health_assessment' => ['health', 'status', 'check', 'health check', 'system health', 'assessment', 'monitoring'],
         'resource_analysis' => ['resource', 'capacity', 'utilization', 'throughput', 'bottleneck', 'performance', 'load', 'memory', 'gpu', 'queue'],
-        'issue_detection'   => ['issue', 'problem', 'error', 'warning', 'diagnose', 'detect', 'alert', 'degraded', 'failure', 'fix'],
-        'data_processing'   => ['process', 'sync', 'index', 'enrich', 'extract', 'ingest', 'import', 'scan', 'catalog', 'pipeline'],
-        'research'          => ['research', 'search', 'find', 'investigate', 'analyze', 'discover', 'explore', 'query', 'lookup'],
-        'content_creation'  => ['create', 'generate', 'write', 'draft', 'compose', 'summarize', 'report', 'digest'],
-        'cleanup'           => ['clean', 'remove', 'delete', 'archive', 'expire', 'prune', 'deduplicate', 'consolidate'],
-        'review'            => ['review', 'approve', 'verify', 'validate', 'audit', 'check', 'evaluate', 'assess'],
+        'issue_detection' => ['issue', 'problem', 'error', 'warning', 'diagnose', 'detect', 'alert', 'degraded', 'failure', 'fix'],
+        'data_processing' => ['process', 'sync', 'index', 'enrich', 'extract', 'ingest', 'import', 'scan', 'catalog', 'pipeline'],
+        'research' => ['research', 'search', 'find', 'investigate', 'analyze', 'discover', 'explore', 'query', 'lookup'],
+        'content_creation' => ['create', 'generate', 'write', 'draft', 'compose', 'summarize', 'report', 'digest'],
+        'cleanup' => ['clean', 'remove', 'delete', 'archive', 'expire', 'prune', 'deduplicate', 'consolidate'],
+        'review' => ['review', 'approve', 'verify', 'validate', 'audit', 'check', 'evaluate', 'assess'],
     ];
 
     // =========================================================================
@@ -57,9 +59,9 @@ class AdaptiveModeService
     /**
      * Select the optimal workflow mode for an agent+task.
      *
-     * @param string $agentId Agent identifier
-     * @param string $task Task description
-     * @param array $options Extra options (default_mode for fallback)
+     * @param  string  $agentId  Agent identifier
+     * @param  string  $task  Task description
+     * @param  array  $options  Extra options (default_mode for fallback)
      * @return array ['mode', 'confidence', 'reasoning', 'fallback', 'task_key', 'selection_id']
      */
     public function selectMode(string $agentId, string $task, array $options = []): array
@@ -101,7 +103,7 @@ class AdaptiveModeService
                 $defaultMode, 0.0, 'No benchmark data available', true, 'no_data'
             );
 
-            Log::info("AdaptiveMode: Fallback (no data)", [
+            Log::info('AdaptiveMode: Fallback (no data)', [
                 'agent_id' => $agentId,
                 'task_key' => $taskKey,
                 'mode' => $defaultMode,
@@ -118,7 +120,7 @@ class AdaptiveModeService
         }
 
         // Sort by composite score descending
-        uasort($scores, fn($a, $b) => $b['composite'] <=> $a['composite']);
+        uasort($scores, fn ($a, $b) => $b['composite'] <=> $a['composite']);
 
         $bestMode = array_key_first($scores);
         $bestData = $scores[$bestMode];
@@ -152,12 +154,12 @@ class AdaptiveModeService
             $bestMode, $confidence, $reasoning, false
         );
 
-        Log::info("AdaptiveMode: Selected", [
+        Log::info('AdaptiveMode: Selected', [
             'agent_id' => $agentId,
             'task_key' => $taskKey,
             'mode' => $bestMode,
             'confidence' => round($confidence, 3),
-            'scores' => array_map(fn($s) => round($s['composite'], 3), $scores),
+            'scores' => array_map(fn ($s) => round($s['composite'], 3), $scores),
         ]);
 
         return [
@@ -187,11 +189,11 @@ class AdaptiveModeService
         $taskLower = strtolower($taskDescription);
 
         // 1. Check if task description matches a known benchmark task_key for this agent
-        $knownKeys = DB::select("
+        $knownKeys = DB::select('
             SELECT DISTINCT task_key FROM agent_benchmarks WHERE agent_id = ?
-        ", [$agentId]);
+        ', [$agentId]);
 
-        $knownTaskKeys = array_map(fn($r) => $r->task_key, $knownKeys);
+        $knownTaskKeys = array_map(fn ($r) => $r->task_key, $knownKeys);
 
         foreach ($knownTaskKeys as $key) {
             if (str_contains($taskLower, str_replace('_', ' ', $key))) {
@@ -219,7 +221,7 @@ class AdaptiveModeService
             $isKnown = in_array($taskKey, $knownTaskKeys);
 
             // Prefer keys the agent has benchmark data for
-            if ($isKnown && !$bestMatchIsKnown) {
+            if ($isKnown && ! $bestMatchIsKnown) {
                 $bestMatch = $taskKey;
                 $bestScore = $matchCount;
                 $bestMatchIsKnown = true;
@@ -238,12 +240,12 @@ class AdaptiveModeService
         // This ensures new task types get tracked even without predefined keywords
         $words = preg_split('/[\s\-_:]+/', $taskLower);
         $stopWords = ['the', 'a', 'an', 'and', 'or', 'for', 'to', 'in', 'on', 'at', 'of', 'is', 'it', 'run', 'do', 'all', 'with'];
-        $meaningful = array_values(array_filter($words, fn($w) => strlen($w) > 2 && !in_array($w, $stopWords)));
+        $meaningful = array_values(array_filter($words, fn ($w) => strlen($w) > 2 && ! in_array($w, $stopWords)));
 
         if (count($meaningful) >= 2) {
-            return $meaningful[0] . '_' . $meaningful[1];
+            return $meaningful[0].'_'.$meaningful[1];
         } elseif (count($meaningful) === 1) {
-            return $meaningful[0] . '_task';
+            return $meaningful[0].'_task';
         }
 
         return null;
@@ -261,7 +263,7 @@ class AdaptiveModeService
     public function scoreModes(string $agentId, ?string $taskKey = null): array
     {
         // 1. Get benchmark data
-        $where = 'WHERE agent_id = ? AND accuracy_score IS NOT NULL';
+        $where = 'WHERE agent_id = ? AND accuracy_score IS NOT NULL AND promotion_eligible = 1';
         $params = [$agentId];
 
         if ($taskKey) {
@@ -287,6 +289,7 @@ class AdaptiveModeService
             if ($taskKey) {
                 return $this->scoreModes($agentId, null);
             }
+
             return [];
         }
 
@@ -294,7 +297,7 @@ class AdaptiveModeService
         $specWins = $this->getSpeculativeWinRates($agentId);
 
         // 3. Find max duration for normalization
-        $maxDuration = max(array_map(fn($b) => (float) $b->avg_duration, $benchmarks));
+        $maxDuration = max(array_map(fn ($b) => (float) $b->avg_duration, $benchmarks));
         if ($maxDuration <= 0) {
             $maxDuration = 1;
         }
@@ -350,7 +353,7 @@ class AdaptiveModeService
                 return [];
             }
 
-            $total = array_sum(array_map(fn($w) => (int) $w->wins, $wins));
+            $total = array_sum(array_map(fn ($w) => (int) $w->wins, $wins));
             if ($total <= 0) {
                 return [];
             }
@@ -363,6 +366,7 @@ class AdaptiveModeService
             return $rates;
         } catch (\Throwable $e) {
             Log::debug('AdaptiveModeService: historical win rates query failed', ['error' => $e->getMessage()]);
+
             return [];
         }
     }
@@ -388,11 +392,11 @@ class AdaptiveModeService
         ?string $fallbackReason = null
     ): int {
         try {
-            DB::insert("
+            DB::insert('
                 INSERT INTO adaptive_mode_selections
                 (agent_id, session_id, task_description, task_key, selected_mode, confidence, reasoning, was_fallback, fallback_reason)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ", [
+            ', [
                 $agentId,
                 $sessionId,
                 $task ? substr($task, 0, 65535) : null,
@@ -404,9 +408,10 @@ class AdaptiveModeService
                 $fallbackReason,
             ]);
 
-            return (int) DB::selectOne("SELECT LAST_INSERT_ID() as id")->id;
+            return (int) DB::selectOne('SELECT LAST_INSERT_ID() as id')->id;
         } catch (\Throwable $e) {
-            Log::warning("AdaptiveMode: Failed to record selection", ['error' => $e->getMessage()]);
+            Log::warning('AdaptiveMode: Failed to record selection', ['error' => $e->getMessage()]);
+
             return 0;
         }
     }
@@ -428,7 +433,7 @@ class AdaptiveModeService
         }
 
         try {
-            DB::update("
+            DB::update('
                 UPDATE adaptive_mode_selections
                 SET outcome_success = ?,
                     outcome_duration_ms = ?,
@@ -437,7 +442,7 @@ class AdaptiveModeService
                     outcome_completeness = ?,
                     outcome_relevance = ?
                 WHERE id = ?
-            ", [
+            ', [
                 $success ? 1 : 0,
                 $durationMs,
                 $tokensUsed,
@@ -447,7 +452,7 @@ class AdaptiveModeService
                 $selectionId,
             ]);
         } catch (\Throwable $e) {
-            Log::warning("AdaptiveMode: Failed to record outcome", [
+            Log::warning('AdaptiveMode: Failed to record outcome', [
                 'selection_id' => $selectionId,
                 'error' => $e->getMessage(),
             ]);
@@ -464,20 +469,20 @@ class AdaptiveModeService
     public function setOverride(string $agentId, string $mode, int $runs = 5, ?string $reason = null): array
     {
         $validModes = ['agentic', 'hybrid', 'deterministic'];
-        if (!in_array($mode, $validModes)) {
-            return ['success' => false, 'error' => "Invalid mode. Must be one of: " . implode(', ', $validModes)];
+        if (! in_array($mode, $validModes)) {
+            return ['success' => false, 'error' => 'Invalid mode. Must be one of: '.implode(', ', $validModes)];
         }
 
         $runs = max(1, min(20, $runs));
 
-        Cache::put(self::OVERRIDE_PREFIX . $agentId, [
+        Cache::put(self::OVERRIDE_PREFIX.$agentId, [
             'mode' => $mode,
             'remaining' => $runs,
             'reason' => $reason,
             'set_at' => now()->toISOString(),
         ], 86400); // 24hr max TTL
 
-        Log::info("AdaptiveMode: Override set", [
+        Log::info('AdaptiveMode: Override set', [
             'agent_id' => $agentId,
             'mode' => $mode,
             'runs' => $runs,
@@ -492,9 +497,10 @@ class AdaptiveModeService
      */
     private function getActiveOverride(string $agentId): ?array
     {
-        $override = Cache::get(self::OVERRIDE_PREFIX . $agentId);
-        if (!$override || ($override['remaining'] ?? 0) <= 0) {
-            Cache::forget(self::OVERRIDE_PREFIX . $agentId);
+        $override = Cache::get(self::OVERRIDE_PREFIX.$agentId);
+        if (! $override || ($override['remaining'] ?? 0) <= 0) {
+            Cache::forget(self::OVERRIDE_PREFIX.$agentId);
+
             return null;
         }
 
@@ -506,17 +512,17 @@ class AdaptiveModeService
      */
     private function decrementOverride(string $agentId): void
     {
-        $override = Cache::get(self::OVERRIDE_PREFIX . $agentId);
-        if (!$override) {
+        $override = Cache::get(self::OVERRIDE_PREFIX.$agentId);
+        if (! $override) {
             return;
         }
 
         $override['remaining'] = max(0, ($override['remaining'] ?? 0) - 1);
         if ($override['remaining'] <= 0) {
-            Cache::forget(self::OVERRIDE_PREFIX . $agentId);
-            Log::info("AdaptiveMode: Override expired", ['agent_id' => $agentId]);
+            Cache::forget(self::OVERRIDE_PREFIX.$agentId);
+            Log::info('AdaptiveMode: Override expired', ['agent_id' => $agentId]);
         } else {
-            Cache::put(self::OVERRIDE_PREFIX . $agentId, $override, 86400);
+            Cache::put(self::OVERRIDE_PREFIX.$agentId, $override, 86400);
         }
     }
 
@@ -555,9 +561,9 @@ class AdaptiveModeService
                    AVG(outcome_tokens) as avg_tokens
             FROM adaptive_mode_selections
             {$where}
-            " . ($where ? 'AND' : 'WHERE') . " outcome_success IS NOT NULL
+            ".($where ? 'AND' : 'WHERE').' outcome_success IS NOT NULL
             GROUP BY selected_mode
-        ", $params);
+        ', $params);
 
         // Total count
         $total = DB::selectOne("
@@ -588,9 +594,9 @@ class AdaptiveModeService
                    outcome_accuracy, outcome_completeness, outcome_relevance
             FROM adaptive_mode_selections
             {$where}
-            " . ($where ? 'AND' : 'WHERE') . " outcome_accuracy IS NOT NULL
+            ".($where ? 'AND' : 'WHERE').' outcome_accuracy IS NOT NULL
               AND was_fallback = 0
-        ", $params);
+        ', $params);
 
         if (empty($selections)) {
             return ['total_evaluated' => 0, 'optimal_picks' => 0, 'accuracy_pct' => null];
@@ -601,14 +607,15 @@ class AdaptiveModeService
             $selectedScore = (int) $sel->outcome_accuracy + (int) $sel->outcome_completeness + (int) $sel->outcome_relevance;
 
             // Check if any other mode scored higher for this agent+task
-            $bestOther = DB::selectOne("
+            $bestOther = DB::selectOne('
                 SELECT MAX(accuracy_score + completeness_score + relevance_score) as best_score
                 FROM agent_benchmarks
                 WHERE agent_id = ?
                   AND (task_key = ? OR ? IS NULL)
                   AND workflow_mode != ?
                   AND accuracy_score IS NOT NULL
-            ", [$sel->agent_id, $sel->task_key, $sel->task_key, $sel->selected_mode]);
+                  AND promotion_eligible = 1
+            ', [$sel->agent_id, $sel->task_key, $sel->task_key, $sel->selected_mode]);
 
             $bestOtherScore = (int) ($bestOther->best_score ?? 0);
 
@@ -630,7 +637,7 @@ class AdaptiveModeService
      */
     public function getSelectionHistory(string $agentId, int $limit = 20): array
     {
-        return DB::select("
+        return DB::select('
             SELECT id, agent_id, task_key, selected_mode, confidence,
                    reasoning, was_fallback, fallback_reason,
                    outcome_success, outcome_duration_ms, outcome_tokens,
@@ -640,7 +647,7 @@ class AdaptiveModeService
             WHERE agent_id = ?
             ORDER BY created_at DESC
             LIMIT ?
-        ", [$agentId, min(100, max(1, $limit))]);
+        ', [$agentId, min(100, max(1, $limit))]);
     }
 
     // =========================================================================
@@ -653,6 +660,7 @@ class AdaptiveModeService
     public function adaptiveModeStats(array $params): array
     {
         $agentId = $params['agent_id'] ?? null;
+
         return ['success' => true, 'stats' => $this->getStats($agentId)];
     }
 
@@ -679,7 +687,7 @@ class AdaptiveModeService
         }
 
         // Sort by composite descending
-        uasort($scores, fn($a, $b) => $b['composite'] <=> $a['composite']);
+        uasort($scores, fn ($a, $b) => $b['composite'] <=> $a['composite']);
         $bestMode = array_key_first($scores);
 
         return [

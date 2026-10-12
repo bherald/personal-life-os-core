@@ -81,6 +81,15 @@ export const nodeSchemas = {
   },
 
   // Logic Nodes
+  Approval: {
+    fields: [
+      { name: 'title', type: 'text', label: 'Approval Title', required: true, default: 'Workflow approval required' },
+      { name: 'instructions', type: 'textarea', label: 'Operator Instructions', required: true, default: 'Review the workflow checkpoint before allowing downstream actions.', rows: 6 },
+      { name: 'timeout_minutes', type: 'number', label: 'Timeout (minutes)', required: true, default: 1440, min: 1, max: 10080 },
+      { name: 'response_fields', type: 'textarea', label: 'Response Fields (JSON)', required: false, default: '[]', rows: 8 }
+    ]
+  },
+
   Conditional: {
     fields: [
       { name: 'condition', type: 'text', label: 'Condition', required: true, placeholder: 'e.g., data.value > 10' },

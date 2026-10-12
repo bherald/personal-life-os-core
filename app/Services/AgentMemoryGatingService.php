@@ -24,11 +24,18 @@ class AgentMemoryGatingService
     /** Cache TTL for gating decisions (seconds) */
     private const CACHE_TTL = 1800;
 
+    private AgentMemoryRecallPolicyService $policy;
+
+    public function __construct(?AgentMemoryRecallPolicyService $policy = null)
+    {
+        $this->policy = $policy ?? new AgentMemoryRecallPolicyService;
+    }
+
     /**
      * Decide which memory types to inject for this agent+task.
      *
-     * @param string $agentId Agent ID
-     * @param string $task Task description
+     * @param  string  $agentId  Agent ID
+     * @param  string  $task  Task description
      * @return array Gating decisions: ['procedural' => bool, 'episodic' => bool, 'cross_agent' => bool]
      */
     public function gate(string $agentId, string $task): array
@@ -39,7 +46,7 @@ class AgentMemoryGatingService
             return $defaults;
         }
 
-        $cacheKey = "memory_gate:{$agentId}:" . md5($task);
+        $cacheKey = "memory_gate:v2:{$agentId}:".md5($task);
         $cached = Cache::get($cacheKey);
         if ($cached !== null) {
             return $cached;
@@ -48,12 +55,14 @@ class AgentMemoryGatingService
         try {
             $decisions = $this->evaluateGating($agentId, $task);
             Cache::put($cacheKey, $decisions, self::CACHE_TTL);
+
             return $decisions;
         } catch (\Throwable $e) {
             Log::debug('MemoryGating: evaluation failed, using defaults', [
                 'agent_id' => $agentId,
                 'error' => $e->getMessage(),
             ]);
+
             return $defaults;
         }
     }
@@ -65,9 +74,9 @@ class AgentMemoryGatingService
     {
         // Check if agent has enough history for informed gating
         $historyCount = (int) (DB::selectOne(
-            "SELECT COUNT(*) as c FROM agent_episode_summaries WHERE agent_id = ?",
+            'SELECT COUNT(*) as c FROM agent_episode_summaries WHERE agent_id = ?',
             [$agentId]
-        )?->c ?? 0);
+        )->c);
 
         if ($historyCount < self::MIN_HISTORY_FOR_GATING) {
             // Not enough history — inject everything (learning phase)
@@ -76,42 +85,58 @@ class AgentMemoryGatingService
 
         // Check if procedural memory has been useful (high-success procedures exist)
         $usefulProcedures = (int) (DB::selectOne(
-            "SELECT COUNT(*) as c FROM agent_procedures
-             WHERE agent_id = ? AND success_rate >= 0.6 AND times_used >= 2",
+            'SELECT COUNT(*) as c FROM agent_procedures
+             WHERE agent_id = ? AND success_rate >= 0.6 AND times_used >= 2',
             [$agentId]
-        )?->c ?? 0);
+        )->c);
 
-        // Check if episodic memory has relevant recent entries
-        $relevantEpisodes = (int) (DB::selectOne(
+        $recentDays = max(1, (int) config('agent_memory.gating.recent_experience_days', 14));
+        $recentCutoff = now()->subDays($recentDays)->format('Y-m-d H:i:s');
+
+        // Recent successful experience remains useful for current-state recall.
+        $recentExperience = (int) (DB::selectOne(
             "SELECT COUNT(*) as c FROM agent_episode_summaries
              WHERE agent_id = ? AND outcome IN ('success', 'partial')
                AND importance >= 0.5
-               AND created_at > DATE_SUB(NOW(), INTERVAL 14 DAY)",
-            [$agentId]
-        )?->c ?? 0);
+               AND is_archived = 0
+               AND created_at > ?",
+            [$agentId, $recentCutoff]
+        )->c);
+
+        // Retained failures and errors are durable environment gotchas. Their
+        // lifecycle is controlled by archival state, not an arbitrary age cut.
+        $gotchaMinImportance = max(
+            0.0,
+            min(1.0, (float) config('agent_memory.gating.gotcha_min_importance', 0.70))
+        );
+        $activeGotchas = (int) (DB::selectOne(
+            "SELECT COUNT(*) as c FROM agent_episode_summaries
+             WHERE agent_id = ? AND outcome IN ('failure', 'error')
+               AND importance >= ?
+               AND is_archived = 0",
+            [$agentId, $gotchaMinImportance]
+        )->c);
 
         // Check if this agent runs frequently (high-frequency agents benefit less from episodic)
         $recentRuns = (int) (DB::selectOne(
-            "SELECT COUNT(*) as c FROM agent_episode_summaries
-             WHERE agent_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)",
+            'SELECT COUNT(*) as c FROM agent_episode_summaries
+             WHERE agent_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 1 DAY)',
             [$agentId]
-        )?->c ?? 0);
+        )->c);
 
         // Task keyword heuristics — certain task types benefit more from memory
         $taskLower = strtolower($task);
         $isResearch = str_contains($taskLower, 'research') || str_contains($taskLower, 'investigate');
         $isRoutine = str_contains($taskLower, 'monitor') || str_contains($taskLower, 'check') || str_contains($taskLower, 'scan');
 
-        return [
-            // Procedural: useful if agent has successful procedures
-            'procedural' => $usefulProcedures > 0,
-
-            // Episodic: useful if relevant recent episodes exist, less useful for high-frequency routine tasks
-            'episodic' => $relevantEpisodes > 0 && !($isRoutine && $recentRuns > 10),
-
-            // Cross-agent: useful for research/investigation tasks, skip for routine monitoring
-            'cross_agent' => $isResearch || (!$isRoutine && $relevantEpisodes > 0),
-        ];
+        return $this->policy->decideGate([
+            'useful_procedures' => $usefulProcedures,
+            'recent_experience' => $recentExperience,
+            'active_gotchas' => $activeGotchas,
+            'recent_runs' => $recentRuns,
+            'is_research' => $isResearch,
+            'is_routine' => $isRoutine,
+        ]);
     }
 
     /**
@@ -121,15 +146,15 @@ class AgentMemoryGatingService
     {
         try {
             $procedureCount = (int) (DB::selectOne(
-                "SELECT COUNT(*) as c FROM agent_procedures WHERE agent_id = ? AND success_rate >= 0.6",
+                'SELECT COUNT(*) as c FROM agent_procedures WHERE agent_id = ? AND success_rate >= 0.6',
                 [$agentId]
-            )?->c ?? 0);
+            )->c);
 
             $episodeCount = (int) (DB::selectOne(
-                "SELECT COUNT(*) as c FROM agent_episode_summaries
-                 WHERE agent_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 14 DAY)",
+                'SELECT COUNT(*) as c FROM agent_episode_summaries
+                 WHERE agent_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 14 DAY)',
                 [$agentId]
-            )?->c ?? 0);
+            )->c);
 
             return [
                 'agent_id' => $agentId,

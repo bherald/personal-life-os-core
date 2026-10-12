@@ -93,7 +93,7 @@
               <div class="text-sm text-ops-peach font-medium truncate group-hover:text-ops-gold transition-colors">{{ note.title }}</div>
               <div v-if="note.snippet" class="text-xs text-ops-text-muted truncate mt-0.5">{{ note.snippet }}</div>
             </div>
-            <span class="text-xs text-ops-text-muted flex-shrink-0">{{ formatDate(note.date) }}</span>
+            <span class="text-xs text-ops-text-muted shrink-0">{{ formatDate(note.date) }}</span>
           </div>
         </div>
       </div>

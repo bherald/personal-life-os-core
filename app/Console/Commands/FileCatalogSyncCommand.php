@@ -3,7 +3,10 @@
 namespace App\Console\Commands;
 
 use App\Services\FileCategorizationRAGService;
+use App\Services\FileIntakeStabilityService;
 use App\Services\FileRegistryService;
+use App\Services\NextcloudFileApiService;
+use Cron\CronExpression;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -84,7 +87,8 @@ class FileCatalogSyncCommand extends Command
             $runScan = $runVerify = $runRagSync = true;
         }
 
-        $path = $this->option('path') ?? $this->nextcloudLibraryRoot();
+        // Non-discovery phases operate on the catalog and need no physical scan root.
+        $path = $runScan ? ($this->option('path') ?? $this->nextcloudLibraryRoot()) : '';
         $limit = $this->option('all') ? 0 : (int) $this->option('limit');  // 0 = unlimited
         $startedAt = microtime(true);
         $deadlineSeconds = $this->resolveDeadlineSeconds();
@@ -105,7 +109,7 @@ class FileCatalogSyncCommand extends Command
 
         $this->info('File Catalog Sync - '.now()->format('Y-m-d H:i:s'));
         $limitDisplay = $limit > 0 ? (string) $limit : 'unlimited';
-        $this->line("Path: {$path}, Limit: {$limitDisplay}");
+        $this->line('Path: '.($path !== '' ? $path : 'existing catalog').", Limit: {$limitDisplay}");
         $this->newLine();
 
         // Create sync run record
@@ -127,7 +131,8 @@ class FileCatalogSyncCommand extends Command
                 if ($this->shouldStopBeforePhase($startedAt, $deadlineSeconds, 240)) {
                     $this->warn("Skipping scan to stay within runtime budget ({$deadlineSeconds}s)");
                 } else {
-                    $results['scan'] = $this->runScan($path, $this->resolvePhaseLimit('scan', $limit, $multiPhaseRun));
+                    $results['scan'] = $this->runScan($path, $this->resolvePhaseLimit('scan', $limit, $multiPhaseRun),
+                        hrtime(true) / 1000000000 + $this->getRemainingBudgetSeconds($startedAt, $deadlineSeconds));
                 }
             }
 
@@ -164,11 +169,26 @@ class FileCatalogSyncCommand extends Command
                     'rag_indexed' => $results['rag_sync']['indexed'] ?? 0,
                     'rag_removed' => $results['rag_sync']['removed'] ?? 0,
                 ];
+                if ($runScan) {
+                    $stats = array_replace($stats, ['state' => 'unproven', 'scope' => $path, 'discovery_complete' => false, 'intake_complete' => false],
+                        array_intersect_key($results['scan'] ?? [], array_flip([
+                            'state', 'scope', 'scope_id', 'epoch', 'revision', 'discovery_complete', 'intake_complete',
+                            'pending_work', 'held_work', 'next_attempt_at', 'stop_reason', 'errors', 'continuation',
+                        ])));
+                }
                 $this->fileRegistry->completeSyncRun($runId, $stats);
             }
 
             $this->newLine();
-            $this->info('Sync completed successfully!');
+            $scanComplete = ! $runScan || (($results['scan']['state'] ?? null) === 'complete' && ($results['scan']['discovery_complete'] ?? false) === true
+                && ($results['scan']['intake_complete'] ?? false) === true);
+            $scanFailed = $runScan && (($results['scan']['state'] ?? null) === 'held'
+                || ($results['scan']['continuation']['state'] ?? null) === 'held' || ($results['scan']['errors'] ?? 0) > 0);
+            if ($scanComplete && ! $scanFailed) {
+                $this->info('Sync completed successfully!');
+            } else {
+                $this->warn('Sync slice finished; discovery state: '.($results['scan']['state'] ?? 'unproven'));
+            }
             $this->showSummary($results);
 
             // Emit structured items_processed marker for ScheduledJobService
@@ -176,7 +196,7 @@ class FileCatalogSyncCommand extends Command
                             + ($results['rag_sync']['indexed'] ?? 0);
             $this->line("[ITEMS_PROCESSED:{$totalProcessed}]");
 
-            return self::SUCCESS;
+            return $scanFailed ? self::FAILURE : self::SUCCESS;
         } catch (\Throwable $e) {
             $this->error("Sync failed: {$e->getMessage()}");
             $this->error("At: {$e->getFile()}:{$e->getLine()}");
@@ -279,7 +299,7 @@ class FileCatalogSyncCommand extends Command
         }
 
         try {
-            $cron = new \Cron\CronExpression($cronExpression);
+            $cron = new CronExpression($cronExpression);
             $first = $cron->getNextRunDate(now()->toDateTimeImmutable());
             $second = $cron->getNextRunDate($first);
             $intervalMinutes = (int) floor(($second->getTimestamp() - $first->getTimestamp()) / 60);
@@ -359,7 +379,7 @@ class FileCatalogSyncCommand extends Command
         return self::SUCCESS;
     }
 
-    private function runScan(string $path, int $limit): array
+    private function runScan(string $path, int $limit, ?float $deadline = null): array
     {
         $this->info('Step 1: Scanning for new files...');
 
@@ -369,11 +389,28 @@ class FileCatalogSyncCommand extends Command
             return ['scanned' => 0, 'registered' => 0];
         }
 
-        $result = $this->fileRegistry->scanAndRegisterNew($path, $limit);
+        $result = $this->fileRegistry->scanAndRegisterNew($path, $limit, $deadline === null ? [] : ['deadline' => $deadline]);
 
         $this->line("  Scanned: {$result['scanned']}");
         $this->line("  Registered: {$result['registered']}");
+        $this->line('  Discovery complete: '.(($result['discovery_complete'] ?? false) ? 'yes' : 'no').
+            '; intake complete: '.(($result['intake_complete'] ?? false) ? 'yes' : 'no'));
+        $this->line('  Pending: '.($result['pending_work'] ?? 0).'; held: '.($result['held_work'] ?? 0).
+            '; next attempt: '.($result['next_attempt_at'] ?? 'not scheduled'));
+        if (isset($result['continuation']['state'])) {
+            $this->line('  Continuation: '.$result['continuation']['state'].
+                (isset($result['continuation']['reason']) ? '; reason: '.$result['continuation']['reason'] : '').
+                (isset($result['continuation']['next_attempt_at']) ? '; due: '.$result['continuation']['next_attempt_at'] : ''));
+        }
         $this->line('  Already registered: '.($result['already_registered'] ?? 0));
+        $this->line('  Deferred (still changing): '.($result['deferred_unstable'] ?? 0));
+        if (($result['stability_wait_seconds'] ?? 0) > 0) {
+            $this->line(sprintf(
+                '  Stability gate: %.3gs via %s',
+                $result['stability_wait_seconds'],
+                $result['stability_policy_source'] ?? FileIntakeStabilityService::CONFIG_KEY
+            ));
+        }
         if (! empty($result['errors'])) {
             $this->warn('  Errors: '.$result['errors']);
         }
@@ -450,11 +487,11 @@ class FileCatalogSyncCommand extends Command
         if (isset($result['limit_semantics']) && is_array($result['limit_semantics'])) {
             $limits = $result['limit_semantics'];
             $this->line(sprintf(
-                '  Limit evidence: requested=%s index=%s orphan_check=%s stale_reindex=%s behavior_changed=%s',
+                '  Limit evidence: requested=%s index=%s stale_reindex=%s orphan_cleanup=%s behavior_changed=%s',
                 $limits['requested_limit'] ?? '-',
                 $limits['effective_index_limit'] ?? '-',
-                $limits['effective_orphan_check_limit'] ?? '-',
                 $limits['effective_stale_reindex_limit'] ?? '-',
+                $limits['orphan_cleanup_mode'] ?? '-',
                 empty($limits['behavior_changed']) ? 'no' : 'yes'
             ));
         }
@@ -518,6 +555,7 @@ class FileCatalogSyncCommand extends Command
             ['Operation', 'Result'],
             [
                 ['Scan - Registered', $results['scan']['registered'] ?? 'skipped'],
+                ['Scan - Deferred unstable', $results['scan']['deferred_unstable'] ?? 'skipped'],
                 ['Verify - Orphaned', $results['verify']['orphaned'] ?? 'skipped'],
                 ['RAG - Indexed', $results['rag_sync']['indexed'] ?? 'skipped'],
                 ['RAG - Removed', $results['rag_sync']['removed'] ?? 'skipped'],
@@ -542,6 +580,6 @@ class FileCatalogSyncCommand extends Command
 
     private function nextcloudLibraryRoot(): string
     {
-        return '/'.trim((string) config('services.nextcloud.library_root', '/Library'), '/');
+        return app(NextcloudFileApiService::class)->configuredLibraryRoot();
     }
 }

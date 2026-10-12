@@ -108,7 +108,7 @@ class OpsMcpHealthCommand extends Command
         if (is_array($policy) && $policy !== []) {
             $enabledCounts = (array) ($policy['enabled_profile_counts'] ?? []);
             $this->line(sprintf(
-                'policy-posture: enabled_denied_default=%d enabled_no_non_default_profile=%d offline_review=%s offline_dev_assist=%s offline_genealogy_assist=%s hybrid_review=%s hybrid_dev_assist=%s cloud_escalation_only=%s denial_reasons=%s',
+                'policy-posture: enabled_denied_default=%d enabled_no_non_default_profile=%d offline_review=%s offline_dev_assist=%s offline_genealogy_assist=%s hybrid_review=%s hybrid_dev_assist=%s private_genealogy_research=%s cloud_escalation_only=%s denial_reasons=%s',
                 (int) ($policy['enabled_servers_denied_default'] ?? 0),
                 (int) ($policy['enabled_servers_with_no_non_default_profile'] ?? 0),
                 $this->formatPolicyCount((array) ($enabledCounts['offline_review'] ?? [])),
@@ -116,6 +116,7 @@ class OpsMcpHealthCommand extends Command
                 $this->formatPolicyCount((array) ($enabledCounts['offline_genealogy_assist'] ?? [])),
                 $this->formatPolicyCount((array) ($enabledCounts['hybrid_review'] ?? [])),
                 $this->formatPolicyCount((array) ($enabledCounts['hybrid_dev_assist'] ?? [])),
+                $this->formatPolicyCount((array) ($enabledCounts['private_genealogy_research'] ?? [])),
                 $this->formatPolicyCount((array) ($enabledCounts['cloud_escalation_only'] ?? [])),
                 $this->formatCounts((array) ($policy['enabled_denial_reason_counts'] ?? [])),
             ));

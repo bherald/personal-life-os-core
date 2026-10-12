@@ -96,6 +96,7 @@ class GenealogySearchPlanService
 
         $calls = [];
         $rejected = [];
+        $seenCalls = [];
         foreach ($items as $item) {
             if (! is_array($item)) {
                 continue;
@@ -123,9 +124,9 @@ class GenealogySearchPlanService
                 continue;
             }
 
-            $manualOnlyDomain = $this->manualOnlyDomainInParams($params);
-            if ($manualOnlyDomain !== null) {
-                $rejected[] = ['reason' => 'manual_only_domain', 'tool' => $tool, 'domain' => $manualOnlyDomain];
+            $providerSpecificDomain = $this->providerSpecificDomainInParams($params);
+            if ($providerSpecificDomain !== null && $this->shouldEnforceProviderSpecificDomains()) {
+                $rejected[] = ['reason' => 'provider_specific_domain_strict', 'tool' => $tool, 'domain' => $providerSpecificDomain];
 
                 continue;
             }
@@ -143,6 +144,14 @@ class GenealogySearchPlanService
                     continue;
                 }
             }
+
+            $callFingerprint = $tool.':'.hash('sha256', json_encode($params, JSON_UNESCAPED_SLASHES) ?: '[]');
+            if (isset($seenCalls[$callFingerprint])) {
+                $rejected[] = ['reason' => 'duplicate_call', 'tool' => $tool, 'params' => $params];
+
+                continue;
+            }
+            $seenCalls[$callFingerprint] = true;
 
             $calls[] = [
                 'tool' => $tool,
@@ -232,7 +241,7 @@ class GenealogySearchPlanService
         $filtered = [];
         foreach ($sources as $source) {
             $domain = $this->normalizedDomain($source['domain'] ?? $source['url'] ?? null);
-            if ($domain === null || $this->isManualOnlyDomain($domain) || $this->isNonPublicDomain($domain)) {
+            if ($domain === null || $this->isProviderSpecificDomain($domain) || $this->isNonPublicDomain($domain)) {
                 continue;
             }
             if (isset($seen[$domain])) {
@@ -270,12 +279,12 @@ class GenealogySearchPlanService
             'task_context' => $this->taskContextForPrompt($context),
             'allowed_tools' => array_slice($toolSummaries, 0, 20),
             'vetted_public_sources' => array_slice($vettedSources, 0, 12),
-            'manual_only_domains' => array_values((array) config('scraping.manual_only_domains', [])),
+            'provider_specific_domains' => array_values((array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', []))),
             'rules' => [
                 'Prioritize the task_context research_question over generic person coverage.',
                 'Use only allowed_tools.',
                 'Use source-scoped web search only for vetted_public_sources domains.',
-                'Do not plan scraping or login/browser automation against manual_only_domains.',
+                'Provider-specific domains may be planned only through configured APIs, private adapters, headed-browser capture, or review-first capture tasks; never plan credential, paywall, CAPTCHA, or prohibited-scraping bypass.',
                 'For FT4, plan around one specific missing fact, relationship, source gap, or media gap plus the expected source class.',
                 'Prefer query anchors: full name plus date, place, spouse, parent, child, occupation, or religion.',
                 'Only plan source_search_all when full name plus date/place/relative anchors are available.',
@@ -307,8 +316,52 @@ class GenealogySearchPlanService
             'question_type' => $this->shortContextString($context['question_type'] ?? null, 80),
             'research_question' => $this->shortContextString($context['research_question'] ?? null, 500),
             'selection_reason' => $this->shortContextString($context['selection_reason'] ?? null, 300),
+            'scope_reason' => $this->shortContextString($context['scope_reason'] ?? null, 500),
+            'evidence_summary' => $this->shortContextString($context['evidence_summary'] ?? null, 1000),
+            'conflicts_found' => $this->shortContextString($context['conflicts_found'] ?? null, 800),
+            'related_people_used' => $this->boundedScalarList($context['related_people_used'] ?? null, 20),
+            'sources_checked' => $this->boundedScalarList($context['sources_checked'] ?? null, 20),
+            'task_parameters' => $this->boundedScalarMap($context['task_parameters'] ?? null, 20),
+            'research_playbook' => $this->playbookContextForPrompt($context['research_playbook'] ?? null),
             'operator_permissions' => $permissions ?: null,
         ], static fn ($value): bool => $value !== null && $value !== '');
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function playbookContextForPrompt(mixed $value): ?array
+    {
+        if (! is_array($value) || empty($value['key'])) {
+            return null;
+        }
+
+        $strings = [];
+        foreach (['first_tools', 'required_anchors', 'upstream_sources'] as $key) {
+            $strings[$key] = [];
+            foreach ((array) ($value[$key] ?? []) as $item) {
+                if (is_scalar($item)) {
+                    $text = $this->shortContextString($item, 80);
+                    if ($text !== null) {
+                        $strings[$key][] = $text;
+                    }
+                }
+                if (count($strings[$key]) >= 8) {
+                    break;
+                }
+            }
+        }
+
+        return array_filter([
+            'key' => $this->shortContextString($value['key'] ?? null, 80),
+            'label' => $this->shortContextString($value['label'] ?? null, 120),
+            'objective' => $this->shortContextString($value['objective'] ?? null, 300),
+            'first_tools' => $strings['first_tools'],
+            'required_anchors' => $strings['required_anchors'],
+            'stop_rule' => $this->shortContextString($value['stop_rule'] ?? null, 240),
+            'report_rule' => $this->shortContextString($value['report_rule'] ?? null, 240),
+            'upstream_sources' => $strings['upstream_sources'],
+        ], static fn ($item): bool => $item !== null && $item !== [] && $item !== '');
     }
 
     private function shortContextString(mixed $value, int $limit): ?string
@@ -316,6 +369,40 @@ class GenealogySearchPlanService
         $text = trim((string) ($value ?? ''));
 
         return $text === '' ? null : mb_substr($text, 0, $limit);
+    }
+
+    /** @return list<int|float|string|bool> */
+    private function boundedScalarList(mixed $value, int $limit): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        return array_slice(array_values(array_filter(
+            $value,
+            static fn (mixed $item): bool => is_int($item) || is_float($item) || is_string($item) || is_bool($item)
+        )), 0, $limit);
+    }
+
+    /** @return array<string, int|float|string|bool|null> */
+    private function boundedScalarMap(mixed $value, int $limit): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $result = [];
+        foreach ($value as $key => $item) {
+            if (! is_string($key) || (! is_scalar($item) && $item !== null)) {
+                continue;
+            }
+            $result[mb_substr($key, 0, 80)] = is_string($item) ? mb_substr($item, 0, 300) : $item;
+            if (count($result) >= $limit) {
+                break;
+            }
+        }
+
+        return $result;
     }
 
     private function decodePlan(string $content): ?array
@@ -472,14 +559,14 @@ class GenealogySearchPlanService
         return array_filter($paramDefs, 'is_array');
     }
 
-    private function manualOnlyDomainInParams(array $params): ?string
+    private function providerSpecificDomainInParams(array $params): ?string
     {
         foreach ($params as $value) {
             if (! is_scalar($value)) {
                 continue;
             }
             $text = (string) $value;
-            foreach ((array) config('scraping.manual_only_domains', []) as $domain) {
+            foreach ((array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', [])) as $domain) {
                 $domain = $this->normalizedDomain($domain);
                 if ($domain !== null && preg_match('/(^|[\/.\s:])'.preg_quote($domain, '/').'($|[\/\s?&#:])/i', $text) === 1) {
                     return $domain;
@@ -519,9 +606,13 @@ class GenealogySearchPlanService
         return preg_replace('/^www\./', '', strtolower(trim($host, "[] \t\n\r\0\x0B."))) ?: null;
     }
 
-    private function isManualOnlyDomain(string $host): bool
+    private function isProviderSpecificDomain(string $host): bool
     {
-        foreach ((array) config('scraping.manual_only_domains', []) as $domain) {
+        if (! $this->shouldEnforceProviderSpecificDomains()) {
+            return false;
+        }
+
+        foreach ((array) config('scraping.provider_specific_domains', config('scraping.manual_only_domains', [])) as $domain) {
             $domain = $this->normalizedDomain($domain);
             if ($domain !== null && ($host === $domain || str_ends_with($host, '.'.$domain))) {
                 return true;
@@ -529,6 +620,11 @@ class GenealogySearchPlanService
         }
 
         return false;
+    }
+
+    private function shouldEnforceProviderSpecificDomains(): bool
+    {
+        return (bool) config('scraping.enforce_provider_specific_domains', config('scraping.enforce_manual_only_domains', false));
     }
 
     private function isNonPublicDomain(string $host): bool

@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\Genealogy\HtrTranscriptionService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -19,7 +20,7 @@ class GenealogyTranscribeMedia extends Command
 {
     protected $signature = 'genealogy:transcribe-media
                             {--tree=    : Scope to a specific tree ID}
-                            {--media=   : Transcribe a single media ID}
+                            {--media=   : Re-evaluate one media row against its current source hash}
                             {--limit=20 : Max records to process}
                             {--status   : Show pipeline status and exit}
                             {--dry-run  : Show eligible records without transcribing}';
@@ -88,10 +89,39 @@ class GenealogyTranscribeMedia extends Command
                 continue;
             }
 
+            if (($result['attempt_state'] ?? null) === 'unknown') {
+                $this->warn("  [{$record->id}] HTR outcome unknown — attempt held; no automatic retry");
+                $skipped++;
+
+                continue;
+            }
+
+            if (($result['attempt_state'] ?? null) === 'deferred') {
+                $this->warn("  [{$record->id}] HTR safely deferred before provider dispatch; retry is cooldown-gated");
+                $skipped++;
+
+                continue;
+            }
+
             if (($result['skipped_reason'] ?? null) === 'low_confidence') {
                 $conf = round(($result['confidence'] ?? 0) * 100);
                 $threshold = round(($result['confidence_threshold'] ?? 0) * 100);
                 $this->warn("  [{$record->id}] Skipped — low HTR confidence ({$conf}% < {$threshold}%)");
+                $skipped++;
+
+                continue;
+            }
+
+            if (in_array($result['attempt_state'] ?? null, ['processing', 'held_low_confidence', 'completed', 'stale_source'], true)) {
+                $state = $result['attempt_state'];
+                $this->warn("  [{$record->id}] HTR attempt held ({$state}) — no automatic retry");
+                $skipped++;
+
+                continue;
+            }
+
+            if (($result['persisted'] ?? true) === false) {
+                $this->warn("  [{$record->id}] Skipped — media source or transcript changed during HTR; result was not saved");
                 $skipped++;
 
                 continue;
@@ -115,8 +145,16 @@ class GenealogyTranscribeMedia extends Command
 
     private function fetchEligible(?int $treeId, int $limit): array
     {
+        // Batch mode deliberately omits media already represented in the
+        // durable ledger (except cooldown-expired deferrals) so held early IDs
+        // cannot starve untouched records. Use --media to re-hash a changed
+        // source revision explicitly; unresolved attempts still block it.
         $typePlaceholders = implode(',', array_fill(0, count(self::DOCUMENT_TYPES), '?'));
         $params = self::DOCUMENT_TYPES;
+        $deferredCutoff = Carbon::now()
+            ->subSeconds(HtrTranscriptionService::OOM_COOLDOWN_SEC)
+            ->format('Y-m-d H:i:s');
+        $params[] = $deferredCutoff;
 
         $treeClause = '';
         if ($treeId) {
@@ -138,6 +176,16 @@ class GenealogyTranscribeMedia extends Command
               AND gm.nextcloud_path != ''
               AND (gm.analysis_error IS NULL OR gm.analysis_error NOT LIKE 'htr_low_confidence:%')
               AND (gm.analysis_status IS NULL OR gm.analysis_status != 'skipped')
+              AND (gm.analysis_status IS NULL OR (gm.analysis_status != 'processing' AND gm.analysis_status NOT LIKE 'processing:%'))
+              AND NOT EXISTS (
+                  SELECT 1 FROM genealogy_media_htr_attempts htr_attempt
+                  WHERE htr_attempt.media_id = gm.id
+                    AND (
+                        htr_attempt.state IN ('processing', 'unknown', 'held_low_confidence', 'completed', 'stale_source')
+                        OR (htr_attempt.state = 'deferred'
+                            AND htr_attempt.updated_at > ?)
+                    )
+              )
               {$treeClause}
             ORDER BY
               FIELD(gm.media_type, 'census', 'certificate', 'document', 'military', 'headstone'),
@@ -180,10 +228,34 @@ class GenealogyTranscribeMedia extends Command
             return 1;
         }
 
+        if (($result['attempt_state'] ?? null) === 'unknown') {
+            $this->error('HTR outcome unknown — attempt is held; no automatic retry was started.');
+
+            return 1;
+        }
+
+        if (($result['attempt_state'] ?? null) === 'deferred') {
+            $this->warn('HTR safely deferred before provider dispatch; retry is cooldown-gated.');
+
+            return 0;
+        }
+
+        if (in_array($result['attempt_state'] ?? null, ['processing', 'held_low_confidence', 'completed', 'stale_source'], true)) {
+            $this->warn('HTR attempt is already held for this source; no automatic retry was started.');
+
+            return 0;
+        }
+
         if (($result['skipped_reason'] ?? null) === 'low_confidence') {
             $conf = round(($result['confidence'] ?? 0) * 100);
             $threshold = round(($result['confidence_threshold'] ?? 0) * 100);
             $this->warn("Skipped — low HTR confidence ({$conf}% < {$threshold}%). Transcript was not persisted.");
+
+            return 0;
+        }
+
+        if (($result['persisted'] ?? true) === false) {
+            $this->warn('Skipped — media source or transcript changed during HTR; result was not saved.');
 
             return 0;
         }

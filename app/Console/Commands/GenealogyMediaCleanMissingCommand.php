@@ -23,7 +23,7 @@ class GenealogyMediaCleanMissingCommand extends Command
     {
         $treeId = max(1, (int) $this->option('tree'));
         $limit = max(1, min(500, (int) $this->option('limit')));
-        $maxRows = max(1, min(1000, (int) $this->option('max-rows')));
+        $maxRows = max(1, min(3000, (int) $this->option('max-rows')));
         $execute = (bool) $this->option('execute');
 
         $missingTables = $this->missingTables();

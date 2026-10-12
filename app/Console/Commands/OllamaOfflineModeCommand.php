@@ -11,7 +11,6 @@ use Illuminate\Support\Facades\Log;
  *
  * INTERNET offline, not LAN offline. When enabled, external LLM providers
  * are blocked:
- *   - Claude CLI (--print)
  *   - SambaNova, Cerebras, Groq, OpenRouter, Gemini, Mistral, DeepInfra
  *
  * Everything on the local network stays online:
@@ -29,7 +28,7 @@ use Illuminate\Support\Facades\Log;
  *
  * Values in system_configs (`routing.offline_mode`):
  *   - 'disabled' → cloud fallback active (default)
- *   - 'enabled'  → block all external + Claude CLI
+ *   - 'enabled'  → block all external providers
  *
  * Usage:
  *   php artisan ollama:offline-mode status
@@ -62,7 +61,7 @@ class OllamaOfflineModeCommand extends Command
         $value = is_string($value) ? strtolower(trim($value)) : 'enabled';
 
         if ($value === 'disabled') {
-            $this->line('offline_mode: <fg=green>disabled</> — cloud fallback active (Claude CLI + external APIs allowed)');
+            $this->line('offline_mode: <fg=green>disabled</> — admitted cloud fallbacks are active');
         } else {
             $this->line('offline_mode: <fg=yellow>enabled</> — cloud fallback BLOCKED, local Ollama only');
         }
@@ -93,7 +92,7 @@ class OllamaOfflineModeCommand extends Command
         $this->line("offline_mode {$verb} (was: {$before})");
 
         if ($target === 'enabled') {
-            $this->warn('Cloud LLM providers (Claude CLI, SambaNova, Cerebras, Groq, OpenRouter, Gemini, Mistral) are now blocked.');
+            $this->warn('Cloud LLM providers (SambaNova, Cerebras, Groq, OpenRouter, Gemini, Mistral) are now blocked.');
             $this->warn('Local network stays online: Nextcloud, DB, Redis, configured Ollama hosts, MCP, queue workers.');
             $this->warn('Only the cloud escape hatch is closed. Verify both Ollama hosts are healthy before relying on offline mode.');
         }

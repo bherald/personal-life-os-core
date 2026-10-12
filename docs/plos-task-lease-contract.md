@@ -56,9 +56,12 @@ Caller requests custody by providing:
 
 - `surface` — enum: `scheduled_job`, `agent_session`, `horizon_job`
 - `surface_ref` — the surface's primary key (scheduled_jobs.id, session_id, etc.)
-- `owner_token` — opaque string that identifies the holder. For scheduled
-  jobs: `host:{hostname}:pid:{pid}`. For agent sessions: the agent's session
-  lock token. PLOS generates this; callers do not supply arbitrary strings.
+- `owner_token` — opaque string that identifies the holder. New scheduled-job
+  tokens use `pid:{pid}:start:{process_start_clock_ticks}:run:{run_id}` so a
+  recycled PID cannot impersonate the original process. Existing PID-only
+  tokens remain supported and use conservative liveness. For agent sessions,
+  this is the agent's session lock token. PLOS generates these tokens; callers
+  do not supply arbitrary strings.
 - `expires_at` — absolute timestamp. For scheduled jobs this is
   `now() + timeout_minutes + 15m`. For agent sessions: `now() + session TTL`.
 
@@ -119,9 +122,11 @@ it first.
   is a no-op. Releasing with a different outcome is an error (a holder
   should not flip `success` to `failure` post-hoc; issue a new task instead).
 - **Expire:** the recovery sweep's transition is guarded by a conditional
-  UPDATE (`WHERE released_at IS NULL AND expires_at < NOW()`). Two sweeps
-  racing on the same record both succeed at the SQL level; the second one
-  updates zero rows.
+  UPDATE that rechecks the observed row ID and owner token, requires
+  `released_at IS NULL`, and requires `expires_at < NOW()` at update time.
+  A holder that renews after the sweep's expired snapshot therefore keeps
+  custody. Two sweeps racing on the same record cannot both release it; the
+  later conditional update affects zero rows.
 
 ## Stale-slot recovery
 
@@ -131,15 +136,22 @@ A recovery sweep reads custody records where `released_at IS NULL AND
 expires_at < NOW()`. For each expired record, the sweep checks the owner
 token's liveness:
 
-- `scheduled_job` surface: parse `pid:{n}` from token, check
-  `/proc/{pid}` (same `isProcessAlive` logic the scheduler uses today).
+- `scheduled_job` surface: parse `pid:{n}` from the token and check
+  `/proc/{pid}`. When the token includes `start:{ticks}`, compare it with Linux
+  `/proc/{pid}/stat` field 22. A mismatch confirms PID reuse and therefore a
+  dead original holder. A present but unreadable or malformed stat record is
+  uncertainty, so recovery fails closed and preserves custody. Legacy
+  PID-only tokens retain directory-existence liveness until normal retention
+  removes them.
 - `agent_session` surface: check whether the Redis lock key still exists.
 - `horizon_job` surface: no liveness probe — Horizon owns this. The sweep
   only annotates; it does not force-release.
 
 ### Recovery action
 
-When the owner is confirmed dead (or not probeable):
+Acquire-time recovery uses the same liveness probe as the sweep. Expiry alone does not permit another owner to take custody. Missing/malformed owner identity, an unavailable process probe, Redis failure, and unprobeable surfaces retain custody. The existing conditional update still protects a renewed lease. This local process authority assumes the documented single-host execution scope; it does not establish remote owner liveness.
+
+When the owner is confirmed dead:
 
 1. Sweep writes `released_at = NOW()`, `outcome = 'failure'`,
    `result_envelope = { reason: 'expired_no_holder', detected_by: 'custody_sweep' }`,
@@ -150,6 +162,13 @@ When the owner is confirmed dead (or not probeable):
    `running_pids`, decrements `running_count`, flips `last_run_status =
    'timeout'`, and forgets the `scheduler:job:{id}:deadline` Redis key.
 
+The liveness result is advisory until the conditional release succeeds. A
+lease may be renewed between the expired-row read, liveness probe, and UPDATE.
+Both recovery sweep and acquire-time expired-row preemption must compare the
+observed custody ID and owner token and prove the row remains unreleased and
+expired in the same UPDATE. A stale snapshot never releases or preempts the
+renewed holder; the competing acquire fails closed and may retry.
+
 TCR does not replace the scheduler's recovery. It **coordinates** it. The
 authoritative state mutations still happen where they happen today.
 
@@ -157,9 +176,10 @@ authoritative state mutations still happen where they happen today.
 
 Recovery sweep runs on the same tick as today's scheduler maintenance — once
 per minute via the existing scheduler loop, invoked from
-`SchedulerRunCommand`. No new cron entry is required
-to start; an `ops:custody-sweep` command ships alongside for manual runs
-and dry-run diagnostics.
+`SchedulerRunCommand`. No new cron entry or standalone custody-sweep command is
+registered. Use the scheduler's existing diagnostics and the deterministic
+pipeline inventory for the shipped recovery contract; do not document or
+automate an unregistered manual mutation surface.
 
 ## Result handoff metadata
 

@@ -69,14 +69,14 @@ const tooltip = computed(() => {
   border-radius: 0.25rem;
   white-space: nowrap;
 }
-.src-chip-label   { background: rgba(99, 51, 153, 0.30);  color: #d4c2f0; }
-.chip-original    { background: rgba(0, 170, 0, 0.30);    color: #b5f5b5; }
-.chip-derivative  { background: rgba(204, 136, 0, 0.30);  color: #ffd980; }
-.chip-authored    { background: rgba(140, 110, 200, 0.30); color: #d4c2f0; }
-.chip-primary     { background: rgba(0, 170, 0, 0.20);    color: #b5f5b5; }
-.chip-secondary   { background: rgba(204, 136, 0, 0.20);  color: #ffd980; }
-.chip-direct      { background: rgba(99, 179, 237, 0.30); color: #bfe1ff; }
-.chip-indirect    { background: rgba(99, 179, 237, 0.15); color: #a3cffb; }
-.chip-negative    { background: rgba(204, 0, 0, 0.30);    color: #ffb5b5; }
-.chip-unknown     { background: rgba(128, 128, 128, 0.20); color: #aaa; }
+.src-chip-label   { background: var(--color-bg-tertiary);  color: var(--color-text-primary); }
+.chip-original    { background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));    color: var(--ops-success); }
+.chip-derivative  { background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));  color: var(--ops-warning); }
+.chip-authored    { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.chip-primary     { background: color-mix(in srgb, var(--ops-success) 12%, var(--color-bg-primary));    color: var(--ops-success); }
+.chip-secondary   { background: color-mix(in srgb, var(--ops-warning) 12%, var(--color-bg-primary));  color: var(--ops-warning); }
+.chip-direct      { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.chip-indirect    { background: var(--color-bg-tertiary); color: var(--color-accent); }
+.chip-negative    { background: color-mix(in srgb, var(--ops-danger) 12%, var(--color-bg-primary));    color: var(--ops-danger); }
+.chip-unknown     { background: var(--color-bg-tertiary); color: var(--color-text-secondary); }
 </style>

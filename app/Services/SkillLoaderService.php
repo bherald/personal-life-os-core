@@ -4,7 +4,7 @@ namespace App\Services;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-use Exception;
+use Symfony\Component\Yaml\Yaml;
 
 /**
  * Skill Loader Service
@@ -33,7 +33,6 @@ class SkillLoaderService
     /** @var array Cached full skill content by name */
     private array $loadedSkills = [];
 
-    /** @var SkillVersionService|null */
     private ?SkillVersionService $versionService = null;
 
     /** @var array Cached version info per skill name */
@@ -44,6 +43,7 @@ class SkillLoaderService
         if ($this->versionService === null) {
             $this->versionService = app(SkillVersionService::class);
         }
+
         return $this->versionService;
     }
 
@@ -57,14 +57,81 @@ class SkillLoaderService
         return base_path(self::configuredSkillsPath());
     }
 
+    public static function isDiscoverableSkillName(string $skillName): bool
+    {
+        return $skillName !== ''
+            && strlen($skillName) <= 64
+            && preg_match('/\A[a-z0-9]+(?:-[a-z0-9]+)*\z/D', $skillName) === 1;
+    }
+
+    /** @return list<string> */
+    public static function discoverableSkillDirectories(?string $basePath = null): array
+    {
+        $basePath ??= self::configuredSkillsBasePath();
+        if (! is_dir($basePath)) {
+            return [];
+        }
+
+        $directories = array_values(array_filter(
+            glob(rtrim($basePath, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.'*', GLOB_ONLYDIR) ?: [],
+            static fn (string $directory): bool => ! is_link($directory)
+                && self::isDiscoverableSkillName(basename($directory))
+        ));
+        sort($directories);
+
+        return $directories;
+    }
+
+    /**
+     * Resolve the complete explicit tool allowlist for a skill.
+     *
+     * Top-level tools remain authoritative when present. Phase-only skills use
+     * the ordered union of their phase declarations instead of implicitly
+     * receiving every permission-compatible registry tool.
+     *
+     * @param  array<string, mixed>  $skillConfig
+     * @return list<string>
+     */
+    public static function declaredToolNames(array $skillConfig): array
+    {
+        $declared = (array) ($skillConfig['tools'] ?? []);
+        if ($declared === []) {
+            foreach ((array) ($skillConfig['tool_phases'] ?? []) as $phaseTools) {
+                foreach ((array) $phaseTools as $toolName) {
+                    $declared[] = $toolName;
+                }
+            }
+        }
+
+        $names = [];
+        foreach ($declared as $toolName) {
+            if (! is_string($toolName) || trim($toolName) === '') {
+                continue;
+            }
+
+            $names[trim($toolName)] = true;
+        }
+
+        return array_keys($names);
+    }
+
     private function skillsBasePath(): string
     {
         return self::configuredSkillsBasePath();
     }
 
-    private function skillFile(string $skillName): string
+    private function skillFile(string $skillName): ?string
     {
-        return $this->skillsBasePath().'/'.$skillName.'/SKILL.md';
+        if (! self::isDiscoverableSkillName($skillName)) {
+            return null;
+        }
+
+        $skillDirectory = $this->skillsBasePath().'/'.$skillName;
+        if (is_link($skillDirectory)) {
+            return null;
+        }
+
+        return $skillDirectory.'/SKILL.md';
     }
 
     /**
@@ -84,26 +151,27 @@ class SkillLoaderService
         $this->skillIndex = [];
         $basePath = $this->skillsBasePath();
 
-        if (!is_dir($basePath)) {
+        if (! is_dir($basePath)) {
             return $this->skillIndex;
         }
 
-        $dirs = glob($basePath . '/*', GLOB_ONLYDIR);
+        $dirs = self::discoverableSkillDirectories($basePath);
 
         foreach ($dirs as $dir) {
-            $skillFile = $dir . '/SKILL.md';
-            if (!file_exists($skillFile)) {
+            $skillFile = $dir.'/SKILL.md';
+            if (! file_exists($skillFile)) {
                 continue;
             }
 
             $parsed = $this->parseSkillFrontmatter($skillFile);
-            if ($parsed) {
+            $directoryName = basename($dir);
+            if ($parsed && ($parsed['name'] ?? null) === $directoryName) {
                 $this->skillIndex[] = [
-                    'name' => $parsed['name'] ?? basename($dir),
+                    'name' => $directoryName,
                     'description' => $parsed['description'] ?? '',
                     'version' => $parsed['version'] ?? '1.0.0',
                     'schedule' => $parsed['schedule'] ?? null,
-                    'tools' => $parsed['tools'] ?? [],
+                    'tools' => self::declaredToolNames($parsed),
                     'permissions' => $parsed['permissions'] ?? [],
                     'workflow_mode' => $parsed['workflow_mode'] ?? 'agentic',
                     'iteration_mode' => $parsed['iteration_mode'] ?? 'batch',
@@ -133,9 +201,9 @@ class SkillLoaderService
             return '';
         }
 
-        $lines = ["Available agent skills:"];
+        $lines = ['Available agent skills:'];
         foreach ($skills as $skill) {
-            $tools = !empty($skill['tools']) ? ' [' . implode(', ', array_slice($skill['tools'], 0, 3)) . ']' : '';
+            $tools = ! empty($skill['tools']) ? ' ['.implode(', ', array_slice($skill['tools'], 0, 3)).']' : '';
             $runtime = $this->formatRuntimeMetadataForIndex($skill);
             $lines[] = "- {$skill['name']}: {$skill['description']}{$tools}{$runtime}";
         }
@@ -153,11 +221,11 @@ class SkillLoaderService
         foreach (['runtime_role', 'write_scope', 'parallel_mode', 'review_mode'] as $field) {
             $value = $skill[$field] ?? null;
             if (is_string($value) && $value !== '') {
-                $parts[] = $field . '=' . $value;
+                $parts[] = $field.'='.$value;
             }
         }
 
-        return $parts === [] ? '' : ' (' . implode(', ', $parts) . ')';
+        return $parts === [] ? '' : ' ('.implode(', ', $parts).')';
     }
 
     /**
@@ -193,7 +261,7 @@ class SkillLoaderService
     /**
      * Load full skill content for active use
      *
-     * @param string $skillName Skill name (directory name)
+     * @param  string  $skillName  Skill name (directory name)
      * @return array|null Full skill data with frontmatter + body, or null if not found
      */
     public function loadSkill(string $skillName): ?array
@@ -202,17 +270,9 @@ class SkillLoaderService
             return $this->loadedSkills[$skillName];
         }
 
-        $skillFile = $this->skillFile($skillName);
+        $parsed = $this->loadSkillSnapshot($skillName);
 
-        if (!file_exists($skillFile)) {
-            Log::warning("SkillLoaderService: Skill not found", ['skill' => $skillName]);
-            return null;
-        }
-
-        $content = file_get_contents($skillFile);
-        $parsed = $this->parseSkillFile($content);
-
-        if (!$parsed) {
+        if (! $parsed) {
             return null;
         }
 
@@ -222,17 +282,19 @@ class SkillLoaderService
                 $skillName,
                 $parsed['frontmatter'],
                 $parsed['body'],
-                $content
+                $parsed['full_content']
             );
             $parsed['version_info'] = $versionInfo;
             $this->versionCache[$skillName] = $versionInfo;
         } catch (\Throwable $e) {
-            Log::warning("SkillLoaderService: Version tracking failed (non-fatal)", [
+            Log::warning('SkillLoaderService: Version tracking failed (non-fatal)', [
                 'skill' => $skillName,
                 'error' => $e->getMessage(),
             ]);
             $parsed['version_info'] = null;
         }
+
+        unset($parsed['full_content']);
 
         $this->loadedSkills[$skillName] = $parsed;
 
@@ -245,7 +307,7 @@ class SkillLoaderService
             );
         }
 
-        Log::debug("SkillLoaderService: Skill loaded", [
+        Log::debug('SkillLoaderService: Skill loaded', [
             'skill' => $skillName,
             'version' => $parsed['frontmatter']['version'] ?? '1.0.0',
             'tools_count' => count($parsed['frontmatter']['tools'] ?? []),
@@ -256,26 +318,75 @@ class SkillLoaderService
     }
 
     /**
+     * Read an uncached skill snapshot for revision-sensitive operations.
+     *
+     * @return array{frontmatter: array<string, mixed>, body: string, content_hash: string, full_content: string}|null
+     */
+    public function loadSkillSnapshot(string $skillName): ?array
+    {
+        $skillFile = $this->skillFile($skillName);
+
+        if ($skillFile === null) {
+            Log::warning('SkillLoaderService: Rejected non-canonical skill identifier');
+
+            return null;
+        }
+
+        if (! is_file($skillFile)) {
+            Log::warning('SkillLoaderService: Skill not found', ['skill' => $skillName]);
+
+            return null;
+        }
+
+        $content = file_get_contents($skillFile);
+        if ($content === false) {
+            Log::warning('SkillLoaderService: Skill could not be read', ['skill' => $skillName]);
+
+            return null;
+        }
+
+        $parsed = $this->parseSkillFile($content);
+        if (! $parsed) {
+            return null;
+        }
+
+        if (($parsed['frontmatter']['name'] ?? null) !== $skillName) {
+            Log::warning('SkillLoaderService: Rejected skill with mismatched frontmatter name', [
+                'skill' => $skillName,
+            ]);
+
+            return null;
+        }
+
+        $parsed['content_hash'] = hash('sha256', $content);
+        $parsed['full_content'] = $content;
+
+        return $parsed;
+    }
+
+    /**
      * Get the instruction body of a skill (markdown content after frontmatter)
      *
-     * @param string $skillName Skill name
+     * @param  string  $skillName  Skill name
      * @return string|null Skill instructions or null if not found
      */
     public function getSkillInstructions(string $skillName): ?string
     {
         $skill = $this->loadSkill($skillName);
+
         return $skill['body'] ?? null;
     }
 
     /**
      * Get skill frontmatter configuration
      *
-     * @param string $skillName Skill name
+     * @param  string  $skillName  Skill name
      * @return array|null Frontmatter data or null
      */
     public function getSkillConfig(string $skillName): ?array
     {
         $skill = $this->loadSkill($skillName);
+
         return $skill['frontmatter'] ?? null;
     }
 
@@ -289,12 +400,31 @@ class SkillLoaderService
         return array_column($this->getSkillIndex(), 'name');
     }
 
+    /** @return list<string> */
+    public function activeSkillDirectories(): array
+    {
+        $directories = array_map(
+            static fn (array $skill): string => dirname($skill['path']),
+            $this->getSkillIndex()
+        );
+        sort($directories);
+
+        return array_values(array_unique($directories));
+    }
+
     /**
      * Check if a skill exists
      */
     public function skillExists(string $skillName): bool
     {
-        return file_exists($this->skillFile($skillName));
+        $skillFile = $this->skillFile($skillName);
+        if ($skillFile === null || ! is_file($skillFile)) {
+            return false;
+        }
+
+        $frontmatter = $this->parseSkillFrontmatter($skillFile);
+
+        return ($frontmatter['name'] ?? null) === $skillName;
     }
 
     /**
@@ -304,7 +434,7 @@ class SkillLoaderService
     {
         $content = file_get_contents($filePath);
 
-        if (!str_starts_with(trim($content), '---')) {
+        if (! str_starts_with(trim($content), '---')) {
             return null;
         }
 
@@ -322,7 +452,7 @@ class SkillLoaderService
      */
     private function parseSkillFile(string $content): ?array
     {
-        if (!str_starts_with(trim($content), '---')) {
+        if (! str_starts_with(trim($content), '---')) {
             return ['frontmatter' => [], 'body' => $content];
         }
 
@@ -387,17 +517,20 @@ class SkillLoaderService
                     $lastSubSubKey = array_key_last($result[$currentKey][$currentSubKey]);
                     if ($lastSubSubKey !== null && is_array($result[$currentKey][$currentSubKey][$lastSubSubKey])) {
                         $result[$currentKey][$currentSubKey][$lastSubSubKey][] = trim($m[1]);
+
                         continue;
                     }
                 }
                 // Fallback: append to sub-key directly
                 $result[$currentKey][$currentSubKey][] = trim($m[1]);
+
                 continue;
             }
 
             // List item at 4+ spaces (third level: nested map's list)
             if ($indent >= 4 && preg_match('/^\s+-\s+(.+)$/', $line, $m) && $currentKey && $currentSubKey && $isNestedMap) {
                 $result[$currentKey][$currentSubKey][] = trim($m[1]);
+
                 continue;
             }
 
@@ -407,7 +540,7 @@ class SkillLoaderService
                 $subSubValue = trim($m[2]);
 
                 // Ensure sub-key is a map
-                if (!is_array($result[$currentKey][$currentSubKey])) {
+                if (! is_array($result[$currentKey][$currentSubKey])) {
                     $result[$currentKey][$currentSubKey] = [];
                 }
 
@@ -416,15 +549,17 @@ class SkillLoaderService
                 } else {
                     $result[$currentKey][$currentSubKey][$subSubKey] = $this->parseScalar($subSubValue);
                 }
+
                 continue;
             }
 
             // List item at 2+ spaces (second level: flat list under top-level key)
-            if ($indent >= 2 && preg_match('/^\s+-\s+(.+)$/', $line, $m) && $currentKey && !$isNestedMap) {
-                if (!is_array($result[$currentKey])) {
+            if ($indent >= 2 && preg_match('/^\s+-\s+(.+)$/', $line, $m) && $currentKey && ! $isNestedMap) {
+                if (! is_array($result[$currentKey])) {
                     $result[$currentKey] = [];
                 }
                 $result[$currentKey][] = trim($m[1]);
+
                 continue;
             }
 
@@ -435,7 +570,7 @@ class SkillLoaderService
                 $currentSubKey = $subKey;
                 $isNestedMap = true;
 
-                if (!is_array($result[$currentKey]) || array_is_list($result[$currentKey])) {
+                if (! is_array($result[$currentKey]) || array_is_list($result[$currentKey])) {
                     $result[$currentKey] = [];
                 }
 
@@ -444,6 +579,7 @@ class SkillLoaderService
                 } else {
                     $result[$currentKey][$subKey] = $this->parseScalar($subValue);
                 }
+
                 continue;
             }
 
@@ -486,6 +622,7 @@ class SkillLoaderService
         if (preg_match('/^["\'](.*)["\']\s*$/', $value, $qm)) {
             return $qm[1];
         }
+
         return $value;
     }
 
@@ -510,31 +647,23 @@ class SkillLoaderService
     }
 
     /**
-     * AG-16: Export a PLOS SKILL.md to AgentSkills.io standard format.
-     *
-     * Maps PLOS frontmatter to the Anthropic/Microsoft/OpenAI standard:
-     * - name → agent_id
-     * - description → description
-     * - permissions → capabilities
-     * - tool_phases → tools (flattened with phase metadata)
-     * - workflow_mode → execution_mode
-     *
-     * @param string $skillName Agent/skill name
-     * @return array|null Standard-format agent card, or null if not found
+     * Export a PLOS skill using the Agent Skills discovery fields while
+     * retaining PLOS-only runtime metadata under an explicit extension.
      */
     public function exportToAgentSkillsFormat(string $skillName): ?array
     {
         $skill = $this->loadSkill($skillName);
-        if (!$skill) {
+        if (! $skill) {
             return null;
         }
 
         $config = $skill['frontmatter'] ?? $skill['config'] ?? [];
 
-        // Flatten tool_phases into a single tools list with phase metadata
+        // Flatten tool_phases for the PLOS extension only. Agent Skills has no
+        // standard execution-mode, phase, capability, or scheduling fields.
         $tools = [];
         $toolPhases = $config['tool_phases'] ?? [];
-        if (!empty($toolPhases)) {
+        if (! empty($toolPhases)) {
             foreach ($toolPhases as $phase => $phaseTools) {
                 foreach ($phaseTools as $toolName) {
                     $tools[] = [
@@ -555,31 +684,25 @@ class SkillLoaderService
             ];
         }
 
-        return [
-            // AgentSkills.io standard fields
-            'agent_id' => $config['name'] ?? $skillName,
-            'version' => $config['version'] ?? '1.0.0',
-            'description' => $config['description'] ?? '',
-            'execution_mode' => match ($config['workflow_mode'] ?? 'agentic') {
-                'auto' => 'autonomous',
-                'agentic' => 'autonomous',
-                'hybrid' => 'semi_autonomous',
-                'deterministic' => 'sequential',
-                default => 'autonomous',
-            },
-            'capabilities' => $capabilities,
-            'tools' => $tools,
-            'constraints' => [
-                'max_iterations' => $config['max_iterations'] ?? 15,
-                'max_tokens' => $config['max_tokens'] ?? 50000,
-                'temperature' => $config['temperature'] ?? 0.3,
-                'num_ctx' => $config['num_ctx'] ?? null,
-            ],
-            'schedule' => $config['schedule'] ?? null,
-            'notifications' => $config['notifications'] ?? null,
+        $metadata = is_array($config['metadata'] ?? null) ? $config['metadata'] : [];
+        $metadata['version'] ??= (string) ($config['version'] ?? '1.0.0');
 
-            // PLOS extensions (non-standard, prefixed)
+        $export = [
+            'name' => (string) ($config['name'] ?? $skillName),
+            'description' => (string) ($config['description'] ?? ''),
+            'metadata' => $metadata,
+            'instructions' => (string) ($skill['body'] ?? ''),
             'x_plos' => [
+                'capabilities' => $capabilities,
+                'tools' => $tools,
+                'constraints' => [
+                    'max_iterations' => $config['max_iterations'] ?? 15,
+                    'max_tokens' => $config['max_tokens'] ?? 50000,
+                    'temperature' => $config['temperature'] ?? 0.3,
+                    'num_ctx' => $config['num_ctx'] ?? null,
+                ],
+                'schedule' => $config['schedule'] ?? null,
+                'notifications' => $config['notifications'] ?? null,
                 'workflow_mode' => $config['workflow_mode'] ?? 'agentic',
                 'default_mode' => $config['default_mode'] ?? 'agentic',
                 'iteration_mode' => $config['iteration_mode'] ?? 'batch',
@@ -591,6 +714,37 @@ class SkillLoaderService
                 'tool_phases' => $toolPhases,
             ],
         ];
+
+        foreach (['license', 'compatibility', 'allowed-tools'] as $optionalField) {
+            if (is_string($config[$optionalField] ?? null) && trim($config[$optionalField]) !== '') {
+                $export[$optionalField] = trim($config[$optionalField]);
+            }
+        }
+
+        return $export;
+    }
+
+    /**
+     * Render a portable SKILL.md containing only Agent Skills standard
+     * frontmatter plus the original instruction body.
+     */
+    public function exportToAgentSkillsSkillMd(string $skillName): ?string
+    {
+        $export = $this->exportToAgentSkillsFormat($skillName);
+        if ($export === null) {
+            return null;
+        }
+
+        $frontmatter = array_filter([
+            'name' => $export['name'],
+            'description' => $export['description'],
+            'license' => $export['license'] ?? null,
+            'compatibility' => $export['compatibility'] ?? null,
+            'metadata' => $export['metadata'] ?? null,
+            'allowed-tools' => $export['allowed-tools'] ?? null,
+        ], static fn (mixed $value): bool => $value !== null && $value !== [] && $value !== '');
+
+        return "---\n".Yaml::dump($frontmatter, 3, 2)."---\n\n".trim((string) $export['instructions'])."\n";
     }
 
     /**

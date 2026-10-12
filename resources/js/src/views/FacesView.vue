@@ -8,7 +8,7 @@
           v-model="searchQuery"
           type="text"
           placeholder="Search people..."
-          class="bg-black/50 border border-ops-peach/40 rounded-r-full px-3 py-1.5 text-xs text-ops-text placeholder-ops-text-muted/40 focus:outline-none focus:border-ops-peach w-48"
+          class="bg-black/50 border border-ops-peach/40 rounded-r-full px-3 py-1.5 text-xs text-ops-text placeholder-ops-text-muted/40 focus:outline-hidden focus:border-ops-peach w-48"
           @input="debouncedSearch"
         />
         <button @click="handleRefresh" class="bg-ops-orange text-black px-4 py-1.5 rounded-r-full hover:bg-ops-peach font-semibold uppercase text-xs">
@@ -20,7 +20,7 @@
     <div :class="embedded ? 'flex flex-col h-full' : 'flex flex-col h-[calc(100vh-8rem)]'">
       <!-- Tab bar -->
       <div class="px-4 pt-3 pb-2">
-        <div class="flex items-center gap-1">
+        <div class="face-tab-bar flex items-center gap-1">
           <button
             v-for="tab in tabs"
             :key="tab.value"
@@ -51,7 +51,7 @@
             v-model="searchQuery"
             type="text"
             placeholder="Search..."
-            class="bg-black/50 border border-ops-peach/40 rounded px-3 py-1.5 text-xs text-ops-text placeholder-ops-text-muted/40 focus:outline-none focus:border-ops-peach w-40"
+            class="bg-black/50 border border-ops-peach/40 rounded px-3 py-1.5 text-xs text-ops-text placeholder-ops-text-muted/40 focus:outline-hidden focus:border-ops-peach w-40"
             @input="debouncedSearch"
           />
 
@@ -199,9 +199,6 @@
             @load-more="loadMoreHidden"
             @unhide="handleUnhideFace"
           />
-
-          <!-- Unidentified tab (N63) -->
-          <FacesUnidentified v-if="activeTab === 'unidentified'" />
         </div>
 
         <!-- Similarity sidebar (only on clusters tab when a cluster is focused) -->
@@ -286,7 +283,7 @@
             v-model="bulkNameValue"
             type="text"
             placeholder="Person name..."
-            class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-none"
+            class="w-full bg-black/50 border border-ops-peach/40 rounded px-3 py-2 text-ops-text focus:border-ops-peach focus:outline-hidden"
             @input="onBulkNameInput"
             @keydown.enter="submitBulkName"
             @keydown.escape="bulkNameDialogVisible = false"
@@ -343,6 +340,10 @@
       @close="showClusterHelp = false"
     />
 
+    <div v-if="globalIdentityUuid" class="global-person-editor" role="dialog" aria-modal="true" aria-label="Person names and aliases">
+      <GlobalFaceIdentityEditor :initial-identity-uuid="globalIdentityUuid" @close="globalIdentityUuid = ''" />
+    </div>
+
     <!-- Clipboard / batch action bar -->
     <FaceClipboard
       :selectedCount="currentSelectedCount"
@@ -362,6 +363,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useFacesData } from '../composables/useFacesData'
 import { useFaceClusterData } from '../composables/useFaceClusterData'
 import api from '../utils/api'
+import GlobalFaceIdentityEditor from '../components/review/GlobalFaceIdentityEditor.vue'
 import OpsPageWrapper from '../components/layout/OpsPageWrapper.vue'
 import FacesRecognized from '../components/faces/FacesRecognized.vue'
 import FacesNew from '../components/faces/FacesNew.vue'
@@ -372,7 +374,6 @@ import FaceMergeDialog from '../components/faces/FaceMergeDialog.vue'
 import FaceRenamePreviewDialog from '../components/faces/FaceRenamePreviewDialog.vue'
 import FaceClipboard from '../components/faces/FaceClipboard.vue'
 import FacesHidden from '../components/faces/FacesHidden.vue'
-import FacesUnidentified from '../components/faces/FacesUnidentified.vue'
 import FaceClusterIdentifyDialog from '../components/faces/FaceClusterIdentifyDialog.vue'
 import FaceClusterSplitDialog from '../components/faces/FaceClusterSplitDialog.vue'
 import FacePhotoOverlay from '../components/faces/FacePhotoOverlay.vue'
@@ -382,9 +383,11 @@ import FaceHelpOverlay from '../components/faces/FaceHelpOverlay.vue'
 const props = defineProps({
   embedded: { type: Boolean, default: false },
 })
+const emit = defineEmits(['counts-updated'])
 
 const router = useRouter()
 const route = useRoute()
+const globalIdentityUuid = ref('')
 
 // Face-level composable
 const {
@@ -394,6 +397,7 @@ const {
   namedOnlyTotal,
   selectedCount, hasUndo, progressPercent,
   loadRecognized, loadNewFaces, loadMoreRecognized, loadMoreNew,
+  loadFaceStats,
   loadHidden, loadMoreHidden, loadNamedOnly, unhideFace,
   nameFace, bulkName, bulkHide, toggleHide,
   previewRenamePerson, renamePerson, searchPersons, undoLast,
@@ -473,10 +477,10 @@ const tabs = computed(() => [
   { label: 'New', value: 'new', count: stats.value.unnamed_count },
   { label: 'Named Only', value: 'named_only', count: namedOnlyTabCount.value },
   { label: 'Hidden', value: 'hidden', count: stats.value.hidden_count },
-  { label: 'Unidentified', value: 'unidentified', count: stats.value.unidentified_count },
 ])
 
-// Default to clusters tab
+// Unidentified photo decisions now live in the main Review screen.
+if (route.query.face_tab === 'unidentified' || route.query.tab === 'unidentified') router.replace({ path: '/reviews', query: { mode: 'photos', ...(typeof route.query.ref === 'string' && /^face:[1-9]\d*$/.test(route.query.ref) ? { ref: route.query.ref } : {}) } })
 activeTab.value = 'clusters'
 
 // --- Computed ---
@@ -662,6 +666,7 @@ async function handleIdentifyConfirm({ name, genealogyPersonId, writeToMedia, tr
   } else if (identifyDialogBatchIds.value.length === 1) {
     await identifyCluster(identifyDialogBatchIds.value[0], name, genealogyPersonId, writeToMedia, treeId)
   }
+  await refreshFaceCountState()
   loadGenealogyBridgeStats()
 }
 
@@ -742,6 +747,7 @@ function handleThresholdChange(value) {
 
 async function handleNameFace({ faceId, name, genealogyPersonId = null }) {
   await nameFace(faceId, name, genealogyPersonId)
+  await refreshFaceCountState()
   loadGenealogyBridgeStats()
 }
 
@@ -755,6 +761,12 @@ function handleNewFaceSelect({ faceId, shift }) {
 }
 
 function viewPersonMedia(person) {
+  if (person?.scope_type === 'global_identity' || person?.identity_key?.startsWith('global:')) {
+    if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(person.identity_uuid || '')) {
+      router.push({ path: '/media/faces/person', query: { identity_uuid: person.identity_uuid } })
+    }
+    return
+  }
   const query = { name: person.person_name || person.name || person.genealogy_name || '' }
   if (person.genealogy_person_id) {
     query.genealogy_person_id = person.genealogy_person_id
@@ -764,24 +776,32 @@ function viewPersonMedia(person) {
 
 async function handleUnhideFace(faceId) {
   await unhideFace(faceId)
+  await refreshFaceCountState()
 }
 
-function handleNamedOnlyLinked() {
+async function handleNamedOnlyLinked() {
+  await refreshFaceCountState()
   loadGenealogyBridgeStats()
 }
 
-function handleNamedOnlyDecided() {
+async function handleNamedOnlyDecided() {
+  await refreshFaceCountState()
   loadGenealogyBridgeStats()
 }
 
 // --- Edit dialog ---
 
 function openEditDialog(person) {
+  if (person?.scope_type === 'global_identity' || person?.identity_key?.startsWith('global:')) {
+    if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(person.identity_uuid || '')) globalIdentityUuid.value = person.identity_uuid
+    return
+  }
   editDialogPerson.value = person
   editDialogVisible.value = true
 }
 
 async function handleEditConfirm(updated) {
+  if (updated?.scope_type === 'global_identity') return
   editDialogVisible.value = false
 
   const oldName = updated.originalName || updated.displayName || ''
@@ -899,15 +919,22 @@ async function submitBulkName() {
   if (!name || selectedIds.value.size === 0) return
   bulkNameDialogVisible.value = false
   await bulkName([...selectedIds.value], name, bulkNameGenealogyPersonId.value)
+  await refreshFaceCountState()
   loadGenealogyBridgeStats()
 }
 
 async function handleBulkHide() {
   if (selectedIds.value.size === 0) return
   await bulkHide([...selectedIds.value])
+  await refreshFaceCountState()
 }
 
 // --- Helpers ---
+
+async function refreshFaceCountState() {
+  await loadFaceStats()
+  emit('counts-updated')
+}
 
 function formatCount(n) {
   if (n == null) return ''
@@ -968,3 +995,9 @@ async function loadGenealogyBridgeStats() {
   }
 }
 </script>
+
+<style scoped>
+.global-person-editor { position: fixed; inset: 0; z-index: 60; overflow-y: auto; padding: 20px; background: rgba(13, 34, 52, .65); display: grid; justify-items: center; align-content: start; }
+@media (max-width: 600px) { .global-person-editor { padding: 10px; } }
+@media (max-width: 600px) { .face-tab-bar { flex-wrap: wrap; } }
+</style>

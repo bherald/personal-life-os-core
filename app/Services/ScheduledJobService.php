@@ -2,8 +2,11 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Jobs\ExecuteWorkflow;
+use App\Services\AgentMetrics\AgentUsefulYieldService;
 use App\Services\Custody\TaskCustodyService;
+use App\Services\Genealogy\GenealogyResearchPlaybookService;
 use App\Services\Genealogy\GenealogyService;
 use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -41,6 +44,10 @@ use Symfony\Component\Console\Output\BufferedOutput;
  */
 class ScheduledJobService
 {
+    public const TIMEOUT_OUTCOME_UNKNOWN = 'scheduler_timeout_outcome_unknown';
+
+    private const LAUNCH_RESERVED = 'scheduler_launch_reserved';
+
     /**
      * Common cron pattern aliases
      */
@@ -144,26 +151,22 @@ class ScheduledJobService
         ", $jobIds);
 
         $consecutiveFailureRows = DB::select("
-            SELECT
-                sj.id AS scheduled_job_id,
-                (
-                    SELECT COUNT(*)
-                    FROM scheduled_job_runs sjr
-                    WHERE sjr.scheduled_job_id = sj.id
-                      AND sjr.status = 'failed'
-                      AND sjr.started_at > COALESCE(
-                          (
-                              SELECT MAX(s2.started_at)
-                              FROM scheduled_job_runs s2
-                              WHERE s2.scheduled_job_id = sj.id
-                                AND s2.status = 'success'
-                          ),
-                          '2000-01-01'
-                      )
-                ) AS consecutive_failures
+            SELECT sj.id AS scheduled_job_id, COUNT(f.id) AS consecutive_failures
             FROM scheduled_jobs sj
+            LEFT JOIN (
+                SELECT scheduled_job_id, MAX(started_at) AS last_success
+                FROM scheduled_job_runs
+                WHERE status = 'success'
+                  AND scheduled_job_id IN ({$placeholders})
+                GROUP BY scheduled_job_id
+            ) s ON s.scheduled_job_id = sj.id
+            LEFT JOIN scheduled_job_runs f
+                ON f.scheduled_job_id = sj.id
+               AND f.status = 'failed'
+               AND f.started_at > COALESCE(s.last_success, '2000-01-01')
             WHERE sj.id IN ({$placeholders})
-        ", $jobIds);
+            GROUP BY sj.id
+        ", array_merge($jobIds, $jobIds));
 
         $recentHealth = [];
         foreach ($recentHealthRows as $row) {
@@ -199,7 +202,8 @@ class ScheduledJobService
     public function createJob(array $data): int
     {
         $cronExpression = $this->normalizeCronExpression($data['cron_expression']);
-        $nextRun = $this->calculateNextRun($cronExpression);
+        $enabled = (bool) ($data['enabled'] ?? true);
+        $nextRunAt = $this->resolveNextRunAtForMutation($cronExpression, $enabled);
         $notes = $this->normalizeJobNotes($data['notes'] ?? null);
 
         DB::insert('
@@ -213,14 +217,14 @@ class ScheduledJobService
             $data['job_type'] ?? 'command',
             $data['command'],
             $cronExpression,
-            $data['enabled'] ?? true,
+            $enabled,
             $data['run_in_background'] ?? true,
             $data['without_overlapping'] ?? true,
-            $data['timeout_minutes'] ?? 60,
+            $data['timeout_minutes'],
             $notes,
             $data['category'] ?? null,
             $data['source_module'] ?? null,
-            $nextRun?->format('Y-m-d H:i:s'),
+            $nextRunAt,
         ]);
 
         return (int) DB::getPdo()->lastInsertId();
@@ -240,7 +244,10 @@ class ScheduledJobService
             ? $this->normalizeCronExpression($data['cron_expression'])
             : $job->cron_expression;
 
-        $nextRun = $this->calculateNextRun($cronExpression);
+        $enabled = array_key_exists('enabled', $data)
+            ? (bool) $data['enabled']
+            : (bool) $job->enabled;
+        $nextRunAt = $this->resolveNextRunAtForMutation($cronExpression, $enabled, $job);
         $notes = array_key_exists('notes', $data)
             ? $this->normalizeJobNotes($data['notes'])
             : $this->normalizeJobNotes($job->notes ?? null);
@@ -270,18 +277,40 @@ class ScheduledJobService
             $data['job_type'] ?? $job->job_type,
             $data['command'] ?? $job->command,
             $cronExpression,
-            $data['enabled'] ?? $job->enabled,
+            $enabled,
             $data['run_in_background'] ?? $job->run_in_background,
             $data['without_overlapping'] ?? $job->without_overlapping,
             $data['timeout_minutes'] ?? $job->timeout_minutes,
             $notes,
             $data['category'] ?? $job->category,
             $data['source_module'] ?? $job->source_module,
-            $nextRun?->format('Y-m-d H:i:s'),
+            $nextRunAt,
             $id,
         ]);
 
         return true;
+    }
+
+    /**
+     * Resolve the durable clock for a create or update without skipping a due run.
+     */
+    private function resolveNextRunAtForMutation(string $cronExpression, bool $enabled, ?object $existingJob = null): ?string
+    {
+        if (! $enabled) {
+            return null;
+        }
+
+        if ($existingJob !== null) {
+            $wasEnabled = (bool) ($existingJob->enabled ?? false);
+            $previousCron = $this->normalizeCronExpression((string) ($existingJob->cron_expression ?? ''));
+            $existingNextRunAt = $existingJob->next_run_at ?? null;
+
+            if ($wasEnabled && $previousCron === $cronExpression && $existingNextRunAt !== null) {
+                return (string) $existingNextRunAt;
+            }
+        }
+
+        return $this->calculateNextRun($cronExpression)?->format('Y-m-d H:i:s');
     }
 
     /**
@@ -354,6 +383,13 @@ class ScheduledJobService
 
         // For parallel jobs, check if dynamic resolution actually allows another worker
         return array_values(array_filter($jobs, function ($job) {
+            try {
+                $this->assertScheduledCustodyAdmission($job);
+            } catch (InferenceAdmissionException) {
+                Log::notice('Scheduler: Replacement custody held', ['reason_code' => 'scheduled_work_custody_unproven']);
+
+                return false;
+            }
             if (($job->max_parallel ?? 1) > 1 && ($job->running_count ?? 0) > 0) {
                 $resolved = $this->resolveMaxParallel($job);
                 if (($job->running_count ?? 0) >= $resolved) {
@@ -365,40 +401,98 @@ class ScheduledJobService
         }));
     }
 
+    /** Exact unreleased run custody, including expired/orphaned rows, gates replacement. */
+    private function assertScheduledCustodyAdmission(object $job, bool $locked = false): void
+    {
+        try {
+            $suffix = $locked ? ' FOR UPDATE' : '';
+            $custodies = DB::select('SELECT *, (expires_at <= NOW()) AS is_expired FROM task_custody_records
+                WHERE surface = ? AND released_at IS NULL AND surface_ref LIKE ?'.$suffix,
+                [TaskCustodyService::SURFACE_SCHEDULED_JOB, $job->id.':%']);
+            $runs = DB::select("SELECT id, pid, status FROM scheduled_job_runs WHERE scheduled_job_id = ?
+                AND (status = 'running' OR EXISTS(SELECT 1 FROM task_custody_records tcr
+                    WHERE tcr.surface = ? AND tcr.surface_ref = CONCAT(?, ':', scheduled_job_runs.id) AND tcr.released_at IS NULL))".$suffix,
+                [$job->id, TaskCustodyService::SURFACE_SCHEDULED_JOB, $job->id]);
+            $byRun = [];
+            $custodyService = app(TaskCustodyService::class);
+            foreach ($custodies as $custody) {
+                if (! preg_match('/\A'.preg_quote((string) $job->id, '/').':([1-9][0-9]*)\z/', $custody->surface_ref, $reference)
+                    || ($custody->is_expired ?? 1) != 0 || in_array($custody->progress_note ?? null, [self::TIMEOUT_OUTCOME_UNKNOWN, self::LAUNCH_RESERVED], true)
+                    || ! preg_match('/\Apid:([1-9][0-9]*):start:[0-9]+:run:([1-9][0-9]*)\z/', $custody->owner_token, $owner)
+                    || $reference[1] !== $owner[2] || ! $this->isProcessAlive((int) $owner[1])
+                    || $custodyService->scheduledJobOwnerToken((int) $owner[1], (int) $owner[2]) !== $custody->owner_token) {
+                    throw new \RuntimeException('scheduled_work_custody_unproven');
+                }
+                $byRun[(int) $reference[1]] = $custody;
+            }
+            foreach ($runs as $run) {
+                if ($run->status !== 'running' || ! isset($byRun[(int) $run->id])
+                    || $byRun[(int) $run->id]->owner_token !== $custodyService->scheduledJobOwnerToken((int) $run->pid, (int) $run->id)) {
+                    throw new \RuntimeException('scheduled_work_custody_unproven');
+                }
+                unset($byRun[(int) $run->id]);
+            }
+            if ($byRun !== [] || ((int) ($job->running_count ?? 0) > count($runs))
+                || ($runs === [] && ($job->last_run_status ?? null) === 'running')) {
+                throw new \RuntimeException('scheduled_work_custody_unproven');
+            }
+            $limit = max(1, (int) ($job->max_parallel ?? 1));
+            if ($limit > 1) {
+                $limit = $this->resolveMaxParallel($job);
+                if (count($runs) >= $limit) {
+                    throw new \RuntimeException('scheduled_parallel_capacity_held');
+                }
+            } elseif (($job->without_overlapping ?? true) && $runs !== []) {
+                throw new \RuntimeException('scheduled_work_custody_occupied');
+            }
+        } catch (\Throwable $error) {
+            throw new InferenceAdmissionException('Scheduled work custody is unproven; admission held.', 0, $error);
+        }
+    }
+
     /**
      * Mark job as started
      */
     public function markJobStarted(int $jobId, string $triggeredBy = 'scheduler'): int
     {
-        // Use own PID for the run record — this is the actual executing process.
-        // Parent may have set last_pid on scheduled_jobs, but using getmypid()
-        // is more reliable and avoids any race condition.
-        $pid = getmypid() ?: null;
+        return DB::transaction(function () use ($jobId, $triggeredBy) {
+            $job = DB::selectOne('SELECT * FROM scheduled_jobs WHERE id = ? FOR UPDATE', [$jobId]);
+            if (! $job) {
+                throw new InferenceAdmissionException('Scheduled job admission unavailable.');
+            }
+            $this->assertScheduledCustodyAdmission($job, true);
+            // Use own PID for the run record — this is the actual executing process.
+            // Parent may have set last_pid on scheduled_jobs, but using getmypid()
+            // is more reliable and avoids any race condition.
+            $pid = getmypid() ?: null;
 
-        DB::update("
+            DB::update("
             UPDATE scheduled_jobs SET
                 last_run_at = NOW(),
                 last_run_status = 'running',
                 last_run_output = NULL,
                 last_pid = ?,
+                running_count = running_count + 1,
+                running_pids = CASE WHEN running_pids IS NULL THEN JSON_ARRAY(?) ELSE JSON_ARRAY_APPEND(running_pids, '$', ?) END,
                 updated_at = NOW()
             WHERE id = ?
-        ", [$pid, $jobId]);
+        ", [$pid, $pid, $pid, $jobId]);
 
-        DB::insert("
+            DB::insert("
             INSERT INTO scheduled_job_runs (scheduled_job_id, started_at, status, triggered_by, pid)
             VALUES (?, NOW(), 'running', ?, ?)
         ", [$jobId, $triggeredBy, $pid]);
 
-        $runId = (int) DB::getPdo()->lastInsertId();
+            $runId = (int) DB::getPdo()->lastInsertId();
 
-        // Framework C2: record a task custody lease alongside the run row.
-        // Per docs/plos-task-lease-contract.md, the TCR is authoritative for
-        // "who owns this task right now" across process boundaries. It
-        // augments — does not replace — `last_pid` / `running_pids` etc.
-        $this->acquireRunCustody($jobId, $runId, $pid);
+            // Framework C2: record a task custody lease alongside the run row.
+            // Per docs/plos-task-lease-contract.md, the TCR is authoritative for
+            // "who owns this task right now" across process boundaries. It
+            // augments — does not replace — `last_pid` / `running_pids` etc.
+            $this->acquireRunCustody($jobId, $runId, $pid);
 
-        return $runId;
+            return $runId;
+        });
     }
 
     /**
@@ -415,8 +509,7 @@ class ScheduledJobService
      * Single-worker jobs are the degenerate case of one run per job.
      *
      * Expiry mirrors the zombie-detector slack: timeout_minutes + 15 min.
-     * Failure is non-fatal; the existing run still proceeds so the scheduler
-     * never depends on TCR for forward progress.
+     * Publication failure holds execution; a missing ledger cannot grant admission.
      *
      * Idempotent across the spawn boundary: the parent process can acquire in
      * registerWorkerPid() using the child's pid; when the child then re-enters
@@ -424,7 +517,7 @@ class ScheduledJobService
      * child pid, same runId) and TaskCustodyService::acquire() returns the
      * existing row without creating a duplicate.
      */
-    private function acquireRunCustody(int $jobId, int $runId, ?int $pid): void
+    private function acquireRunCustody(int $jobId, int $runId, ?int $pid): object
     {
         try {
             $row = DB::selectOne(
@@ -434,20 +527,22 @@ class ScheduledJobService
             $timeoutMinutes = max(1, (int) ($row->timeout_minutes ?? 60));
             $expiresInSeconds = ($timeoutMinutes + 15) * 60;
 
-            $ownerToken = sprintf('pid:%s:run:%d', $pid ?? 'unknown', $runId);
+            $custodyService = app(TaskCustodyService::class);
+            $ownerToken = $custodyService->scheduledJobOwnerToken($pid, $runId);
 
-            app(TaskCustodyService::class)->acquire(
+            $custody = $custodyService->acquire(
                 TaskCustodyService::SURFACE_SCHEDULED_JOB,
                 $this->custodySurfaceRef($jobId, $runId),
                 $ownerToken,
                 $expiresInSeconds
             );
-        } catch (\Throwable $e) {
-            Log::warning('ScheduledJobService: custody acquire failed (non-fatal)', [
-                'job_id' => $jobId,
-                'run_id' => $runId,
-                'error' => $e->getMessage(),
-            ]);
+            if (! $custody) {
+                throw new InferenceAdmissionException('Scheduled custody publication unavailable; execution held.');
+            }
+
+            return $custody;
+        } catch (\Throwable $error) {
+            throw new InferenceAdmissionException('Scheduled custody publication unavailable; execution held.', 0, $error);
         }
     }
 
@@ -513,9 +608,6 @@ class ScheduledJobService
      */
     public function markJobCompleted(int $jobId, int $runId, bool $success, ?string $output = null, ?float $duration = null, ?int $pid = null, ?int $itemsProcessed = null): void
     {
-        $status = $success ? 'success' : 'failed';
-        $job = $this->getJob($jobId);
-
         // Extract items_processed from output marker if not explicitly provided
         if ($itemsProcessed === null && $output) {
             if (preg_match('/\[ITEMS_PROCESSED:(\d+)\]/', $output, $m)) {
@@ -523,19 +615,26 @@ class ScheduledJobService
             }
         }
 
-        // For parallel jobs, unregister this worker first
-        if ($job && ($job->max_parallel ?? 1) > 1 && $pid) {
-            $this->unregisterWorkerPid($jobId, $pid);
-            $job = $this->getJob($jobId); // Refresh to get updated running_count
-        }
+        $isLastWorker = DB::transaction(function () use ($jobId, $runId, $success, $output, $duration, $pid, $itemsProcessed) {
+            $job = DB::selectOne('SELECT * FROM scheduled_jobs WHERE id = ? FOR UPDATE', [$jobId]);
+            if (! $job) {
+                throw new InferenceAdmissionException('Scheduled completion parent unavailable; custody retained.');
+            }
+            $status = $success ? 'success' : 'failed';
 
-        // Only update job-level status when no more workers are running
-        $isLastWorker = ! $job || ($job->running_count ?? 0) <= 0;
+            // Every registered owner has a counted slot, including single workers.
+            if ($job && $pid) {
+                $this->unregisterWorkerPid($jobId, $pid);
+                $job = DB::selectOne('SELECT * FROM scheduled_jobs WHERE id = ?', [$jobId]);
+            }
 
-        if ($isLastWorker) {
-            $nextRun = $job ? $this->calculateNextRun($job->cron_expression) : null;
+            // Only update job-level status when no more workers are running
+            $isLastWorker = ! $job || ($job->running_count ?? 0) <= 0;
 
-            $sql = '
+            if ($isLastWorker) {
+                $nextRun = $job ? $this->calculateNextRun($job->cron_expression) : null;
+
+                $sql = '
                 UPDATE scheduled_jobs SET
                     last_completed_at = NOW(),
                     last_run_status = ?,
@@ -548,31 +647,31 @@ class ScheduledJobService
                 WHERE id = ?
             ';
 
-            DB::update($sql, [
-                $status,
-                $output ? mb_substr($output, 0, 16000) : null,
-                $nextRun?->format('Y-m-d H:i:s'),
-                $success ? 1 : 0,
-                $success ? 0 : 1,
-                $jobId,
-            ]);
-        } else {
-            // Other workers still running — only increment counts, don't change job status
-            DB::update('
+                DB::update($sql, [
+                    $status,
+                    $output ? mb_substr($output, 0, 16000) : null,
+                    $nextRun?->format('Y-m-d H:i:s'),
+                    $success ? 1 : 0,
+                    $success ? 0 : 1,
+                    $jobId,
+                ]);
+            } else {
+                // Other workers still running — only increment counts, don't change job status
+                DB::update('
                 UPDATE scheduled_jobs SET
                     run_count = run_count + ?,
                     fail_count = fail_count + ?,
                     updated_at = NOW()
                 WHERE id = ?
             ', [
-                $success ? 1 : 0,
-                $success ? 0 : 1,
-                $jobId,
-            ]);
-        }
+                    $success ? 1 : 0,
+                    $success ? 0 : 1,
+                    $jobId,
+                ]);
+            }
 
-        // Always update the individual run record (including items_processed)
-        DB::update('
+            // Always update the individual run record (including items_processed)
+            DB::update('
             UPDATE scheduled_job_runs SET
                 completed_at = NOW(),
                 status = ?,
@@ -581,25 +680,33 @@ class ScheduledJobService
                 items_processed = ?
             WHERE id = ?
         ', [
-            $status,
-            $output ? mb_substr($output, 0, 16000) : null,
-            $duration,
-            $itemsProcessed,
-            $runId,
-        ]);
+                $status,
+                $output ? mb_substr($output, 0, 16000) : null,
+                $duration,
+                $itemsProcessed,
+                $runId,
+            ]);
 
-        // Clean up adaptive timeout deadline key
-        Cache::forget("scheduler:job:{$jobId}:deadline");
+            // Framework C2 — release the custody record for THIS run. Surface ref
+            // is per-run ("{jobId}:{runId}") so parallel workers each release
+            // their own row; the previous isLastWorker gate was a relic of the
+            // per-job scheme where only one custody row existed across all
+            // workers.
+            $this->releaseRunCustody($jobId, $runId, $success, $output, $itemsProcessed);
 
-        // Framework C2 — release the custody record for THIS run. Surface ref
-        // is per-run ("{jobId}:{runId}") so parallel workers each release
-        // their own row; the previous isLastWorker gate was a relic of the
-        // per-job scheme where only one custody row existed across all
-        // workers.
-        $this->releaseRunCustody($jobId, $runId, $success, $output, $itemsProcessed);
+            return $isLastWorker;
+        });
+
+        if ($isLastWorker) {
+            try {
+                Cache::forget("scheduler:job:{$jobId}:deadline");
+            } catch (\Throwable $error) {
+                throw new InferenceAdmissionException('Scheduled completion cache cleanup failed; execution must not be replayed.', 0, $error);
+            }
+        }
 
         // Adapt timeout for this job based on historical performance
-        if ($success && $duration > 0 && $isLastWorker) {
+        if ($success && $duration > 0 && $isLastWorker && $itemsProcessed !== 0) {
             $this->adaptJobTimeout($jobId);
         }
     }
@@ -637,6 +744,7 @@ class ScheduledJobService
                     WHERE scheduled_job_id = ?
                       AND status = 'success'
                       AND duration_seconds > 0
+                      AND (items_processed IS NULL OR items_processed > 0)
                     ORDER BY completed_at DESC
                     LIMIT 20
                 ) recent
@@ -653,6 +761,7 @@ class ScheduledJobService
                 WHERE scheduled_job_id = ?
                   AND status = 'success'
                   AND duration_seconds > 0
+                  AND (items_processed IS NULL OR items_processed > 0)
                 ORDER BY duration_seconds DESC
                 LIMIT 1 OFFSET ?
             ", [$jobId, max(0, (int) floor($stats->run_count * 0.05))]);
@@ -708,13 +817,28 @@ class ScheduledJobService
 
     private function getAdaptiveTimeoutFloor(object $job): int
     {
-        return (($job->job_type ?? null) === 'agent_task') ? 60 : 30;
+        $default = (($job->job_type ?? null) === 'agent_task') ? 60 : 30;
+        $notes = $job->notes ?? null;
+        if (is_string($notes)) {
+            $decoded = json_decode($notes, true);
+            $notes = is_array($decoded) ? $decoded : [];
+        }
+
+        $runtime = is_array($notes) && is_array($notes['runtime'] ?? null)
+            ? $notes['runtime']
+            : [];
+        $configured = $runtime['minimum_timeout_minutes'] ?? null;
+        if (! is_int($configured) || $configured < $default || $configured > 360) {
+            return $default;
+        }
+
+        return $configured;
     }
 
     /**
      * Run a specific job immediately (manual trigger)
      */
-    public function runJobNow(int $jobId, string $triggeredBy = 'manual', ?int $existingRunId = null, ?\Closure $timeoutExtender = null): array
+    public function runJobNow(int $jobId, string $triggeredBy = 'manual', ?int $existingRunId = null, ?\Closure $timeoutExtender = null, ?string $workerId = null): array
     {
         $job = $this->getJob($jobId);
         if (! $job) {
@@ -731,22 +855,7 @@ class ScheduledJobService
         // Reuse parent's run record if provided (parallel worker path), else create new
         if ($existingRunId) {
             $runId = $existingRunId;
-            // Still update job status and set our PID on the existing run
-            DB::update("
-                UPDATE scheduled_jobs SET last_run_at = NOW(), last_run_status = 'running', last_pid = ?, updated_at = NOW()
-                WHERE id = ?
-            ", [$pid, $jobId]);
-            DB::update('UPDATE scheduled_job_runs SET pid = ? WHERE id = ?', [$pid, $runId]);
-
-            // C2 — acquire custody for this run. For parallel workers this is
-            // idempotent with the parent's registerWorkerPid() acquire (same
-            // pid, same runId → same owner_token). For non-parallel paths
-            // that reuse an existing run (e.g., the UI-triggered
-            // `scheduled-job:run-now` command, which creates the run row in
-            // the controller and passes $existingRunId), this is the
-            // authoritative acquire — otherwise the run would have no
-            // custody at all.
-            $this->acquireRunCustody($jobId, $runId, $pid);
+            $this->claimReservedWorker($jobId, (int) $pid, $runId, $workerId);
         } else {
             $runId = $this->markJobStarted($jobId, $triggeredBy);
         }
@@ -789,6 +898,9 @@ class ScheduledJobService
                     $success = false;
             }
         } catch (\Throwable $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             $output = 'Exception: '.$e->getMessage();
             $success = false;
             Log::error("ScheduledJob {$job->name} failed", [
@@ -865,6 +977,9 @@ class ScheduledJobService
 
             return true;
         } catch (\Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             $output = 'Job dispatch failed: '.$e->getMessage();
 
             return false;
@@ -948,6 +1063,7 @@ class ScheduledJobService
                 'benchmark_mode' => $params['benchmark_mode'] ?? null,
                 'timeout_minutes' => $timeoutMinutes,
                 'timeout_extender' => $timeoutExtender,
+                'scheduled_job_name' => $scheduledJobName,
                 // Scheduled ops/review agents run on the cron critical path. Keep post-run
                 // indexing/memory work opt-in so final reports do not wedge the scheduler.
                 'index_findings' => (bool) ($params['index_findings'] ?? false),
@@ -999,6 +1115,9 @@ class ScheduledJobService
                 return false;
             }
         } catch (\Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             $output = 'Agent task exception: '.$e->getMessage();
             Log::error('ScheduledJobService: Agent task exception', [
                 'scheduled_job_name' => $scheduledJobName,
@@ -1105,6 +1224,9 @@ class ScheduledJobService
                     'scheduled_job' => 'research_analyst_agent',
                 ]);
             } catch (\Throwable $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 $result = [
                     'success' => false,
                     'error' => $e->getMessage(),
@@ -1213,26 +1335,12 @@ class ScheduledJobService
         $genealogy = app(GenealogyService::class);
         $cleanup = $genealogy->cleanupStaleProcessingResearchTasks($treeId, $staleHours * 60);
 
-        $recoveredTaskIds = array_map(
-            static fn (array $task): int => (int) ($task['id'] ?? 0),
-            $cleanup['cancelled_tasks'] ?? []
-        );
-        foreach ($cleanup['requeued_task_ids'] ?? [] as $taskId) {
-            $recoveredTaskIds[] = (int) $taskId;
-        }
-        $recoveredTaskIds = array_values(array_unique(array_filter($recoveredTaskIds)));
-        sort($recoveredTaskIds);
-
-        $releasedQueueItemIds = array_values(array_map(
-            static fn ($id): int => (int) $id,
-            $cleanup['queue_reset_ids'] ?? []
-        ));
-
         return [
-            'stale_task_count' => count($recoveredTaskIds),
-            'released_queue_count' => count($releasedQueueItemIds),
-            'stale_task_ids' => $recoveredTaskIds,
-            'released_queue_item_ids' => $releasedQueueItemIds,
+            'stale_task_count' => (int) ($cleanup['stale_count'] ?? 0),
+            'held_task_count' => (int) ($cleanup['held_count'] ?? $cleanup['stale_count'] ?? 0),
+            'released_queue_count' => 0,
+            'stale_task_ids' => [],
+            'released_queue_item_ids' => [],
         ];
     }
 
@@ -1319,7 +1427,24 @@ class ScheduledJobService
             $exhaustedFallbackMinPendingHints = $this->nonNegativeRuntimeInt(
                 $this->extractRuntimeValue($params, 'exhausted_fallback_min_pending_hints')
             );
+            $exhaustedFallbackMaxDataGapOnlyExhaustionScore = $this->normalizedUnitInterval(
+                $this->extractRuntimeValue($params, 'exhausted_fallback_max_data_gap_only_exhaustion_score')
+            );
+            $emptyQueueRefillEnabled = filter_var(
+                $this->extractRuntimeValue($params, 'empty_queue_refill_enabled'),
+                FILTER_VALIDATE_BOOLEAN,
+                FILTER_NULL_ON_FAILURE
+            ) === true;
+            $emptyQueueRefillCooldownHours = $this->nonNegativeRuntimeInt(
+                $this->extractRuntimeValue($params, 'empty_queue_refill_cooldown_hours')
+            );
+            $emptyQueueRefillLimit = $this->nonNegativeRuntimeInt(
+                $this->extractRuntimeValue($params, 'empty_queue_refill_limit')
+            );
+            $researchYieldGuard = $this->genealogyResearchYieldGuard($params);
             $exhaustedFallbackTrees = 0;
+            $emptyQueueRefillTrees = 0;
+            $yieldGuardPausedTrees = 0;
 
             foreach ($trees as $tree) {
                 $treeId = (int) $tree->tree_id;
@@ -1338,15 +1463,13 @@ class ScheduledJobService
                 ", [$treeId]);
                 $totalStale += $stale;
 
-                // Reset abandoned in-progress items (>3 hours old)
-                DB::update("
-                    UPDATE genealogy_research_queue
-                    SET status = 'pending', started_at = NULL, session_id = NULL,
-                        notes = CONCAT(COALESCE(notes, ''), ' [auto-reset: abandoned]'),
-                        updated_at = NOW()
-                    WHERE tree_id = ? AND status = 'in_progress'
-                      AND started_at < DATE_SUB(NOW(), INTERVAL 3 HOUR)
-                ", [$treeId]);
+                // In-progress queue rows remain held until their exact owner is proven dead.
+
+                if ($researchYieldGuard['pause_assessment']) {
+                    $yieldGuardPausedTrees++;
+
+                    continue;
+                }
 
                 // Get priority persons from coverage table
                 $result = $genealogyService->getPriorityPersons($treeId, $assessLimit, null, false, $recentWorkCutoff);
@@ -1359,12 +1482,42 @@ class ScheduledJobService
                         true,
                         $recentWorkCutoff,
                         $exhaustedFallbackMinDataGapScore,
-                        $exhaustedFallbackMinPendingHints
+                        $exhaustedFallbackMinPendingHints,
+                        $exhaustedFallbackMaxDataGapOnlyExhaustionScore
                     );
                     $fallbackPersons = $fallbackResult['persons'] ?? [];
                     if ($fallbackPersons !== []) {
                         $persons = $fallbackPersons;
                         $exhaustedFallbackTrees++;
+                    }
+                }
+                if ($persons === [] && $emptyQueueRefillEnabled) {
+                    $activeQueueCount = $this->getActiveGenealogyQueueCount($treeId);
+                    if ($activeQueueCount === 0) {
+                        $refillLimit = $emptyQueueRefillLimit !== null && $emptyQueueRefillLimit > 0
+                            ? min($assessLimit, $emptyQueueRefillLimit)
+                            : min($assessLimit, 10);
+                        $refillCooldownHours = $emptyQueueRefillCooldownHours !== null
+                            ? $emptyQueueRefillCooldownHours
+                            : 12;
+                        $refillCutoff = $refillCooldownHours > 0
+                            ? Carbon::now()->subHours($refillCooldownHours)->toDateTimeString()
+                            : null;
+                        $refillResult = $genealogyService->getPriorityPersons(
+                            $treeId,
+                            $refillLimit,
+                            null,
+                            true,
+                            $refillCutoff,
+                            $exhaustedFallbackMinDataGapScore,
+                            $exhaustedFallbackMinPendingHints,
+                            $exhaustedFallbackMaxDataGapOnlyExhaustionScore
+                        );
+                        $refillPersons = $refillResult['persons'] ?? [];
+                        if ($refillPersons !== []) {
+                            $persons = $refillPersons;
+                            $emptyQueueRefillTrees++;
+                        }
                     }
                 }
 
@@ -1459,12 +1612,24 @@ class ScheduledJobService
 
             $output = "Assess complete: queued {$totalQueued} persons across "
                 .count($trees)." tree(s), expired {$totalStale} stale queue entries, "
-                ."recovered {$totalStaleTasks} stale tasks. Assess limit: {$assessLimit}. "
+                ."held {$totalStaleTasks} stale tasks with unproven owners. Assess limit: {$assessLimit}. "
                 .'Recent work cooldown: '.($recentWorkCooldownHours !== null ? $recentWorkCooldownHours.'h.' : 'off.').' '
                 .'Exhausted fallback: '.($includeExhaustedFallback ? 'enabled' : 'disabled')
                 .", used {$exhaustedFallbackTrees} tree(s). "
                 .'Fallback filters: data_gap>='.($exhaustedFallbackMinDataGapScore ?? 'off')
-                .', pending_hints>='.($exhaustedFallbackMinPendingHints ?? 'off').'.';
+                .', pending_hints>='.($exhaustedFallbackMinPendingHints ?? 'off')
+                .', data_gap_only_exhaustion<='.($exhaustedFallbackMaxDataGapOnlyExhaustionScore ?? 'off').'. '
+                .'Empty-queue refill: '.($emptyQueueRefillEnabled ? 'enabled' : 'disabled')
+                .", used {$emptyQueueRefillTrees} tree(s), cooldown "
+                .($emptyQueueRefillCooldownHours !== null ? $emptyQueueRefillCooldownHours.'h' : 'default')
+                .', limit '.($emptyQueueRefillLimit !== null ? $emptyQueueRefillLimit : 'default').'. '
+                .'Research yield guard: '.$researchYieldGuard['state']
+                .', terminal non-useful '.$researchYieldGuard['non_useful_terminal'].'/'.$researchYieldGuard['decision_count']
+                .' decisions ('.round($researchYieldGuard['non_useful_rate'] * 100, 1).'%), '
+                .'accepted '.$researchYieldGuard['accepted'].', pending '.$researchYieldGuard['pending'].', '
+                .'sample floor '.$researchYieldGuard['min_submissions']
+                .', threshold '.round($researchYieldGuard['max_non_useful_rate'] * 100, 1).'%, '
+                ."paused {$yieldGuardPausedTrees} tree(s).";
 
             return true;
         } catch (\Throwable $e) {
@@ -1473,6 +1638,93 @@ class ScheduledJobService
 
             return false;
         }
+    }
+
+    private function getActiveGenealogyQueueCount(int $treeId): int
+    {
+        $row = DB::selectOne("
+            SELECT COUNT(*) AS c
+            FROM genealogy_research_queue
+            WHERE tree_id = ? AND status IN ('pending', 'in_progress')
+        ", [$treeId]);
+
+        return (int) ($row->c ?? 0);
+    }
+
+    /**
+     * @return array{state:string,enabled:bool,pause_assessment:bool,window_hours:int,min_submissions:int,max_non_useful_rate:float,agent_id:string,submissions:int,decision_count:int,non_useful_terminal:int,accepted:int,reviewed_only:int,pending:int,non_useful_rate:float}
+     */
+    private function genealogyResearchYieldGuard(array $params): array
+    {
+        $enabled = filter_var(
+            $this->extractRuntimeValue($params, 'research_yield_guard_enabled'),
+            FILTER_VALIDATE_BOOLEAN,
+            FILTER_NULL_ON_FAILURE
+        ) === true;
+        $windowHours = max(1, min(168, (int) ($this->extractRuntimeValue($params, 'research_yield_guard_window_hours') ?? 24)));
+        $minSubmissions = max(1, min(10000, (int) ($this->extractRuntimeValue($params, 'research_yield_guard_min_submissions') ?? 50)));
+        $maxNonUsefulRate = $this->normalizedUnitInterval(
+            $this->extractRuntimeValue($params, 'research_yield_guard_max_non_useful_rate')
+                ?? $this->extractRuntimeValue($params, 'research_yield_guard_max_auto_reject_rate')
+        ) ?? 0.8;
+        $agentId = (string) ($this->extractRuntimeValue($params, 'research_yield_guard_agent_id') ?? 'genealogy-records');
+        $pauseWhenTriggered = filter_var(
+            $this->extractRuntimeValue($params, 'research_yield_guard_pause_assessment'),
+            FILTER_VALIDATE_BOOLEAN,
+            FILTER_NULL_ON_FAILURE
+        ) !== false;
+
+        $result = [
+            'state' => $enabled ? 'insufficient_sample' : 'disabled',
+            'enabled' => $enabled,
+            'pause_assessment' => false,
+            'window_hours' => $windowHours,
+            'min_submissions' => $minSubmissions,
+            'max_non_useful_rate' => $maxNonUsefulRate,
+            'agent_id' => $agentId,
+            'submissions' => 0,
+            'decision_count' => 0,
+            'non_useful_terminal' => 0,
+            'accepted' => 0,
+            'reviewed_only' => 0,
+            'pending' => 0,
+            'non_useful_rate' => 0.0,
+        ];
+
+        if (! $enabled) {
+            return $result;
+        }
+
+        $snapshot = app(AgentUsefulYieldService::class)->submissionOutcomeSnapshot(
+            $agentId,
+            'genealogy_finding',
+            $windowHours
+        );
+        if (! $snapshot['available']) {
+            $result['state'] = 'unavailable';
+
+            return $result;
+        }
+
+        $result['submissions'] = $snapshot['submitted'];
+        $result['non_useful_terminal'] = $snapshot['declined'] + $snapshot['expired'];
+        $result['accepted'] = $snapshot['accepted'];
+        $result['reviewed_only'] = $snapshot['reviewed_only'];
+        $result['pending'] = $snapshot['pending'];
+        $result['decision_count'] = $result['accepted'] + $result['non_useful_terminal'];
+        $result['non_useful_rate'] = $result['decision_count'] > 0
+            ? round($result['non_useful_terminal'] / $result['decision_count'], 4)
+            : 0.0;
+
+        if ($result['decision_count'] < $minSubmissions) {
+            return $result;
+        }
+
+        $lowYield = $result['non_useful_rate'] >= $maxNonUsefulRate;
+        $result['state'] = $lowYield ? 'low_yield' : 'healthy';
+        $result['pause_assessment'] = $lowYield && $pauseWhenTriggered;
+
+        return $result;
     }
 
     /**
@@ -1520,6 +1772,9 @@ class ScheduledJobService
         $researchQuestion = trim((string) ($item->research_question ?? ''));
         $selectionReason = trim((string) ($item->selection_reason ?? ''));
         $questionType = trim((string) ($item->question_type ?? ''));
+        $playbookService = app(GenealogyResearchPlaybookService::class);
+        $researchPlaybook = $playbookService->fromQueueContract($questionType, $researchQuestion, $selectionReason);
+        $researchPlaybookPrompt = $playbookService->promptBlock($researchPlaybook);
 
         if ($researchQuestion === '' || $selectionReason === '') {
             $reason = 'Queue item missing required anchor-question contract.';
@@ -1531,8 +1786,8 @@ class ScheduledJobService
                     last_outcome_reason = ?,
                     notes = CONCAT(COALESCE(notes, ''), ' [contract-missing]'),
                     updated_at = NOW()
-                WHERE id = ?
-            ", [$reason, $item->id]);
+                WHERE id = ? AND status = 'in_progress' AND session_id = ?
+            ", [$reason, $item->id, $sessionId]);
 
             $output = "Research queue failed: {$personName} (#{$personId}) missing research_question/selection_reason.";
             Log::warning('ScheduledJobService: Queue item missing contract', [
@@ -1557,6 +1812,17 @@ class ScheduledJobService
 
         $taskId = $this->createGenealogyQueueTask($item);
         $maxIterations = $this->extractRuntimeValue($params, 'max_iterations') ?? $params['max_iterations'] ?? null;
+        $queueQualityAnalysis = filter_var(
+            $this->extractRuntimeValue($params, 'quality_analysis_enabled') ?? false,
+            FILTER_VALIDATE_BOOLEAN,
+            FILTER_NULL_ON_FAILURE
+        ) ?? false;
+        $configuredModelRole = $queueQualityAnalysis
+            ? $this->extractRuntimeValue($params, 'quality_analysis_model_role')
+            : $this->extractRuntimeValue($params, 'model_role');
+        $proposalQualityPolicy = $queueQualityAnalysis
+            ? $this->extractRuntimeValue($params, 'proposal_quality_policy')
+            : null;
 
         // Build focused single-person task prompt (skips assess phase)
         $task = "Anchor-centered genealogy research run for {$personName} (ID: {$personId}) in tree {$treeId}.\n"
@@ -1572,6 +1838,7 @@ class ScheduledJobService
             ."- Record negative searches as real progress when they narrow the field.\n"
             ."- Use GPS-style evidence analysis and note conflicts explicitly.\n"
             ."- Document searches in the outcome and use search-coverage tools when available; do not pass genealogy_research_tasks.id={$taskId} to GPS-only logging tools unless the runtime supplies a compatible GPS task ID.\n\n"
+            .($researchPlaybookPrompt !== '' ? $researchPlaybookPrompt."\n\n" : '')
             ."At the END of your final response, include these exact lines:\n"
             ."OUTCOME_STATE: completed|deferred|requeue|needs_human_review\n"
             ."OUTCOME_REASON: <concise reason>\n"
@@ -1589,23 +1856,40 @@ class ScheduledJobService
             'capture_procedural_memory' => false,
             'capture_episodic_memory' => false,
             'record_adaptive_outcome' => false,
-            'model' => $params['model'] ?? null,
-            'model_role' => $params['model_role'] ?? null,
+            'model' => $this->extractRuntimeValue($params, 'model') ?? $params['model'] ?? null,
+            'model_role' => $configuredModelRole ?? $params['model_role'] ?? null,
             'context' => [
                 'queue_mode' => true,
+                'queue_quality_analysis' => $queueQualityAnalysis,
+                'queue_quality_model_role' => $configuredModelRole,
+                'queue_proposal_quality_policy' => $proposalQualityPolicy,
+                'queue_quality_policy_source' => 'scheduled_jobs.genealogy_agent_research_queue.notes.runtime',
                 'queue_item_id' => $item->id,
                 'target_person_id' => $personId,
                 'target_person_name' => $personName,
                 'research_question' => $researchQuestion,
                 'selection_reason' => $selectionReason,
                 'question_type' => $questionType,
+                'research_playbook' => $playbookService->contextPayload($researchPlaybook),
                 'genealogy_task_id' => $taskId,
                 'priority_score' => (float) $item->priority_score,
                 'skip_assess' => true,
             ],
             'timeout_minutes' => $timeoutMinutes,
             'timeout_extender' => $timeoutExtender,
-            'progress_callback' => function (string $event, array $details = []) use ($item, $taskId): void {
+            'execution_guard' => function () use ($item, $taskId, $sessionId): void {
+                $current = DB::selectOne('
+                    SELECT t.id
+                    FROM genealogy_research_tasks t
+                    JOIN genealogy_research_queue q ON q.id = t.queue_item_id AND q.tree_id = t.tree_id
+                    WHERE t.id = ? AND t.tree_id = ? AND t.queue_item_id = ?
+                      AND t.status = \'processing\' AND q.status = \'in_progress\' AND q.session_id = ?
+                ', [$taskId, $item->tree_id, $item->id, $sessionId]);
+                if ($current === null) {
+                    throw new InferenceAdmissionException('Genealogy queue attempt no longer owns execution; no new work was dispatched.');
+                }
+            },
+            'progress_callback' => function (string $event, array $details = []) use ($item, $taskId, $sessionId): void {
                 $phase = $details['phase'] ?? null;
                 $tool = $details['tool'] ?? null;
                 $message = match ($event) {
@@ -1624,13 +1908,21 @@ class ScheduledJobService
                     SET parameters = JSON_SET(COALESCE(parameters, JSON_OBJECT()), "$.progress", ?),
                         updated_at = NOW()
                     WHERE id = ?
-                ', [$message, $taskId]);
+                      AND status = \'processing\'
+                      AND queue_item_id = ?
+                      AND tree_id = ?
+                      AND EXISTS (
+                          SELECT 1 FROM genealogy_research_queue q
+                          WHERE q.id = ? AND q.tree_id = ?
+                            AND q.status = \'in_progress\' AND q.session_id = ?
+                      )
+                ', [$message, $taskId, $item->id, $item->tree_id, $item->id, $item->tree_id, $sessionId]);
 
                 DB::update('
                     UPDATE genealogy_research_queue
                     SET notes = ?, updated_at = NOW()
-                    WHERE id = ?
-                ', [$message, $item->id]);
+                    WHERE id = ? AND status = \'in_progress\' AND session_id = ?
+                ', [$message, $item->id, $sessionId]);
             },
         ];
         if (is_numeric($maxIterations)) {
@@ -1638,6 +1930,14 @@ class ScheduledJobService
         }
 
         $result = $agentLoop->execute($skillName, $task, $options);
+        if (($result['execution_guard_held'] ?? false) === true) {
+            $output = "Research queue attempt #{$item->id} held before new work; retained task and queue evidence require review.";
+
+            return false;
+        }
+        $capacityDeferred = ! ($result['success'] ?? false)
+            && ($result['controller_capacity_wait_expired'] ?? false) === true;
+        $tokensUsed = $this->resolveGenealogyQueueTokens($result, $sessionId);
 
         // Count findings and review items from tool calls
         $findingsCount = 0;
@@ -1649,19 +1949,24 @@ class ScheduledJobService
                 if ($success && in_array($tool, ['propose_change', 'propose_relationship'])) {
                     $findingsCount++;
                 }
-                if ($success && $tool === 'submit_for_review') {
+                if ($this->isCountableGenealogyReviewToolCall($tc)) {
                     $reviewItemsCount++;
                 }
             }
         }
 
         $parsedOutcome = $this->parseGenealogyOutcomeContract((string) ($result['response'] ?? ''));
-        $outcomeState = $parsedOutcome['outcome_state']
-            ?? ($result['success'] ? ($findingsCount > 0 ? 'completed' : 'deferred') : 'requeue');
-        $outcomeReason = $parsedOutcome['outcome_reason']
+        $outcomeState = $capacityDeferred ? 'requeue' : ($parsedOutcome['outcome_state']
+            ?? ($result['success'] ? ($findingsCount > 0 ? 'completed' : 'deferred') : 'requeue'));
+        $outcomeReason = $capacityDeferred ? 'Controller capacity remained unavailable before inference; retry when resources recover.' : ($parsedOutcome['outcome_reason']
             ?? ($result['success']
                 ? ($findingsCount > 0 ? 'Evidence-backed findings generated.' : 'No supported change found; preserve for future follow-up.')
-                : ($result['error'] ?? 'Agent execution failed.'));
+                : ($result['error'] ?? 'Agent execution failed.')));
+
+        if ($result['success'] && $outcomeState === 'completed' && $findingsCount === 0 && $reviewItemsCount === 0) {
+            $outcomeState = 'deferred';
+            $outcomeReason = 'No queued review row survived quality/actionability gates; preserve for future follow-up.';
+        }
 
         if ($outcomeState === 'deferred') {
             $findingsCount = 0;
@@ -1675,31 +1980,23 @@ class ScheduledJobService
             ?? mb_substr(trim((string) ($result['response'] ?? '')), 0, 500);
         $conflictsFound = $parsedOutcome['conflicts_found'] ?? 'none';
 
-        DB::update('
-            UPDATE genealogy_research_tasks
-            SET status = ?,
-                results = ?,
-                research_question = ?,
-                selection_reason = ?,
-                scope_reason = ?,
-                related_people_used = ?,
-                sources_checked = ?,
-                evidence_summary = ?,
-                conflicts_found = ?,
-                outcome_state = ?,
-                outcome_reason = ?,
-                completed_at = NOW(),
-                updated_at = NOW(),
-                error_message = ?
-            WHERE id = ?
-        ', [
+        $queueStatus = match (true) {
+            $capacityDeferred => 'pending',
+            ! $result['success'] => 'failed',
+            $outcomeState === 'requeue' => 'pending',
+            default => 'completed',
+        };
+
+        $taskUpdateParams = [
             $result['success'] ? 'completed' : 'failed',
             json_encode([
                 'tool_calls_count' => count($result['tool_calls'] ?? []),
                 'findings_count' => $findingsCount,
                 'review_items_count' => $reviewItemsCount,
                 'duration_ms' => $result['duration_ms'] ?? null,
-                'tokens_used' => $result['tokens_used'] ?? null,
+                'tokens_used' => $tokensUsed,
+                'capacity_deferred' => $capacityDeferred,
+                ...(! $result['success'] && ! $capacityDeferred ? ['failure_diagnosis' => $this->diagnoseGenealogyQueueFailure($result)] : []),
             ]),
             $researchQuestion,
             $selectionReason,
@@ -1712,7 +2009,107 @@ class ScheduledJobService
             $outcomeReason,
             $result['success'] ? null : ($result['error'] ?? 'unknown'),
             $taskId,
-        ]);
+            $item->id,
+            $item->tree_id,
+            $item->id,
+            $item->tree_id,
+            $sessionId,
+        ];
+
+        if ($queueStatus === 'pending') {
+            $queueUpdateSql = '
+                UPDATE genealogy_research_queue
+                SET status = ?, started_at = NULL, completed_at = NULL, session_id = NULL,
+                    findings_count = ?, review_items_count = ?, last_task_id = ?,
+                    last_outcome_state = ?, last_outcome_reason = ?, notes = ?, updated_at = NOW()
+                WHERE id = ? AND status = \'in_progress\' AND session_id = ?
+            ';
+            $queueUpdateParams = [
+                $queueStatus,
+                $findingsCount,
+                $reviewItemsCount,
+                $taskId,
+                $outcomeState,
+                $outcomeReason,
+                'Requeued: '.($outcomeReason ?: 'retry requested'),
+                $item->id,
+                $sessionId,
+            ];
+        } else {
+            $queueUpdateSql = '
+                UPDATE genealogy_research_queue
+                SET status = ?, completed_at = NOW(), findings_count = ?, review_items_count = ?,
+                    last_task_id = ?, last_outcome_state = ?, last_outcome_reason = ?, notes = ?, updated_at = NOW()
+                WHERE id = ? AND status = \'in_progress\' AND session_id = ?
+            ';
+            $queueUpdateParams = [
+                $queueStatus,
+                $findingsCount,
+                $reviewItemsCount,
+                $taskId,
+                $outcomeState,
+                $outcomeReason,
+                $result['success']
+                    ? 'Completed in '.($result['duration_ms'] ?? 0).'ms. Tokens: '.$tokensUsed
+                    : 'Failed: '.($result['error'] ?? 'unknown'),
+                $item->id,
+                $sessionId,
+            ];
+        }
+
+        try {
+            DB::transaction(function () use ($taskUpdateParams, $queueUpdateSql, $queueUpdateParams): void {
+                $taskUpdated = DB::update('
+                            UPDATE genealogy_research_tasks
+                            SET status = ?,
+                                results = ?,
+                                research_question = ?,
+                                selection_reason = ?,
+                                scope_reason = ?,
+                                related_people_used = ?,
+                                sources_checked = ?,
+                                evidence_summary = ?,
+                                conflicts_found = ?,
+                                outcome_state = ?,
+                                outcome_reason = ?,
+                                completed_at = NOW(),
+                                updated_at = NOW(),
+                                error_message = ?
+                            WHERE id = ?
+                              AND status = \'processing\'
+                              AND queue_item_id = ?
+                              AND tree_id = ?
+                              AND EXISTS (
+                                  SELECT 1 FROM genealogy_research_queue q
+                                  WHERE q.id = ? AND q.tree_id = ?
+                                    AND q.status = \'in_progress\' AND q.session_id = ?
+                              )
+                        ', $taskUpdateParams);
+                if ($taskUpdated !== 1) {
+                    throw new \RuntimeException('genealogy_queue_attempt_lost');
+                }
+
+                if (DB::update($queueUpdateSql, $queueUpdateParams) !== 1) {
+                    throw new \RuntimeException('genealogy_queue_attempt_lost');
+                }
+            });
+        } catch (\RuntimeException $exception) {
+            if ($exception->getMessage() !== 'genealogy_queue_attempt_lost') {
+                throw $exception;
+            }
+
+            $output = "Research queue attempt for #{$item->id} lost ownership; result was not finalized.";
+            Log::info('ScheduledJobService: discarded genealogy queue result after ownership changed', [
+                'queue_id' => $item->id,
+                'task_id' => $taskId,
+            ]);
+
+            return false;
+        }
+
+        if (! $capacityDeferred) {
+            $this->markGenealogyPersonAgentWorked($treeId, $personId);
+        }
 
         if ($result['success']) {
             $this->recordGenealogyQueueSearchCoverage(
@@ -1728,71 +2125,129 @@ class ScheduledJobService
             );
         }
 
-        $queueStatus = match (true) {
-            ! $result['success'] => 'failed',
-            $outcomeState === 'requeue' => 'pending',
-            default => 'completed',
-        };
-
-        // Update queue entry
-        if ($queueStatus === 'pending') {
-            DB::update('
-                UPDATE genealogy_research_queue
-                SET status = ?,
-                    started_at = NULL,
-                    completed_at = NULL,
-                    session_id = NULL,
-                    findings_count = ?,
-                    review_items_count = ?,
-                    last_task_id = ?,
-                    last_outcome_state = ?,
-                    last_outcome_reason = ?,
-                    notes = ?,
-                    updated_at = NOW()
-                WHERE id = ?
-            ', [
-                $queueStatus,
-                $findingsCount,
-                $reviewItemsCount,
-                $taskId,
-                $outcomeState,
-                $outcomeReason,
-                'Requeued: '.($outcomeReason ?: 'retry requested'),
-                $item->id,
-            ]);
-        } else {
-            DB::update('
-                UPDATE genealogy_research_queue
-                SET status = ?,
-                    completed_at = NOW(),
-                    findings_count = ?,
-                    review_items_count = ?,
-                    last_task_id = ?,
-                    last_outcome_state = ?,
-                    last_outcome_reason = ?,
-                    notes = ?,
-                    updated_at = NOW()
-                WHERE id = ?
-            ', [
-                $queueStatus,
-                $findingsCount,
-                $reviewItemsCount,
-                $taskId,
-                $outcomeState,
-                $outcomeReason,
-                $result['success']
-                    ? 'Completed in '.($result['duration_ms'] ?? 0).'ms. Tokens: '.($result['tokens_used'] ?? 0)
-                    : 'Failed: '.($result['error'] ?? 'unknown'),
-                $item->id,
-            ]);
-        }
-
         $output = "Research queue ({$skillName}): {$personName} (#{$personId}, tree {$treeId}) — "
             .($queueStatus === 'pending' ? 'REQUEUED' : ($result['success'] ? 'completed' : 'FAILED'))
             ." — {$findingsCount} findings, {$reviewItemsCount} reviews"
             ." — outcome {$outcomeState}";
 
-        return $result['success'];
+        return $result['success'] || $capacityDeferred;
+    }
+
+    /** Diagnosis never changes execution status, admission, retries, or canonical data. */
+    private function diagnoseGenealogyQueueFailure(array $result): array
+    {
+        try {
+            $policy = app(SystemConfigService::class)->get(TypeSafeJevDecisionService::POLICY_KEY, []);
+            $policy = is_string($policy) ? json_decode($policy, true, flags: JSON_THROW_ON_ERROR) : $policy;
+            $task = $policy['tasks']['pipeline_issue_triage'] ?? [];
+            $diagnosis = $task['failure_diagnosis'] ?? [];
+            if (($diagnosis['enabled'] ?? false) !== true) {
+                return ['status' => 'skipped', 'reason_code' => 'failure_diagnosis_disabled'];
+            }
+
+            $error = (string) ($result['error'] ?? '');
+            $known = $diagnosis['deterministic_errors'][$error] ?? null;
+            if (is_array($known) && is_string($known['category'] ?? null) && is_string($known['diagnostic_path'] ?? null)) {
+                return ['status' => 'classified', 'method' => 'deterministic',
+                    'category' => $known['category'], 'diagnostic_path' => $known['diagnostic_path']];
+            }
+            if (($policy['enabled'] ?? false) !== true || ($task['enabled'] ?? false) !== true) {
+                return ['status' => 'skipped', 'reason_code' => 'jev_task_disabled'];
+            }
+            $tool = DB::selectOne('SELECT enabled, service_class, method, requires_confirmation FROM agent_tool_registry WHERE name = ?', ['typesafe_jev_decide']);
+            if ($tool === null || ! in_array($tool->enabled, [true, 1, '1'], true)
+                || ! in_array($tool->requires_confirmation, [false, 0, '0'], true)
+                || $tool->service_class !== TypeSafeJevDecisionService::class || $tool->method !== 'evaluate') {
+                return ['status' => 'skipped', 'reason_code' => 'jev_tool_unavailable'];
+            }
+
+            $questions = $diagnosis['questions'] ?? null;
+            $cooldown = $diagnosis['cooldown_seconds'] ?? null;
+            $patterns = $diagnosis['signal_patterns'] ?? null;
+            if (! is_array($questions) || $questions === [] || ! is_int($cooldown) || $cooldown < 1
+                || $cooldown > 86400 || ! is_array($patterns)) {
+                return ['status' => 'skipped', 'reason_code' => 'failure_diagnosis_policy_invalid'];
+            }
+            // Only table-defined signal names leave this process; never copy raw error text or task context.
+            $signals = [];
+            foreach ($patterns as $name => $pattern) {
+                if (! is_string($name) || preg_match('/\A[a-z][a-z0-9_]{0,79}\z/', $name) !== 1 || ! is_string($pattern)) {
+                    return ['status' => 'skipped', 'reason_code' => 'failure_diagnosis_policy_invalid'];
+                }
+                $matched = @preg_match($pattern, $error);
+                if ($matched === false) {
+                    return ['status' => 'skipped', 'reason_code' => 'failure_diagnosis_policy_invalid'];
+                }
+                $signals[$name] = $matched === 1;
+            }
+            $state = ['workload' => 'genealogy_research_queue', 'execution_failed' => true,
+                'tools_executed' => count($result['tool_calls'] ?? []) > 0, 'signals' => $signals];
+            $key = 'genealogy_failure_diagnosis:'.hash('sha256', json_encode([$state, $questions], JSON_THROW_ON_ERROR));
+            if (! Cache::add($key, true, $cooldown)) {
+                return ['status' => 'skipped', 'reason_code' => 'duplicate_symptom_cooldown'];
+            }
+            $judgment = app(TypeSafeJevDecisionService::class)->evaluate('pipeline_issue_triage', 'sanitized_internal', $state, $questions);
+
+            return array_intersect_key($judgment, array_flip(['status', 'reason_code', 'route_trace_id', 'answers', 'usage', 'duration_ms']));
+        } catch (\Throwable) {
+            // Optional diagnostics must not mask the failure or prevent its durable queue/task record.
+            return ['status' => 'skipped', 'reason_code' => 'failure_diagnosis_unavailable'];
+        }
+    }
+
+    private function isCountableGenealogyReviewToolCall(array $toolCall): bool
+    {
+        if (($toolCall['tool'] ?? '') !== 'submit_for_review' || empty($toolCall['success'])) {
+            return false;
+        }
+
+        if (! empty($toolCall['skipped'])) {
+            return false;
+        }
+
+        if (! empty($toolCall['merged_into'])) {
+            return true;
+        }
+
+        $status = strtolower(trim((string) ($toolCall['status'] ?? '')));
+        if (! empty($toolCall['review_created'])) {
+            return $status === '' || $status === 'pending';
+        }
+
+        if ($status !== '') {
+            return $status === 'pending'
+                && (isset($toolCall['review_id']) || isset($toolCall['token']) || ! empty($toolCall['deduplicated']));
+        }
+
+        return false;
+    }
+
+    /**
+     * Local/private model routes do not always return usage in the agent result,
+     * but AgentLoopService still records session token totals.
+     */
+    private function resolveGenealogyQueueTokens(array $result, string $sessionId): int
+    {
+        $reported = $result['tokens_used'] ?? null;
+        if (is_numeric($reported) && (int) $reported > 0) {
+            return (int) $reported;
+        }
+
+        try {
+            $row = DB::selectOne(
+                'SELECT total_tokens FROM agent_sessions WHERE session_id = ? LIMIT 1',
+                [$sessionId]
+            );
+
+            return max(0, (int) ($row->total_tokens ?? 0));
+        } catch (\Throwable $e) {
+            Log::debug('ScheduledJobService: Could not resolve genealogy queue session tokens', [
+                'session_id' => $sessionId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return max(0, (int) ($reported ?? 0));
+        }
     }
 
     private function recordGenealogyQueueSearchCoverage(
@@ -1909,6 +2364,11 @@ class ScheduledJobService
         }
     }
 
+    private function markGenealogyPersonAgentWorked(int $treeId, int $personId): void
+    {
+        app(GenealogyService::class)->markPersonAgentWorked($treeId, $personId);
+    }
+
     private function mapGenealogyQueueQuestionToGpsTaskType(string $questionType, string $question): string
     {
         $haystack = strtolower($questionType.' '.$question);
@@ -1974,12 +2434,19 @@ class ScheduledJobService
         if ($exhaustion > 0) {
             $selectionParts[] = "exhaustion {$exhaustion}";
         }
+        $playbookService = app(GenealogyResearchPlaybookService::class);
+        $playbook = $playbookService->chooseForQueueCandidate($person, $questionType, $researchQuestion);
+        if (! empty($playbook['enabled']) && ! empty($playbook['key'])) {
+            $selectionParts[] = 'playbook='.$playbook['key'];
+            $researchQuestion = $playbookService->appendGuidance($researchQuestion, $playbook);
+        }
 
         return [
             'question_type' => $questionType,
             'research_question' => $researchQuestion,
             'selection_reason' => implode(', ', $selectionParts),
             'priority_reason' => "tier={$tier}, gap={$gap}, exhaustion={$exhaustion}, priority={$priorityScore}",
+            'research_playbook' => $playbookService->contextPayload($playbook),
         ];
     }
 
@@ -2229,7 +2696,7 @@ class ScheduledJobService
     /**
      * Get recent run history for a job
      */
-    public function getJobHistory(int $jobId, int $limit = 20): array
+    public function getJobHistory(int $jobId, int $limit): array
     {
         $sql = '
             SELECT * FROM scheduled_job_runs
@@ -2247,36 +2714,11 @@ class ScheduledJobService
      * Returns count of jobs fixed.
      */
     /**
-     * APL #8A — dead-run reconciliation.
+     * Observe running workers whose local PID is absent or uncertain.
+     * Parent PID end does not prove descendants or remote work ended, so preserve
+     * running state, all custody, deadlines and research claims until owner completion.
      *
-     * Pivots on `scheduled_job_runs` (one row per worker) so parallel jobs
-     * — where `max_parallel > 1` means several `status='running'` rows can
-     * share a single `scheduled_jobs` parent — get per-worker PID liveness
-     * checks. The earlier implementation pivoted on `scheduled_jobs` and
-     * only looked at `last_pid`, so a crashed worker whose PID wasn't the
-     * one stored on the parent row could sit for `timeout_minutes + 15`
-     * before `fixStuckJobs()` caught it.
-     *
-     * For each dead-pid run: mark the run row failed, release its custody
-     * record, and (only after ALL of this job's running rows are closed)
-     * reset the parent `scheduled_jobs` bookkeeping — last_pid / running_pids /
-     * running_count / last_run_status. If live workers remain, just rebuild
-     * the parent's running_pids JSON from the survivors and leave status
-     * as 'running'. A 60-second grace window is enforced against each run's
-     * own started_at so a freshly-spawned worker whose PID hasn't been
-     * recorded yet isn't reconciled mid-bootstrap.
-     *
-     * Counter semantics (finding: dead-PID reconcile under-reported failures):
-     * On FULL parent collapse (all workers dead → parent flipped to 'failed')
-     * we bump `run_count +1`, `fail_count +1`, and set `last_completed_at = NOW()`
-     * — exactly once per parent, not once per dead worker — so reporting and
-     * adaptive-timeout logic see the failure. On PARTIAL collapse (some dead,
-     * survivors live → parent stays 'running') we deliberately do NOT bump
-     * counters: the run is still in progress and the surviving worker's
-     * eventual markJobCompleted() path will account for the outcome. This
-     * matches markJobCompleted()'s own "last worker" gating.
-     *
-     * @return array<int,array{id:int,name:string,pid:int,run_id:int}> Reconciled per-worker rows.
+     * @return array<int,array{id:int,name:string,pid:int,run_id:int}> No unproven recovery receipts.
      */
     public function reconcileDeadRunningJobs(): array
     {
@@ -2297,164 +2739,30 @@ class ScheduledJobService
               AND sjr.started_at < DATE_SUB(NOW(), INTERVAL 60 SECOND)
         ");
 
-        $reconciled = [];
-        $affectedJobIds = [];
-        foreach ($candidates as $cand) {
-            $pid = (int) $cand->pid;
-            if ($this->isProcessAlive($pid)) {
-                continue;
-            }
-
-            $jobId = (int) $cand->scheduled_job_id;
-            $runId = (int) $cand->run_id;
-            $marker = "\n[AUTO-RECONCILED] PID {$pid} dead (no process), run never completed.";
-
-            DB::update(
-                "UPDATE scheduled_job_runs
-                 SET status = 'failed',
-                     completed_at = NOW(),
-                     output = CONCAT(COALESCE(output, ''), ?)
-                 WHERE id = ? AND status = 'running'",
-                [$marker, $runId]
-            );
-
-            // Finding M1 (updated for per-run custody scheme): release THIS
-            // worker's custody row. Surface ref is "{jobId}:{runId}" so
-            // sibling workers' custody rows are untouched. `findUnreleased`
-            // returns any unreleased row regardless of expiry, so we also
-            // clean up expired-but-unreleased rows from prior crashes.
+        $heldCount = 0;
+        foreach ($candidates as $candidate) {
             try {
-                $custody = app(TaskCustodyService::class)->findUnreleased(
-                    TaskCustodyService::SURFACE_SCHEDULED_JOB,
-                    self::custodySurfaceRef($jobId, $runId),
-                );
-                if ($custody) {
-                    app(TaskCustodyService::class)->release(
-                        (int) $custody->id,
-                        'failure',
-                        [
-                            'reason' => 'dead_pid_reconciled',
-                            'pid' => $pid,
-                            'run_id' => $runId,
-                            'reconciled_at' => date('Y-m-d H:i:s'),
-                        ],
-                    );
+                if ($this->isProcessAlive((int) $candidate->pid)) {
+                    continue;
                 }
-            } catch (\Throwable $e) {
-                Log::warning('ScheduledJobService: custody release during dead-PID reconcile failed (non-fatal)', [
-                    'job_id' => $jobId,
-                    'run_id' => $runId,
-                    'pid' => $pid,
-                    'error' => $e->getMessage(),
-                ]);
+            } catch (\Throwable) {
+                // An unavailable PID probe retains every hold too.
             }
-
-            $fullJob = $this->getJob($jobId);
-            if ($fullJob) {
-                $this->releaseQueueResearchItemsForJob(
-                    $fullJob,
-                    "Dead scheduled worker PID {$pid} was reconciled before completing its claimed queue item.",
-                    $runId,
-                    $pid
-                );
-            }
-
-            $reconciled[] = [
-                'id' => $jobId,
-                'name' => (string) $cand->name,
-                'pid' => $pid,
-                'run_id' => $runId,
-            ];
-            $affectedJobIds[$jobId] = (object) [
-                'id' => $jobId,
-                'cron_expression' => $cand->cron_expression,
-                'marker' => $marker,
-            ];
+            $heldCount++;
         }
-
-        // Per-job bookkeeping: only collapse the parent scheduled_jobs row
-        // after every running worker on that job is closed. Otherwise we'd
-        // downgrade a still-running parallel job to 'failed' just because
-        // one of its workers crashed.
-        foreach ($affectedJobIds as $jobCtx) {
-            $survivors = DB::select(
-                "SELECT id, pid FROM scheduled_job_runs
-                 WHERE scheduled_job_id = ? AND status = 'running'",
-                [$jobCtx->id]
-            );
-
-            $deadlineKey = "scheduler:job:{$jobCtx->id}:deadline";
-
-            if ($survivors === []) {
-                if (Cache::has($deadlineKey)) {
-                    Cache::forget($deadlineKey);
-                }
-                $nextRun = $this->calculateNextRun($jobCtx->cron_expression);
-                // Counter bump is WHERE-gated on last_run_status='running' so
-                // orphan-run reconciliation (parent already in a terminal
-                // state — see orphan_running_run_is_reconciled... test) does
-                // NOT double-count a failure that was already counted when
-                // the parent originally completed. Single increment per real
-                // parent collapse.
-                DB::update(
-                    "UPDATE scheduled_jobs
-                     SET last_run_status = 'failed',
-                         last_pid = NULL,
-                         running_pids = NULL,
-                         running_count = 0,
-                         last_run_output = CONCAT(COALESCE(last_run_output, ''), ?),
-                         next_run_at = ?,
-                         last_completed_at = NOW(),
-                         run_count = run_count + 1,
-                         fail_count = fail_count + 1,
-                         updated_at = NOW()
-                     WHERE id = ? AND last_run_status = 'running'",
-                    [$jobCtx->marker, $nextRun?->format('Y-m-d H:i:s'), $jobCtx->id]
-                );
-
-                continue;
-            }
-
-            // Parallel job with live survivors — keep the parent 'running' but
-            // rebuild running_pids / running_count from the survivors so the
-            // bookkeeping reflects reality. Leave last_pid alone only if it
-            // still matches a live survivor; otherwise pick the first.
-            $liveIds = array_values(array_map(static fn ($r) => (int) $r->pid, $survivors));
-            $current = DB::selectOne(
-                'SELECT last_pid FROM scheduled_jobs WHERE id = ?',
-                [$jobCtx->id]
-            );
-            $lastPid = (int) ($current->last_pid ?? 0);
-            if (! in_array($lastPid, $liveIds, true)) {
-                $lastPid = $liveIds[0];
-            }
-            DB::update(
-                'UPDATE scheduled_jobs
-                 SET last_pid = ?,
-                     running_pids = ?,
-                     running_count = ?,
-                     updated_at = NOW()
-                 WHERE id = ?',
-                [$lastPid, json_encode($liveIds), count($liveIds), $jobCtx->id]
-            );
-        }
-
-        if ($reconciled !== []) {
-            Log::warning('ScheduledJobService: reconciled dead-PID running workers', [
-                'count' => count($reconciled),
-                'workers' => array_map(
-                    static fn (array $r) => "{$r['name']}(job#{$r['id']}, run#{$r['run_id']}, PID {$r['pid']})",
-                    $reconciled
-                ),
+        if ($heldCount > 0) {
+            Log::notice('ScheduledJobService: Missing-parent work custody retained', [
+                'held_count' => $heldCount,
+                'reason_code' => 'scheduled_job_work_end_unproven',
             ]);
         }
 
-        return $reconciled;
+        return [];
     }
 
     public function fixStuckJobs(): int
     {
-        // Find stuck jobs — include last_pid for process verification
+        // Timeout candidates are observations only; preserve physical and queue custody.
         $stuckJobs = DB::select("
             SELECT id, name, command, cron_expression, last_run_at, timeout_minutes, last_pid, job_type, notes
             FROM scheduled_jobs
@@ -2464,114 +2772,23 @@ class ScheduledJobService
               AND (last_completed_at IS NULL OR last_completed_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
         ");
 
-        if (empty($stuckJobs)) {
-            return 0;
-        }
-
-        $fixedCount = 0;
-        $fixedNames = [];
-
+        $heldCount = 0;
         foreach ($stuckJobs as $job) {
             if (! $this->shouldAutoFixTimedOutJob($job)) {
                 continue;
             }
-
-            $pid = $job->last_pid;
-
-            // Check for adaptive timeout extension before marking stuck
-            $deadline = Cache::get("scheduler:job:{$job->id}:deadline");
-            if ($deadline && $deadline > time()) {
-                if ($pid && ! $this->isProcessAlive((int) $pid)) {
-                    Cache::forget("scheduler:job:{$job->id}:deadline");
-                    Log::warning('ScheduledJobService: Deadline key active but PID dead, cleaning up', [
-                        'job' => $job->name,
-                        'pid' => (int) $pid,
-                        'deadline' => date('Y-m-d H:i:s', $deadline),
-                    ]);
-                } else {
-                    Log::debug("ScheduledJobService: Job #{$job->id} ({$job->name}) has active timeout extension", [
-                        'deadline' => date('Y-m-d H:i:s', $deadline),
-                        'remaining_min' => round(($deadline - time()) / 60, 1),
-                    ]);
-
-                    continue;
-                }
-            }
-
-            // PID-aware handling
-            if ($pid && $this->isProcessAlive($pid)) {
-                // Process alive but past timeout — kill it
-                $this->killProcess($pid);
-                $label = "killed PID {$pid}";
-            } elseif ($pid) {
-                $label = "dead PID {$pid}";
-            } else {
-                $label = 'no PID';
-            }
-
-            $nextRun = $this->calculateNextRun($job->cron_expression);
-            $timedOutRunRows = DB::select("
-                SELECT id, pid
-                FROM scheduled_job_runs
-                WHERE scheduled_job_id = ?
-                  AND status = 'running'
-                  AND started_at < DATE_SUB(NOW(), INTERVAL COALESCE(?, 120) MINUTE)
-            ", [$job->id, $job->timeout_minutes ? $job->timeout_minutes + 15 : null]);
-
-            DB::update("
-                UPDATE scheduled_jobs
-                SET last_run_status = 'failed',
-                    last_pid = NULL,
-                    running_pids = NULL,
-                    running_count = 0,
-                    last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n[AUTO-FIXED] Job timed out ({$label})'),
-                    next_run_at = ?
-                WHERE id = ? AND last_run_status = 'running'
-            ", [
-                $nextRun?->format('Y-m-d H:i:s'),
-                $job->id,
+            // Age, missing/recycled PID and kill acceptance cannot prove all work ended.
+            // Normal owner-driven markJobCompleted retains terminal publication authority.
+            $heldCount++;
+        }
+        if ($heldCount > 0) {
+            Log::notice('ScheduledJobService: Timed-out work custody retained', [
+                'held_count' => $heldCount,
+                'reason_code' => 'scheduled_job_work_end_unproven',
             ]);
-
-            // Fix corresponding run records
-            DB::update("
-                UPDATE scheduled_job_runs
-                SET status = 'failed',
-                    completed_at = NOW(),
-                    output = CONCAT(COALESCE(output, ''), '\n[AUTO-FIXED] Job timed out ({$label})')
-                WHERE scheduled_job_id = ?
-                  AND status = 'running'
-                  AND started_at < DATE_SUB(NOW(), INTERVAL COALESCE(?, 120) MINUTE)
-            ", [$job->id, $job->timeout_minutes ? $job->timeout_minutes + 15 : null]);
-
-            if ($timedOutRunRows !== []) {
-                foreach ($timedOutRunRows as $runRow) {
-                    $this->releaseQueueResearchItemsForJob(
-                        $job,
-                        "Automatic cleanup after timed-out queue research worker ({$label}).",
-                        (int) $runRow->id,
-                        (int) ($runRow->pid ?? 0)
-                    );
-                }
-            } else {
-                $this->releaseQueueResearchItemsForJob($job, "Automatic cleanup after timed-out queue research worker ({$label}).", null, $pid ? (int) $pid : null);
-            }
-
-            $stuckMinutes = $job->last_run_at
-                ? round((time() - strtotime($job->last_run_at)) / 60)
-                : '?';
-
-            $fixedNames[] = "{$job->name} (stuck {$stuckMinutes}min, {$label})";
-            $fixedCount++;
         }
 
-        Log::warning('ScheduledJobService: Auto-fixed stuck jobs', [
-            'count' => $fixedCount,
-            'jobs' => $fixedNames,
-        ]);
-
-        // Stuck jobs are auto-fixed and logged — daily report covers visibility
-
-        return $fixedCount;
+        return 0;
     }
 
     /**
@@ -2581,19 +2798,24 @@ class ScheduledJobService
     public function checkConsecutiveFailures(): void
     {
         $failingJobs = DB::select("
-            SELECT id, name, fail_count,
-                   (SELECT COUNT(*) FROM scheduled_job_runs
-                    WHERE scheduled_job_id = sj.id
-                      AND status = 'failed'
-                      AND started_at > COALESCE(
-                          (SELECT MAX(started_at) FROM scheduled_job_runs
-                           WHERE scheduled_job_id = sj.id AND status = 'success'),
-                          '2000-01-01'
-                      )
-                   ) as consecutive_failures
+            SELECT sj.id, sj.name, sj.fail_count, COUNT(f.id) AS consecutive_failures
             FROM scheduled_jobs sj
-            WHERE enabled = 1
-              AND last_run_status = 'failed'
+            LEFT JOIN (
+                SELECT r.scheduled_job_id, MAX(r.started_at) AS last_success
+                FROM scheduled_job_runs r
+                JOIN scheduled_jobs eligible ON eligible.id = r.scheduled_job_id
+                WHERE r.status = 'success'
+                  AND eligible.enabled = 1
+                  AND eligible.last_run_status = 'failed'
+                GROUP BY r.scheduled_job_id
+            ) s ON s.scheduled_job_id = sj.id
+            LEFT JOIN scheduled_job_runs f
+                ON f.scheduled_job_id = sj.id
+               AND f.status = 'failed'
+               AND f.started_at > COALESCE(s.last_success, '2000-01-01')
+            WHERE sj.enabled = 1
+              AND sj.last_run_status = 'failed'
+            GROUP BY sj.id, sj.name, sj.fail_count
         ");
 
         $alerts = [];
@@ -2844,7 +3066,7 @@ class ScheduledJobService
     /**
      * Clean up old run history
      */
-    public function cleanupHistory(int $daysToKeep = 30): int
+    public function cleanupHistory(int $daysToKeep): int
     {
         $cutoff = Carbon::now()->subDays($daysToKeep)->format('Y-m-d H:i:s');
 
@@ -3011,56 +3233,20 @@ class ScheduledJobService
     }
 
     /**
-     * Clean up dead processes detected via PID tracking.
-     * Called on every scheduler tick for instant zombie detection.
+     * Observe uncertain process tracking without clearing physical work custody.
+     * Called on scheduler ticks; PID absence and historical status are not completion proof.
      */
     private function cleanupDeadProcesses(): void
     {
-        // Clean orphaned run records with NULL PIDs (parallel worker companions)
         $nullPidRuns = DB::select("
             SELECT id, scheduled_job_id
             FROM scheduled_job_runs
             WHERE status = 'running' AND pid IS NULL AND started_at < NOW() - INTERVAL 5 MINUTE
         ");
-        foreach ($nullPidRuns as $run) {
-            DB::update("
-                UPDATE scheduled_job_runs
-                SET status = 'failed', completed_at = COALESCE(completed_at, NOW()),
-                    output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] No PID, auto-cleared')
-                WHERE id = ? AND status = 'running'
-            ", [$run->id]);
-
-            $fullJob = $this->getJob((int) $run->scheduled_job_id);
-            if ($fullJob) {
-                $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research worker lost PID before completing the claimed item.', (int) $run->id);
-            }
-        }
-
-        // Sweep stale run records with PIDs that are dead — catches orphans where
-        // the parent job already moved on to a new run (last_run_status != 'running')
         $staleRuns = DB::select("
             SELECT id, scheduled_job_id, pid FROM scheduled_job_runs
             WHERE status = 'running' AND pid IS NOT NULL AND started_at < NOW() - INTERVAL 10 MINUTE
         ");
-        foreach ($staleRuns as $run) {
-            if (! $this->isProcessAlive((int) $run->pid)) {
-                DB::update("
-                    UPDATE scheduled_job_runs
-                    SET status = 'failed', completed_at = NOW(),
-                        output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] Stale PID dead, auto-cleared')
-                    WHERE id = ? AND status = 'running'
-                ", [$run->id]);
-
-                $fullJob = $this->getJob((int) $run->scheduled_job_id);
-                if ($fullJob) {
-                    $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research worker stale PID died before completing the claimed item.', (int) $run->id, (int) $run->pid);
-                }
-            }
-        }
-
-        // Single-worker jobs with dead PIDs (must be in 'running' state)
-        // OR parallel jobs with stale running_pids (any status — a completed worker
-        // may have set last_run_status='success' while sibling PIDs are still tracked)
         $runningJobs = DB::select("
             SELECT id, name, cron_expression, last_pid, max_parallel, running_pids
             FROM scheduled_jobs
@@ -3068,133 +3254,39 @@ class ScheduledJobService
                OR (running_pids IS NOT NULL AND JSON_LENGTH(running_pids) > 0)
         ");
 
+        $held = $nullPidRuns !== [];
+        foreach ($staleRuns as $run) {
+            try {
+                $held = ! $this->isProcessAlive((int) $run->pid) || $held;
+            } catch (\Throwable) {
+                $held = true;
+            }
+        }
         foreach ($runningJobs as $job) {
-            $maxParallel = $job->max_parallel ?? 1;
+            $pids = json_decode($job->running_pids ?? '[]', true);
+            if (! is_array($pids)) {
+                $held = true;
 
-            if ($maxParallel <= 1) {
-                // Single-worker: check last_pid
-                if ($job->last_pid && ! $this->isProcessAlive($job->last_pid)) {
-                    $runStatus = DB::selectOne('
-                        SELECT id, status FROM scheduled_job_runs
-                        WHERE scheduled_job_id = ? AND pid = ?
-                        ORDER BY id DESC LIMIT 1
-                    ', [$job->id, $job->last_pid]);
-
-                    $nextRun = $this->calculateNextRun($job->cron_expression);
-
-                    if ($runStatus && in_array($runStatus->status, ['success', 'completed'], true)) {
-                        DB::update("
-                            UPDATE scheduled_jobs
-                            SET last_run_status = 'success',
-                                last_pid = NULL,
-                                next_run_at = ?
-                            WHERE id = ? AND last_run_status = 'running'
-                        ", [$nextRun?->format('Y-m-d H:i:s'), $job->id]);
-                        Cache::forget("scheduler:job:{$job->id}:deadline");
-
-                        Log::info("ScheduledJobService: Cleared completed single-worker PID {$job->last_pid} for job #{$job->id} ({$job->name})");
-
-                        continue;
-                    }
-
-                    DB::update("
-                        UPDATE scheduled_jobs
-                        SET last_run_status = 'failed',
-                            last_pid = NULL,
-                            last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n[ZOMBIE] PID {$job->last_pid} dead, auto-cleared'),
-                            next_run_at = ?
-                        WHERE id = ? AND last_run_status = 'running'
-                    ", [$nextRun?->format('Y-m-d H:i:s'), $job->id]);
-                    Cache::forget("scheduler:job:{$job->id}:deadline");
-
-                    DB::update("
-                        UPDATE scheduled_job_runs
-                        SET status = 'failed', completed_at = NOW(),
-                            output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] PID dead, auto-cleared')
-                        WHERE scheduled_job_id = ? AND status = 'running' AND pid = ?
-                    ", [$job->id, $job->last_pid]);
-
-                    $fullJob = $this->getJob((int) $job->id);
-                    if ($fullJob) {
-                        $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research worker exited before completing the claimed item.', (int) ($runStatus->id ?? 0), (int) $job->last_pid);
-                    }
-
-                    Log::info("ScheduledJobService: Cleared zombie job #{$job->id} ({$job->name}), dead PID {$job->last_pid}");
-                }
-            } else {
-                // Parallel jobs: check each PID in running_pids
-                $pids = json_decode($job->running_pids ?? '[]', true) ?: [];
-                $deadPids = [];
-
-                foreach ($pids as $pid) {
-                    if (! $this->isProcessAlive((int) $pid)) {
-                        $deadPids[] = $pid;
-                    }
-                }
-
-                $trueZombiePids = [];
-                foreach ($deadPids as $deadPid) {
-                    // Check if the run already completed successfully before marking as zombie
-                    $runStatus = DB::selectOne('
-                        SELECT id, status FROM scheduled_job_runs
-                        WHERE scheduled_job_id = ? AND pid = ?
-                        ORDER BY id DESC LIMIT 1
-                    ', [$job->id, $deadPid]);
-
-                    $this->unregisterWorkerPid($job->id, (int) $deadPid);
-
-                    if ($runStatus && in_array($runStatus->status, ['success', 'completed'])) {
-                        // Worker finished normally — PID exited cleanly, not a zombie
-                        Log::debug("ScheduledJobService: PID {$deadPid} for job #{$job->id} ({$job->name}) already completed, not a zombie");
-
-                        continue;
-                    }
-
-                    $trueZombiePids[] = $deadPid;
-                    DB::update("
-                        UPDATE scheduled_job_runs
-                        SET status = 'failed', completed_at = NOW(),
-                            output = CONCAT(COALESCE(output, ''), '\n[ZOMBIE] PID dead, auto-cleared')
-                        WHERE scheduled_job_id = ? AND status = 'running' AND pid = ?
-                    ", [$job->id, $deadPid]);
-
-                    $fullJob = $this->getJob((int) $job->id);
-                    if ($fullJob) {
-                        $this->releaseQueueResearchItemsForJob($fullJob, 'Queue research parallel worker exited before completing the claimed item.', (int) ($runStatus->id ?? 0), (int) $deadPid);
-                    }
-
-                    Log::info("ScheduledJobService: Cleared zombie worker PID {$deadPid} for job #{$job->id} ({$job->name})");
-                }
-
-                // If all workers dead AND at least one was a true zombie, mark job as failed
-                $refreshed = $this->getJob($job->id);
-                if ($refreshed && $refreshed->last_run_status === 'running' && ($refreshed->running_count ?? 0) <= 0) {
-                    if (! empty($trueZombiePids)) {
-                        $nextRun = $this->calculateNextRun($job->cron_expression);
-                        DB::update("
-                            UPDATE scheduled_jobs
-                            SET last_run_status = 'failed', last_pid = NULL, next_run_at = ?,
-                                last_run_output = CONCAT(COALESCE(last_run_output, ''), '\n[ZOMBIE] All parallel workers dead')
-                            WHERE id = ? AND last_run_status = 'running'
-                        ", [$nextRun?->format('Y-m-d H:i:s'), $job->id]);
-                        Cache::forget("scheduler:job:{$job->id}:deadline");
-                    } else {
-                        // All workers completed successfully — mark job as success
-                        $nextRun = $this->calculateNextRun($job->cron_expression);
-                        DB::update("
-                            UPDATE scheduled_jobs
-                            SET last_run_status = 'success', last_pid = NULL, next_run_at = ?
-                            WHERE id = ? AND last_run_status = 'running'
-                        ", [$nextRun?->format('Y-m-d H:i:s'), $job->id]);
-                        Cache::forget("scheduler:job:{$job->id}:deadline");
-                        Log::info("ScheduledJobService: All workers for job #{$job->id} ({$job->name}) completed successfully, cleaned up");
-                    }
+                continue;
+            }
+            if ($job->last_pid !== null) {
+                $pids[] = $job->last_pid;
+            }
+            foreach ($pids as $pid) {
+                try {
+                    $held = ! $this->isProcessAlive((int) $pid) || $held;
+                } catch (\Throwable) {
+                    $held = true;
                 }
             }
         }
-
-        // CPU-stall detection: find alive processes that have consumed almost no CPU time
-        $this->detectStalledProcesses();
+        if ($held) {
+            Log::notice('ScheduledJobService: Cleanup work custody retained', [
+                'reason_code' => 'scheduled_job_work_end_unproven',
+            ]);
+        }
+        // No kill, claim release, deadline removal, state repair or CPU-stall recovery.
+        // Only normal owner completion publishes terminal status.
     }
 
     /**
@@ -3310,12 +3402,12 @@ class ScheduledJobService
         }
 
         $where = ['status = \'in_progress\''];
-        $params = [$reason];
+        $filterParams = [];
         $sessionLikes = self::genealogyQueueSessionLikePatterns($runId, $pid);
 
         if ($sessionLikes !== []) {
             $where[] = '('.implode(' OR ', array_fill(0, count($sessionLikes), 'session_id LIKE ?')).')';
-            array_push($params, ...$sessionLikes);
+            array_push($filterParams, ...$sessionLikes);
         } elseif ((int) ($job->max_parallel ?? 1) > 1) {
             Log::warning('ScheduledJobService: skipped broad queue release for parallel genealogy worker without owner identity', [
                 'job_id' => $job->id ?? null,
@@ -3325,6 +3417,27 @@ class ScheduledJobService
 
             return;
         }
+
+        try {
+            $workedRows = DB::select('
+                SELECT DISTINCT tree_id, person_id
+                FROM genealogy_research_queue
+                WHERE '.implode(' AND ', $where).'
+            ', $filterParams);
+
+            foreach ($workedRows as $workedRow) {
+                $this->markGenealogyPersonAgentWorked((int) $workedRow->tree_id, (int) $workedRow->person_id);
+            }
+        } catch (\Throwable $e) {
+            Log::debug('ScheduledJobService: Could not mark released genealogy queue people as worked', [
+                'job_id' => $job->id ?? null,
+                'job_name' => $job->name ?? null,
+                'reason' => $reason,
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        $params = array_merge([$reason], $filterParams);
 
         DB::update("
             UPDATE genealogy_research_queue
@@ -3927,22 +4040,24 @@ class ScheduledJobService
         $backlogMetric = $this->getScheduledJobRuntimeValue($job, 'backlog_metric');
         $cmd = $job->command ?? '';
         $imageExts = "'jpg','jpeg','png','gif','bmp','webp','tiff','tif','heic','heif'";
+        $available = $this->availableFileRegistryPredicate();
+        $availableFr = $this->availableFileRegistryPredicate('fr');
 
         try {
             if ($backlogMetric === 'faces' || str_contains($cmd, 'faces')) {
-                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND face_scan_at IS NULL AND extension IN ({$imageExts})")->c ?? 0);
+                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND {$available} AND face_scan_at IS NULL AND extension IN ({$imageExts})")->c ?? 0);
             }
             if ($backlogMetric === 'ai' || str_contains($cmd, 'type=ai') || str_contains($cmd, 'ai')) {
-                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND ai_analyzed_at IS NULL AND extension IN ({$imageExts})")->c ?? 0);
+                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND {$available} AND ai_analyzed_at IS NULL AND extension IN ({$imageExts})")->c ?? 0);
             }
             if ($backlogMetric === 'rag' || str_contains($cmd, 'rag') || str_contains($cmd, 'file-catalog')) {
-                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND rag_indexed_at IS NULL")->c ?? 0);
+                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND {$available} AND rag_indexed_at IS NULL")->c ?? 0);
             }
             if ($backlogMetric === 'phash' || str_contains($cmd, 'phash')) {
-                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry fr WHERE status = 'active' AND extension IN ({$imageExts}) AND NOT EXISTS (SELECT 1 FROM file_registry_perceptual_hashes ph WHERE ph.file_registry_id = fr.id)")->c ?? 0);
+                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry fr WHERE status = 'active' AND {$availableFr} AND extension IN ({$imageExts}) AND NOT EXISTS (SELECT 1 FROM file_registry_perceptual_hashes ph WHERE ph.file_registry_id = fr.id)")->c ?? 0);
             }
             if ($backlogMetric === 'thumbnail' || str_contains($cmd, 'thumbnail')) {
-                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND thumbnail_generated_at IS NULL AND thumbnail_error IS NULL")->c ?? 0);
+                return (int) (DB::selectOne("SELECT COUNT(*) as c FROM file_registry WHERE status = 'active' AND {$available} AND thumbnail_generated_at IS NULL AND thumbnail_error IS NULL")->c ?? 0);
             }
             if ($backlogMetric === 'genealogy_queue') {
                 return (int) (DB::selectOne("SELECT COUNT(*) as c FROM genealogy_research_queue WHERE status = 'pending'")->c ?? 0);
@@ -3952,6 +4067,18 @@ class ScheduledJobService
         }
 
         return 1000; // Unknown job — assume moderate backlog
+    }
+
+    private function availableFileRegistryPredicate(string $alias = 'file_registry'): string
+    {
+        $prefix = $alias !== '' ? "{$alias}." : '';
+        $error = "LOWER(COALESCE({$prefix}thumbnail_error, ''))";
+
+        return "COALESCE({$prefix}verification_failures, 0) = 0
+            AND {$error} NOT LIKE '%404%'
+            AND {$error} NOT LIKE '%not found%'
+            AND {$error} NOT LIKE '%no such file%'
+            AND {$error} NOT LIKE '%failed to download source file%'";
     }
 
     private function getScheduledJobRuntimeValue(object $job, string $key): mixed
@@ -4064,25 +4191,38 @@ class ScheduledJobService
      */
     public function markParallelWorkerStarted(int $jobId, string $triggeredBy = 'scheduler'): array
     {
-        $workerId = substr(md5(uniqid((string) mt_rand(), true)), 0, 12);
+        return DB::transaction(function () use ($jobId, $triggeredBy) {
+            $job = DB::selectOne('SELECT * FROM scheduled_jobs WHERE id = ? FOR UPDATE', [$jobId]);
+            if (! $job) {
+                throw new InferenceAdmissionException('Scheduled job admission unavailable.');
+            }
+            $this->assertScheduledCustodyAdmission($job, true);
+            $workerId = substr(md5(uniqid((string) mt_rand(), true)), 0, 12);
 
-        DB::insert("
+            DB::insert("
             INSERT INTO scheduled_job_runs (scheduled_job_id, started_at, status, triggered_by, worker_id)
             VALUES (?, NOW(), 'running', ?, ?)
         ", [$jobId, $triggeredBy, $workerId]);
 
-        $runId = (int) DB::getPdo()->lastInsertId();
+            $runId = (int) DB::getPdo()->lastInsertId();
 
-        // Update job to running if not already
-        DB::update("
+            // Update job to running if not already
+            DB::update("
             UPDATE scheduled_jobs SET
                 last_run_at = NOW(),
                 last_run_status = 'running',
+                running_count = running_count + 1,
                 updated_at = NOW()
             WHERE id = ?
         ", [$jobId]);
 
-        return ['run_id' => $runId, 'worker_id' => $workerId];
+            $custody = $this->acquireRunCustody($jobId, $runId, getmypid() ?: null);
+            if (! app(TaskCustodyService::class)->hold((int) $custody->id, 0, self::LAUNCH_RESERVED)) {
+                throw new InferenceAdmissionException('Scheduled reservation publication unavailable.');
+            }
+
+            return ['run_id' => $runId, 'worker_id' => $workerId];
+        });
     }
 
     /**
@@ -4098,27 +4238,76 @@ class ScheduledJobService
      * child's subsequent runJobNow($existingRunId) call is an idempotent
      * re-acquire (same pid, same run_id → same owner_token).
      */
-    public function registerWorkerPid(int $jobId, int $pid, int $runId): void
+    public function registerWorkerPid(int $jobId, int $pid, int $runId, ?string $workerId = null): void
     {
-        // Store PID on the run record
-        DB::update('UPDATE scheduled_job_runs SET pid = ? WHERE id = ?', [$pid, $runId]);
+        try {
+            $this->claimReservedWorker($jobId, $pid, $runId, $workerId);
+        } catch (InferenceAdmissionException $held) {
+            // A fast child may finish before its original parent registers its PID.
+            // This acknowledgement never grants execution or mutates completed state.
+            if ($pid !== getmypid() && $workerId !== null && $workerId !== '') {
+                try {
+                    $terminal = DB::selectOne('SELECT sjr.status, sjr.completed_at, tcr.owner_token, tcr.outcome, tcr.released_at
+                        FROM scheduled_job_runs sjr JOIN task_custody_records tcr ON tcr.surface = ?
+                            AND tcr.surface_ref = ?
+                        WHERE sjr.id = ? AND sjr.scheduled_job_id = ? AND sjr.worker_id = ? AND sjr.pid = ?
+                            AND (SELECT COUNT(*) FROM task_custody_records evidence WHERE evidence.surface = ? AND evidence.surface_ref = ?) = 1',
+                        [TaskCustodyService::SURFACE_SCHEDULED_JOB, self::custodySurfaceRef($jobId, $runId), $runId, $jobId, $workerId, $pid, TaskCustodyService::SURFACE_SCHEDULED_JOB, self::custodySurfaceRef($jobId, $runId)]);
+                    if ($terminal && in_array($terminal->status, ['success', 'completed'], true)
+                        && $terminal->completed_at !== null && $terminal->released_at !== null && $terminal->outcome === 'success'
+                        && preg_match('/\Apid:'.preg_quote((string) $pid, '/').':start:[0-9]+:run:'.preg_quote((string) $runId, '/').'\z/', $terminal->owner_token)) {
+                        return;
+                    }
+                } catch (\Throwable) {
+                    // Unknown terminal readback retains the original handoff hold.
+                }
+            }
+            throw $held;
+        }
+    }
 
-        // Append to running_pids JSON array atomically
-        DB::update("
-            UPDATE scheduled_jobs SET
-                running_pids = CASE
-                    WHEN running_pids IS NULL THEN JSON_ARRAY(?)
-                    ELSE JSON_ARRAY_APPEND(running_pids, '$', ?)
-                END,
-                running_count = running_count + 1,
-                last_pid = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ", [$pid, $pid, $pid, $jobId]);
-
-        // C2 — acquire custody for this worker's run. Non-fatal inside
-        // acquireRunCustody so a custody failure never blocks the worker.
-        $this->acquireRunCustody($jobId, $runId, $pid);
+    /** Exact reservation CAS; parent registration and same-child reentry are idempotent. */
+    private function claimReservedWorker(int $jobId, int $pid, int $runId, ?string $workerId): void
+    {
+        DB::transaction(function () use ($jobId, $pid, $runId, $workerId) {
+            if (! DB::selectOne('SELECT id FROM scheduled_jobs WHERE id = ? FOR UPDATE', [$jobId])) {
+                throw new InferenceAdmissionException('Scheduled worker parent unavailable; execution held.');
+            }
+            $run = DB::selectOne('SELECT * FROM scheduled_job_runs WHERE id = ? AND scheduled_job_id = ? FOR UPDATE', [$runId, $jobId]);
+            $custody = DB::selectOne('SELECT *, (expires_at <= NOW()) AS is_expired FROM task_custody_records
+                WHERE surface = ? AND surface_ref = ? AND released_at IS NULL FOR UPDATE',
+                [TaskCustodyService::SURFACE_SCHEDULED_JOB, self::custodySurfaceRef($jobId, $runId)]);
+            $service = app(TaskCustodyService::class);
+            $childOwner = $service->scheduledJobOwnerToken($pid, $runId);
+            if (! $run || $run->status !== 'running' || ! $custody || ($custody->is_expired ?? 1) != 0
+                || ($custody->progress_note ?? null) === self::TIMEOUT_OUTCOME_UNKNOWN
+                || ! preg_match('/\Apid:[1-9][0-9]*:start:[0-9]+:run:'.$runId.'\z/', $childOwner)
+                || ! $this->isProcessAlive($pid)) {
+                throw new InferenceAdmissionException('Scheduled worker handoff is unproven; execution held.');
+            }
+            if ((int) $run->pid === $pid && $custody->owner_token === $childOwner) {
+                return;
+            }
+            if ($workerId === null || $workerId === '' || $run->worker_id !== $workerId || $run->pid !== null
+                || ($custody->progress_note ?? null) !== self::LAUNCH_RESERVED
+                || ! preg_match('/\Apid:([1-9][0-9]*):start:[0-9]+:run:'.$runId.'\z/', $custody->owner_token, $parent)
+                || ! $this->isProcessAlive((int) $parent[1])
+                || $service->scheduledJobOwnerToken((int) $parent[1], $runId) !== $custody->owner_token
+                || ($pid !== getmypid() && (int) $parent[1] !== getmypid())) {
+                throw new InferenceAdmissionException('Scheduled worker handoff is unproven; execution held.');
+            }
+            $claimed = DB::update('UPDATE task_custody_records SET owner_token = ?, progress_note = ?, updated_at = NOW()
+                WHERE id = ? AND owner_token = ? AND progress_note = ? AND released_at IS NULL',
+                [$childOwner, 'scheduler_worker_claimed', $custody->id, $custody->owner_token, self::LAUNCH_RESERVED]);
+            $bound = DB::update("UPDATE scheduled_job_runs SET pid = ? WHERE id = ? AND scheduled_job_id = ?
+                AND worker_id = ? AND pid IS NULL AND status = 'running'", [$pid, $runId, $jobId, $workerId]);
+            if ($claimed !== 1 || $bound !== 1) {
+                throw new InferenceAdmissionException('Scheduled worker handoff changed; execution held.');
+            }
+            DB::update("UPDATE scheduled_jobs SET running_pids = CASE WHEN running_pids IS NULL THEN JSON_ARRAY(?)
+                ELSE JSON_ARRAY_APPEND(running_pids, '$', ?) END, last_pid = ?, updated_at = NOW() WHERE id = ?",
+                [$pid, $pid, $pid, $jobId]);
+        });
     }
 
     /**
@@ -4126,26 +4315,38 @@ class ScheduledJobService
      */
     public function unregisterWorkerPid(int $jobId, int $pid): void
     {
-        $job = $this->getJob($jobId);
-        if (! $job) {
-            return;
-        }
-
-        $pids = json_decode($job->running_pids ?? '[]', true) ?: [];
-        $pids = array_values(array_filter($pids, fn ($p) => (int) $p !== $pid));
-        $newCount = max(0, count($pids));
-
-        DB::update('
-            UPDATE scheduled_jobs SET
-                running_pids = ?,
-                running_count = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ', [
-            empty($pids) ? null : json_encode(array_values($pids)),
-            $newCount,
-            $jobId,
-        ]);
+        DB::transaction(function () use ($jobId, $pid) {
+            $job = DB::selectOne('SELECT * FROM scheduled_jobs WHERE id = ? FOR UPDATE', [$jobId]);
+            if (! $job) {
+                throw new InferenceAdmissionException('Scheduled completion parent unavailable; custody retained.');
+            }
+            $pids = json_decode($job->running_pids ?? '[]', true);
+            if (! is_array($pids)) {
+                throw new InferenceAdmissionException('Scheduled completion tracking unavailable; custody retained.');
+            }
+            $runs = DB::select("SELECT id, pid FROM scheduled_job_runs WHERE scheduled_job_id = ? AND status = 'running' FOR UPDATE", [$jobId]);
+            $ownedRows = 0;
+            $reserved = 0;
+            $remainingPids = array_values(array_filter(array_map('intval', $pids), fn ($value) => $value !== $pid));
+            foreach ($runs as $run) {
+                if ($run->pid === null) {
+                    $reserved++;
+                } elseif ((int) $run->pid === $pid) {
+                    $ownedRows++;
+                } else {
+                    $remainingPids[] = (int) $run->pid;
+                }
+            }
+            if ($ownedRows > 1) {
+                $remainingPids[] = $pid; // Another same-PID run cannot be silently discarded.
+            }
+            $remainingPids = array_values(array_unique($remainingPids));
+            $ownedSlot = $ownedRows > 0 ? 1 : 0;
+            $count = max(count($remainingPids) + $reserved, count($runs) - $ownedSlot,
+                max(0, (int) $job->running_count - $ownedSlot));
+            DB::update('UPDATE scheduled_jobs SET running_pids = ?, running_count = ?, last_pid = ?, updated_at = NOW() WHERE id = ?',
+                [$remainingPids === [] ? null : json_encode($remainingPids), $count, $remainingPids[0] ?? null, $jobId]);
+        });
     }
 
     private function slugify(string $name): string
