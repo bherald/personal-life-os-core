@@ -4,8 +4,8 @@ A local-first research and automation workbench. PLOS brings documents, web
 sources, AI-assisted analysis, workflows and human review into one system on
 hardware you control.
 
-**Release status:** v2.1 source update, October 12, 2026.
-The latest tagged release remains v0.1.1. [Source release notes](docs/releases/v2.1.md)
+**Release status:** v2.1, October 12, 2026.
+[Release notes](docs/releases/v2.1.md)
 and [verification status](docs/public-release-readiness.md) distinguish shipped
 source from tested installation and research outcomes.
 

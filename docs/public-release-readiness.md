@@ -1,8 +1,9 @@
 # Public release readiness
 
-v2.1 source update — prepared 2026-10-12. Operator approved the corrected public
-main update. No v2.1 tag or GitHub release is included. Previous public smoke and
-private deployment receipts are historical.
+v2.1 — prepared 2026-10-12. Operator approved the corrected public main update
+and requested a matching tag/release. Exact publication and signed-out readback
+are retained separately. Previous public smoke and private deployment receipts
+are historical.
 
 ## Current evidence
 
