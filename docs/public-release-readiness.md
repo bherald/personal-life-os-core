@@ -99,3 +99,12 @@ executable lookup. This exercises the Node installation selected by CI and local
 operators. Owned-worker timeout, cancellation, partial-output retention and
 no-replay checks remain unchanged. Three affected controls also pass through a
 private PATH-selected Node shim; the full framework test file passes69 tests.
+
+## Linux sandbox CI prerequisite
+
+Public CI installs Bubblewrap before the synthetic MCP network-isolation test
+and checks real PID/network namespace admission. The test retains offline socket
+denial and explicit online socket access assertions. Failed PHP admission now
+includes its synthetic fixture diagnostic. No test is skipped and no sandbox
+policy is relaxed. Hosted confirmation of this follow-up remains pending;
+the preceding run passed687 PHP tests with9 skips but failed this MCP fixture.

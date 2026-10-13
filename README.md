@@ -9,6 +9,9 @@ hardware you control.
 and [verification status](docs/public-release-readiness.md) distinguish shipped
 source from tested installation and research outcomes.
 
+Public CI installs and probes Bubblewrap for its Linux MCP isolation fixture;
+hosted confirmation of this prerequisite follow-up is pending.
+
 Laravel 12 · Vue · MySQL/MariaDB · PostgreSQL + pgvector · Redis · Docker ·
 operator-configured local AI. Application code is MIT licensed; third-party
 components and demo assets retain their [separate terms](THIRD_PARTY.md).

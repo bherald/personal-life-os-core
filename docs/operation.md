@@ -4,6 +4,11 @@ Start with [Quick start](quickstart.md), then run `setup:doctor` for the install
 profile. Core installation, optional media dependencies and model configuration
 are separate checks.
 
+The public Linux MCP isolation test requires a trusted Bubblewrap installation
+and working PID/network namespaces. Public CI installs the distro package and
+probes those capabilities before the real socket fixture. Admission failures
+remain failures; inspect their diagnostic rather than bypassing isolation.
+
 ## Research and evidence
 
 Use the configured topic/mission surfaces and Review Desk (`/reviews`) for

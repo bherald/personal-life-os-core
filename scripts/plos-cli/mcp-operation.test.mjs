@@ -109,7 +109,7 @@ test('actual PHP process plan isolates offline sockets and honors explicit onlin
             const result = spawnSync('php', ['-r',
                 'require "vendor/autoload.php"; $input=json_decode(stream_get_contents(STDIN),true); echo json_encode((new App\\Services\\UnifiedCli\\CliMcpProcessPlan)->build($input["bound"],$input["network"],$input["workspace"]));'],
             { cwd: root, input: JSON.stringify({ bound: { ...operation.launch, network_required: network === 'offline' ? 'none' : 'localhost' }, network, workspace }), encoding: 'utf8' });
-            assert.equal(result.status, 0, 'PHP process admission failed');
+            assert.equal(result.status, 0, `PHP process admission failed: ${result.stderr}`);
             operation.launch = JSON.parse(result.stdout);
             const receipt = await runMcpOperation(operation);
             assert.equal(receipt.protocol_valid, true, receipt.failure);

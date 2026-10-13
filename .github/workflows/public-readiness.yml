@@ -90,12 +90,13 @@ jobs:
 
       - name: Install system audit tools
         run: |
-          if command -v rg >/dev/null 2>&1; then
-            rg --version
-          else
-            sudo timeout 180s apt-get update
-            sudo env DEBIAN_FRONTEND=noninteractive timeout 180s apt-get install -y --no-install-recommends ripgrep
-          fi
+          sudo timeout 180s apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive timeout 180s apt-get install -y --no-install-recommends ripgrep bubblewrap
+          rg --version
+          /usr/bin/bwrap --version
+
+      - name: Verify Linux sandbox prerequisite
+        run: /usr/bin/bwrap --die-with-parent --unshare-pid --unshare-net --ro-bind / / --dev /dev --proc /proc -- /usr/bin/true
 
       - name: Install PHP dependencies
         run: composer install --no-interaction --prefer-dist --no-progress
