@@ -29,6 +29,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
+use Symfony\Component\Process\ExecutableFinder;
 use Symfony\Component\Process\Process;
 use Tests\TestCase;
 
@@ -780,7 +781,10 @@ class UnifiedCliFrameworkServicesTest extends TestCase
             }, 250));
             JS, JSON_THROW_ON_ERROR);
 
-        return new Process(['/usr/bin/node', '--input-type=module', '-e',
+        $node = (new ExecutableFinder)->find('node');
+        $this->assertNotNull($node, 'Managed worker fixtures require Node.js on PATH.');
+
+        return new Process([$node, '--input-type=module', '-e',
             "import { runInternalOperation } from $wrapper; import { runManagedInput } from $input; await runManagedInput((request, options) => runInternalOperation({...request, command: process.execPath, args: ['-e', $child]}, options));"]);
     }
 

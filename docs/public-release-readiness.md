@@ -91,3 +91,11 @@ license snapshots across installed and absent package manifests. SPDX licenses
 remain unchanged; conflicting installed license claims are refused. Regression
 checks cover hydration-independent snapshots, conflicting licenses and version
 mismatches. Public CI retains all license/provenance gates.
+
+## Portable worker-fixture runtime
+
+Managed worker fixtures resolve Node.js from PATH using the existing Symfony
+executable lookup. This exercises the Node installation selected by CI and local
+operators. Owned-worker timeout, cancellation, partial-output retention and
+no-replay checks remain unchanged. Three affected controls also pass through a
+private PATH-selected Node shim; the full framework test file passes69 tests.
