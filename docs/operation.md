@@ -8,6 +8,9 @@ The public Linux MCP isolation test requires a trusted Bubblewrap installation
 and working PID/network namespaces. Public CI installs the distro package and
 probes those capabilities before the real socket fixture. Admission failures
 remain failures; inspect their diagnostic rather than bypassing isolation.
+The focused-test job selects GitHub's supported Ubuntu 22.04 VM; audit and
+Compose jobs keep their existing runner. Host policy and application sandbox
+rules remain unchanged. Other Ubuntu releases require their own qualification.
 
 ## Research and evidence
 

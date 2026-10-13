@@ -108,3 +108,8 @@ denial and explicit online socket access assertions. Failed PHP admission now
 includes its synthetic fixture diagnostic. No test is skipped and no sandbox
 policy is relaxed. Hosted confirmation of this follow-up remains pending;
 the preceding run passed687 PHP tests with9 skips but failed this MCP fixture.
+
+The subsequent hosted probe failed with `Failed RTM_NEWADDR: Operation not
+permitted` while creating sandbox loopback. The focused-test job now selects
+GitHub's supported Ubuntu 22.04 VM. No kernel setting, AppArmor profile or
+application isolation rule is changed. Hosted confirmation is still pending.

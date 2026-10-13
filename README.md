@@ -10,7 +10,7 @@ and [verification status](docs/public-release-readiness.md) distinguish shipped
 source from tested installation and research outcomes.
 
 Public CI installs and probes Bubblewrap for its Linux MCP isolation fixture;
-hosted confirmation of this prerequisite follow-up is pending.
+the focused-test job uses Ubuntu 22.04. Hosted confirmation remains pending.
 
 Laravel 12 · Vue · MySQL/MariaDB · PostgreSQL + pgvector · Redis · Docker ·
 operator-configured local AI. Application code is MIT licensed; third-party
