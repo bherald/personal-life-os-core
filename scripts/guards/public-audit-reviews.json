@@ -290,12 +290,12 @@
     {
       "rule": "Public-bound source containing private genealogy/person literals",
       "path": "tests/Feature/Quality/PublicExportPackagingTest.php",
-      "file_sha256": "39ef7aeee301991a7ef9e0e140b71362be5d581613a84195524a8dc24c038c1f",
+      "file_sha256": "76505050e557cab8632c0c14dd9830e2ed3c3854072c1460225dc88ac0313509",
       "line": 1460,
       "line_sha256": "e0011188da6f9d9d9d88ecd04c0fbeeddf3a31cfa14a6ef3770c99ef2a0a5e8a",
       "reason": "Exact known public article-author byline match in a regression check. No private genealogy/person record or operator-account default; all other privacy checks remain active.",
       "reviewer": "public-preparation-root",
-      "reviewed_at": "2026-10-12T20:02:05.750962+00:00"
+      "reviewed_at": "2026-10-13T00:17:50.265799+00:00"
     }
   ]
 }

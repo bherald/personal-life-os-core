@@ -1095,7 +1095,7 @@ class PublicExportPackagingTest extends TestCase
 
         $readinessDoc = file_get_contents(base_path('docs/public-release-readiness.md'));
         foreach ([
-            'Candidate v2.1',
+            'v2.1',
             'Current evidence',
             'Confidentiality/secret audit',
             'Clean Docker bootstrap/upgrade',

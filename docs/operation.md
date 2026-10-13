@@ -75,3 +75,8 @@ Use your installation's reviewed deployment and service procedures; the public
 example does not install privileged helpers or qualify mounts. Explicit Codex
 preference retains offline/local-only, privacy, profile, role and exact provider
 admission; preference alone does not grant permission to send source data.
+
+License-snapshot checks bind reviewed registry metadata to exact npm package
+versions. Installed and absent manifests produce the same reviewed entries; a
+conflicting installed license is refused. Keep the license/provenance checks
+enabled when preparing a clean public installation.

@@ -1,5 +1,5 @@
 {
-  "reviewed_at": "2026-10-12",
+  "reviewed_at": "2026-10-13T00:05:11.114475+00:00",
   "packages": {
     "@esbuild/aix-ppc64@0.28.1": {
       "name": "@esbuild/aix-ppc64",
@@ -400,6 +400,69 @@
       "repository": "git+https://github.com/fsevents/fsevents.git",
       "source_url": "https://registry.npmjs.org/fsevents/2.3.3",
       "response_sha256": "b9f892b7d399e73de65849e3647094e648ff91c0a03e4460ac0fdcd335df2704"
+    },
+    "@types/node@26.1.1": {
+      "name": "@types/node",
+      "version": "26.1.1",
+      "license": "MIT",
+      "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+      "source_url": "https://registry.npmjs.org/%40types%2Fnode/26.1.1",
+      "response_sha256": "1ae70a5b0e70aa28152c52000a7e74c74836fe30b6779bf8bac9f7856e7e6e50",
+      "stable_snapshot": true
+    },
+    "buffer-crc32@0.2.13": {
+      "name": "buffer-crc32",
+      "version": "0.2.13",
+      "license": "MIT",
+      "repository": "git://github.com/brianloveswords/buffer-crc32.git",
+      "source_url": "https://registry.npmjs.org/buffer-crc32/0.2.13",
+      "response_sha256": "50aebc9d575f0aab6ec548c401516e534bdba16bf1b2f1f979c3116d9fec48ff",
+      "stable_snapshot": true
+    },
+    "fd-slicer@1.1.0": {
+      "name": "fd-slicer",
+      "version": "1.1.0",
+      "license": "MIT",
+      "repository": "git://github.com/andrewrk/node-fd-slicer.git",
+      "source_url": "https://registry.npmjs.org/fd-slicer/1.1.0",
+      "response_sha256": "ba5c9acb565826875f8f96e3bcacfdecde2002801bc086273f6e3167c50ec0dc",
+      "stable_snapshot": true
+    },
+    "pend@1.2.0": {
+      "name": "pend",
+      "version": "1.2.0",
+      "license": "MIT",
+      "repository": "git://github.com/andrewrk/node-pend.git",
+      "source_url": "https://registry.npmjs.org/pend/1.2.0",
+      "response_sha256": "76fd5ea152bc983151f6a741d72234ed9679f29ab3413988c9408fd000573df2",
+      "stable_snapshot": true
+    },
+    "undici-types@8.3.0": {
+      "name": "undici-types",
+      "version": "8.3.0",
+      "license": "MIT",
+      "repository": "git+https://github.com/nodejs/undici.git",
+      "source_url": "https://registry.npmjs.org/undici-types/8.3.0",
+      "response_sha256": "24da5de4e991c76c94872bf31bf4f9c461f75e3410936480bea2307cc795e7a1",
+      "stable_snapshot": true
+    },
+    "yaml@2.9.0": {
+      "name": "yaml",
+      "version": "2.9.0",
+      "license": "ISC",
+      "repository": "git+https://github.com/eemeli/yaml.git",
+      "source_url": "https://registry.npmjs.org/yaml/2.9.0",
+      "response_sha256": "ed36bc66e2b2e87aff5274e3cb197d106add7afb1a7d680444dad667f0d3f103",
+      "stable_snapshot": true
+    },
+    "yauzl@2.10.0": {
+      "name": "yauzl",
+      "version": "2.10.0",
+      "license": "MIT",
+      "repository": "git+https://github.com/thejoshwolfe/yauzl.git",
+      "source_url": "https://registry.npmjs.org/yauzl/2.10.0",
+      "response_sha256": "ba2ac301af03d47708080ca62aab798614d0099fc8024fab05b64a699a58cbf5",
+      "stable_snapshot": true
     }
   }
 }

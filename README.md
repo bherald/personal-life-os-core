@@ -126,3 +126,7 @@ php artisan setup:doctor --profile=full
 Pushover is optional, not a required public dependency.
 
 The v2.1 web build requires modern browsers: Safari 16.4+, Chrome 111+ or Firefox 128+. See [frontend/dependency qualification](docs/public-release/ui-dependency-upgrade-2026-10-12.md).
+
+License snapshot generation uses verified exact-version registry evidence for
+reviewed entries so fresh npm installs retain reproducible license metadata.
+Conflicting installed license claims are refused.

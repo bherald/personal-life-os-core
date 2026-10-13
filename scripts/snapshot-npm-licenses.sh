@@ -178,7 +178,11 @@ for (const tree of trees) {
     };
 
     const reviewed = reviewedMetadata[`${row.name}@${row.version}`];
-    if (!row.license && reviewed && reviewed.name === row.name && reviewed.version === row.version) {
+    if (reviewed && reviewed.name === row.name && reviewed.version === row.version
+        && (!row.license || reviewed.stable_snapshot === true)) {
+      if (row.license && normalizeLicense(row.license) !== normalizeLicense(reviewed.license)) {
+        throw new Error(`Reviewed license metadata conflicts for ${row.name}@${row.version}`);
+      }
       row.license = reviewed.license;
       row.bucket = licenseBucket(row.license);
       row.repository = reviewed.repository;

@@ -28,6 +28,7 @@ jobs:
       - name: Verify public audit and photo provenance
         run: |
           python3 scripts/guards/tests/test_public_audit_filter.py
+          python3 scripts/guards/tests/test_npm_license_snapshot.py
           python3 scripts/guards/tests/test_photo_demo.py
 
       - name: Lint public release scripts

@@ -19,7 +19,7 @@ are historical.
 | Setup doctor without live services | Core and media local slices have zero failures; optional services remain separate. |
 | Clean Docker bootstrap/upgrade | Not performed for this candidate. |
 | Real model/research/media end-to-end proof | Not performed; no success claim. |
-| Public publication approval | Operator approved the corrective main update; exact final ref and signed-out readback must be verified during publication. |
+| Exact public commit-set approval | Original v2.1 source/tag/release and docs approved and verified; subsequent public changes require exact approval. |
 
 ## Extraction rules
 
@@ -83,3 +83,11 @@ These are source/test qualifications. They do not establish live source processi
 The cancelled privileged maintenance adapter, its configuration, inventory entry and tests are removed. Public MCP metadata is reviewed independently from private installations. Preferred Codex dispatch uses the existing privacy/profile/role admission; local-only requests, malformed profiles and foreign required providers are held before connector dispatch. Generic SQLite/mock tests preserve approved routes. These source changes do not deploy the private application or enable models, services or connectors.
 
 Current sync verification:189 isolated repair/privacy tests,51 packaging/provenance checks and124 primary MCP tests pass (one optional skip). The regenerated31-tool stdio contract has zero drift or violations. Earlier broader-suite/build results remain evidence for their original snapshots; no new UI or dependency change was made.
+
+## Fresh-install license metadata
+
+Seven exact-version npm entries use verified registry metadata for reproducible
+license snapshots across installed and absent package manifests. SPDX licenses
+remain unchanged; conflicting installed license claims are refused. Regression
+checks cover hydration-independent snapshots, conflicting licenses and version
+mismatches. Public CI retains all license/provenance gates.

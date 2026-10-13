@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-10-12T19:19:28Z",
+  "generated_at": "2026-10-13T00:06:32Z",
   "source": "installed node_modules package manifests plus package-lock fallbacks; platform-specific optional packages prefer lockfile metadata when licensed there",
   "trees": [
     {
@@ -1101,8 +1101,8 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/@types/node",
           "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
-          "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/node",
-          "source": "package.json"
+          "homepage": "https://registry.npmjs.org/%40types%2Fnode/26.1.1",
+          "source": "reviewed-exact-version-registry-metadata"
         },
         {
           "name": "@types/trusted-types",
@@ -1684,8 +1684,8 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/buffer-crc32",
           "repository": "git://github.com/brianloveswords/buffer-crc32.git",
-          "homepage": "https://github.com/brianloveswords/buffer-crc32",
-          "source": "package.json"
+          "homepage": "https://registry.npmjs.org/buffer-crc32/0.2.13",
+          "source": "reviewed-exact-version-registry-metadata"
         },
         {
           "name": "buffer-from",
@@ -2861,8 +2861,8 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/fd-slicer",
           "repository": "git://github.com/andrewrk/node-fd-slicer.git",
-          "homepage": "",
-          "source": "package.json"
+          "homepage": "https://registry.npmjs.org/fd-slicer/1.1.0",
+          "source": "reviewed-exact-version-registry-metadata"
         },
         {
           "name": "fdir",
@@ -4324,8 +4324,8 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/pend",
           "repository": "git://github.com/andrewrk/node-pend.git",
-          "homepage": "",
-          "source": "package.json"
+          "homepage": "https://registry.npmjs.org/pend/1.2.0",
+          "source": "reviewed-exact-version-registry-metadata"
         },
         {
           "name": "picocolors",
@@ -5336,8 +5336,8 @@
           "lockfile": "package-lock.json",
           "package_path": "node_modules/undici-types",
           "repository": "git+https://github.com/nodejs/undici.git",
-          "homepage": "https://undici.nodejs.org",
-          "source": "package.json"
+          "homepage": "https://registry.npmjs.org/undici-types/8.3.0",
+          "source": "reviewed-exact-version-registry-metadata"
         },
         {
           "name": "universalify",
@@ -5610,9 +5610,9 @@
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/yaml",
-          "repository": "github:eemeli/yaml",
-          "homepage": "https://eemeli.org/yaml/",
-          "source": "package.json"
+          "repository": "git+https://github.com/eemeli/yaml.git",
+          "homepage": "https://registry.npmjs.org/yaml/2.9.0",
+          "source": "reviewed-exact-version-registry-metadata"
         },
         {
           "name": "yargs",
@@ -5665,9 +5665,9 @@
           "bucket": "permissive",
           "lockfile": "package-lock.json",
           "package_path": "node_modules/yauzl",
-          "repository": "https://github.com/thejoshwolfe/yauzl.git",
-          "homepage": "https://github.com/thejoshwolfe/yauzl",
-          "source": "package.json"
+          "repository": "git+https://github.com/thejoshwolfe/yauzl.git",
+          "homepage": "https://registry.npmjs.org/yauzl/2.10.0",
+          "source": "reviewed-exact-version-registry-metadata"
         },
         {
           "name": "zod",
