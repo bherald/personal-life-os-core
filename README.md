@@ -10,7 +10,8 @@ and [verification status](docs/public-release-readiness.md) distinguish shipped
 source from tested installation and research outcomes.
 
 Public CI installs and probes Bubblewrap for its Linux MCP isolation fixture;
-the focused-test job uses Ubuntu 22.04. Hosted confirmation remains pending.
+the focused-test job uses Ubuntu 22.04. Public Readiness and Repository Governance
+passed for the code and test snapshot at `1df63ea1` on October 13, 2026.
 
 Laravel 12 · Vue · MySQL/MariaDB · PostgreSQL + pgvector · Redis · Docker ·
 operator-configured local AI. Application code is MIT licensed; third-party

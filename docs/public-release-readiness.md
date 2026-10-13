@@ -1,21 +1,22 @@
 # Public release readiness
 
-v2.1 — prepared 2026-10-12. Operator approved the corrected public main update
-and requested a matching tag/release. Exact publication and signed-out readback
-are retained separately. Previous public smoke and private deployment receipts
-are historical.
+v2.1 was published on October 12, 2026. The release tag remains at `d17e803`.
+Hosted CI passed for the code and test snapshot at `1df63ea1` on October 13.
+Public Readiness run `38392686470` and Repository Governance run `38392686582`
+are the verification records in the repository's Actions tab. Previous public smoke and
+private deployment receipts are historical.
 
 ## Current evidence
 
 | Check | State |
 | --- | --- |
-| Fresh public-base comparison | Public main re-read unchanged; reviewed source delta prepared locally. Fresh source check remains required before a future push. |
+| Fresh public-base comparison | Public main verified at `1df63ea1` on October 13. Future source changes and exports require fresh comparison and review. |
 | Confidentiality/secret audit | Final tracked source and history-free export audits pass; manual narrative scrub preserves upstream attribution. |
 | Fixture/media source and license provenance | Two licensed synthetic JPEGs; fictional names, embedded XMP and independent readback tested. |
 | Upstream notices/license files | Included; source-only license audit passes with 25 dependency/optional-tier warnings and zero missing npm license metadata. |
 | Dependency/license snapshots and audits | Current snapshots, zero missing metadata; all three npm audits report zero vulnerabilities after reviewed Tailwind 4 upgrade. |
-| Frontend/MCP builds | Frontend and both TypeScript builds passed. Primary MCP rebuilt after maintenance retirement; strict31-tool reviewed baseline passes. 124 MCP tests pass with one optional skip. Legacy MCP:3 passed. |
-| Focused isolated public tests | Expanded PHP suite:677 passed/9 skipped (686 total). Core CLI Node:34 passed/4 skips. Guard10 and embedded-photo2 checks passed. |
+| Frontend/MCP builds | Hosted frontend and TypeScript builds passed. The two MCP packages passed 11 and 124 tests respectively, with one optional skip; the reviewed 31-tool contract passed. |
+| Focused isolated public tests | Hosted PHP suite:687 passed/9 skipped (696 total;119920 assertions). Core CLI Node:34 passed/4 optional native skips, including actual offline/online socket-isolation checks. |
 | Setup doctor without live services | Core and media local slices have zero failures; optional services remain separate. |
 | Clean Docker bootstrap/upgrade | Not performed for this candidate. |
 | Real model/research/media end-to-end proof | Not performed; no success claim. |
@@ -106,10 +107,13 @@ Public CI installs Bubblewrap before the synthetic MCP network-isolation test
 and checks real PID/network namespace admission. The test retains offline socket
 denial and explicit online socket access assertions. Failed PHP admission now
 includes its synthetic fixture diagnostic. No test is skipped and no sandbox
-policy is relaxed. Hosted confirmation of this follow-up remains pending;
-the preceding run passed687 PHP tests with9 skips but failed this MCP fixture.
+policy is relaxed. An earlier run passed687 PHP tests with9 skips but failed
+this MCP fixture; that failure remains historical evidence.
 
 The subsequent hosted probe failed with `Failed RTM_NEWADDR: Operation not
 permitted` while creating sandbox loopback. The focused-test job now selects
 GitHub's supported Ubuntu 22.04 VM. No kernel setting, AppArmor profile or
-application isolation rule is changed. Hosted confirmation is still pending.
+application isolation rule is changed. The subsequent Ubuntu 22.04 run at
+`1df63ea1` passed the sandbox probe, offline/online socket fixture and all Public
+Readiness jobs. Repository Governance also passed. These checks do not establish
+a full Docker upgrade or configured model/controller/connector qualification.
