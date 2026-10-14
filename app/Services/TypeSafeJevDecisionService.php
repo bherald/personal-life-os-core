@@ -85,7 +85,16 @@ class TypeSafeJevDecisionService
             return $this->skipped($traceId, $task_type, 'invalid_question_schema', $startedAt);
         }
 
-        $payload = ['state' => $state, 'model' => $model, 'questions' => $questions];
+        $wireQuestions = $questions;
+        foreach ($wireQuestions as &$question) {
+            if ($question['type'] === 'choice' && array_is_list($question['criteria'])) {
+                // The public bridge accepts label lists; TypeSafe's HTTP API requires a map.
+                // Cast to object so numeric labels cannot serialize back into a JSON list.
+                $question['criteria'] = (object) array_fill_keys($question['criteria'], null);
+            }
+        }
+        unset($question);
+        $payload = ['state' => $state, 'model' => $model, 'questions' => $wireQuestions];
         try {
             $encodedPayload = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         } catch (Throwable) {
@@ -212,7 +221,8 @@ class TypeSafeJevDecisionService
             }
             if ($type === 'choice' && (! is_array($question['criteria'] ?? null)
                 || count($question['criteria']) < 2 || count($question['criteria']) > 255
-                || $this->choiceLabels($question['criteria']) === [])) {
+                || $this->choiceLabels($question['criteria']) === []
+                || count(array_unique($this->choiceLabels($question['criteria']))) !== count($question['criteria']))) {
                 return false;
             }
             if ($type === 'score' && (! is_array($question['criteria'] ?? null)

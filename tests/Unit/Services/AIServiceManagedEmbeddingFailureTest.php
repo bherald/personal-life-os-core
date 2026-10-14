@@ -20,6 +20,28 @@ use Tests\TestCase;
 
 class AIServiceManagedEmbeddingFailureTest extends TestCase
 {
+    public function test_ordinary_caller_cannot_disable_complete_chunk_coverage(): void
+    {
+        $source = "  Original\r\n\r\n".str_repeat("日本語\tComplete source. ", 40)."\r\nCritical tail  ";
+        $seen = [];
+        $router = Mockery::mock(AIRouter::class);
+        $router->shouldReceive('generateEmbedding')->andReturnUsing(function (string $chunk) use (&$seen) {
+            $seen[] = $chunk;
+
+            return [1.0, 0.0];
+        });
+        $router->shouldNotReceive('generateExternalEmbedding');
+        $service = $this->service($router, [['id' => 'first', 'url' => 'http://first', 'embedding_context_length' => 128]]);
+        $result = $service->generateEmbedding($source, ['preserve_embedding_input' => false, 'allow_cpu_fallback' => false]);
+        $this->assertTrue($result['success']);
+        $this->assertTrue($result['chunked']);
+        $this->assertGreaterThan(1, count($seen));
+        $this->assertSame($source, implode('', $seen));
+        foreach ($seen as $chunk) {
+            $this->assertTrue(mb_check_encoding($chunk, 'UTF-8'));
+        }
+    }
+
     public function test_managed_ollama_unknown_stops_retry_provider_and_cpu_fallback(): void
     {
         $router = Mockery::mock(AIRouter::class);

@@ -49,8 +49,10 @@ class ComputeRouterService
 
     private static ?\Closure $workflowOutputObserver = null;
 
+    private static ?\Closure $workflowDispatchObserver = null;
+
     /** Scope an operator selection to one synchronous workflow, retaining table admission. */
-    public static function withRequiredInstance(string $selection, \Closure $operation, ?\Closure $outputObserver = null): mixed
+    public static function withRequiredInstance(string $selection, \Closure $operation, ?\Closure $outputObserver = null, ?\Closure $dispatchObserver = null): mixed
     {
         if ($selection === '' || trim($selection) !== $selection || strlen($selection) > 191
             || preg_match('/[\x00-\x1f\x7f]/', $selection)) {
@@ -59,15 +61,18 @@ class ComputeRouterService
         $previous = self::$requiredInstance;
         $previousScope = self::$workflowScopeActive;
         $previousObserver = self::$workflowOutputObserver;
+        $previousDispatchObserver = self::$workflowDispatchObserver;
         self::$requiredInstance = $selection === 'auto' ? null : $selection;
         self::$workflowScopeActive = true;
         self::$workflowOutputObserver = $outputObserver ?? $previousObserver;
+        self::$workflowDispatchObserver = $dispatchObserver ?? $previousDispatchObserver;
         try {
             return $operation();
         } finally {
             self::$requiredInstance = $previous;
             self::$workflowScopeActive = $previousScope;
             self::$workflowOutputObserver = $previousObserver;
+            self::$workflowDispatchObserver = $previousDispatchObserver;
         }
     }
 
@@ -436,6 +441,22 @@ class ComputeRouterService
                 $terminal = true;
                 $failureCode = 'compute_maintenance_no_dispatch';
                 throw new InferenceAdmissionException('Compute entered maintenance before runner dispatch; no command started.');
+            }
+            if (self::$workflowDispatchObserver !== null) {
+                // Bind the existing durable supervisor identity before launching
+                // any child. A failed observer must not become a dispatch.
+                try {
+                    (self::$workflowDispatchObserver)(['schema' => 'plos.compute_dispatch_binding.v1',
+                        'custody_id' => (int) $custody->id, 'surface_ref' => $custody->surface_ref,
+                        'owner_token' => $ownerToken, 'instance_id' => $instanceId,
+                        'command_sha256' => hash('sha256', $command)]);
+                } catch (\Throwable $error) {
+                    $this->executionCustody->noDispatch($custody);
+                    $terminal = true;
+                    $failureCode = 'compute_dispatch_binding_refused';
+                    throw new InferenceAdmissionException('Compute dispatch binding failed before launch.', 0, $error,
+                        ['dispatched' => false]);
+                }
             }
             // Persist dispatch intent before run: process startup itself may fork before throwing.
             $dispatched = true;

@@ -2,11 +2,42 @@
 
 namespace Tests\Unit\Commands;
 
+use App\Services\UpstreamPrivatePreparationWorkerService;
+use App\Services\UpstreamSourceDriftRuntimePolicyService;
+use App\Services\UpstreamSourceDriftService;
 use Illuminate\Support\Facades\Artisan;
 use Tests\TestCase;
 
 class WhiteroomMonitorCommandTest extends TestCase
 {
+    public function test_scheduled_preparation_consumes_the_bounded_worker_cycle_after_metadata(): void
+    {
+        $sequence = [];
+        $this->mock(UpstreamSourceDriftRuntimePolicyService::class, function ($mock): void {
+            $mock->shouldReceive('preparation')->once()->andReturn(['enabled' => true]);
+        });
+        $this->mock(UpstreamSourceDriftService::class, function ($mock) use (&$sequence): void {
+            $mock->shouldReceive('prepareScheduled')->once()->andReturnUsing(function () use (&$sequence): array {
+                $sequence[] = 'metadata';
+
+                return ['schema' => 'metadata', 'checks' => [['private' => 'must omit']]];
+            });
+        });
+        $this->mock(UpstreamPrivatePreparationWorkerService::class, function ($mock) use (&$sequence): void {
+            $mock->shouldReceive('consumeScheduled')->once()->andReturnUsing(function () use (&$sequence): array {
+                $sequence[] = 'worker';
+
+                return ['status' => 'disabled', 'invoked' => 0];
+            });
+        });
+        $this->assertSame(0, Artisan::call('whiteroom:monitor', ['--format' => 'json', '--compact' => true, '--prepare' => true]));
+        $payload = json_decode(Artisan::output(), true);
+        $this->assertSame(['metadata', 'worker'], $sequence);
+        $this->assertArrayNotHasKey('checks', $payload);
+        $this->assertSame('disabled', $payload['worker_cycle']['status']);
+        $this->assertSame(0, $payload['worker_cycle']['invoked']);
+    }
+
     public function test_json_output_lists_monitor_projects_with_cadence(): void
     {
         $exit = Artisan::call('whiteroom:monitor', [

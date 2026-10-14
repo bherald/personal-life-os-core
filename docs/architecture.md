@@ -164,3 +164,16 @@ snapshot comparison. It records `unknown` without inventing domain success or
 failure; a fresh idempotent cycle needs a separate empty-scope admission proof.
 Image-audit diagnostics expose approved categories, SQLSTATE and numeric driver
 codes while withholding raw SQL, exception messages and private filesystem data.
+
+Guarded framework processing now preserves complete research and file inputs,
+checks embedding-space compatibility before retrieval, and requires an exact
+task-owned auto-tag vision binding. Scheduled UNKNOWN receipts retain no-replay
+boundaries while separate current-work checkpoints preserve downstream admission.
+The upstream preparation worker and its prerequisites register disabled and
+require exact private framework/custody/source/rollback qualification before use.
+See [upgrade boundaries](framework-upgrade-boundaries.md) for installation and rollback constraints.
+
+Managed knowledge-graph groups now retain native per-request admission without
+an outer model permit. Oversized input is refused intact, and genealogy managers
+wait for disabled registered jobs before scheduler handoff. Preserve document
+stamps and uncertain receipts during rollback; see [the upgrade boundaries](framework-upgrade-boundaries.md).

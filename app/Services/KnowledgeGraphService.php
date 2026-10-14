@@ -175,6 +175,14 @@ class KnowledgeGraphService
         }
         $modelRoleOverride = $options['model_role_override'] ?? null;
         $scheduledModelRole = $modelRoleOverride ?: 'fast';
+        if ($managedModelHost) {
+            $managedRole = $managedBinding['model_role'] ?? null;
+            if (! is_string($managedRole) || $managedRole === ''
+                || ($modelRoleOverride !== null && $modelRoleOverride !== $managedRole)) {
+                throw new \InvalidArgumentException('Managed knowledge-graph role differs from its registered binding.');
+            }
+            $scheduledModelRole = $managedRole;
+        }
 
         if ($scheduledBatch && strlen($text) > self::SCHEDULED_BATCH_CHAR_LIMIT) {
             throw new \InvalidArgumentException('Knowledge-graph input exceeds the registered batch budget; source text was not shortened.');

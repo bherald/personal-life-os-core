@@ -22,6 +22,7 @@ use App\Services\TimeoutManager;
 use App\Services\TrustBoundaryFormatterService;
 use App\Support\AI\PoolExecutionReceipt;
 use App\Support\AI\StreamTextStepJoiner;
+use App\Support\PromptIntegrityPolicy;
 use Exception;
 use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\DB;
@@ -947,13 +948,13 @@ class AIRouter
     /**
      * Generate text embedding vector for RAG
      */
-    public function generateEmbedding(string $text, ?string $instanceUrl = null, ?int $charLimit = null, ?int $timeoutSeconds = null, ?string $modelOverride = null, bool $preserveInput = false): array
+    public function generateEmbedding(string $text, ?string $instanceUrl = null, ?int $charLimit = null, ?int $timeoutSeconds = null, ?string $modelOverride = null, bool $preserveInput = true): array
     {
         try {
             $url = $instanceUrl ?? $this->ollamaUrl;
             $managed = $this->controllerManaged($url.'/api/embed');
-            $preserveInput = $preserveInput || $managed;
-            // Managed requests preserve original bytes and reject invalid input.
+            $preserveInput = $preserveInput || $managed || ! PromptIntegrityPolicy::allowsLossyTransforms();
+            // The complete-input policy also covers legacy callers and unmanaged hosts.
             if ($preserveInput) {
                 if (! mb_check_encoding($text, 'UTF-8')) {
                     throw new InferenceAdmissionException('Embedding input must be valid UTF-8; original bytes were not modified.');

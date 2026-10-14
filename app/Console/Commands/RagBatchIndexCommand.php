@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Exceptions\AI\InferenceAdmissionException;
+use App\Services\ComputeRouterRuntimePolicyService;
 use App\Services\DomainRegistryService;
 use App\Services\RAGService;
 use Illuminate\Console\Command;
@@ -206,6 +207,7 @@ class RagBatchIndexCommand extends Command
                     $this->ragService->indexDocument(
                         documentType: $ragType, content: $content, title: $title,
                         metadata: $metadata, sourceId: $record->id ?? null,
+                        options: ['preserve_content' => $key === 'files'],
                     );
                     DB::connection($connection)->update(
                         "UPDATE {$table} SET rag_indexed_at = NOW() WHERE id = ?", [$record->id],
@@ -478,15 +480,12 @@ class RagBatchIndexCommand extends Command
                 $codeExtensions = ['php', 'js', 'ts', 'py', 'md', 'json', 'yaml', 'yml', 'sh', 'css', 'html', 'vue', 'txt', 'xml', 'sql'];
                 if (! empty($record->extension) && in_array(strtolower($record->extension), $codeExtensions)) {
                     $filePath = $record->current_path ?? null;
-                    if ($filePath && file_exists($filePath) && is_readable($filePath)) {
-                        $content = @file_get_contents($filePath, false, null, 0, 50000); // Max 50KB
-                        if ($content !== false && strlen(trim($content)) > 0) {
-                            // Truncate to ~8000 chars for embedding limits
-                            if (strlen($content) > 8000) {
-                                $content = substr($content, 0, 8000)."\n[truncated]";
-                            }
-                            $parts[] = "Content:\n".$content;
-                        }
+                    if (! is_string($filePath) || trim($filePath) === '') {
+                        throw new InferenceAdmissionException('Complete text file source is unavailable; indexing held.');
+                    }
+                    $content = $this->readCompleteFileContent($filePath);
+                    if (strlen(trim($content)) > 0) {
+                        $parts[] = "Content:\n".$content;
                     }
                 }
                 break;
@@ -532,6 +531,37 @@ class RagBatchIndexCommand extends Command
         }
 
         return implode("\n\n", array_filter($parts));
+    }
+
+    private function readCompleteFileContent(string $path): string
+    {
+        $maximum = filter_var(config('services.tika.max_file_size'), FILTER_VALIDATE_INT);
+        if ($maximum === false || $maximum < 1 || ! is_file($path)) {
+            throw new InferenceAdmissionException('Complete file input policy or regular source is unavailable; indexing held.');
+        }
+        $budget = min($maximum, app(ComputeRouterRuntimePolicyService::class)->captureLimits()['raw_bytes']);
+        $stream = @fopen($path, 'rb');
+        if ($stream === false) {
+            throw new InferenceAdmissionException('Complete file source cannot be read; indexing held.');
+        }
+        try {
+            $before = fstat($stream);
+            if ($before === false || ($before['mode'] & 0170000) !== 0100000 || $before['size'] > $budget) {
+                throw new InferenceAdmissionException('Complete file exceeds its input or memory budget; indexing held.');
+            }
+            $content = stream_get_contents($stream, $budget + 1);
+            $after = fstat($stream);
+            if ($content === false || $after === false || strlen($content) !== $before['size']
+                || strlen($content) > $budget || ! feof($stream)
+                || array_intersect_key($before, array_flip(['ino', 'size', 'mtime', 'ctime']))
+                    !== array_intersect_key($after, array_flip(['ino', 'size', 'mtime', 'ctime']))) {
+                throw new InferenceAdmissionException('Complete stable file read is unverified; indexing held.');
+            }
+
+            return $content;
+        } finally {
+            fclose($stream);
+        }
     }
 
     private function buildTitle(string $domain, object $record): string

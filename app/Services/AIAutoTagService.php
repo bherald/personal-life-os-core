@@ -5,6 +5,7 @@ namespace App\Services;
 use App\DTOs\TrustEnvelope;
 use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\Files\PhotoReviewEvidenceService;
+use App\Services\UnifiedCli\CliWorkflowModelSelection;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -287,10 +288,7 @@ class AIAutoTagService
         $prompt = $this->buildImageAnalysisPrompt($filename, $folderPath);
 
         // Process with vision AI under the configured routing policy.
-        $visionResult = $this->aiService->processImage($imageContent, $prompt, [
-            'suppressAlert' => true,
-            'skip_if_busy' => true,
-        ]);
+        $visionResult = $this->aiService->processImage($imageContent, $prompt, $this->visionRoutingConfig());
 
         if (! $visionResult['success']) {
             return [
@@ -484,6 +482,9 @@ class AIAutoTagService
                         }
                     }
                 } catch (Exception $e) {
+                    if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                        throw $e;
+                    }
                     $results['failed']++;
                     $results['errors'][$id] = $e->getMessage();
                     if (count($results['failure_details']) < config('file_registry.ai_analysis.failure_receipt_limit', 50)) {
@@ -539,6 +540,31 @@ class AIAutoTagService
         }
 
         return $results;
+    }
+
+    /** Reuse the registered exact selector; task binding never permits an automatic alternate. */
+    private function visionRoutingConfig(): array
+    {
+        try {
+            $selection = app(SystemConfigService::class)->get('files.ai_auto_tag_vision_model_selection', null, strict: true);
+            if (! is_string($selection) || $selection === '' || $selection === 'auto') {
+                throw new InferenceAdmissionException('AI auto-tag vision requires an exact task-owned table binding; work held.');
+            }
+            $config = ['suppressAlert' => true, 'skip_if_busy' => true, 'sensitive_data' => true,
+                'local_only' => true, 'disable_external_fallback' => true];
+
+            $resolved = (new CliWorkflowModelSelection)->resolve($selection, 'vision', $config);
+            if (($resolved['ollama_required_no_fallback'] ?? false) !== true) {
+                throw new InferenceAdmissionException('AI auto-tag vision binding requires its registered local model; work held.');
+            }
+
+            return array_replace($config, $resolved);
+        } catch (\Throwable $error) {
+            if (InferenceAdmissionException::isAdmissionFailure($error)) {
+                throw $error;
+            }
+            throw new InferenceAdmissionException('AI auto-tag vision binding is unavailable or not admitted; work held.', 0, $error);
+        }
     }
 
     /** Fixed cause codes only; raw provider errors, prompts and payloads stay out of run receipts. */

@@ -150,6 +150,7 @@ includes=(
     docs/native-ml-package-review.md
     docs/OLLAMA-COMPATIBILITY.md
     docs/operation.md
+    docs/framework-upgrade-boundaries.md
     docs/personal-connectors.md
     docs/public-release/privacy-secret-scan-baseline-2026-04-29.md
     docs/public-release/npm-license-snapshot.json
@@ -235,6 +236,7 @@ includes=(
     scripts/nlp_extract.py
     scripts/audit-licenses.sh
     scripts/public-export.sh
+    scripts/plos-compute-execution-supervisor.py
     scripts/public-smoke.sh
     scripts/snapshot-npm-licenses.sh
     scripts/snapshot-python-licenses.sh
@@ -266,6 +268,30 @@ includes=(
     tests/Feature/Quality/PublicMcpWorkspaceReadmeTest.php
     tests/Feature/Quality/PublicTempArtifactCleanupScriptTest.php
     tests/Feature/Quality/RepositoryGovernanceTest.php
+    tests/Feature/Compute/ComputeExecutionCustodyTest.php
+    tests/Feature/Scheduler/ScheduledTaskBindingCheckpointTest.php
+    tests/Support/FakesComputeExecutionCustody.php
+    tests/Support/HostileCorpus.php
+    tests/Support/PreservesSystemConfig.php
+    tests/Unit/Commands/FileEnrichmentExifStageTest.php
+    tests/Unit/Commands/ManagerPreDispatchCustodyRefusalTest.php
+    tests/Unit/Commands/RagBatchCompleteFileContentTest.php
+    tests/Unit/Engine/AIRouterManagedEmbeddingBoundaryTest.php
+    tests/Unit/Services/AIAutoTagServiceTest.php
+    tests/Unit/Services/AIAutoTagVisionBindingTest.php
+    tests/Unit/Services/AIServiceTest.php
+    tests/Unit/Services/CascadeQualityEvaluatorTest.php
+    tests/Unit/Services/HisterRegistrationMigrationTest.php
+    tests/Unit/Services/HyDEServiceTest.php
+    tests/Unit/Services/RAGSearchTracingIntegrationTest.php
+    tests/Unit/Services/RagEmbeddingQuerySpaceTest.php
+    tests/Unit/Services/RepoDevMCPServiceTest.php
+    tests/Unit/Services/UpstreamPrivatePreparationWorkerServiceTest.php
+    tests/Feature/Scheduler/ScheduledAgentLineageTest.php
+    tests/Unit/Commands/GenealogyManagerCommandTest.php
+    tests/Unit/Services/KnowledgeGraphManagedBatchServiceTest.php
+    tests/Unit/Services/KnowledgeGraphServiceTest.php
+    tests/Support/UsesLlmRoutingBindings.php
     tests/Fixtures
     tests/Support/PreservesSchemaTables.php
     tests/Support/ScenarioHarness

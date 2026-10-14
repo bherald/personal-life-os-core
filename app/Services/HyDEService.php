@@ -34,9 +34,12 @@ class HyDEService
 {
     private AIService $aiService;
 
-    public function __construct(AIService $aiService)
+    private RagEmbeddingProvenanceService $embeddingProvenance;
+
+    public function __construct(AIService $aiService, ?RagEmbeddingProvenanceService $embeddingProvenance = null)
     {
         $this->aiService = $aiService;
+        $this->embeddingProvenance = $embeddingProvenance ?? new RagEmbeddingProvenanceService;
     }
 
     /**
@@ -81,6 +84,9 @@ class HyDEService
                 $whereClause = 'WHERE document_type = ?';
                 $params[] = $documentType;
             }
+            $space = $this->embeddingProvenance->querySpacePredicate($result);
+            $whereClause .= ($whereClause === '' ? 'WHERE ' : ' AND ').$space['sql'];
+            $params = array_merge($params, $space['bindings']);
             $params[] = $k;
 
             $sql = "SELECT *,

@@ -14,6 +14,57 @@ class RagEmbeddingProvenanceService
 
     private const EMBEDDING_CONTRACT = 'document-vector-v1';
 
+    /** Reject proven space differences before distance; legacy uncertainty remains table-owned. */
+    public function querySpacePredicate(array $embeddingResult): array
+    {
+        $default = ['schema' => 'plos.rag_embedding_query_policy.v1', 'allow_unknown_identity' => true];
+        try {
+            $policy = app(SystemConfigService::class)->get('rag.embedding_query_policy', $default, strict: true);
+        } catch (\Throwable $error) {
+            if (InferenceAdmissionException::isAdmissionFailure($error)) {
+                throw $error;
+            }
+            throw new InferenceAdmissionException('RAG embedding query identity policy cannot be read; comparison held.', 0, $error);
+        }
+        if (! is_array($policy) || ($policy['schema'] ?? null) !== $default['schema']
+            || ! is_bool($policy['allow_unknown_identity'] ?? null)) {
+            throw new InferenceAdmissionException('RAG embedding query identity policy is unavailable; vector comparison held.');
+        }
+        $embedding = $embeddingResult['embedding'] ?? null;
+        if (! is_array($embedding) || $embedding === []) {
+            throw new InferenceAdmissionException('RAG query vector identity is unavailable; vector comparison held.');
+        }
+        $conditions = ['embedding IS NOT NULL', 'vector_dims(embedding) = ?'];
+        $bindings = [count($embedding)];
+        $revision = $this->nullableString($embeddingResult['revision'] ?? null);
+        // Provider can be a routing-host alias. A shared content-addressed artifact
+        // proves the space across hosts; opaque version labels do not.
+        $artifactRevision = $revision !== null && preg_match('/\A(?:sha256:)?[a-f0-9]{64}\z/D', $revision) === 1;
+        foreach (['provider', 'model', 'revision', 'dimensions'] as $field) {
+            $expected = $field === 'dimensions' ? (string) count($embedding)
+                : $this->nullableString($embeddingResult[$field] ?? null);
+            if ($expected === null) {
+                if (! $policy['allow_unknown_identity']) {
+                    $conditions[] = 'FALSE';
+                }
+
+                continue;
+            }
+            $stored = "NULLIF(BTRIM(metadata::jsonb->'".self::METADATA_KEY."'->>'{$field}'), '')";
+            $conditions[] = $policy['allow_unknown_identity']
+                ? "({$stored} IS NULL OR {$stored} = ?)" : "{$stored} = ?";
+            $bindings[] = $expected;
+            if ($field === 'provider' && $artifactRevision) {
+                $last = array_key_last($conditions);
+                $storedRevision = "NULLIF(BTRIM(metadata::jsonb->'".self::METADATA_KEY."'->>'revision'), '')";
+                $conditions[$last] = "({$conditions[$last]} OR {$storedRevision} = ?)";
+                $bindings[] = $revision;
+            }
+        }
+
+        return ['sql' => '('.implode(' AND ', $conditions).')', 'bindings' => $bindings];
+    }
+
     /**
      * @param  array<string, mixed>|null  $metadata
      * @param  array<string, mixed>  $embeddingResult

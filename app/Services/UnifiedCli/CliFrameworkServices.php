@@ -65,6 +65,72 @@ final class CliFrameworkServices
                 ...(($rule['durable_receipts'] ?? false) === true ? [$policy['worker_receipts'] ?? null] : [])], JSON_THROW_ON_ERROR))];
     }
 
+    /** Server-owned recurring plan; callers must pin its complete private envelope. */
+    public function dispatchPreparedRequest(array $request): array
+    {
+        $configuration = new CliConfiguration($this->store);
+        $session = $this->store->session($this->sessionId);
+        $effective = $configuration->effective($session);
+        $values = $effective['values'];
+        $policy = $values['cli.framework_services'] ?? [];
+        CliFrameworkServicePolicy::validate($policy);
+        $tool = $request['tool'] ?? '';
+        $rule = $policy['tools'][$tool] ?? [];
+        $binding = $policy['targets'][$request['target'] ?? ''] ?? [];
+        $definition = (new CliToolCatalog($configuration))->definitions($session)[$tool] ?? [];
+        $expected = $this->context($tool, $definition);
+        $caller = $request['caller_binding'] ?? [];
+        $root = ($binding['transport'] ?? null) === 'local' ? $this->plosRoot : ($binding['root'] ?? null);
+        if (($request['schema'] ?? null) !== 'plos.cli.framework-request.v1'
+            || ($request['approved'] ?? false) !== true || ($request['remote_operation'] ?? null) !== 'execute'
+            || ($caller['session_id'] ?? null) !== $this->sessionId || ! is_string($caller['action_id'] ?? null)
+            || ! is_string($caller['turn_id'] ?? null) || ! is_array($request['arguments'] ?? null)
+            || ($caller['arguments_sha256'] ?? null) !== hash('sha256', json_encode($request['arguments'], JSON_THROW_ON_ERROR))
+            || ($request['root'] ?? null) !== $root || ($request['skill'] ?? null) !== $configuration->selectedSkillName($session)
+            || $expected === null || ($request['target'] ?? null) !== $expected['operation_target']
+            || ($request['tree_id'] ?? null) !== $expected['tree_id']
+            || ($rule['durable_receipts'] ?? false) !== true || $definition === []
+            || ($definition['privacy_class'] ?? null) !== 'private_internal' || ($definition['allows_private_data'] ?? false) !== true
+            || ($rule['target'] ?? null) === 'local' && ($request['target'] ?? null) !== 'local'
+            || ($request['rule_sha256'] ?? null) !== hash('sha256', json_encode($rule, JSON_THROW_ON_ERROR))
+            || ($request['definition_sha256'] ?? null) !== CliFrameworkServicePolicy::fingerprint($definition)
+            || ($request['worker_journal_sha256'] ?? null) !== hash('sha256', json_encode($policy['worker_receipts'] ?? null, JSON_THROW_ON_ERROR))) {
+            throw new RuntimeException('Prepared recurring framework envelope differs from current owned configuration.');
+        }
+        if (isset($this->store->actionReceipts($this->sessionId, $caller['turn_id'])[$caller['action_id']])) {
+            throw new CliToolOutcomeUnknown('Original prepared invocation already has a claim; never replay.');
+        }
+        $requestHash = hash('sha256', json_encode($request, JSON_THROW_ON_ERROR));
+        $result = $this->dispatch($request, $binding, $values, null, function () use ($request, $requestHash, $effective, $configuration, $caller, $policy, $tool, $definition, $expected): void {
+            if ($configuration->effective($this->store->session($this->sessionId)) !== $effective
+                || $this->context($tool, $definition) !== $expected) {
+                throw new RuntimeException('Prepared dispatch configuration changed before launch.');
+            }
+            $this->store->startAction($this->sessionId, $caller['turn_id'],
+                ['id' => $caller['action_id'], 'name' => $request['tool'], 'arguments' => ['request_sha256' => $requestHash]],
+                ['instance_id' => $policy['worker_receipts']['worker_id'], 'model' => 'framework-no-model']);
+            $this->store->recordEvent($this->sessionId, 'framework_remote_dispatch', ['request' => $request, 'binding' => $policy['targets'][$request['target']]]);
+        });
+        self::validateReadback($result['framework_remote_receipt'] ?? [], $request, $policy['worker_receipts']['worker_id']);
+        if (($result['framework_remote_receipt']['state'] ?? null) !== 'result_recorded') {
+            throw new CliToolOutcomeUnknown('Prepared remote invocation has no original terminal result.');
+        }
+        $original = json_decode($result['framework_remote_receipt']['result_json'], true, flags: JSON_THROW_ON_ERROR);
+        // Dispatch captures complete native streams in private artifacts. Its
+        // transport normalization may change only those process evidence keys.
+        if (array_diff_key($result, ['framework_remote_receipt' => true, 'compute_artifacts' => true, 'codex_artifacts' => true])
+            !== array_diff_key($original, ['compute_executions' => true, 'codex_executions' => true])) {
+            throw new CliToolOutcomeUnknown('Prepared remote result differs from original durable bytes.');
+        }
+        $bytes = json_encode($result, JSON_THROW_ON_ERROR);
+        $this->store->completeAction($this->sessionId, $caller['turn_id'], $caller['action_id'], ['success' => $result['success'], 'output' => $bytes]);
+        if (($this->store->actionReceipts($this->sessionId, $caller['turn_id'])[$caller['action_id']]['document']['result']['output'] ?? null) !== $bytes) {
+            throw new CliToolOutcomeUnknown('Prepared invocation terminal result did not reopen.');
+        }
+
+        return $result;
+    }
+
     public function call(string $tool, array $arguments, array $context, array $definition, ?Closure $keeper = null, string $remoteOperation = 'execute'): ?array
     {
         if (! in_array($remoteOperation, ['execute', 'status', 'cancel'], true)) {

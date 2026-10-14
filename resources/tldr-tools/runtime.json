@@ -3,6 +3,5 @@
   "runtime_root": ".local/share/plos/tldr-tools",
   "archify": "archify-9e35d2b/bin/archify.mjs",
   "retrieval": "retrieval-v1",
-  "database": "database-v1",
   "fallback": "Continue through existing PLOS services when optional tools are unavailable."
 }

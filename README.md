@@ -152,3 +152,10 @@ The v2.1 web build requires modern browsers: Safari 16.4+, Chrome 111+ or Firefo
 License snapshot generation uses verified exact-version registry evidence for
 reviewed entries so fresh npm installs retain reproducible license metadata.
 Conflicting installed license claims are refused.
+
+The guarded framework update preserves complete processing input, exact vision
+bindings and compatible embedding retrieval. Disabled upstream worker registration
+and proof-bound fresh scheduled checkpoints are documented in [framework upgrade boundaries](docs/framework-upgrade-boundaries.md).
+
+The current admission correction uses native per-request knowledge-graph checks,
+refuses over-budget source text intact and respects disabled scheduled jobs.

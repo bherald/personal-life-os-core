@@ -432,26 +432,6 @@
     "references": [],
     "purpose": "Search or explicitly import the selected local reference collection. No automatic browser collection."
   },
-  "plos-pggraph-query": {
-    "category": "database_diagnostics",
-    "package": null,
-    "paths": [
-      "{home}/.local/bin/plos-pggraph-query"
-    ],
-    "dependencies": [
-      "docker",
-      "python3"
-    ],
-    "adapter": null,
-    "references": [
-      {
-        "url": "https://github.com/Evokoa/pgGraph/tree/v1.2.1",
-        "kind": "official_documentation",
-        "verification": "reference_only_runtime_does_not_fetch"
-      }
-    ],
-    "purpose": "Read-only known-ID queries over the installed source-backed PLOS architecture reference graph. Supports --diagram ID and --path FROM_NODE TO_NODE. Curated relationships, not a traced callgraph. Unavailable service returns a structured fallback to the atlas JSON and source files."
-  },
   "docker": {
     "category": "runtime_dependency",
     "package": null,
@@ -462,6 +442,6 @@
     "dependencies": [],
     "adapter": null,
     "references": [],
-    "purpose": "Observe the installed container client used by the optional local pgGraph query wrapper. Discovery grants no container execution permissions."
+    "purpose": "Observe the installed container client. Discovery grants no container execution permissions."
   }
 }

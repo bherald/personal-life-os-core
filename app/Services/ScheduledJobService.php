@@ -2,12 +2,24 @@
 
 namespace App\Services;
 
+use App\Console\Commands\FilesDiscoveryDrainCommand;
+use App\Console\Commands\GenealogyBackfillSourceMedia;
+use App\Console\Commands\GenealogyManagerCommand;
+use App\Console\Commands\OpsCapacityUtilizationManagerCommand;
+use App\Console\Commands\SchedulerRunCommand;
 use App\Exceptions\AI\InferenceAdmissionException;
+use App\Jobs\ExecuteFileRegistryScan;
 use App\Jobs\ExecuteWorkflow;
+use App\Jobs\RetireFileRegistryDerivedArtifacts;
 use App\Services\AgentMetrics\AgentUsefulYieldService;
 use App\Services\Custody\TaskCustodyService;
+use App\Services\Genealogy\GenealogyEvidenceAssetCaptureStorageService;
 use App\Services\Genealogy\GenealogyResearchPlaybookService;
+use App\Services\Genealogy\GenealogySemanticMemoryService;
 use App\Services\Genealogy\GenealogyService;
+use App\Services\Genealogy\NaraCatalogMediaCaptureService;
+use App\Services\UnifiedCli\CliOllamaRuntimePolicy;
+use App\Services\UnifiedCli\CliWorkflowModelSelection;
 use Carbon\Carbon;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Artisan;
@@ -457,7 +469,44 @@ class ScheduledJobService
         }
     }
 
-    /** A trusted empty-current-scope checkpoint permits new work, never the old run. */
+    /** Only this manager's pre-enrollment assertion refusal can become a blocked lane. */
+    public static function preDispatchCustodyRefusalReason(\Throwable $error): ?string
+    {
+        $cause = $error->getPrevious();
+        if (get_class($error) !== InferenceAdmissionException::class
+            || $error->getMessage() !== 'Scheduled work custody is unproven; admission held.'
+            || $error->getFile() !== __FILE__ || $cause === null
+            || get_class($cause) !== \RuntimeException::class || $cause->getFile() !== __FILE__
+            || $cause->getPrevious() !== null || ! in_array($cause->getMessage(), [
+                'scheduled_work_custody_unproven', 'scheduled_parallel_capacity_held', 'scheduled_work_custody_occupied',
+            ], true)) {
+            return null;
+        }
+        $trace = $cause->getTrace();
+        if (($trace[0]['class'] ?? null) !== self::class
+            || ($trace[0]['function'] ?? null) !== 'assertScheduledCustodyAdmission') {
+            return null;
+        }
+        $beforeEnrollment = false;
+        foreach ($trace as $frame) {
+            $class = $frame['class'] ?? null;
+            $function = $frame['function'] ?? null;
+            if ($class === self::class) {
+                if (in_array($function, ['runArtisanCommand', 'runWorkflow', 'dispatchJobClass', 'runAgentTask'], true)) {
+                    return null; // A launched child's refusal retains UNKNOWN/no-replay propagation.
+                }
+                $beforeEnrollment = $beforeEnrollment || in_array($function, ['markJobStarted', 'markParallelWorkerStarted'], true);
+            }
+            if (in_array($class, [GenealogyManagerCommand::class, OpsCapacityUtilizationManagerCommand::class], true)
+                && $function === 'runLane') {
+                return $beforeEnrollment ? $cause->getMessage() : null;
+            }
+        }
+
+        return null;
+    }
+
+    /** A trusted current-scope checkpoint permits new work, never the old run. */
     private function qualifiedUnknownNewWork(object $job, int $runId): bool
     {
         $custody = DB::table('task_custody_records')->where('surface', TaskCustodyService::SURFACE_SCHEDULED_JOB)
@@ -475,15 +524,15 @@ class ScheduledJobService
             || ($lifecycle['job_id'] ?? null) !== (int) $job->id || ($lifecycle['run_id'] ?? null) !== $runId
             || ($lifecycle['custody_id'] ?? null) !== (int) $custody->id
             || ($lifecycle['domain_outcome'] ?? null) !== 'unknown' || ($lifecycle['replay_authorized'] ?? null) !== false
-            || ($physical['schema'] ?? null) !== 'plos.scheduled_db_physical_terminal.v1'
+            || ! in_array($physical['schema'] ?? null, ['plos.scheduled_db_physical_terminal.v1', 'plos.scheduled_manager_custody_transfer.v1'], true)
             || ($physical['owner_token'] ?? null) !== $custody->owner_token
             || ($physical['surface_ref'] ?? null) !== $custody->surface_ref
-            || ($checkpoint['schema'] ?? null) !== 'plos.scheduled_db_new_work_checkpoint.v1'
+            || ! in_array($checkpoint['schema'] ?? null, ['plos.scheduled_db_new_work_checkpoint.v1',
+                'plos.scheduled_empty_capture_checkpoint.v1', 'plos.scheduled_registered_children_checkpoint.v1',
+                'plos.scheduled_discovery_queue_checkpoint.v1', 'plos.scheduled_task_binding_checkpoint.v1'], true)
             || ($checkpoint['job_id'] ?? null) !== (int) $job->id || ($checkpoint['run_id'] ?? null) !== $runId
             || ($checkpoint['custody_id'] ?? null) !== (int) $custody->id
             || ($checkpoint['command_sha256'] ?? null) !== hash('sha256', $job->command)
-            || ($checkpoint['current_candidate_count'] ?? null) !== 0
-            || ($checkpoint['operation_kind'] ?? null) !== 'current_pending_idempotent_review_ignore'
             || ($checkpoint['domain_outcome'] ?? null) !== 'unknown'
             || ($checkpoint['historical_replay_authorized'] ?? null) !== false
             || ! is_string($checkpoint['preview_receipt_sha256'] ?? null)
@@ -500,6 +549,47 @@ class ScheduledJobService
             !== $this->physicalClosureSnapshot(array_replace($originalRun, ['status' => self::PHYSICAL_END_OUTCOME_UNKNOWN]))) {
             return false;
         }
+        if (($checkpoint['schema'] ?? null) === 'plos.scheduled_empty_capture_checkpoint.v1') {
+            return ($physical['schema'] ?? null) === 'plos.scheduled_db_physical_terminal.v1'
+                && ($checkpoint['operation_kind'] ?? null) === 'current_empty_source_media_capture'
+                && ($checkpoint['current_candidate_count'] ?? null) === 0
+                && ($checkpoint['original_empty_scope_sha256'] ?? null) === ($physical['source_scope_receipt_sha256'] ?? null)
+                && ($checkpoint['job_definition_sha256'] ?? null) === $this->physicalClosureSnapshot($this->scheduledDefinition((array) $job))
+                && ($checkpoint['command_class'] ?? null) === GenealogyBackfillSourceMedia::class
+                && $this->qualifiedCheckpointSources($job, $checkpoint, [GenealogyEvidenceAssetCaptureStorageService::class,
+                    NaraCatalogMediaCaptureService::class, GenealogySemanticMemoryService::class,
+                    FileRegistryService::class, NextcloudFileApiService::class]);
+        }
+        if (($checkpoint['schema'] ?? null) === 'plos.scheduled_registered_children_checkpoint.v1') {
+            $binding = $checkpoint['child_policy'] ?? [];
+            if (($physical['schema'] ?? null) !== 'plos.scheduled_manager_custody_transfer.v1'
+                || ($checkpoint['operation_kind'] ?? null) !== 'current_registered_child_custody_admission'
+                || ($checkpoint['admission_contract_receipt_sha256'] ?? null) !== ($physical['admission_contract_receipt_sha256'] ?? null)
+                || ($checkpoint['command_class'] ?? null) !== ($binding['command_class'] ?? null)
+                || ($checkpoint['retained_child_custody'] ?? null) !== ($physical['retained_child_custody'] ?? null)
+                || ! $this->qualifiedRetainedChildren($checkpoint['retained_child_custody'] ?? null)
+                || ! $this->qualifiedCheckpointSources($job, $checkpoint, [SchedulerRunCommand::class, TaskCustodyService::class])) {
+                return false;
+            }
+            $namespace = $this->managerChildNamespace($job, $binding);
+
+            // Ordinary child cycles may advance runtime rows. Definitions and
+            // normal child custody admission stay bound; no child is released.
+            return $namespace !== null && ($checkpoint['job_definition_sha256'] ?? null) === $this->physicalClosureSnapshot($this->scheduledDefinition((array) $job))
+                && ($checkpoint['child_definitions_sha256'] ?? null) === $this->physicalClosureSnapshot(array_map($this->scheduledDefinition(...), $namespace['jobs']));
+        }
+        if (($checkpoint['schema'] ?? null) === 'plos.scheduled_discovery_queue_checkpoint.v1') {
+            return $this->qualifiedDiscoveryCheckpoint($job, $checkpoint, $physical);
+        }
+        if (($checkpoint['schema'] ?? null) === 'plos.scheduled_task_binding_checkpoint.v1') {
+            return ($physical['schema'] ?? null) === 'plos.scheduled_db_physical_terminal.v1'
+                && $this->qualifiedTaskBindingCheckpoint($job, $checkpoint);
+        }
+        if (($physical['schema'] ?? null) !== 'plos.scheduled_db_physical_terminal.v1'
+            || ($checkpoint['current_candidate_count'] ?? null) !== 0
+            || ($checkpoint['operation_kind'] ?? null) !== 'current_pending_idempotent_review_ignore') {
+            return false;
+        }
         // Fresh direct table/source reads; cached or drifted policy cannot grant
         // new work from an old checkpoint. Producer qualification remains root-owned.
         $policy = DB::table('system_configs')->where('section', $checkpoint['policy_section'] ?? '')
@@ -507,9 +597,232 @@ class ScheduledJobService
         $registry = DB::table('review_type_registry')->where('name', $checkpoint['review_type'] ?? '')->first();
         if (! $policy || ! $registry || ($checkpoint['policy_row_sha256'] ?? null) !== $this->physicalClosureSnapshot((array) $policy)
             || ($checkpoint['registry_row_sha256'] ?? null) !== $this->physicalClosureSnapshot((array) $registry)
-            || ($checkpoint['source_classes_sha256'] ?? []) === []) {
+        ) {
             return false;
         }
+
+        return $this->qualifiedCheckpointSources($job, $checkpoint);
+    }
+
+    private function qualifiedDiscoveryCheckpoint(object $job, array $checkpoint, array $physical): bool
+    {
+        $report = $checkpoint['admission_report'] ?? [];
+        if (! is_array($report) || ($physical['schema'] ?? null) !== 'plos.scheduled_db_physical_terminal.v1'
+            || ($checkpoint['operation_kind'] ?? null) !== 'current_durable_discovery_queue'
+            || ($checkpoint['command_class'] ?? null) !== FilesDiscoveryDrainCommand::class
+            || ($checkpoint['original_no_business_scope_sha256'] ?? null) !== ($physical['source_scope_receipt_sha256'] ?? null)
+            || ! preg_match('/^[a-f0-9]{64}$/D', (string) ($checkpoint['original_no_business_scope_sha256'] ?? ''))
+            || ($checkpoint['job_definition_sha256'] ?? null) !== $this->physicalClosureSnapshot($this->scheduledDefinition((array) $job))
+            || ($report['state'] ?? null) !== 'admitted' || ! array_key_exists('reason', $report) || $report['reason'] !== null
+            || ($report['worker_started'] ?? null) !== false || ! is_array($report['before'] ?? null)
+            || $report['before'] !== ($report['after'] ?? null)) {
+            return false;
+        }
+        foreach (['pending', 'ready', 'reserved', 'delayed', 'failed'] as $key) {
+            if (! is_int($report['before'][$key] ?? null) || $report['before'][$key] < 0) {
+                return false;
+            }
+        }
+        if ($report['before']['reserved'] !== 0 || $report['before']['failed'] !== 0
+            || $report['before']['pending'] !== $report['before']['ready'] + $report['before']['delayed']) {
+            return false;
+        }
+        // Bind the actual table-owned worker and retirement policies. A normal
+        // later queue cycle may advance backlog; it never rewrites the old run.
+        $policies = [];
+        foreach (['registry_discovery_worker_policy', 'registry_discovery_retirement_policy'] as $key) {
+            $row = DB::table('system_configs')->where('section', 'files')->where('config_key', $key)->first();
+            if (! $row || ($checkpoint['policy_rows_sha256'][$key] ?? null) !== $this->physicalClosureSnapshot((array) $row)) {
+                return false;
+            }
+            $policies[$key] = json_decode($row->config_value, true);
+            if (! is_array($policies[$key])) {
+                return false;
+            }
+        }
+        $worker = $policies['registry_discovery_worker_policy'];
+        if (! is_string($worker['connection'] ?? null) || ! is_string($worker['cache_store'] ?? null)
+            || ($checkpoint['runtime_configuration_sha256'] ?? null) !== $this->physicalClosureSnapshot([
+                'worker_bounds' => config('file_registry.discovery.worker_bounds'),
+                'queue_connection' => config('queue.connections.'.$worker['connection']),
+                'failed_queue' => config('queue.failed'),
+                'cache_store' => config('cache.stores.'.$worker['cache_store']),
+            ])) {
+            return false;
+        }
+
+        return $this->qualifiedCheckpointSources($job, $checkpoint, [SystemConfigService::class,
+            FileRegistryLifecycleService::class, FileRegistryDiscoveryService::class, FileRegistryDiscoveryStateService::class,
+            FileRegistryService::class, NextcloudFileApiService::class, ThumbnailService::class,
+            FileCategorizationRAGService::class, RAGService::class,
+            ExecuteFileRegistryScan::class, RetireFileRegistryDerivedArtifacts::class]);
+    }
+
+    /** Pure current tables for the narrowly registered native task binding; no transport. */
+    private function registeredTaskBindingSnapshot(object $job, string $bindingId, bool $locked = false): ?array
+    {
+        try {
+            $query = function (string $table) use ($locked) {
+                $query = DB::table($table);
+
+                return $locked ? $query->lockForUpdate() : $query;
+            };
+            $policy = $query('system_configs')->where('section', 'scheduler')
+                ->where('config_key', 'unknown_task_binding_checkpoint_policy')->first();
+            $definition = json_decode($policy->config_value ?? '{}', true, flags: JSON_THROW_ON_ERROR);
+            $binding = $definition['bindings'][$bindingId] ?? [];
+            if (($definition['schema'] ?? null) !== 'plos.scheduled_task_binding_checkpoint_policy.v1'
+                || ($definition['enabled'] ?? null) !== true || ($binding['command'] ?? null) !== $job->command
+                || ($binding['native_tools_configured'] ?? null) !== false) {
+                return null;
+            }
+            $key = explode('.', $binding['selection_key'] ?? '', 2);
+            if (count($key) !== 2) {
+                return null;
+            }
+            $selectionRow = $query('system_configs')->where('section', $key[0])->where('config_key', $key[1])->first();
+            $selection = $selectionRow->config_value ?? null;
+            if (($selectionRow->data_type ?? null) !== 'string' || ! is_string($selection) || $selection === '' || $selection === 'auto') {
+                return null;
+            }
+            $role = $binding['role'] ?? '';
+            $route = (new CliWorkflowModelSelection)->resolve($selection, $role, ['local_only' => true, 'disable_external_fallback' => true]);
+            [$instanceId, $model] = explode('::', $selection, 2);
+            if (($route['ollama_required_no_fallback'] ?? null) !== true
+                || ($route['preferred_ollama_instance_ids'] ?? null) !== [$instanceId]
+                || ($route['model'] ?? null) !== $model) {
+                return null;
+            }
+            $provider = $query('llm_instances')->where('instance_id', $instanceId)->first();
+            $modelRow = $query('ollama_models')->where('instance_id', $provider->id)->where('model_name', $model)->first();
+            $runtime = $query('system_configs')->where('section', 'cli')->where('config_key', 'runtime_policy')->first();
+            $resources = $query('system_configs')->where('section', 'ai')->where('config_key', 'model_host_controller_resource_policy')->first();
+            if (! $modelRow || ! $runtime || ! $resources) {
+                return null;
+            }
+            $candidate = ['configuration_eligible' => true, 'instance_id' => $instanceId, 'engine' => 'ollama',
+                'model' => $model, 'role' => $role, 'native_tools_configured' => false, 'instance' => (array) $provider,
+                'model_definition' => ['capabilities' => json_decode($modelRow->capabilities, true, flags: JSON_THROW_ON_ERROR),
+                    'context_length' => $modelRow->context_length]];
+            $contract = (new CliOllamaRuntimePolicy)->resolve($candidate,
+                ['cli.runtime_policy' => json_decode($runtime->config_value, true, flags: JSON_THROW_ON_ERROR)]);
+            $contractHash = ModelHostControllerResourcePolicyService::requestContractIdentity($contract);
+            $profiles = json_decode($resources->config_value, true, flags: JSON_THROW_ON_ERROR)['profiles'] ?? [];
+            $qualified = array_filter($profiles, fn ($profile) => ($profile['qualified'] ?? null) === true
+                && in_array($contractHash, $profile['request_contracts'] ?? [], true));
+            if (count($qualified) !== 1 || empty($contract['controller_target'])
+                || ($contract['native_tools_enabled'] ?? null) !== false
+                || array_diff($binding['required_input_modalities'] ?? [], $contract['input_modalities'] ?? []) !== []) {
+                return null;
+            }
+            // Definitions remain pinned; ordinary health/usage telemetry can advance.
+            $providerDefinition = array_intersect_key((array) $provider, array_flip([
+                'id', 'instance_id', 'instance_type', 'base_url', 'port', 'priority', 'is_active', 'routability',
+                'gpu_target', 'host_affinity', 'compat_runtime_family', 'compat_backend', 'compat_status',
+                'capabilities', 'is_censored', 'allows_private_data', 'data_privacy_scope', 'supported_models',
+                'context_length', 'embedding_context_length', 'max_concurrent', 'rate_limit_rpm', 'rate_limit_tpm',
+                'quarantine_status', 'config',
+            ]));
+            $modelDefinition = array_intersect_key((array) $modelRow, array_flip([
+                'id', 'instance_id', 'model_name', 'profile', 'status', 'is_available', 'capabilities',
+                'size_gb', 'context_length', 'vram_required_mb',
+            ]));
+
+            return ['binding_id' => $bindingId, 'policy' => (array) $policy, 'binding' => $binding,
+                'selection' => (array) $selectionRow, 'provider_definition' => $providerDefinition,
+                'model_definition' => $modelDefinition, 'runtime_policy' => (array) $runtime,
+                'resource_policy' => (array) $resources, 'contract_sha256' => $contractHash,
+                'profile_id' => array_key_first($qualified)];
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function qualifiedTaskBindingCheckpoint(object $job, array $checkpoint): bool
+    {
+        if (($checkpoint['operation_kind'] ?? null) !== 'current_registered_native_task_binding'
+            || ! is_string($checkpoint['binding_id'] ?? null)) {
+            return false;
+        }
+        $snapshot = $this->registeredTaskBindingSnapshot($job, $checkpoint['binding_id']);
+
+        return $snapshot !== null
+            && ($checkpoint['binding_snapshot_sha256'] ?? null) === $this->physicalClosureSnapshot($snapshot)
+            && ($checkpoint['command_class'] ?? null) === ($snapshot['binding']['command_class'] ?? null)
+            && ($checkpoint['job_definition_sha256'] ?? null) === $this->physicalClosureSnapshot($this->scheduledDefinition((array) $job))
+            && $this->qualifiedCheckpointSources($job, $checkpoint, $snapshot['binding']['required_source_classes'] ?? []);
+    }
+
+    private function retainedChildCustody(array $namespace): array
+    {
+        return array_values(array_map(fn ($row) => ['id' => $row['id'], 'surface_ref' => $row['surface_ref'],
+            'owner_token_sha256' => hash('sha256', $row['owner_token'])],
+            array_filter($namespace['custody'], fn ($row) => $row['released_at'] === null)));
+    }
+
+    private function qualifiedRetainedChildren(mixed $bindings): bool
+    {
+        if (! is_array($bindings) || ! array_is_list($bindings)) {
+            return false;
+        }
+        foreach ($bindings as $binding) {
+            $custody = DB::table('task_custody_records')->where('id', $binding['id'] ?? 0)->first();
+            if (! $custody || $custody->surface !== TaskCustodyService::SURFACE_SCHEDULED_JOB
+                || $custody->surface_ref !== ($binding['surface_ref'] ?? null)
+                || hash('sha256', $custody->owner_token) !== ($binding['owner_token_sha256'] ?? null)
+                || ! preg_match('/^([1-9][0-9]*):([1-9][0-9]*)$/D', $custody->surface_ref, $ids)) {
+                return false;
+            }
+            $run = DB::table('scheduled_job_runs')->where('id', (int) $ids[2])->where('scheduled_job_id', (int) $ids[1])->first();
+            if (! $run) {
+                return false;
+            }
+            if ($custody->released_at === null) {
+                if ($custody->outcome !== null) {
+                    return false;
+                }
+
+                continue;
+            }
+            $envelope = json_decode((string) $custody->result_envelope, true, flags: JSON_THROW_ON_ERROR);
+            $lifecycle = $envelope['scheduler_lifecycle_reconciliation'] ?? [];
+            $physical = $envelope['physical_closure'] ?? [];
+            if ($custody->outcome === null && $run->status === self::PHYSICAL_END_OUTCOME_UNKNOWN
+                && $custody->notification_state === 'suppressed' && $custody->progress_note === 'scheduler_physical_terminal_verified'
+                && ($lifecycle['domain_outcome'] ?? null) === 'unknown' && ($lifecycle['replay_authorized'] ?? null) === false
+                && ($lifecycle['schema'] ?? null) === 'plos.scheduled_unknown_lifecycle.v1'
+                && ($lifecycle['job_id'] ?? null) === (int) $ids[1] && ($lifecycle['run_id'] ?? null) === (int) $ids[2]
+                && ($lifecycle['custody_id'] ?? null) === (int) $custody->id
+                && in_array($physical['schema'] ?? null, ['plos.scheduled_db_physical_terminal.v1', 'plos.scheduled_manager_custody_transfer.v1'], true)
+                && ($physical['surface_ref'] ?? null) === $custody->surface_ref
+                && ($physical['owner_token'] ?? null) === $custody->owner_token
+                && is_array($lifecycle['original_rows']['run'] ?? null)
+                && $this->physicalClosureSnapshot((array) $run) === $this->physicalClosureSnapshot(array_replace($lifecycle['original_rows']['run'], ['status' => self::PHYSICAL_END_OUTCOME_UNKNOWN]))) {
+                continue;
+            }
+            if (! in_array($run->status, ['success', 'failed'], true) || $run->completed_at === null
+                || ($envelope['run_id'] ?? null) !== (int) $run->id
+                || ($envelope['success'] ?? null) !== ($run->status === 'success')
+                || $custody->outcome !== ($run->status === 'success' ? 'success' : 'failure')) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function scheduledDefinition(array $job): array
+    {
+        foreach (['last_run_at', 'last_completed_at', 'last_run_status', 'last_run_output', 'last_pid', 'running_pids',
+            'running_count', 'next_run_at', 'run_count', 'fail_count', 'updated_at'] as $field) {
+            unset($job[$field]);
+        }
+
+        return $job;
+    }
+
+    private function qualifiedCheckpointSources(object $job, array $checkpoint, array $requiredClasses = []): bool
+    {
         $commandClass = $checkpoint['command_class'] ?? null;
         if (! is_string($commandClass) || ! str_starts_with($commandClass, 'App\\Console\\Commands\\')) {
             return false;
@@ -519,7 +832,7 @@ class ScheduledJobService
         if (preg_split('/\s+/', $signature)[0] !== preg_split('/\s+/', trim($job->command))[0]) {
             return false;
         }
-        $requiredClasses = [$commandClass];
+        $requiredClasses[] = $commandClass;
         foreach ($reflection->getConstructor()?->getParameters() ?? [] as $parameter) {
             $type = $parameter->getType();
             if ($type instanceof \ReflectionNamedType && ! $type->isBuiltin() && str_starts_with($type->getName(), 'App\\')) {
@@ -725,12 +1038,18 @@ class ScheduledJobService
                     return $held('scheduled_physical_closure_unqualified');
                 }
                 $preimage = ['job' => (array) $job, 'run' => (array) $run, 'custody' => (array) $custody];
-                $snapshot = $this->physicalClosureSnapshot($preimage);
+                $envelope = json_decode((string) $custody->result_envelope, true, flags: JSON_THROW_ON_ERROR);
+                $proof = $envelope['physical_closure'] ?? null;
+                $transfer = is_array($proof) && ($proof['schema'] ?? null) === 'plos.scheduled_manager_custody_transfer.v1';
+                $namespace = $transfer ? $this->managerChildNamespace($job, $proof['child_policy'] ?? [], true) : null;
+                if ($transfer && ($namespace === null || ($proof['child_namespace_sha256'] ?? null) !== $this->physicalClosureSnapshot($namespace)
+                    || ($proof['retained_child_custody'] ?? null) !== $this->retainedChildCustody($namespace))) {
+                    return $held('scheduled_child_custody_transfer_changed');
+                }
+                $snapshot = $this->physicalClosureSnapshot($preimage + ($transfer ? ['child_namespace' => $namespace] : []));
                 if ($expectedSnapshotSha256 !== null && ! hash_equals($expectedSnapshotSha256, $snapshot)) {
                     return $held('scheduled_physical_closure_snapshot_changed');
                 }
-                $envelope = json_decode((string) $custody->result_envelope, true, flags: JSON_THROW_ON_ERROR);
-                $proof = $envelope['physical_closure'] ?? null;
                 if (! $this->qualifiedPhysicalClosure($job, $run, $custody, $proof)
                     || array_key_exists('scheduler_lifecycle_reconciliation', $envelope)) {
                     return $held('scheduled_physical_closure_unqualified');
@@ -740,8 +1059,11 @@ class ScheduledJobService
                 $otherRunning = DB::table('scheduled_job_runs')->where('scheduled_job_id', $job->id)
                     ->where('id', '<>', $run->id)->where('status', 'running')->exists();
                 $pids = json_decode($job->running_pids ?? '[]', true, flags: JSON_THROW_ON_ERROR);
-                if ($otherRunning || ! is_array($pids) || (int) $job->running_count !== 1
+                $clearedHistoricalLabel = $transfer && $run->status === 'failed' && $job->last_run_status === 'failed';
+                $expectedCount = $clearedHistoricalLabel ? 0 : 1;
+                if ($otherRunning || ! is_array($pids) || (int) $job->running_count !== $expectedCount
                     || ($job->last_pid !== null && (int) $job->last_pid !== (int) $run->pid)
+                    || ($clearedHistoricalLabel && $pids !== [])
                     || array_filter($pids, fn ($pid) => ! is_int($pid) || $pid !== (int) $run->pid) !== []) {
                     return $held('scheduled_other_physical_slots_unqualified');
                 }
@@ -754,10 +1076,10 @@ class ScheduledJobService
                 $envelope['scheduler_lifecycle_reconciliation'] = $result + ['original_rows' => $preimage,
                     'recorded_at' => now()->toIso8601String()];
                 $changedRun = DB::table('scheduled_job_runs')->where('id', $run->id)
-                    ->where('scheduled_job_id', $job->id)->where('status', 'running')->where('pid', $run->pid)
+                    ->where('scheduled_job_id', $job->id)->where('status', $run->status)->where('pid', $run->pid)
                     ->update(['status' => self::PHYSICAL_END_OUTCOME_UNKNOWN]);
-                $changedJob = DB::table('scheduled_jobs')->where('id', $job->id)->where('last_run_status', 'running')
-                    ->where('running_count', 1)->update(['last_run_status' => self::PHYSICAL_END_OUTCOME_UNKNOWN,
+                $changedJob = DB::table('scheduled_jobs')->where('id', $job->id)->where('last_run_status', $job->last_run_status)
+                    ->where('running_count', $expectedCount)->update(['last_run_status' => self::PHYSICAL_END_OUTCOME_UNKNOWN,
                         'last_pid' => null, 'running_pids' => null, 'running_count' => 0, 'updated_at' => now()]);
                 $changedCustody = DB::table('task_custody_records')->where('id', $custodyId)
                     ->where('surface', $custody->surface)->where('surface_ref', $custody->surface_ref)
@@ -812,17 +1134,24 @@ class ScheduledJobService
 
     private function qualifiedPhysicalClosure(object $job, object $run, object $custody, mixed $proof): bool
     {
-        if (! is_array($proof) || ($proof['schema'] ?? null) !== 'plos.scheduled_db_physical_terminal.v1'
+        if (! is_array($proof) || ! in_array($proof['schema'] ?? null, ['plos.scheduled_db_physical_terminal.v1', 'plos.scheduled_manager_custody_transfer.v1'], true)
             || $custody->released_at === null || $custody->outcome !== null
             || $custody->progress_note !== 'scheduler_physical_terminal_verified'
-            || $custody->notification_state !== 'suppressed' || $job->last_run_status !== 'running'
-            || $run->status !== 'running' || $run->completed_at !== null || $job->job_type !== 'command'
+            || $custody->notification_state !== 'suppressed' || $job->job_type !== 'command'
+            || ! (($job->last_run_status === 'running' && $run->status === 'running' && $run->completed_at === null)
+                || (($proof['schema'] ?? null) === 'plos.scheduled_manager_custody_transfer.v1'
+                    && $job->last_run_status === 'failed' && $run->status === 'failed' && $run->completed_at !== null))
             || ($proof['custody_id'] ?? null) !== (int) $custody->id
             || ($proof['job_id'] ?? null) !== (int) $job->id || ($proof['run_id'] ?? null) !== (int) $run->id
             || ($proof['owner_token'] ?? null) !== $custody->owner_token
             || ($proof['surface_ref'] ?? null) !== $custody->surface_ref
             || ($proof['command_sha256'] ?? null) !== hash('sha256', $job->command)
             || ($proof['domain_outcome'] ?? null) !== 'unknown' || ($proof['replay_authorized'] ?? null) !== false) {
+            return false;
+        }
+        if (($proof['schema'] ?? null) === 'plos.scheduled_manager_custody_transfer.v1'
+            && (! is_string($proof['admission_contract_receipt_sha256'] ?? null)
+                || ! preg_match('/^[a-f0-9]{64}$/D', $proof['admission_contract_receipt_sha256']))) {
             return false;
         }
         foreach (['source_scope_receipt_sha256', 'privileged_db_receipt_sha256', 'original_custody_sha256',
@@ -844,6 +1173,87 @@ class ScheduledJobService
             && array_key_exists('outcome', $original) && $original['outcome'] === null
             && array_key_exists('result_envelope', $original) && $original['result_envelope'] === null
             && hash_equals($proof['original_custody_sha256'], $this->physicalClosureSnapshot($original));
+    }
+
+    /** Read the complete table-owned child namespace; never release or replay a child. */
+    private function managerChildNamespace(object $job, array $binding, bool $locked = false): ?array
+    {
+        $class = $binding['command_class'] ?? null;
+        if (! in_array($class, [GenealogyManagerCommand::class,
+            OpsCapacityUtilizationManagerCommand::class], true)) {
+            return null;
+        }
+        $reflection = new \ReflectionClass($class);
+        $signature = trim((string) ($reflection->getDefaultProperties()['signature'] ?? ''));
+        if (preg_split('/\s+/', $signature)[0] !== preg_split('/\s+/', trim($job->command))[0]
+            || $reflection->getConstant('CONFIG_KEY') !== ($binding['section'] ?? '').'.'.($binding['key'] ?? '')) {
+            return null;
+        }
+        $policyQuery = DB::table('system_configs')->where('section', $binding['section'])->where('config_key', $binding['key']);
+        $policy = ($locked ? $policyQuery->lockForUpdate() : $policyQuery)->first();
+        if (! $policy || ($binding['row_sha256'] ?? null) !== $this->physicalClosureSnapshot((array) $policy)) {
+            return null;
+        }
+        $config = json_decode($policy->config_value, true, flags: JSON_THROW_ON_ERROR);
+        $names = array_values(array_unique(array_map(fn ($lane) => $lane['job_name'] ?? null, $config['lanes'] ?? [])));
+        if ($names === [] || array_filter($names, fn ($name) => ! is_string($name) || $name === '' || $name === $job->name) !== []) {
+            return null;
+        }
+        $jobQuery = DB::table('scheduled_jobs')->whereIn('name', $names)->orderBy('id');
+        $jobs = ($locked ? $jobQuery->lockForUpdate() : $jobQuery)->get()->map(fn ($row) => (array) $row)->all();
+        $ids = array_column($jobs, 'id');
+        if (count($jobs) !== count($names) || ($binding['job_ids'] ?? null) !== $ids) {
+            return null;
+        }
+        $runQuery = DB::table('scheduled_job_runs')->whereIn('scheduled_job_id', $ids)->where(function ($query) {
+            $query->whereIn('status', ['running', self::PHYSICAL_END_OUTCOME_UNKNOWN])->orWhereExists(function ($custody) {
+                $custody->selectRaw('1')->from('task_custody_records as tcr')->where('tcr.surface', TaskCustodyService::SURFACE_SCHEDULED_JOB)
+                    ->whereRaw("tcr.surface_ref = CONCAT(scheduled_job_runs.scheduled_job_id, ':', scheduled_job_runs.id)")->whereNull('tcr.released_at');
+            });
+        })->orderBy('id');
+        $runs = ($locked ? $runQuery->lockForUpdate() : $runQuery)->get()->map(fn ($row) => (array) $row)->all();
+        $refs = array_map(fn ($run) => self::custodySurfaceRef($run['scheduled_job_id'], $run['id']), $runs);
+        $custodyQuery = DB::table('task_custody_records')->where('surface', TaskCustodyService::SURFACE_SCHEDULED_JOB)
+            ->where(function ($query) use ($ids, $refs) {
+                $query->whereIn('surface_ref', $refs)->orWhere(function ($unreleased) use ($ids) {
+                    $unreleased->whereNull('released_at')->where(function ($prefix) use ($ids) {
+                        foreach ($ids as $id) {
+                            $prefix->orWhere('surface_ref', 'like', $id.':%');
+                        }
+                    });
+                });
+            })->orderBy('id');
+        $custodies = ($locked ? $custodyQuery->lockForUpdate() : $custodyQuery)->get()->map(fn ($row) => (array) $row)->all();
+        $byRef = [];
+        foreach ($custodies as $row) {
+            if (! in_array($row['surface_ref'], $refs, true) || isset($byRef[$row['surface_ref']])) {
+                return null;
+            }
+            $byRef[$row['surface_ref']] = $row;
+        }
+        foreach ($runs as $run) {
+            $custody = $byRef[self::custodySurfaceRef($run['scheduled_job_id'], $run['id'])] ?? null;
+            if (! $custody || ! preg_match('/^pid:([1-9][0-9]*):start:[0-9]+:run:'.$run['id'].'$/D', $custody['owner_token'], $owner)
+                || ($run['pid'] !== null && (int) $owner[1] !== (int) $run['pid'])) {
+                return null;
+            }
+            if ($run['status'] === self::PHYSICAL_END_OUTCOME_UNKNOWN) {
+                if (! $this->qualifiedRetainedChildren([['id' => $custody['id'], 'surface_ref' => $custody['surface_ref'],
+                    'owner_token_sha256' => hash('sha256', $custody['owner_token'])]])) {
+                    return null;
+                }
+            } elseif ($custody['released_at'] !== null || $custody['outcome'] !== null) {
+                return null;
+            }
+        }
+        foreach ($jobs as $child) {
+            $count = count(array_filter($runs, fn ($run) => $run['scheduled_job_id'] === $child['id'] && $run['status'] === 'running'));
+            if ((int) $child['running_count'] > $count || ($child['last_run_status'] === 'running' && $count === 0)) {
+                return null;
+            }
+        }
+
+        return ['policy' => (array) $policy, 'jobs' => $jobs, 'runs' => $runs, 'custody' => $custodies];
     }
 
     /**
@@ -1137,8 +1547,10 @@ class ScheduledJobService
                         $timeoutExtender,
                         $job->name,
                         [
+                            'job_id' => $jobId,
                             'run_id' => $runId,
                             'pid' => $pid,
+                            'worker_id' => $workerId,
                         ]
                     );
                     break;
@@ -1309,6 +1721,7 @@ class ScheduledJobService
                 'model' => $params['model'] ?? null,
                 'model_role' => $params['model_role'] ?? null,
                 'context' => $params['context'] ?? [],
+                'metadata' => is_array($params['metadata'] ?? null) ? $params['metadata'] : [],
                 'max_iterations' => isset($params['max_iterations']) ? (int) $params['max_iterations'] : null,
                 'benchmark_mode' => $params['benchmark_mode'] ?? null,
                 'timeout_minutes' => $timeoutMinutes,
@@ -1321,6 +1734,18 @@ class ScheduledJobService
                 'capture_episodic_memory' => (bool) ($params['capture_episodic_memory'] ?? false),
                 'record_adaptive_outcome' => (bool) ($params['record_adaptive_outcome'] ?? false),
             ];
+            if ($executionContext !== []) {
+                $execution = $this->ownedAgentExecution($executionContext, $scheduledJobName, $skillName);
+                // Caller metadata remains intact; these references describe the
+                // verified scheduler parent, never a terminal or replay grant.
+                $options['metadata']['caller_metadata'] = $options['metadata'];
+                $options['metadata']['scheduled_execution'] = $execution;
+                $options['execution_guard'] = function () use ($executionContext, $scheduledJobName, $skillName, $execution): void {
+                    if ($this->ownedAgentExecution($executionContext, $scheduledJobName, $skillName) !== $execution) {
+                        throw new InferenceAdmissionException('Scheduled agent parent changed; custody retained.');
+                    }
+                };
+            }
 
             Log::info('ScheduledJobService: Starting agent task', [
                 'scheduled_job_name' => $scheduledJobName,
@@ -1377,6 +1802,33 @@ class ScheduledJobService
 
             return false;
         }
+    }
+
+    private function ownedAgentExecution(array $context, ?string $jobName, string $skillName): array
+    {
+        $jobId = $context['job_id'] ?? null;
+        $runId = $context['run_id'] ?? null;
+        $pid = $context['pid'] ?? null;
+        if (! is_int($jobId) || $jobId <= 0 || ! is_int($runId) || $runId <= 0
+            || ! is_int($pid) || $pid !== getmypid()) {
+            throw new InferenceAdmissionException('Scheduled agent parent identity unavailable; custody retained.');
+        }
+        $run = DB::table('scheduled_job_runs')->where('id', $runId)->where('scheduled_job_id', $jobId)->first();
+        $job = DB::table('scheduled_jobs')->where('id', $jobId)->first();
+        $parent = DB::table('task_custody_records')->where('surface', TaskCustodyService::SURFACE_SCHEDULED_JOB)
+            ->where('surface_ref', self::custodySurfaceRef($jobId, $runId))->first();
+        $owner = app(TaskCustodyService::class)->scheduledJobOwnerToken($pid, $runId);
+        if (! $run || ! $job || ! $parent || $run->status !== 'running' || (int) $run->pid !== $pid
+            || $run->worker_id !== ($context['worker_id'] ?? null) || $job->name !== $jobName
+            || $job->job_type !== 'agent_task' || $job->command !== $skillName
+            || $parent->released_at !== null || $parent->outcome !== null || $parent->owner_token !== $owner) {
+            throw new InferenceAdmissionException('Scheduled agent parent ownership unavailable; custody retained.');
+        }
+
+        return ['job_id' => $jobId, 'job_name' => $jobName, 'run_id' => $runId, 'pid' => $pid,
+            'worker_id' => $run->worker_id, 'command_sha256' => hash('sha256', $job->command),
+            'parent_custody_id' => (int) $parent->id, 'parent_surface' => $parent->surface,
+            'parent_surface_ref' => $parent->surface_ref, 'parent_owner_sha256' => hash('sha256', $owner)];
     }
 
     private function decodeJobParameters(string $parametersJson): array

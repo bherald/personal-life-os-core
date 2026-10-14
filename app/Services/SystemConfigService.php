@@ -108,10 +108,21 @@ class SystemConfigService
      *
      * @param  string  $key  Dot-notation key: "section.config_key"
      * @param  mixed  $default  Fallback value if not found anywhere
+     * @param  bool  $strict  Fresh security-policy read; defaults require proven row absence, lookup/decode failures throw
      * @return mixed Typed value (int/float/bool/string/array based on data_type column)
      */
-    public function get(string $key, mixed $default = null): mixed
+    public function get(string $key, mixed $default = null, bool $strict = false): mixed
     {
+        if ($strict) {
+            try {
+                $row = $this->lookupRow($key);
+
+                return $row === null ? $default : $this->cast($row->config_value, $row->data_type, strict: true);
+            } catch (\Throwable $error) {
+                throw new \RuntimeException('System configuration lookup unavailable.', 0, $error);
+            }
+        }
+
         // 1. Local memory (zero-cost repeated reads in same request)
         if (
             array_key_exists($key, $this->localCache)
@@ -141,11 +152,7 @@ class SystemConfigService
 
         // 3. MySQL
         try {
-            [$section, $configKey] = $this->parseKey($key);
-            $row = DB::selectOne(
-                'SELECT config_value, data_type FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
-                [$section, $configKey]
-            );
+            $row = $this->lookupRow($key);
 
             if ($row !== null) {
                 $value = $this->cast($row->config_value, $row->data_type);
@@ -161,6 +168,16 @@ class SystemConfigService
 
         // 4. Default
         return $default;
+    }
+
+    private function lookupRow(string $key): ?object
+    {
+        [$section, $configKey] = $this->parseKey($key);
+
+        return DB::selectOne(
+            'SELECT config_value, data_type FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
+            [$section, $configKey]
+        );
     }
 
     /**
@@ -272,7 +289,7 @@ class SystemConfigService
     /**
      * Cast a string DB value to the appropriate PHP type.
      */
-    private function cast(?string $value, string $dataType): mixed
+    private function cast(?string $value, string $dataType, bool $strict = false): mixed
     {
         if ($value === null) {
             return null;
@@ -282,7 +299,7 @@ class SystemConfigService
             'int', 'integer' => (int) $value,
             'float', 'double' => (float) $value,
             'bool', 'boolean' => filter_var($value, FILTER_VALIDATE_BOOLEAN),
-            'json', 'array' => json_decode($value, true) ?? [],
+            'json', 'array' => $strict ? json_decode($value, true, flags: JSON_THROW_ON_ERROR) : (json_decode($value, true) ?? []),
             default => $value,
         };
     }

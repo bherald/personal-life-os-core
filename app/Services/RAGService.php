@@ -846,6 +846,9 @@ class RAGService
                 $whereClauses[] = "metadata::jsonb->>'agent_id' = ?";
                 $params[] = $agentId;
             }
+            $space = $this->embeddingProvenance->querySpacePredicate($result);
+            $whereClauses[] = $space['sql'];
+            $params = array_merge($params, $space['bindings']);
 
             $whereClause = ! empty($whereClauses) ? 'WHERE '.implode(' AND ', $whereClauses) : '';
             $params[] = $limit;
@@ -1361,16 +1364,23 @@ class RAGService
 
         // PostgreSQL with pgvector
         $embeddingStr = $this->toVectorLiteral($documentEmbedding);
+        $metadata = is_array($document->metadata ?? null) ? $document->metadata
+            : (json_decode($document->metadata ?? '{}', true) ?: []);
+        $provenance = is_array($metadata[RagEmbeddingProvenanceService::METADATA_KEY] ?? null)
+            ? $metadata[RagEmbeddingProvenanceService::METADATA_KEY] : [];
+        $space = $this->embeddingProvenance->querySpacePredicate([
+            ...$provenance, 'embedding' => $documentEmbedding,
+        ]);
 
         $sql = "SELECT *,
                 (embedding <=> '{$embeddingStr}'::vector) as distance,
                 1 - (embedding <=> '{$embeddingStr}'::vector) as similarity
                 FROM rag_documents
-                WHERE id != ? AND document_type = ?
+                WHERE id != ? AND document_type = ? AND {$space['sql']}
                 ORDER BY distance ASC
                 LIMIT ?";
 
-        $docs = DB::connection('pgsql_rag')->select($sql, [$documentId, $document->document_type, $limit]);
+        $docs = DB::connection('pgsql_rag')->select($sql, [$documentId, $document->document_type, ...$space['bindings'], $limit]);
 
         $results = array_map(function ($doc) {
             return [

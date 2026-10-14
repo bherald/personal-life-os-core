@@ -4,7 +4,7 @@ namespace App\Console\Commands;
 
 use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\HyperGraphService;
-use App\Services\KnowledgeGraphControllerBatchLeaseService;
+use App\Services\KnowledgeGraphManagedBatchService;
 use App\Services\KnowledgeGraphService;
 use App\Services\SystemConfigService;
 use Exception;
@@ -27,7 +27,7 @@ class KnowledgeGraphBuildCommand extends Command
         {--force : Re-process already extracted documents}
         {--sleep=2000 : Milliseconds to sleep between documents (rate limiting)}
         {--min-chars=50 : Skip documents shorter than this}
-        {--max-chars=8000 : Truncate documents longer than this}
+        {--max-chars=8000 : Refuse oversized documents without shortening the source}
         {--min-confidence=0.5 : Minimum relationship confidence threshold}
         {--type= : Only process documents of this type}
         {--dry-run : Show what would be processed without extracting}
@@ -36,7 +36,7 @@ class KnowledgeGraphBuildCommand extends Command
         {--order=newest : Processing order: newest, oldest, or stale-first}
         {--budget-minutes= : Override the runtime budget in minutes for a manual catch-up run}
         {--prefer-external : Skip Ollama, use external APIs first}
-        {--instance= : Registered route alias; omitted uses the table default, managed-secondary uses its exact controller lease}
+        {--instance= : Registered route alias; omitted uses the table default, managed-secondary uses exact per-request controller admission}
         {--model-role=fast : Model role to resolve: fast, standard, quality}
         {--with-hyperedges : GR-11: Also extract N-ary hyperedges for each document}';
 
@@ -195,7 +195,7 @@ class KnowledgeGraphBuildCommand extends Command
                 'success' => 0,
                 'failed' => 0,
                 'skipped_short' => 0,
-                'truncated' => 0,
+                'input_rejected' => 0,
                 'fresh_processed' => 0,
                 'stale_processed' => 0,
                 'entities' => 0,
@@ -233,10 +233,10 @@ class KnowledgeGraphBuildCommand extends Command
                     $content = $doc->content;
                     $wasStale = $this->isStaleDocument($doc);
 
-                    // Truncate oversized documents
+                    // Refuse oversized input without dropping source details.
                     if (strlen($content) > $maxChars) {
-                        $content = substr($content, 0, $maxChars)."\n[... truncated]";
-                        $stats['truncated']++;
+                        $stats['input_rejected']++;
+                        throw new \InvalidArgumentException('knowledge_graph_input_budget_exceeded: source text was not shortened.');
                     }
 
                     $stats['total_input_chars'] += strlen($content);
@@ -307,8 +307,8 @@ class KnowledgeGraphBuildCommand extends Command
 
             $controllerFailure = false;
             if ($instance === 'managed-secondary') {
-                /** @var KnowledgeGraphControllerBatchLeaseService $batchLease */
-                $batchLease = app(KnowledgeGraphControllerBatchLeaseService::class);
+                /** @var KnowledgeGraphManagedBatchService $managedBatch */
+                $managedBatch = app(KnowledgeGraphManagedBatchService::class);
                 foreach (array_chunk(array_values($documents), 3) as $batchNumber => $batch) {
                     $baseIndex = $batchNumber * 3;
                     if ($this->shouldStopBeforeDocument($startedAt, $deadlineSeconds, $baseIndex)) {
@@ -319,20 +319,20 @@ class KnowledgeGraphBuildCommand extends Command
 
                     $attempted = 0;
                     try {
-                        $receipt = $batchLease->run(count($batch), function (int $offset) use (
+                        $receipt = $managedBatch->run(count($batch), function (int $offset) use (
                             $batch,
                             $baseIndex,
                             $processDocument,
                             &$attempted,
-                        ): void {
+                        ): bool {
                             $attempted++;
-                            $processDocument($batch[$offset], $baseIndex + $offset, true);
+
+                            return $processDocument($batch[$offset], $baseIndex + $offset, true);
                         });
                         $this->newLine();
                         $this->info(sprintf(
-                            '[MHC_BATCH_LEASE:green target=%s size=%d cleanup=released]',
-                            (string) ($receipt['results'][0]['target'] ?? ''),
-                            count($receipt['results'] ?? [])
+                            '[MHC_MANAGED_BATCH:completed size=%d admission=per_request]',
+                            (int) $receipt['processed_count']
                         ));
                     } catch (\Throwable $exception) {
                         if (InferenceAdmissionException::isAdmissionFailure($exception)) {
@@ -345,7 +345,7 @@ class KnowledgeGraphBuildCommand extends Command
                             $bar->advance();
                         }
                         $this->newLine();
-                        $this->error('Managed .87 batch lease failed: '.substr($exception->getMessage(), 0, 200));
+                        $this->error('Managed knowledge-graph batch failed: '.substr($exception->getMessage(), 0, 200));
                         break;
                     }
                 }
@@ -371,7 +371,7 @@ class KnowledgeGraphBuildCommand extends Command
                     ['  Fresh Processed', $stats['fresh_processed']],
                     ['  Stale Re-extracted', $stats['stale_processed']],
                     ['Documents Failed', $stats['failed']],
-                    ['Documents Truncated', $stats['truncated']],
+                    ['Documents Input Rejected', $stats['input_rejected']],
                     ['Entities Extracted', $stats['entities']],
                     ['Relationships Extracted', $stats['relationships']],
                     ['Hyperedges Stored', $withHyperedges ? $stats['hyperedges_stored'] : 'N/A (--with-hyperedges not set)'],
@@ -394,7 +394,7 @@ class KnowledgeGraphBuildCommand extends Command
 
             $this->info(sprintf('[ITEMS_PROCESSED:%d]', $stats['success']));
 
-            return $controllerFailure ? Command::FAILURE : Command::SUCCESS;
+            return $controllerFailure || $stats['input_rejected'] > 0 ? Command::FAILURE : Command::SUCCESS;
         } finally {
             optional($lock)->release();
         }

@@ -44,7 +44,8 @@ class FilesImageAuditCommand extends Command
                         $report['worker_started'] = true;
                         try {
                             // A separate process-group deadline survives this parent; never use --foreground or --force.
-                            $result = Process::path(base_path())->timeout($policy['outer_timeout_seconds'])->quietly()->run([
+                            // Capture child output for the whitelist; quietly() disables output() on real processes.
+                            $result = Process::path(base_path())->timeout($policy['outer_timeout_seconds'])->run([
                                 $binary, '--signal=KILL', $policy['hard_timeout_seconds'].'s',
                                 PHP_BINARY, base_path('artisan'), 'files:image-audit', '--slice', '--json', '--no-interaction',
                             ]);

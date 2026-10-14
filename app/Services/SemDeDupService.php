@@ -242,14 +242,15 @@ class SemDeDupService
             }
 
             $embeddingStr = PgVector::literal($result['embedding']);
+            $space = $this->embeddingProvenance->querySpacePredicate($result);
 
             $match = DB::connection('pgsql_rag')->selectOne(
                 "SELECT id, title,
                         1 - (embedding <=> '{$embeddingStr}'::vector) as similarity
                  FROM rag_documents
-                 WHERE embedding IS NOT NULL
+                 WHERE {$space['sql']}
                  ORDER BY embedding <=> '{$embeddingStr}'::vector ASC
-                 LIMIT 1"
+                 LIMIT 1", $space['bindings']
             );
 
             if ($match && (float) $match->similarity >= $threshold) {
@@ -259,6 +260,9 @@ class SemDeDupService
                 ];
             }
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             Log::warning('SemDedup: Embedding similarity check failed', ['error' => $e->getMessage()]);
         }
 

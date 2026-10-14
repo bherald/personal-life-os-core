@@ -1315,6 +1315,7 @@ PHPCMD;
             SELECT fr.id, fr.asset_uuid, fr.current_path, fr.filename, fr.nextcloud_modified_at, fr.file_size, fr.content_hash, fr.lifecycle_generation_key, fr.is_scan, fr.date_needs_review
             FROM file_registry fr
             WHERE fr.status = 'active'
+            AND fr.quarantine_status IS NULL
             AND fr.extension IN ({$imageExts})
             AND fr.date_taken IS NULL
             AND (fr.exif_checked IS NULL OR fr.exif_checked = 0)
@@ -1483,6 +1484,7 @@ PHPCMD;
                         exif_checked      = 1,
                         updated_at        = NOW()
                     WHERE id = ? AND status = 'active' AND BINARY current_path = BINARY ?
+                        AND quarantine_status IS NULL
                         AND (exif_checked IS NULL OR exif_checked = 0)
                         AND is_scan <=> ? AND date_needs_review <=> ?
                         AND nextcloud_modified_at <=> ? AND file_size <=> ? AND BINARY content_hash <=> BINARY ?

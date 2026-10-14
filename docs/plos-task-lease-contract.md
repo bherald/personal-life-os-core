@@ -181,6 +181,14 @@ registered. Use the scheduler's existing diagnostics and the deterministic
 pipeline inventory for the shipped recovery contract; do not document or
 automate an unregistered manual mutation surface.
 
+Manager parents can use a distinct root-persisted custody-transfer receipt: the
+complete table-owned child namespace and retained child identities remain bound,
+and children are never released by parent reconciliation. Historical failed
+labels with cleared slots preserve their original domain bytes as UNKNOWN.
+Separate registered-child-admission and zero-current-capture checkpoints permit
+new normal work while keeping old UNKNOWN runs and descendant admission holds.
+See the [transfer and fresh-work procedure](framework-upgrade-boundaries.md).
+
 ## Result handoff metadata
 
 `result_envelope` JSON shape (advisory — exact keys finalized at implementation):
@@ -353,3 +361,22 @@ is explicitly out of scope for the first implementation sprint.
   pluggable.
 - Does not commit to scheduler autonomy. Leases make leaks diagnosable.
   Any autonomous action on top of that is a separate backlog item.
+
+### Manager refusal before child dispatch
+
+A direct known scheduler custody refusal originating at its actual assertion,
+through pre-enrollment methods and before business dispatch, can be reported as a
+blocked manager lane. Full source trace is qualified only up to that manager's
+`runLane`; already executing parent frames are outside this boundary. No child
+slot, ownership or historical outcome is altered. Wrapped, unknown-cause and
+post-dispatch admission failures retain ordinary UNKNOWN/no-replay propagation.
+See [boundary and rollback](framework-upgrade-boundaries.md).
+
+### Current registered native task binding
+
+The typed task-binding checkpoint follows an independently qualified physical
+UNKNOWN closure. Registered exact command/task policy, current explicit selector,
+role, native contract/resource qualification and source hashes must match fresh
+reads. Ordinary health telemetry may advance; unavailable current health holds.
+No checkpoint releases unproven custody, activates a model, widens selection or
+replays the old run. [Procedure](framework-upgrade-boundaries.md).

@@ -74,6 +74,52 @@ final class TypeSafeJevDecisionServiceTest extends TestCase
             && $request['questions'] === $questions);
     }
 
+    #[DataProvider('choiceLabelLists')]
+    public function test_accepted_choice_label_lists_are_sent_as_api_object_maps(array $labels): void
+    {
+        $question = ['type' => 'choice', 'instructions' => 'Select the best review target.', 'criteria' => $labels];
+        $state = ['item' => 'Review the retained project preparation.'];
+        Http::fake(['https://api.typesafe.ai/v1/systemone' => Http::response([
+            'model' => 'jev-1.13.0',
+            'answers' => ['target' => ['type' => 'choice', 'choice' => $labels[0],
+                'probabilities' => [$labels[0] => 0.9, $labels[1] => 0.1], 'confidence' => 0.9]],
+            'usage' => ['input_tokens' => 40, 'output_tokens' => 10],
+        ])]);
+        $this->bindServices();
+
+        $result = app(TypeSafeJevDecisionService::class)->evaluate('todo_triage', 'sanitized_internal', $state, ['target' => $question]);
+
+        $this->assertSame('completed', $result['status']);
+        $this->assertSame($labels[0], $result['answers']['target']['choice']);
+        Http::assertSent(function ($request) use ($labels, $question, $state): bool {
+            $wire = json_decode($request->body(), flags: JSON_THROW_ON_ERROR);
+
+            return $wire->questions->target->criteria instanceof \stdClass
+                && get_object_vars($wire->questions->target->criteria) === array_fill_keys($labels, null)
+                && $request['state'] === $state
+                && $request['questions']['target']['instructions'] === $question['instructions'];
+        });
+    }
+
+    public static function choiceLabelLists(): array
+    {
+        return ['named labels' => [['preparation', 'archive']], 'numeric labels remain a map' => [['0', '1']]];
+    }
+
+    public function test_duplicate_choice_labels_hold_before_provider_transport(): void
+    {
+        Http::fake();
+        $this->bindServices(attempt: false);
+
+        $result = app(TypeSafeJevDecisionService::class)->evaluate('todo_triage', 'sanitized_internal', ['item' => 'example'], [
+            'target' => ['type' => 'choice', 'instructions' => 'Choose one.', 'criteria' => ['same', 'same']],
+        ]);
+
+        $this->assertSame('skipped', $result['status']);
+        $this->assertSame('invalid_question_schema', $result['reason_code']);
+        Http::assertNothingSent();
+    }
+
     public function test_offline_mode_skips_without_making_a_provider_request(): void
     {
         Http::preventStrayRequests();
@@ -343,7 +389,7 @@ final class TypeSafeJevDecisionServiceTest extends TestCase
             'bearer in text' => [['log' => 'Bearer fixture-token-12345'], []],
             'basic auth' => [['log' => 'Basic ZmljdGlvbmFsOnRlc3Q='], []],
             'key in question' => [[], ['instructions' => 'password=fixture']],
-            'private key' => [['source' => '-----BEGIN PRIVATE KEY-----'], []],
+            'private key' => [['source' => '-----BEGIN '.strtoupper('private').' KEY-----'], []],
             'url credential' => [['url' => 'https://user:password@example.test'], []],
             'cookie' => [['log' => 'Cookie: session=fixture'], []],
             'invalid rule' => [[], [], ['key_pattern' => '[', 'text_patterns' => ['test']]],

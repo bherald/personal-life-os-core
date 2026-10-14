@@ -1,6 +1,6 @@
 ---
 name: offline-assistant
-version: "1.2.8"
+version: "1.2.9"
 description: General PLOS CLI assistance with public web search, advisory Jev judgments, and approved native commands.
 permissions:
   - system:read
@@ -118,7 +118,7 @@ current permitted local/offline workflow. Hister access does not permit cloud di
 Discover current installations through `os-tools:inventory` / `os-tools:review`.
 Use `plos-archify` for explicit diagram JSON, `plos-pdf INPUT --output NEW_DIRECTORY`
 for local PDF page coordinates, `plos-hister hister-search QUERY` for the selected
-local collection, and `plos-pggraph-query` for read-only architecture queries.
+local collection.
 `sql-tap` is an on-demand diagnostic: never change default DB routes or expose
 query captures without task authorization. All optional tools use installed local
 artifacts. If one is missing or unavailable, continue existing permitted PLOS

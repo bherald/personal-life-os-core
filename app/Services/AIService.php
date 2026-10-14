@@ -1901,12 +1901,16 @@ PROMPT;
      */
     private function splitForEmbedding(string $text, int $tokenLimit, bool $preserveInput = false): array
     {
+        $preserveInput = $preserveInput || ! PromptIntegrityPolicy::allowsLossyTransforms();
         $chunkCharLimit = (int) ($tokenLimit * 0.60 * 1.5); // 60% safety margin, 1.5 chars/token (handles code/JSON BPE worst-case)
         $overlapChars = (int) ($chunkCharLimit * 0.10);
 
         if ($preserveInput) {
             if ($chunkCharLimit < 1 || ! mb_check_encoding($text, 'UTF-8')) {
                 throw new InferenceAdmissionException('Strict embedding chunk input or context is unavailable.');
+            }
+            if ($text === '') {
+                return [$text];
             }
             $chunks = [];
             for ($offset = 0; $offset < strlen($text);) {
@@ -2195,7 +2199,7 @@ PROMPT;
 
             // Auto-chunk if text exceeds this provider's context limit (70% threshold guards against token underestimate for code/JSON)
             // The admitted table-selected provider must retain originals even without a caller override.
-            $strictChunks = $preserveInput && $isOllama
+            $strictChunks = ($preserveInput || ! PromptIntegrityPolicy::allowsLossyTransforms()) && $isOllama
                 && strlen($content) > (int) ($tokenLimit * 0.60 * 1.5);
             if ($strictChunks || (! $preserveInput && $estimatedTokens > (int) ($tokenLimit * 0.70))) {
                 $result = $this->generateChunkedEmbeddingForProvider($content, $tokenLimit, $provider, $options);

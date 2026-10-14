@@ -122,7 +122,7 @@ class RepoEditRecoveryService
     /**
      * @return array<string, mixed>
      */
-    public function load(string $token): array
+    public function load(string $token, bool $historicalEvidence = false): array
     {
         if (preg_match('/^rec_[a-f0-9]{32}$/', $token) !== 1) {
             throw new RuntimeException('Recovery token is invalid.');
@@ -148,7 +148,9 @@ class RepoEditRecoveryService
         if (($packet['token'] ?? null) !== $token || ! is_array($packet['files'] ?? null)) {
             throw new RuntimeException('Recovery packet is invalid.');
         }
-        if ((int) ($packet['expires_at'] ?? 0) < time()) {
+        // Historical readback grants no restore authority. Preserve signed
+        // originals when an independent terminal observer follows later.
+        if (! $historicalEvidence && (int) ($packet['expires_at'] ?? 0) < time()) {
             @unlink($path);
 
             throw new RuntimeException('Recovery packet has expired.');

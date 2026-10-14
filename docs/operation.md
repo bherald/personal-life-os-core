@@ -124,3 +124,17 @@ relabel historical vectors, or clear uncertain publication holds during upgrades
 Image-audit workers retain safe diagnostic codes; raw failures remain private.
 For the optional disabled upstream metadata capability, see
 [configuration and boundaries](upstream-metadata-preparation.md).
+
+## Guarded framework upgrades
+
+Complete research and batch-file input stays intact through route admission.
+Quarantined media is excluded from EXIF work; auto-tag vision requires its exact
+task-owned table binding. Retrieval excludes incompatible embedding spaces while
+retaining the configured legacy policy and lexical results. See
+[framework upgrade boundaries](framework-upgrade-boundaries.md) for the disabled
+upstream preparation worker, scheduled UNKNOWN checkpoints and rollback rules.
+
+Managed knowledge-graph groups now retain native per-request admission without
+an outer model permit. Oversized input is refused intact, and genealogy managers
+wait for disabled registered jobs before scheduler handoff. Preserve document
+stamps and uncertain receipts during rollback; see [the upgrade boundaries](framework-upgrade-boundaries.md).

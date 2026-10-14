@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Services\UpstreamPrivatePreparationWorkerService;
 use App\Services\UpstreamSourceDriftRuntimePolicyService;
 use App\Services\UpstreamSourceDriftService;
 use App\Services\WhiteroomProjectRegistryService;
@@ -70,6 +71,7 @@ class WhiteroomMonitorCommand extends Command
                     $this->filteredProjects($registry, $asOf),
                     app(UpstreamSourceDriftRuntimePolicyService::class)->preparation(),
                 );
+                $result['worker_cycle'] = app(UpstreamPrivatePreparationWorkerService::class)->consumeScheduled();
                 if ((bool) $this->option('compact')) {
                     unset($result['checks']);
                 }

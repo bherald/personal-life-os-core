@@ -655,16 +655,11 @@ class ResearchTopicRunner extends BaseNode
     {
         $aiService = app(AIService::class);
 
-        $triageInputLimit = $this->runtimePolicyInt('ai_triage.truncate_chars');
-        $truncated = strlen($aiOutput) > $triageInputLimit
-            ? substr($aiOutput, 0, $triageInputLimit)."\n[truncated]"
-            : $aiOutput;
-
         $prompt = <<<PROMPT
 Evaluate this research output. Respond with ONLY a JSON object, no other text.
 
 RESEARCH OUTPUT:
-{$truncated}
+{$aiOutput}
 
 Evaluate:
 1. Does this contain NEW, SPECIFIC, ACTIONABLE information? (not just "no records found" or suggestions to search elsewhere)
@@ -1989,7 +1984,6 @@ PROMPT;
 
         $context = "KNOWLEDGE BASE SOURCES:\n\n";
         $references = [];
-        $contentLimit = $this->runtimePolicyInt('rag.context_content_limit_chars');
 
         foreach ($results as $index => $result) {
             $num = $index + 1;
@@ -2011,9 +2005,6 @@ PROMPT;
             $context .= "Type: {$doc->document_type}\n";
 
             $content = $doc->content;
-            if (strlen($content) > $contentLimit) {
-                $content = substr($content, 0, $contentLimit)."\n... [truncated]";
-            }
             $context .= "Content:\n{$content}\n\n";
         }
 

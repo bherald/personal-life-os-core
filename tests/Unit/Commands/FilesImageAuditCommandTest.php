@@ -6,6 +6,8 @@ use App\Console\Commands\FilesImageAuditCommand;
 use App\Services\FileRegistryImageAuditService;
 use Illuminate\Contracts\Foundation\MaintenanceMode;
 use Illuminate\Process\Exceptions\ProcessTimedOutException;
+use Illuminate\Process\Factory;
+use Illuminate\Process\PendingProcess;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Process;
@@ -102,7 +104,7 @@ class FilesImageAuditCommandTest extends TestCase
         Process::assertNothingRan();
     }
 
-    public function test_parent_uses_registered_quiet_independently_bounded_child_and_safe_before_after(): void
+    public function test_parent_uses_registered_independently_bounded_child_and_safe_before_after(): void
     {
         Process::fake(function () {
             $this->aggregate['counters']['registry']['inspections'] = 2;
@@ -117,7 +119,7 @@ class FilesImageAuditCommandTest extends TestCase
         $this->assertSame(0, $report['before']['counters']['registry']['inspections']);
         $this->assertSame(2, $report['after']['counters']['registry']['inspections']);
         $this->assertSame(0, $this->sliceCalls);
-        Process::assertRan(fn ($process) => $process->timeout === 95 && $process->quietly && $process->path === base_path()
+        Process::assertRan(fn ($process) => $process->timeout === 95 && ! $process->quietly && $process->path === base_path()
             && $process->command === [$this->policy['timeout_binary'], '--signal=KILL', '90s', PHP_BINARY,
                 base_path('artisan'), 'files:image-audit', '--slice', '--json', '--no-interaction']);
         $this->assertStringNotContainsString('private-photo', Artisan::output());
@@ -242,6 +244,52 @@ class FilesImageAuditCommandTest extends TestCase
         $this->assertSame(1, $report['worker_exit_code']);
         $this->assertStringNotContainsString('private', Artisan::output());
         $this->assertSame(0, $this->sliceCalls);
+    }
+
+    #[DataProvider('nativeChildAggregates')]
+    public function test_native_child_output_is_captured_without_exposing_raw_fields(array $child, int $expectedExit, string $expectedState): void
+    {
+        $payload = json_encode($child + ['source_path' => '/private/synthetic-photo.jpg'], JSON_THROW_ON_ERROR);
+        Process::swap(new class($payload) extends Factory
+        {
+            public function __construct(private string $payload) {}
+
+            public function newPendingProcess()
+            {
+                return new class($this, $this->payload) extends PendingProcess
+                {
+                    public function __construct(Factory $factory, private string $payload)
+                    {
+                        parent::__construct($factory);
+                    }
+
+                    protected function toSymfonyProcess(array|string|null $command)
+                    {
+                        // Retain the real adapter and timeout; replace only the business worker.
+                        return parent::toSymfonyProcess([$command[0], '--signal=KILL', '5s', PHP_BINARY, '-r',
+                            'fwrite(STDOUT, $argv[1]); fwrite(STDERR, "private synthetic stderr");', $this->payload]);
+                    }
+                };
+            }
+        });
+
+        [$exit, $report] = $this->runCommand();
+        $this->assertSame($expectedExit, $exit);
+        $this->assertSame($expectedState, $report['state']);
+        $this->assertSame(0, $report['worker_exit_code']);
+        $this->assertSame($child['state'], $report['worker']['state']);
+        $this->assertSame($child['reason'], $report['worker']['reason']);
+        $this->assertSame('pending', $report['after']['state']);
+        $this->assertStringNotContainsString('private', Artisan::output());
+        $this->assertSame(0, $this->sliceCalls);
+    }
+
+    public static function nativeChildAggregates(): array
+    {
+        return [
+            'successful child' => [['state' => 'progressed', 'reason' => null], 0, 'completed_slice'],
+            'held child despite zero exit' => [['state' => 'held', 'reason' => 'image_audit_database_query_failed'], 1, 'failed'],
+        ];
     }
 
     public function test_parent_refuses_a_success_exit_with_a_held_child_and_hides_unknown_reason(): void

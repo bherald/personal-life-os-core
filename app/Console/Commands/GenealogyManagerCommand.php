@@ -12,6 +12,8 @@ use Throwable;
 
 class GenealogyManagerCommand extends Command
 {
+    private const CONFIG_KEY = 'genealogy.supervisor_manager';
+
     protected $signature = 'genealogy:manager
                             {--tree=4 : Genealogy tree ID to manage}
                             {--execute : Run eligible scheduled jobs through scheduler:run}
@@ -45,7 +47,7 @@ class GenealogyManagerCommand extends Command
             'execute' => $execute,
             'dry_run' => ! $execute,
             'generated_at' => now()->toIso8601String(),
-            'policy_source' => 'system_configs.genealogy.supervisor_manager',
+            'policy_source' => 'system_configs.'.self::CONFIG_KEY,
             'queue' => $this->queueCounts($treeId),
             'review_backlog' => $reviewBacklog,
             'face_repair' => $faceRepair,
@@ -197,7 +199,7 @@ class GenealogyManagerCommand extends Command
         try {
             $row = DB::selectOne(
                 'SELECT config_value FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1',
-                ['genealogy', 'supervisor_manager']
+                explode('.', self::CONFIG_KEY, 2)
             );
         } catch (Throwable) {
             return ['__error' => 'genealogy_supervisor_manager_config_unavailable'];
@@ -423,7 +425,7 @@ class GenealogyManagerCommand extends Command
             'decision' => 'waiting',
             'reason' => 'not_evaluated',
             'triggers' => [],
-            'policy_source' => 'system_configs.genealogy.supervisor_manager.lanes',
+            'policy_source' => 'system_configs.'.self::CONFIG_KEY.'.lanes',
         ];
 
         if (! $lane['enabled']) {
@@ -449,6 +451,12 @@ class GenealogyManagerCommand extends Command
         }
 
         $lane['job'] = $this->jobSnapshot($job);
+        if (! $lane['job']['enabled']) {
+            $lane['reason'] = 'scheduled_job_disabled';
+
+            return $lane;
+        }
+
         $allowWhileRunning = (bool) ($laneConfig['allow_while_running'] ?? false);
         if (! $allowWhileRunning && ((int) ($job->running_count ?? 0) > 0 || ($job->last_run_status ?? null) === 'running')) {
             $lane['decision'] = 'waiting';
@@ -629,12 +637,34 @@ class GenealogyManagerCommand extends Command
     private function runLane(array $lane): array
     {
         $jobName = (string) ($lane['job_name'] ?? '');
+        $job = $this->scheduledJobService->getJobByName($jobName);
+        if ($job) {
+            $lane['job'] = $this->jobSnapshot($job);
+        }
+        if (! $job || ! (bool) ($job->enabled ?? false)) {
+            $lane['decision'] = 'waiting';
+            $lane['reason'] = $job ? 'scheduled_job_disabled' : 'scheduled_job_missing';
+            $lane['started'] = false;
+
+            return $lane;
+        }
+
         $startedAt = now()->toIso8601String();
-        $exitCode = Artisan::call('scheduler:run', [
-            '--job' => $jobName,
-            '--force' => true,
-        ]);
-        $output = trim(Artisan::output());
+        $custodyRefusal = null;
+        try {
+            $exitCode = Artisan::call('scheduler:run', [
+                '--job' => $jobName,
+                '--force' => true,
+            ]);
+            $output = trim(Artisan::output());
+        } catch (Throwable $error) {
+            $custodyRefusal = ScheduledJobService::preDispatchCustodyRefusalReason($error);
+            if ($custodyRefusal === null) {
+                throw $error;
+            }
+            $exitCode = 1;
+            $output = $custodyRefusal;
+        }
 
         $lane['started'] = $exitCode === 0;
         $lane['exit_code'] = $exitCode;
@@ -650,7 +680,7 @@ class GenealogyManagerCommand extends Command
             'output_summary' => $this->commandOutputSummary($output),
         ];
         $lane['decision'] = $exitCode === 0 ? 'started' : 'blocked';
-        $lane['reason'] = $exitCode === 0 ? 'scheduler_run_completed' : 'scheduler_run_failed';
+        $lane['reason'] = $custodyRefusal ?? ($exitCode === 0 ? 'scheduler_run_completed' : 'scheduler_run_failed');
 
         return $lane;
     }

@@ -397,18 +397,21 @@ class AgentLoopService
 
         $executionFailure = null;
         try {
+            $callerMetadata = is_array($options['metadata'] ?? null) ? $options['metadata'] : [];
+            $sessionMetadata = array_replace($callerMetadata, [
+                'skill' => $agentId, 'tree_id' => $options['tree_id'] ?? null,
+                'depth' => $depth, 'delegation_governance' => $delegationGovernance,
+            ]);
+            if ($callerMetadata !== []) {
+                $sessionMetadata['caller_metadata'] = $callerMetadata;
+            }
             // 2. Load or create session
             $session = $this->getSessionService()->findOrCreateSession(null, 'agent', [
                 'session_id' => $sessionId,
                 'agent_name' => $agentId,
                 'ttl_hours' => 24,
                 'context' => $options['context'] ?? [],
-                'metadata' => [
-                    'skill' => $agentId,
-                    'tree_id' => $options['tree_id'] ?? null,
-                    'depth' => $depth,
-                    'delegation_governance' => $delegationGovernance,
-                ],
+                'metadata' => $sessionMetadata,
             ]);
 
             // 3. Load skill definition (also tracks version in skill_versions table)

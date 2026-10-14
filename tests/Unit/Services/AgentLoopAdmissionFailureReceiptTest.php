@@ -33,7 +33,7 @@ class AgentLoopAdmissionFailureReceiptTest extends TestCase
             'wrapped_admission' => [false, 'wrapped'], 'ordinary_failure' => [false, 'generic'],
             'raw_dispatched_controller' => [false, 'raw_controller'],
             'wrapped_dispatched_controller' => [false, 'wrapped_controller'],
-            'clean_capacity_refusal' => [false, 'clean_capacity']];
+            'clean_capacity_refusal' => [false, 'clean_capacity'], 'session_metadata' => [false, 'metadata']];
     }
 
     #[DataProvider('guardModes')]
@@ -84,7 +84,14 @@ class AgentLoopAdmissionFailureReceiptTest extends TestCase
             }
         };
         $guardCalls = 0;
-        $sessions->shouldReceive('findOrCreateSession')->once()->andReturnUsing(function () use ($loop, $guarded, $guard, $failure) {
+        $sessions->shouldReceive('findOrCreateSession')->once()->andReturnUsing(function ($user, $type, $sessionOptions) use ($loop, $guarded, $guard, $failure, $kind) {
+            if ($kind === 'metadata') {
+                $this->assertSame('complete original tail', $sessionOptions['context']['operator_note']);
+                $this->assertSame('log-analyst', $sessionOptions['metadata']['skill']);
+                $this->assertSame('caller-skill', $sessionOptions['metadata']['caller_metadata']['skill']);
+                $this->assertSame(['job_id' => 7, 'run_id' => 81, 'parent_custody_id' => 99], $sessionOptions['metadata']['scheduled_execution']);
+                $this->assertSame(['existing' => 'full original'], $sessionOptions['metadata']['caller_metadata']['caller_metadata']);
+            }
             if ($guarded) {
                 (new \ReflectionMethod($loop, 'assertExecutionGuard'))->invoke($loop, ['execution_guard' => $guard]);
             }
@@ -103,7 +110,10 @@ class AgentLoopAdmissionFailureReceiptTest extends TestCase
 
         $result = $loop->execute('log-analyst', 'sanitized task', [
             'session_id' => 'test-admission-receipt', 'benchmark_mode' => true,
-        ] + ($guarded ? ['execution_guard' => $guard] : []));
+        ] + ($kind === 'metadata' ? ['context' => ['operator_note' => 'complete original tail'],
+            'metadata' => ['skill' => 'caller-skill', 'caller_metadata' => ['existing' => 'full original'],
+                'scheduled_execution' => ['job_id' => 7, 'run_id' => 81, 'parent_custody_id' => 99]]] : [])
+            + ($guarded ? ['execution_guard' => $guard] : []));
         $this->assertSame($guarded, $result['execution_guard_held'] ?? false);
         $this->assertSame(! in_array($kind, ['generic', 'clean_capacity'], true), $result['inference_admission_held'] ?? false);
 

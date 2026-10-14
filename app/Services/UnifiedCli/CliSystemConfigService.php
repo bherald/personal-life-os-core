@@ -13,7 +13,7 @@ final class CliSystemConfigService extends SystemConfigService
         private readonly string $sessionId,
     ) {}
 
-    public function get(string $key, mixed $default = null): mixed
+    public function get(string $key, mixed $default = null, bool $strict = false): mixed
     {
         $session = $this->store->session($this->sessionId);
         $effective = (new CliConfiguration($this->store))->effective($session);
@@ -22,7 +22,8 @@ final class CliSystemConfigService extends SystemConfigService
         }
 
         // No shared Redis cache or application database: every policy check
-        // sees the latest session revision and its exact pinned generation.
+        // sees the latest session revision and its exact pinned generation,
+        // including named strict reads through the shared parent contract.
         $value = array_key_exists($key, $effective['values']) ? $effective['values'][$key] : $default;
         if ($key === config('offline_policy.active_profile_config_key', 'routing.active_profile')
             && (! is_string($value) || ! array_key_exists(strtolower(trim($value)), (array) config('offline_policy.profiles', [])))) {

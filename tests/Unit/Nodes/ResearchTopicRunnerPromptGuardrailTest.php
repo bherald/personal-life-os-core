@@ -3,6 +3,7 @@
 namespace Tests\Unit\Nodes;
 
 use App\Nodes\ResearchTopicRunner;
+use App\Services\AIService;
 use App\Services\SystemConfigService;
 use Mockery;
 use ReflectionClass;
@@ -10,6 +11,39 @@ use Tests\TestCase;
 
 class ResearchTopicRunnerPromptGuardrailTest extends TestCase
 {
+    public function test_triage_includes_findings_after_the_obsolete_prefix_limit(): void
+    {
+        $runner = (new ReflectionClass(ResearchTopicRunner::class))->newInstanceWithoutConstructor();
+        (new \ReflectionProperty(ResearchTopicRunner::class, 'runtimePolicy'))->setValue($runner, [
+            'ai_triage' => ['truncate_chars' => 10, 'max_tokens' => 321, 'timeout_seconds' => 15],
+        ]);
+        $source = str_repeat('Background evidence. ', 600)."\r\nCritical tail finding 日本語  ";
+        $ai = Mockery::mock(AIService::class);
+        $ai->shouldReceive('process')->once()->with(Mockery::on(fn ($prompt) => str_contains($prompt, "RESEARCH OUTPUT:\n".$source."\n\nEvaluate:")),
+            ['max_tokens' => 321, 'ai_timeout' => 15])->andReturn([
+                'success' => true, 'response' => '{"has_findings":true,"score":0.8,"recommendation":"index"}',
+            ]);
+        $this->app->instance(AIService::class, $ai);
+        $result = (new \ReflectionMethod(ResearchTopicRunner::class, 'aiTriageFindings'))->invoke($runner, $source);
+        $this->assertSame(['score' => 0.8, 'has_findings' => true, 'recommendation' => 'index'], $result);
+    }
+
+    public function test_retrieved_research_context_retains_complete_document_and_reference(): void
+    {
+        $runner = (new ReflectionClass(ResearchTopicRunner::class))->newInstanceWithoutConstructor();
+        (new \ReflectionProperty(ResearchTopicRunner::class, 'runtimePolicy'))->setValue($runner, [
+            'rag' => ['context_content_limit_chars' => 10],
+        ]);
+        $source = '  '.str_repeat('Source content. ', 900)."\r\nCritical source tail 日本語  ";
+        [$context, $references] = (new \ReflectionMethod(ResearchTopicRunner::class, 'formatRAGContext'))
+            ->invoke($runner, [['document' => (object) [
+                'id' => 123, 'title' => 'Synthetic source', 'document_type' => 'research', 'content' => $source,
+            ], 'similarity' => 0.9]]);
+        $this->assertStringContainsString("Content:\n".$source."\n\n", $context);
+        $this->assertSame('rag://document/123', $references[0]['url']);
+        $this->assertSame(90.0, $references[0]['relevance']);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

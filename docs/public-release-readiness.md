@@ -117,3 +117,7 @@ application isolation rule is changed. The subsequent Ubuntu 22.04 run at
 `1df63ea1` passed the sandbox probe, offline/online socket fixture and all Public
 Readiness jobs. Repository Governance also passed. These checks do not establish
 a full Docker upgrade or configured model/controller/connector qualification.
+
+The guarded framework update preserves complete processing input, exact vision
+bindings and compatible embedding retrieval. Disabled upstream worker registration
+and proof-bound fresh scheduled checkpoints are documented in [framework upgrade boundaries](framework-upgrade-boundaries.md).

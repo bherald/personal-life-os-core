@@ -4,7 +4,7 @@ namespace Tests\Unit\Commands;
 
 use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\HyperGraphService;
-use App\Services\KnowledgeGraphControllerBatchLeaseService;
+use App\Services\KnowledgeGraphManagedBatchService;
 use App\Services\KnowledgeGraphService;
 use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\DB;
@@ -153,7 +153,7 @@ class KnowledgeGraphBuildCommandTest extends TestCase
         ])->assertExitCode(0);
     }
 
-    public function test_managed_secondary_processes_three_documents_under_one_controller_lease(): void
+    public function test_managed_secondary_processes_three_documents_with_native_per_request_admission(): void
     {
         $this->mockRouteBinding([
             'default_alias' => 'remote_lane',
@@ -201,7 +201,7 @@ class KnowledgeGraphBuildCommandTest extends TestCase
                 && ($options['scheduled_batch'] ?? null) === true;
         })->andReturn(['success' => true, 'entities' => [], 'relationships' => []]);
         $hyper = Mockery::mock(HyperGraphService::class);
-        $batch = Mockery::mock(KnowledgeGraphControllerBatchLeaseService::class);
+        $batch = Mockery::mock(KnowledgeGraphManagedBatchService::class);
         $batch->shouldReceive('run')->once()->withArgs(function (int $size, callable $executor): bool {
             $this->assertSame(3, $size);
             foreach (range(0, 2) as $offset) {
@@ -210,20 +210,33 @@ class KnowledgeGraphBuildCommandTest extends TestCase
 
             return true;
         })->andReturn([
-            'result' => 'green',
-            'results' => array_fill(0, 3, ['result' => 'green', 'release_result' => 'released', 'target' => 'ollama_qwen3_8b_87']),
+            'result' => 'completed',
+            'processed_count' => 3,
         ]);
         $this->app->instance(KnowledgeGraphService::class, $kg);
         $this->app->instance(HyperGraphService::class, $hyper);
-        $this->app->instance(KnowledgeGraphControllerBatchLeaseService::class, $batch);
+        $this->app->instance(KnowledgeGraphManagedBatchService::class, $batch);
 
         $this->artisan('rag:build-knowledge-graph', [
             '--limit' => 3,
             '--sleep' => 0,
             '--instance' => 'managed-secondary',
             '--model-role' => 'standard',
-        ])->expectsOutputToContain('[MHC_BATCH_LEASE:green target=ollama_qwen3_8b_87 size=3 cleanup=released]')
+        ])->expectsOutputToContain('[MHC_MANAGED_BATCH:completed size=3 admission=per_request]')
             ->assertExitCode(0);
+    }
+
+    public function test_oversized_source_is_not_shortened_or_dispatched(): void
+    {
+        $this->mockPendingDocuments(1);
+        config(['cache.default' => 'array']);
+        $kg = Mockery::mock(KnowledgeGraphService::class);
+        $kg->shouldReceive('extractEntities')->never();
+        $this->app->instance(KnowledgeGraphService::class, $kg);
+        $this->app->instance(HyperGraphService::class, Mockery::mock(HyperGraphService::class));
+        $this->artisan('rag:build-knowledge-graph', ['--limit' => 1, '--sleep' => 0,
+            '--max-chars' => 10, '--instance' => 'primary'])
+            ->expectsOutputToContain('knowledge_graph_input_budget_exceeded: source text was not shortened')->assertExitCode(1);
     }
 
     public function test_terminal_admission_stop_aborts_batch_before_later_document(): void
@@ -272,7 +285,7 @@ class KnowledgeGraphBuildCommandTest extends TestCase
         ])->assertExitCode(0);
     }
 
-    public function test_terminal_admission_stop_escapes_managed_lease_catcher(): void
+    public function test_terminal_admission_stop_escapes_managed_batch_catcher(): void
     {
         $this->mockPendingDocuments(2);
         config(['cache.default' => 'array']);
@@ -282,12 +295,12 @@ class KnowledgeGraphBuildCommandTest extends TestCase
         $kg->shouldReceive('extractEntities')->once()->andThrow($stop);
         $this->app->instance(KnowledgeGraphService::class, $kg);
         $this->app->instance(HyperGraphService::class, Mockery::mock(HyperGraphService::class));
-        $lease = Mockery::mock(KnowledgeGraphControllerBatchLeaseService::class);
+        $lease = Mockery::mock(KnowledgeGraphManagedBatchService::class);
         $lease->shouldReceive('run')->once()->andReturnUsing(function (int $size, callable $executor) {
             $this->assertSame(2, $size);
             $executor(0, []);
         });
-        $this->app->instance(KnowledgeGraphControllerBatchLeaseService::class, $lease);
+        $this->app->instance(KnowledgeGraphManagedBatchService::class, $lease);
 
         try {
             $this->artisan('rag:build-knowledge-graph', [

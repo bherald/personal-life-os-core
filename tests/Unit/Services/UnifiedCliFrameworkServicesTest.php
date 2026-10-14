@@ -83,6 +83,158 @@ class UnifiedCliFrameworkServicesTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_prepared_recurring_transport_uses_existing_ssh_and_durable_original_result_without_replay(): void
+    {
+        [$runtime, $request, $launches] = $this->preparedRecurringFixture();
+        $result = $runtime->dispatchPreparedRequest($request);
+        $this->assertTrue($result['success']);
+        $this->assertSame('complete original tail', $result['result']);
+        $receipt = $this->store->actionReceipts($this->session['id'], 'prepared-turn')['prepared-action'];
+        $this->assertSame('completed', $receipt['state']);
+        $this->assertSame($result, json_decode($receipt['document']['result']['output'], true));
+        $this->assertSame(1, $launches->count);
+        $this->assertStringContainsString('127.0.0.77', json_encode($launches->last['args']));
+        try {
+            $runtime->dispatchPreparedRequest($request);
+            $this->fail('Original prepared invocation was replayed.');
+        } catch (CliToolOutcomeUnknown) {
+            $this->assertSame(1, $launches->count);
+        }
+    }
+
+    public function test_prepared_recurring_transport_rejects_changed_target_rule_or_caller_before_claim(): void
+    {
+        [$runtime, $request, $launches] = $this->preparedRecurringFixture();
+        foreach (['root', 'rule_sha256', 'definition_sha256', 'worker_journal_sha256'] as $field) {
+            $variant = $request;
+            $variant[$field] .= 'changed';
+            try {
+                $runtime->dispatchPreparedRequest($variant);
+                $this->fail('Changed prepared binding dispatched.');
+            } catch (RuntimeException) {
+                $this->assertSame(0, $launches->count);
+                $this->assertSame([], $this->store->actionReceipts($this->session['id'], 'prepared-turn'));
+            }
+        }
+        $request['caller_binding']['session_id'] = 'other-owner';
+        try {
+            $runtime->dispatchPreparedRequest($request);
+            $this->fail('Different caller dispatched.');
+        } catch (RuntimeException) {
+            $this->assertSame(0, $launches->count);
+        }
+        [$runtime, $request, $launches] = $this->preparedRecurringFixture(privateAllowed: false);
+        try {
+            $runtime->dispatchPreparedRequest($request);
+            $this->fail('Unqualified private-data contract dispatched.');
+        } catch (RuntimeException) {
+            $this->assertSame(0, $launches->count);
+            $this->assertSame([], $this->store->actionReceipts($this->session['id'], 'prepared-turn'));
+        }
+    }
+
+    public function test_prepared_recurring_transport_missing_remote_receipt_preserves_unknown_parent_claim(): void
+    {
+        [$runtime, $request, $launches] = $this->preparedRecurringFixture(false);
+        try {
+            $runtime->dispatchPreparedRequest($request);
+            $this->fail('Missing durable remote receipt became completion.');
+        } catch (RuntimeException) {
+            $this->assertSame(1, $launches->count);
+            $this->assertSame('started', $this->store->actionReceipts($this->session['id'], 'prepared-turn')['prepared-action']['state']);
+        }
+        try {
+            $runtime->dispatchPreparedRequest($request);
+            $this->fail('Unknown parent claim was replayed.');
+        } catch (CliToolOutcomeUnknown) {
+            $this->assertSame(1, $launches->count);
+        }
+    }
+
+    public function test_prepared_recurring_transport_binds_current_selected_workflow_target_and_tree_before_claim(): void
+    {
+        foreach ([['cli.workflow_target', 'prod'], ['cli.tree_id', 9]] as [$setting, $value]) {
+            [$runtime, $request, $launches] = $this->preparedRecurringFixture();
+            $this->session['overrides'][$setting] = $value;
+            $this->session = $this->store->saveSession($this->session);
+            try {
+                $runtime->dispatchPreparedRequest($request);
+                $this->fail('Prepared invocation ignored the current selected workflow target/tree.');
+            } catch (RuntimeException) {
+                $this->assertSame(0, $launches->count);
+                $this->assertSame([], $this->store->actionReceipts($this->session['id'], 'prepared-turn'));
+            }
+        }
+        [$runtime, $request, $launches] = $this->preparedRecurringFixture();
+        $policy = (new CliConfiguration($this->store))->effective($this->session)['values']['cli.framework_services'];
+        $policy['tools']['fixture_echo']['tree_scoped'] = true;
+        $this->session['overrides']['cli.framework_services'] = $policy;
+        $this->session = $this->store->saveSession($this->session);
+        $request['rule_sha256'] = hash('sha256', json_encode($policy['tools']['fixture_echo']));
+        $request['tree_id'] = null;
+        try {
+            $runtime->dispatchPreparedRequest($request);
+            $this->fail('Tree scoped prepared invocation omitted the current tree.');
+        } catch (RuntimeException) {
+            $this->assertSame(0, $launches->count);
+            $this->assertSame([], $this->store->actionReceipts($this->session['id'], 'prepared-turn'));
+        }
+    }
+
+    private function preparedRecurringFixture(bool $receiptPresent = true, bool $privateAllowed = true): array
+    {
+        $policy = $this->policy;
+        $policy['targets']['dev'] = ['transport' => 'ssh', 'host' => 'test-worker@127.0.0.77',
+            'root' => '/qualified/dev/worktree', 'production' => false];
+        $policy['tools']['fixture_echo']['durable_receipts'] = true;
+        $policy['worker_receipts'] = ['path' => '/qualified/dev/journal.sqlite', 'session_id' => 'remote-owner',
+            'turn_id' => 'remote-turn', 'worker_id' => 'remote-worker'];
+        $tables = array_fill_keys(RegistrySnapshotValidator::REQUIRED_TABLES, []);
+        $tables['system_configs'] = [['section' => 'cli', 'config_key' => 'framework_services',
+            'config_value' => json_encode($policy), 'data_type' => 'json']];
+        $tables['agent_tool_registry'] = [['name' => 'fixture_echo', 'service_class' => CliFrameworkFixture::class,
+            'method' => 'echoOriginal', 'parameters' => json_encode($this->definition['parameters']), 'permissions' => '[]',
+            'enabled' => true, 'availability_status' => 'available', 'description' => 'fixture', 'risk_level' => 'read',
+            'category' => 'operations', 'requires_confirmation' => false, 'mcp_server' => null, 'mcp_tool' => null,
+            'privacy_class' => 'private_internal', 'allows_private_data' => $privateAllowed]];
+        $this->session['generation'] = $this->store->activate(['schema' => RegistrySnapshotValidator::SCHEMA, 'source' => 'prepared-fixture',
+            'exported_at' => gmdate('c'), 'tables' => $tables]);
+        $this->session['turns'] = [['id' => 'prepared-turn', 'status' => 'inProgress']];
+        $this->session['overrides']['cli.workflow_target'] = 'dev';
+        $this->session['overrides']['cli.tree_id'] = 4;
+        $this->session = $this->store->saveSession($this->session);
+        $definition = (new CliToolCatalog(new CliConfiguration($this->store)))->definitions($this->session)['fixture_echo'];
+        $arguments = ['text' => 'complete original tail'];
+        $request = ['schema' => 'plos.cli.framework-request.v1', 'tool' => 'fixture_echo', 'arguments' => $arguments,
+            'skill' => 'fixture', 'definition_sha256' => CliFrameworkServicePolicy::fingerprint($definition),
+            'rule_sha256' => hash('sha256', json_encode($policy['tools']['fixture_echo'])), 'root' => '/qualified/dev/worktree',
+            'target' => 'dev', 'tree_id' => 4, 'production' => false, 'approved' => true, 'remote_operation' => 'execute',
+            'worker_journal_sha256' => hash('sha256', json_encode($policy['worker_receipts'])),
+            'caller_binding' => ['session_id' => $this->session['id'], 'turn_id' => 'prepared-turn', 'action_id' => 'prepared-action',
+                'arguments_sha256' => hash('sha256', json_encode($arguments)), 'approval_scope_sha256' => str_repeat('a', 64)]];
+        $launches = (object) ['count' => 0, 'last' => null];
+        $runtime = new CliFrameworkServices($this->store, $this->session['id'], base_path(), '/usr/bin/node',
+            new CliArtifactStore($this->directory.'/prepared-artifacts'), function (array $launch) use ($launches, $receiptPresent): Process {
+                $launches->count++;
+                $launches->last = $launch;
+                $request = json_decode($launch['input'], true);
+                $original = ['success' => true, 'result' => 'complete original tail'];
+                $caller = $request['caller_binding'];
+                $remote = ['schema' => 'plos.cli.framework-remote-receipt.v1', 'success' => true, 'worker_id' => 'remote-worker',
+                    'action_id' => hash('sha256', json_encode([$caller['session_id'], $caller['turn_id'], $caller['action_id']])),
+                    'request_sha256' => hash('sha256', json_encode(array_diff_key($request, ['remote_operation' => true, 'approved' => true, 'control_existing' => true]))),
+                    'automatic_replay_allowed' => false, 'cancel_requested' => false, 'process_tree_termination_verified' => false,
+                    'state' => 'result_recorded', 'result_json' => json_encode($original), 'result_sha256' => hash('sha256', json_encode($original))];
+                $result = $original + ($receiptPresent ? ['framework_remote_receipt' => $remote] : []);
+                $packet = ['schema' => 'plos.cli.internal-operation.v1', 'completed' => true,
+                    'stdout_base64' => base64_encode(json_encode(['schema' => 'plos.cli.framework-result.v1', 'result' => $result]))];
+
+                return new Process([PHP_BINARY, '-r', 'fgets(STDIN); echo '.var_export(json_encode($packet), true).';']);
+            });
+
+        return [$runtime, $request, $launches];
+    }
+
     public function test_camel_case_arguments_do_not_relax_table_or_column_identifiers(): void
     {
         $policy = $this->policy;

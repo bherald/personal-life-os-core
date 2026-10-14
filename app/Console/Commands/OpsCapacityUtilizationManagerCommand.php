@@ -978,11 +978,21 @@ class OpsCapacityUtilizationManagerCommand extends Command
     {
         $jobName = (string) ($lane['job_name'] ?? '');
         $startedAt = now()->toIso8601String();
-        $exitCode = Artisan::call('scheduler:run', [
-            '--job' => $jobName,
-            '--force' => true,
-        ]);
-        $output = trim(Artisan::output());
+        $custodyRefusal = null;
+        try {
+            $exitCode = Artisan::call('scheduler:run', [
+                '--job' => $jobName,
+                '--force' => true,
+            ]);
+            $output = trim(Artisan::output());
+        } catch (Throwable $error) {
+            $custodyRefusal = ScheduledJobService::preDispatchCustodyRefusalReason($error);
+            if ($custodyRefusal === null) {
+                throw $error;
+            }
+            $exitCode = 1;
+            $output = $custodyRefusal;
+        }
 
         $lane['started'] = $exitCode === 0;
         $lane['exit_code'] = $exitCode;
@@ -998,7 +1008,7 @@ class OpsCapacityUtilizationManagerCommand extends Command
             'output_summary' => $this->commandOutputSummary($output),
         ];
         $lane['decision'] = $exitCode === 0 ? 'started' : 'blocked';
-        $lane['reason'] = $exitCode === 0 ? 'scheduler_run_completed' : 'scheduler_run_failed';
+        $lane['reason'] = $custodyRefusal ?? ($exitCode === 0 ? 'scheduler_run_completed' : 'scheduler_run_failed');
 
         return $lane;
     }
