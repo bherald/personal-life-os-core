@@ -251,6 +251,29 @@ return [
 
     'profiles' => [
 
+        // This profile grants only the separately evaluated scheduled official metadata GET.
+        // Selecting it never enables generic domains, tools, providers or MCP.
+        'upstream_public_metadata' => [
+            'allowed_tool_classes' => [], 'allowed_mcp_trust' => [],
+            'allowed_path_classes' => [], 'allowed_provider_classes' => [],
+            'allowed_remote_domain_classes' => [], 'confirmation' => [], 'audit' => 'always',
+            'description' => 'Official public metadata only; no generic Internet or model permission.',
+            'task_metadata_get' => [
+                'task' => 'whiteroom_monitor_due_report',
+                'allowed_parent_profiles' => ['default', 'resilient_local_first'],
+                'endpoints' => [
+                    'api.github.com' => [
+                        '~\A/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/commits\z~D' => 'github_commits',
+                        '~\A/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/license\z~D' => 'github_license',
+                        '~\A/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*/releases/latest\z~D' => 'empty',
+                        '~\A/repos/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\z~D' => 'empty',
+                    ],
+                    'huggingface.co' => ['~\A/api/models/[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\z~D' => 'hf_model'],
+                    'export.arxiv.org' => ['~\A/api/query\z~D' => 'arxiv_ids'],
+                ],
+            ],
+        ],
+
         'default' => [
             'allowed_tool_classes' => ['read', 'bounded-write', 'collaboration-write', 'command-safe', 'command-dangerous', 'deploy', 'external-network'],
             'allowed_mcp_trust' => ['plos_local', 'local_host', 'local_lan', 'internet'],

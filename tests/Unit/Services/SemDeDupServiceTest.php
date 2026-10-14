@@ -151,7 +151,7 @@ class SemDeDupServiceTest extends TestCase
     {
         $text = "  Exact José “source”—text…\r\n\t tail  ";
         $ai = Mockery::mock(AIService::class);
-        $ai->shouldReceive('generateEmbedding')->once()->with($text)->andReturn([
+        $ai->shouldReceive('generateEmbedding')->once()->with($text, ['preserve_embedding_input' => true])->andReturn([
             'success' => true, 'embedding' => [0.1, 0.2],
         ]);
         $connection = Mockery::mock();

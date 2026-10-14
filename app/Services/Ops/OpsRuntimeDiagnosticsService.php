@@ -109,7 +109,7 @@ class OpsRuntimeDiagnosticsService
         }
 
         $jobs = [];
-        $counts = ['total' => 0, 'success' => 0, 'failed' => 0, 'running' => 0, 'timeout' => 0];
+        $counts = ['total' => 0, 'success' => 0, 'failed' => 0, 'running' => 0, 'timeout' => 0, 'unknown' => 0];
         $missingMetadataCount = 0;
 
         foreach ($rows as $row) {

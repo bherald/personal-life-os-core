@@ -52,6 +52,14 @@ class FilesImageAuditCommand extends Command
                             $report['state'] = $timedOut ? 'timed_out' : ($result->successful() ? 'completed_slice' : 'failed');
                             $report['reason'] = $timedOut ? 'worker_hard_timeout' : ($result->successful() ? null : 'worker_nonzero_exit');
                             $report['worker_exit_code'] = $result->exitCode();
+                            $worker = $this->workerAggregate($result->output());
+                            if ($worker !== null) {
+                                $report['worker'] = $worker;
+                                if (! $timedOut && in_array($worker['state'], ['held', 'failed', 'timed_out'], true)) {
+                                    $report['state'] = $worker['state'] === 'timed_out' ? 'timed_out' : 'failed';
+                                    $report['reason'] = $worker['reason'] ?? 'worker_nonzero_exit';
+                                }
+                            }
                         } catch (ProcessTimedOutException) {
                             $report['state'] = 'timed_out';
                             $report['reason'] = 'worker_hard_timeout';
@@ -111,10 +119,14 @@ class FilesImageAuditCommand extends Command
             throw new RuntimeException('Unexpected audit aggregate state.');
         }
         $reason = $result['reason'] ?? null;
-        if ($reason !== null && (! is_string($reason) || preg_match('/^[a-z][a-z_]{0,47}$/D', $reason) !== 1)) {
+        if ($reason !== null && (! is_string($reason) || ! in_array($reason, FileRegistryImageAuditService::AGGREGATE_REASONS, true))) {
             throw new RuntimeException('Unexpected audit aggregate reason.');
         }
         $safe = ['state' => $result['state'], 'reason' => $reason];
+        $databaseError = FileRegistryImageAuditService::sanitizeDatabaseError($result['database_error'] ?? null);
+        if ($databaseError !== []) {
+            $safe['database_error'] = $databaseError;
+        }
         if (($result['completion_scope'] ?? null) === 'captured_maximum_selector_ids') {
             $safe['completion_scope'] = 'captured_maximum_selector_ids';
         }
@@ -152,5 +164,17 @@ class FilesImageAuditCommand extends Command
         $safe['next_attempt_at'] = $next;
 
         return $safe;
+    }
+
+    /** Child stdout is untrusted; only the existing aggregate whitelist can cross this boundary. */
+    private function workerAggregate(string $output): ?array
+    {
+        try {
+            $decoded = json_decode($output, true, 32, JSON_THROW_ON_ERROR);
+
+            return is_array($decoded) ? $this->aggregate($decoded) : null;
+        } catch (Throwable) {
+            return null;
+        }
     }
 }

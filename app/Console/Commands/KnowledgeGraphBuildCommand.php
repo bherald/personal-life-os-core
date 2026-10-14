@@ -6,6 +6,7 @@ use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\HyperGraphService;
 use App\Services\KnowledgeGraphControllerBatchLeaseService;
 use App\Services\KnowledgeGraphService;
+use App\Services\SystemConfigService;
 use Exception;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Cache;
@@ -35,7 +36,7 @@ class KnowledgeGraphBuildCommand extends Command
         {--order=newest : Processing order: newest, oldest, or stale-first}
         {--budget-minutes= : Override the runtime budget in minutes for a manual catch-up run}
         {--prefer-external : Skip Ollama, use external APIs first}
-        {--instance=primary : Pin Ollama route: primary local, secondary local, managed-secondary controller lease, or any}
+        {--instance= : Registered route alias; omitted uses the table default, managed-secondary uses its exact controller lease}
         {--model-role=fast : Model role to resolve: fast, standard, quality}
         {--with-hyperedges : GR-11: Also extract N-ary hyperedges for each document}';
 
@@ -77,9 +78,24 @@ class KnowledgeGraphBuildCommand extends Command
         $dryRun = $this->option('dry-run');
         $preferExternal = $this->option('prefer-external');
         $withHyperedges = $this->option('with-hyperedges');
-        $instance = strtolower((string) ($this->option('instance') ?: 'primary'));
-        if (! in_array($instance, ['primary', 'secondary', 'managed-secondary', 'any'], true)) {
-            $this->error("Invalid --instance value '{$instance}'. Expected one of: primary, secondary, managed-secondary, any.");
+        $routing = app(SystemConfigService::class)->llmRoutingBinding('knowledge_graph');
+        $aliases = $routing['aliases'] ?? [];
+        $instance = $this->option('instance') ?? ($routing['default_alias'] ?? null);
+        $routeAlias = $instance;
+        if ($instance === 'managed-secondary') {
+            $managedInstance = $routing['managed']['instance_id'] ?? null;
+            $routeAlias = null;
+            foreach (is_array($aliases) ? $aliases : [] as $alias => $members) {
+                if (is_string($managedInstance) && $managedInstance !== '' && $members === [$managedInstance]) {
+                    $routeAlias = $alias;
+                    break;
+                }
+            }
+        }
+        if (! is_string($routeAlias) || $routeAlias === '' || ! is_array($aliases)
+            || ! array_key_exists($routeAlias, $aliases)
+            || ($aliases[$routeAlias] !== null && (! is_array($aliases[$routeAlias]) || $aliases[$routeAlias] === []))) {
+            $this->error('Knowledge-graph route alias is unavailable in the registered table binding.');
 
             return Command::FAILURE;
         }
@@ -198,7 +214,7 @@ class KnowledgeGraphBuildCommand extends Command
                 $maxChars,
                 $minConfidence,
                 $preferExternal,
-                $instance,
+                $routeAlias,
                 $modelRole,
                 $withHyperedges,
                 $sleepMs,
@@ -232,7 +248,7 @@ class KnowledgeGraphBuildCommand extends Command
                         'prefer_external' => $preferExternal,
                         'skip_recursive' => true,
                         'scheduled_batch' => true,
-                        'preferred_instance' => $managedModelHost ? 'secondary' : $instance,
+                        'preferred_instance' => $routeAlias,
                         'model_role_override' => $modelRole,
                         'managed_model_host' => $managedModelHost,
                     ]);

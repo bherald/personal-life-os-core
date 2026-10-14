@@ -1899,10 +1899,27 @@ PROMPT;
      * @param  int  $tokenLimit  Max tokens per chunk
      * @return array Array of chunk strings
      */
-    private function splitForEmbedding(string $text, int $tokenLimit): array
+    private function splitForEmbedding(string $text, int $tokenLimit, bool $preserveInput = false): array
     {
         $chunkCharLimit = (int) ($tokenLimit * 0.60 * 1.5); // 60% safety margin, 1.5 chars/token (handles code/JSON BPE worst-case)
         $overlapChars = (int) ($chunkCharLimit * 0.10);
+
+        if ($preserveInput) {
+            if ($chunkCharLimit < 1 || ! mb_check_encoding($text, 'UTF-8')) {
+                throw new InferenceAdmissionException('Strict embedding chunk input or context is unavailable.');
+            }
+            $chunks = [];
+            for ($offset = 0; $offset < strlen($text);) {
+                $chunk = mb_strcut($text, $offset, $chunkCharLimit, 'UTF-8');
+                if ($chunk === '') {
+                    throw new InferenceAdmissionException('Selected embedding context cannot contain the next UTF-8 character.');
+                }
+                $chunks[] = $chunk;
+                $offset += strlen($chunk);
+            }
+
+            return $chunks;
+        }
 
         if (strlen($text) <= $chunkCharLimit) {
             return [$text];
@@ -2125,6 +2142,10 @@ PROMPT;
                 $options = array_replace($options, (self::$workflowEmbeddingModelResolver)($options));
             }
         } catch (RuntimeException $error) {
+            if (InferenceAdmissionException::isAdmissionFailure($error)) {
+                throw $error;
+            }
+
             return ['success' => false, 'embedding' => null, 'provider' => null,
                 'error' => $error->getMessage(), 'duration_ms' => 0, 'fallback_suppressed' => true];
         }
@@ -2173,7 +2194,10 @@ PROMPT;
             $estimatedTokens = $this->estimateTokenCount($content);
 
             // Auto-chunk if text exceeds this provider's context limit (70% threshold guards against token underestimate for code/JSON)
-            if (! $preserveInput && $estimatedTokens > (int) ($tokenLimit * 0.70)) {
+            // The admitted table-selected provider must retain originals even without a caller override.
+            $strictChunks = $preserveInput && $isOllama
+                && strlen($content) > (int) ($tokenLimit * 0.60 * 1.5);
+            if ($strictChunks || (! $preserveInput && $estimatedTokens > (int) ($tokenLimit * 0.70))) {
                 $result = $this->generateChunkedEmbeddingForProvider($content, $tokenLimit, $provider, $options);
                 if (($result['fallback_suppressed'] ?? false) === true) {
                     return array_merge($result, ['duration_ms' => (int) ((microtime(true) - $startTime) * 1000)]);
@@ -2320,7 +2344,7 @@ PROMPT;
         $startTime = microtime(true);
         $isOllama = ($provider['instance_type'] ?? '') === 'ollama';
 
-        $chunks = $this->splitForEmbedding($content, $tokenLimit);
+        $chunks = $this->splitForEmbedding($content, $tokenLimit, (bool) ($traceConfig['preserve_embedding_input'] ?? false));
         $chunkCount = count($chunks);
 
         Log::info('AIService: Auto-chunked embedding for provider', [
@@ -2332,10 +2356,8 @@ PROMPT;
         ]);
 
         $embeddings = [];
-        $resultProvider = null;
-        $instanceId = null;
-        $model = null;
-        $revision = null;
+        $chunkDimensions = null;
+        $chunkIdentity = null;
 
         foreach ($chunks as $index => $chunk) {
             if ($isOllama) {
@@ -2357,11 +2379,36 @@ PROMPT;
                 ];
             }
 
-            $embeddings[] = $result['embedding'];
-            $resultProvider = $resultProvider ?? $result['provider'];
-            $instanceId = $instanceId ?? ($result['instance_id'] ?? $result['provider']);
-            $model = $model ?? $result['model'];
-            $revision = $revision ?? ($result['revision'] ?? null);
+            $vector = $result['embedding'] ?? null;
+            if (! is_array($vector) || ! array_is_list($vector) || $vector === []
+                || ($chunkDimensions !== null && count($vector) !== $chunkDimensions)) {
+                throw new InferenceAdmissionException('Embedding chunk vector shape or dimensions are unverified.');
+            }
+            foreach ($vector as $value) {
+                if ((! is_int($value) && ! is_float($value)) || ! is_finite((float) $value)) {
+                    throw new InferenceAdmissionException('Embedding chunk vector contains an unverified value.');
+                }
+            }
+            $identity = [
+                'provider' => $result['provider'] ?? null,
+                'instance_id' => $result['instance_id'] ?? $result['provider'] ?? null,
+                'model' => $result['model'] ?? null,
+                'revision' => $result['revision'] ?? null,
+            ];
+            foreach (['provider', 'instance_id', 'model'] as $field) {
+                if (! is_string($identity[$field]) || trim($identity[$field]) === '') {
+                    throw new InferenceAdmissionException('Embedding chunk identity is unverified.');
+                }
+            }
+            if ($identity['revision'] !== null && (! is_string($identity['revision']) || trim($identity['revision']) === '')) {
+                throw new InferenceAdmissionException('Embedding chunk revision is unverified.');
+            }
+            if ($chunkIdentity !== null && $identity !== $chunkIdentity) {
+                throw new InferenceAdmissionException('Embedding chunk provider, instance, model or revision changed.');
+            }
+            $chunkIdentity ??= $identity;
+            $chunkDimensions ??= count($vector);
+            $embeddings[] = $vector;
         }
 
         $pooledEmbedding = $this->meanPoolEmbeddings($embeddings);
@@ -2369,15 +2416,21 @@ PROMPT;
         return [
             'success' => true,
             'embedding' => $pooledEmbedding,
-            'provider' => $resultProvider,
-            'instance_id' => $instanceId,
-            'model' => $model,
-            'revision' => $revision,
+            'provider' => $chunkIdentity['provider'],
+            'instance_id' => $chunkIdentity['instance_id'],
+            'model' => $chunkIdentity['model'],
+            'revision' => $chunkIdentity['revision'],
             'error' => null,
             'chunked' => true,
             'chunk_count' => $chunkCount,
             'duration_ms' => (int) ((microtime(true) - $startTime) * 1000),
-        ];
+        ] + (empty($traceConfig['preserve_embedding_input']) ? [] : [
+            'embedding_input_hash' => hash('sha256', $content),
+            'embedding_input_bytes' => strlen($content),
+            'preserved_input_chunks' => array_map(static fn (string $chunk): array => [
+                'sha256' => hash('sha256', $chunk), 'bytes' => strlen($chunk),
+            ], $chunks),
+        ]);
     }
 
     /**
@@ -3198,6 +3251,9 @@ PROMPT;
                 } catch (InferenceAdmissionException $e) {
                     return $this->managedEmbeddingFailure($e, $baseInstanceId, $model);
                 } catch (Exception $e) {
+                    if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                        throw $e;
+                    }
                     $typed = $e instanceof AIServiceException
                         ? $e
                         : AIExceptionFactory::fromMessage($e->getMessage(), $providerId, $model);
@@ -3230,6 +3286,9 @@ PROMPT;
         } catch (InferenceAdmissionException $e) {
             return $this->managedEmbeddingFailure($e, $baseInstanceId, $model);
         } catch (Exception $e) {
+            if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                throw $e;
+            }
             $this->recordFailure($providerId);
             $this->recordFailure($baseInstanceId, $e->getMessage(), null, $this->modelTelemetry(
                 $traceConfig,
@@ -3243,8 +3302,8 @@ PROMPT;
 
     private function managedEmbeddingFailure(InferenceAdmissionException $error, string $provider, ?string $model): array
     {
-        return ['success' => false, 'embedding' => null, 'provider' => $provider, 'model' => $model,
-            'error' => $error->getMessage(), 'fallback_suppressed' => true];
+        // Preserve execution custody across callers; an ordinary error array loses the typed stop.
+        throw $error;
     }
 
     private function resolveEmbeddingTimeoutSeconds(array $instance, array $ollamaStatus): int
@@ -3343,6 +3402,9 @@ PROMPT;
             } catch (InferenceAdmissionException $e) {
                 return $this->managedEmbeddingFailure($e, $provider['id'], $provider['embedding_model'] ?? null);
             } catch (Exception $e) {
+                if (InferenceAdmissionException::isAdmissionFailure($e)) {
+                    throw $e;
+                }
                 $typed = $e instanceof AIServiceException
                     ? $e
                     : AIExceptionFactory::fromMessage($e->getMessage(), $providerId, $provider['embedding_model'] ?? 'unknown');

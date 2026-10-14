@@ -104,3 +104,23 @@ License-snapshot checks bind reviewed registry metadata to exact npm package
 versions. Installed and absent manifests produce the same reviewed entries; a
 conflicting installed license is refused. Keep the license/provenance checks
 enabled when preparing a clean public installation.
+
+## Framework corrections and upgrade
+
+Run the included migrations through your reviewed upgrade procedure. Scheduled
+status supports `unknown`; rollback refuses to coerce retained unknown history.
+The existing scheduler recovery methods consume trusted persisted proof with
+exact read-back. Expiry, missing parent processes and quiet queues alone grant
+neither release nor replay. Preserve original outputs, custody and receipts.
+
+Omitting `--instance` from `rag:build-knowledge-graph` now uses
+`routing.llm_bindings.knowledge_graph.default_alias`. Explicit aliases remain
+table-registered; the compatibility `managed-secondary` mode resolves its exact
+registered provider and controller lease. Missing bindings stop processing.
+
+Verbatim document publication preserves embedding inputs across insertion and
+replacement. Do not treat matching vector dimensions as matching model space,
+relabel historical vectors, or clear uncertain publication holds during upgrades.
+Image-audit workers retain safe diagnostic codes; raw failures remain private.
+For the optional disabled upstream metadata capability, see
+[configuration and boundaries](upstream-metadata-preparation.md).

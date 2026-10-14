@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -26,6 +27,10 @@ class RagEmbeddingProvenanceService
         $provider = $this->nullableString($embeddingResult['provider'] ?? null);
         $instanceId = $this->nullableString($embeddingResult['instance_id'] ?? null) ?? $provider;
         $model = $this->nullableString($embeddingResult['model'] ?? null);
+        $revision = $embeddingResult['revision'] ?? null;
+        if ($revision !== null && (! is_string($revision) || trim($revision) === '')) {
+            throw new InferenceAdmissionException('Embedding revision provenance is unverified.');
+        }
         $chunked = (bool) ($embeddingResult['chunked'] ?? false);
         $chunkCount = $chunked ? max(1, (int) ($embeddingResult['chunk_count'] ?? 1)) : 1;
 
@@ -40,16 +45,46 @@ class RagEmbeddingProvenanceService
             'chunk_count' => $chunkCount,
             'pooling' => $chunked ? 'arithmetic_mean_v1' : 'none',
         ];
+        // Keep legacy unknown-revision fingerprints compatible; never invent an artifact.
+        if ($revision !== null) {
+            $contract['revision'] = $revision;
+        }
+        $inputChunks = $embeddingResult['preserved_input_chunks'] ?? null;
+        if ($inputChunks !== null) {
+            if (! $chunked || ! is_array($inputChunks) || ! array_is_list($inputChunks) || count($inputChunks) !== $chunkCount
+                || ($embeddingResult['embedding_input_hash'] ?? null) !== $inputHash
+                || ! is_int($embeddingResult['embedding_input_bytes'] ?? null) || $embeddingResult['embedding_input_bytes'] < 1) {
+                throw new InferenceAdmissionException('Strict embedding input partition is unverified.');
+            }
+            $totalBytes = 0;
+            foreach ($inputChunks as $chunk) {
+                if (! is_array($chunk) || count($chunk) !== 2 || ! is_string($chunk['sha256'] ?? null)
+                    || ! preg_match('/^[a-f0-9]{64}$/D', $chunk['sha256']) || ! is_int($chunk['bytes'] ?? null) || $chunk['bytes'] < 1) {
+                    throw new InferenceAdmissionException('Strict embedding input chunk is unverified.');
+                }
+                $totalBytes += $chunk['bytes'];
+            }
+            if ($totalBytes !== $embeddingResult['embedding_input_bytes']) {
+                throw new InferenceAdmissionException('Strict embedding input byte coverage is unverified.');
+            }
+            $contract['chunking'] = 'utf8_contiguous_v1';
+            $contract['pooling'] = $chunkCount > 1 ? 'arithmetic_mean_l2_normalized_v1' : 'none';
+        }
         $contractFingerprint = hash('sha256', json_encode($contract, JSON_THROW_ON_ERROR));
 
         $metadata ??= [];
         $metadata[self::METADATA_KEY] = [
             ...$contract,
+            'revision' => $revision,
             'contract_fingerprint' => $contractFingerprint,
             'document_fingerprint' => hash('sha256', $inputHash.'|'.$contractFingerprint),
             'input_hash' => $inputHash,
             'recorded_at' => now()->utc()->format('Y-m-d\TH:i:s\Z'),
-        ];
+        ] + ($inputChunks === null ? [] : [
+            'input_bytes' => $embeddingResult['embedding_input_bytes'],
+            'input_chunks' => $inputChunks,
+            'input_partition_hash' => hash('sha256', json_encode($inputChunks, JSON_THROW_ON_ERROR)),
+        ]);
 
         return $metadata;
     }

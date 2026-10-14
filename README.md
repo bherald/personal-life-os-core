@@ -4,20 +4,22 @@ A local-first research and automation workbench. PLOS brings documents, web
 sources, AI-assisted analysis, workflows and human review into one system on
 hardware you control.
 
-**Release status:** v2.1, October 12, 2026.
+**Release status:** v2.1, October 14, 2026.
 [Release notes](docs/releases/v2.1.md)
 and [verification status](docs/public-release-readiness.md) distinguish shipped
 source from tested installation and research outcomes.
 
 Public CI installs and probes Bubblewrap for its Linux MCP isolation fixture;
 the focused-test job uses Ubuntu 22.04. Public Readiness and Repository Governance
-passed for the code and test snapshot at `1df63ea1` on October 13, 2026.
+passed for the preceding source snapshot at `41d2407` on October 14, 2026.
+The additional corrections below have isolated source checks; hosted verification
+follows their publication.
 
 Laravel 12 · Vue · MySQL/MariaDB · PostgreSQL + pgvector · Redis · Docker ·
 operator-configured local AI. Application code is MIT licensed; third-party
 components and demo assets retain their [separate terms](THIRD_PARTY.md).
 
-The prepared routing follow-up uses table-owned provider/model bindings and
+Routing uses table-owned provider/model bindings and
 retires prompt-compressor integration while retaining complete original input.
 See [routing and upgrade notes](docs/table-owned-llm-routing.md).
 
@@ -25,6 +27,13 @@ Offline vision retains its registered instance/model, MCP sidecar defaults come
 from Laravel table policy, and enabled research requires an explicit provider
 and model role. Matching MCP metadata and isolated regression checks accompany
 these route-default corrections.
+
+Verbatim RAG publication preserves complete embedding inputs and verifies chunk
+model/revision consistency. Knowledge-graph batches honor registered table route
+defaults. Scheduled recovery retains unknown domain outcomes after verified
+physical closure, and image audits report bounded error codes without private
+exception text. Optional upstream metadata preparation uses explicit public GET
+scope and remains disabled until configured by the installation operator.
 
 ## Research with sources you can inspect
 

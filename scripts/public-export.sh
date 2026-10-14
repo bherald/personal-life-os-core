@@ -191,6 +191,7 @@ includes=(
     docs/public-release/privacy-secret-scan-baseline-2026-10-12.md
     docs/schema-reference.md
     docs/troubleshooting.md
+    docs/upstream-metadata-preparation.md
     mcp-server/.env.example
     mcp-server/README.md
     mcp-server/package-lock.json
@@ -301,6 +302,17 @@ includes=(
     tests/Unit/Services/RAGPublicationGuardTest.php
     tests/Unit/Services/RAGServiceTest.php
     tests/Unit/Services/SemDeDupServiceTest.php
+    tests/Unit/Services/AIServiceManagedEmbeddingFailureTest.php
+    tests/Unit/Services/RagEmbeddingProvenanceServiceTest.php
+    tests/Unit/Services/FileRegistryImageAuditServiceTest.php
+    tests/Unit/Services/UpstreamMetadataNetworkScopeTest.php
+    tests/Unit/Services/UpstreamSourceDriftRuntimePolicyServiceTest.php
+    tests/Unit/Services/UpstreamSourceDriftServiceTest.php
+    tests/Unit/Commands/FilesImageAuditCommandTest.php
+    tests/Unit/Commands/KnowledgeGraphBuildCommandTest.php
+    tests/Unit/Commands/WhiteroomMonitorCommandTest.php
+    tests/Feature/Scheduler/ScheduledUnknownPhysicalClosureTest.php
+    tests/Feature/Services/UpstreamScheduledPreparationTest.php
     tests/Unit/Services/YouTubeTranscriptStorageServiceTest.php
     tests/Unit/Nodes/YouTube/YouTubeNightlyPipelineTest.php
     tests/Unit/Nodes/YouTube/YouTubeKeyPointsScopeTest.php

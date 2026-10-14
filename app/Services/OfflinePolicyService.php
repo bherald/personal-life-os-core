@@ -1049,6 +1049,51 @@ class OfflinePolicyService
         return $decision;
     }
 
+    /** The explicit scheduled metadata grant cannot authorize generic domains or private payloads. */
+    public function evaluateTaskMetadataGet(string $task, string $url, array $query, string $profile, string $method = 'GET'): PolicyDecision
+    {
+        $deny = fn () => PolicyDecision::deny('Task metadata request is outside its qualified public GET scope.', $profile);
+        try {
+            $scope = $this->profileDef($profile)['task_metadata_get'] ?? null;
+            $parts = parse_url($url);
+            $network = CliWorkflowExecutionScope::current()['settings']['network']['mode'] ?? $this->policySetting('cli.network');
+            if (! is_array($scope) || ($scope['task'] ?? null) !== $task || $method !== 'GET'
+                || ! $this->isInternetAccessEnabled() || $this->isOfflineModeActive() || $network !== 'online'
+                || ! in_array($this->activeProfile(), $scope['allowed_parent_profiles'] ?? [], true)
+                || ! is_array($parts) || ($parts['scheme'] ?? null) !== 'https'
+                || array_intersect(['user', 'pass', 'port', 'query', 'fragment'], array_keys($parts)) !== []) {
+                return $deny();
+            }
+            $queryType = null;
+            foreach ($scope['endpoints'][$parts['host'] ?? ''] ?? [] as $pattern => $type) {
+                if (preg_match($pattern, $parts['path'] ?? '') === 1) {
+                    $queryType = $type;
+                    break;
+                }
+            }
+            $valid = match ($queryType) {
+                'empty' => $query === [],
+                'github_commits' => $query === ['per_page' => 1],
+                'github_license' => array_keys($query) === ['ref'] && is_string($query['ref']) && preg_match('/\A[a-f0-9]{40,64}\z/D', $query['ref']) === 1,
+                'hf_model' => $query === ['expand' => ['sha', 'lastModified', 'cardData']],
+                'arxiv_ids' => array_keys($query) === ['id_list', 'max_results'] && is_string($query['id_list'])
+                    && is_int($query['max_results']) && $query['max_results'] >= 1 && $query['max_results'] <= 10
+                    && count(explode(',', $query['id_list'])) === $query['max_results']
+                    && preg_match('~\A(?:[0-9]{4}\.[0-9]{4,5}|[a-z][a-z.-]*/[0-9]{7})(?:v[1-9][0-9]*)?(?:,(?:[0-9]{4}\.[0-9]{4,5}|[a-z][a-z.-]*/[0-9]{7})(?:v[1-9][0-9]*)?)*\z~D', $query['id_list']) === 1,
+                default => false,
+            };
+            if (! $valid) {
+                return $deny();
+            }
+            $decision = PolicyDecision::allow('Official public task metadata GET is qualified.', $profile, remoteDomainClass: $this->classifyRemoteDomain($parts['host']));
+            $this->auditOperation($decision, 'task_metadata_get:'.$task, ['remote_domain' => $parts['host']]);
+
+            return $decision;
+        } catch (\Throwable) {
+            return $deny();
+        }
+    }
+
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------

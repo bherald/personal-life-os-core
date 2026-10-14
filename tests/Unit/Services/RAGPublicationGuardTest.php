@@ -43,7 +43,8 @@ class RAGPublicationGuardTest extends TestCase
         $text = "  Exact source\r\n\tbytes…  ";
         $stop = new \RuntimeException('original_source_changed');
         $ai = Mockery::mock(AIService::class);
-        $ai->shouldReceive('generateEmbedding')->once()->withArgs(fn ($input) => $input === $text)
+        $ai->shouldReceive('generateEmbedding')->once()->withArgs(fn ($input, $options = []) => $input === $text
+            && ($options['preserve_embedding_input'] ?? false) === true)
             ->andReturnUsing(function () use (&$prepared): array {
                 $prepared = true;
 

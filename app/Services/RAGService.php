@@ -504,6 +504,9 @@ class RAGService
 
             // Generate embedding using AIService with full resilience (retry, circuit breaker)
             $embeddingOptions = [];
+            if ($preserveContent) {
+                $embeddingOptions['preserve_embedding_input'] = true;
+            }
             if (array_key_exists('allow_cpu_fallback', $options)) {
                 $embeddingOptions['allow_cpu_fallback'] = (bool) $options['allow_cpu_fallback'];
             }

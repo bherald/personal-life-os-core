@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -11,6 +12,18 @@ use Throwable;
 /** Scheduled inspection adapter. Never writes originals, identities, catalog hashes or FT links. */
 class FileRegistryImageAuditService
 {
+    /** Closed reporting vocabulary; exception messages and private code-shaped strings are not reasons. */
+    public const AGGREGATE_REASONS = [
+        'image_audit_policy_unavailable', 'image_audit_policy_invalid', 'image_audit_source_batch_held',
+        'image_audit_review_retention_unavailable', 'image_audit_finding_too_large',
+        'image_audit_local_root_unavailable', 'image_audit_custody_policy_changed',
+        'image_audit_slice_held', 'image_audit_database_query_failed',
+        'epoch_interval_pending', 'epoch_due', 'conflicting_audit_options', 'maintenance_mode',
+        'invalid_audit_bounds', 'audit_scheduler_admission_invalid', 'audit_timeout_fence_invalid',
+        'independent_timeout_unavailable', 'audit_admission_or_reporting_unavailable',
+        'worker_hard_timeout', 'worker_nonzero_exit',
+    ];
+
     public function __construct(
         protected FileRegistryImageAuditStateService $state,
         protected FileRegistryImageSourceAuditService $sources,
@@ -61,7 +74,7 @@ class FileRegistryImageAuditService
 
             return $this->safeStatus($status);
         } catch (Throwable $e) {
-            return $this->emptyStatus('held', $this->reason($e));
+            return $this->emptyStatus('held', $this->reason($e)) + $this->databaseError($e);
         }
     }
 
@@ -136,7 +149,8 @@ class FileRegistryImageAuditService
                     // Expiry recovery owns unresolved custody; never force-release another owner.
                 }
             }
-            Log::warning('Image audit slice held', ['exception_class' => $e::class]);
+            $databaseError = $this->databaseError($e);
+            Log::warning('Image audit slice held', ['exception_class' => $e::class, 'reason' => $this->reason($e)] + $databaseError);
 
             $status = $this->emptyStatus('held', $this->reason($e));
             if (isset($ensured['status']['checkpoint_id'])) {
@@ -147,7 +161,7 @@ class FileRegistryImageAuditService
                 }
             }
 
-            return [...$status, 'state' => 'held', 'reason' => $this->reason($e), 'processed' => $processed];
+            return [...$status, 'state' => 'held', 'reason' => $this->reason($e), 'processed' => $processed, ...$databaseError];
         }
     }
 
@@ -303,7 +317,43 @@ class FileRegistryImageAuditService
 
     protected function reason(Throwable $e): string
     {
-        return preg_match('/^image_audit_[a-z_]{1,80}$/D', $e->getMessage()) ? $e->getMessage() : 'image_audit_slice_held';
+        if ($e instanceof QueryException) {
+            return 'image_audit_database_query_failed';
+        }
+
+        return in_array($e->getMessage(), self::AGGREGATE_REASONS, true) ? $e->getMessage() : 'image_audit_slice_held';
+    }
+
+    /** Never retain the errorInfo message, query, bindings, connection name or source identifiers. */
+    private function databaseError(Throwable $error): array
+    {
+        if (! $error instanceof QueryException) {
+            return [];
+        }
+        $info = $error->errorInfo ?? null;
+        $safe = self::sanitizeDatabaseError(is_array($info)
+            ? ['sqlstate' => $info[0] ?? null, 'driver_code' => $info[1] ?? null] : null);
+
+        return $safe === [] ? [] : ['database_error' => $safe];
+    }
+
+    /** Revalidate the same primitive-only contract at the child/parent process boundary. */
+    public static function sanitizeDatabaseError(mixed $error): array
+    {
+        if (! is_array($error)) {
+            return [];
+        }
+        $safe = [];
+        if (is_string($error['sqlstate'] ?? null) && preg_match('/^[A-Z0-9]{5}$/D', $error['sqlstate']) === 1) {
+            $safe['sqlstate'] = $error['sqlstate'];
+        }
+        $code = $error['driver_code'] ?? null;
+        if ((is_int($code) || is_string($code) && preg_match('/^[0-9]{1,5}$/D', $code) === 1)
+            && (int) $code >= 0 && (int) $code <= 65535) {
+            $safe['driver_code'] = (int) $code;
+        }
+
+        return $safe;
     }
 
     protected function encode(array $value): string

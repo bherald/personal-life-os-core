@@ -148,3 +148,19 @@ privacy/profile/role admission before calling its connector. Local-only requests
 are held, malformed active profiles retain the existing local hold, and a
 required provider must match the selected fallback. The public MCP inventory
 excludes the cancelled privileged maintenance adapter and its host helper.
+
+### Complete embeddings and proof-bound recovery
+
+Verbatim RAG insert/update paths request complete embedding input. Oversized
+Ollama input uses contiguous UTF-8 chunks; every original byte remains covered.
+Pooling requires consistent provider, model, revision and vector dimensions, and
+provenance retains the original input hash and partition. Typed uncertain
+execution stops preserve their exception through publication and prevent retries
+or provider/CPU substitution.
+
+Knowledge-graph batch defaults and aliases resolve from registered table policy.
+Scheduled physical closure requires trusted persisted evidence and exact
+snapshot comparison. It records `unknown` without inventing domain success or
+failure; a fresh idempotent cycle needs a separate empty-scope admission proof.
+Image-audit diagnostics expose approved categories, SQLSTATE and numeric driver
+codes while withholding raw SQL, exception messages and private filesystem data.

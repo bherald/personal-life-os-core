@@ -2,6 +2,8 @@
 
 namespace App\Console\Commands;
 
+use App\Services\UpstreamSourceDriftRuntimePolicyService;
+use App\Services\UpstreamSourceDriftService;
 use App\Services\WhiteroomProjectRegistryService;
 use Carbon\CarbonImmutable;
 use Illuminate\Console\Command;
@@ -16,6 +18,7 @@ class WhiteroomMonitorCommand extends Command
         {--registry=* : Filter by registry source}
         {--source-type=* : Filter by one or more source types, such as repository, paper, or standard}
         {--due : Show only sources due for review}
+        {--prepare : Persist bounded current metadata checks and backend changed-source preparation records}
         {--compact : With --format=json, emit scheduler-safe aggregate output}
         {--limit=0 : Limit returned projects, 0 means no limit}
         {--as-of= : Reference date for due calculations, YYYY-MM-DD}';
@@ -54,6 +57,30 @@ class WhiteroomMonitorCommand extends Command
             $this->error('Invalid --limit. Use 0 or a positive integer.');
 
             return self::FAILURE;
+        }
+
+        if ((bool) $this->option('prepare')) {
+            if ($asOf !== CarbonImmutable::now()->toDateString() || $this->option('due') || $limit !== 0) {
+                $this->error('Preparation uses current time, durable cadence and the table-owned limit; omit --due, --as-of and --limit.');
+
+                return self::FAILURE;
+            }
+            try {
+                $result = app(UpstreamSourceDriftService::class)->prepareScheduled(
+                    $this->filteredProjects($registry, $asOf),
+                    app(UpstreamSourceDriftRuntimePolicyService::class)->preparation(),
+                );
+                if ((bool) $this->option('compact')) {
+                    unset($result['checks']);
+                }
+                $this->line(json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+                return self::SUCCESS;
+            } catch (\Throwable $e) {
+                $this->error('Upstream preparation held: source, storage or policy qualification failed.');
+
+                return self::FAILURE;
+            }
         }
 
         $projects = $this->filteredProjects($registry, $asOf);

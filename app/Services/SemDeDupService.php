@@ -371,7 +371,9 @@ class SemDeDupService
                     throw new \RuntimeException('Verbatim RAG indexing requires nonempty content.');
                 }
             }
-            $result = $this->aiService->generateEmbedding($indexContent);
+            $result = $preserveContent
+                ? $this->aiService->generateEmbedding($indexContent, ['preserve_embedding_input' => true])
+                : $this->aiService->generateEmbedding($indexContent);
             if (! $result['success']) {
                 if (! empty($result['controller_failure']) && is_array($result['controller_failure'])) {
                     throw new InferenceAdmissionException('Embedding admission held', controllerFailure: $result['controller_failure']);

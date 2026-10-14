@@ -22,6 +22,7 @@ class UpstreamSourceDriftRuntimePolicyService
      *     max_limit:int,
      *     connect_timeout_seconds:int,
      *     request_timeout_seconds:int,
+     *     response_max_bytes:int,
      *     max_request_timeout_seconds:int
      * }
      */
@@ -45,6 +46,7 @@ class UpstreamSourceDriftRuntimePolicyService
                 'request_timeout_seconds',
                 self::HARD_MAX_TIMEOUT_SECONDS,
             ),
+            'response_max_bytes' => $this->boundedInt($policy, 'response_max_bytes', 1048576),
             'max_request_timeout_seconds' => $this->boundedInt(
                 $policy,
                 'max_request_timeout_seconds',
@@ -63,6 +65,40 @@ class UpstreamSourceDriftRuntimePolicyService
         }
 
         return $resolved;
+    }
+
+    /** @return array<string,mixed> */
+    public function preparation(): array
+    {
+        $runtime = $this->required();
+        $policy = $this->systemConfig->get(self::CONFIG_KEY);
+        $preparation = $policy['preparation'] ?? null;
+        if (! is_array($preparation) || ! is_bool($preparation['enabled'] ?? null)) {
+            throw new RuntimeException('Upstream preparation policy is unavailable.');
+        }
+        foreach (['limit' => $runtime['max_limit'], 'budget_seconds' => 240, 'retry_after_seconds' => 604800, 'max_sources' => self::HARD_MAX_LIMIT] as $key => $maximum) {
+            $preparation[$key] = $this->boundedInt($preparation, $key, $maximum);
+        }
+        if ($preparation['budget_seconds'] < $preparation['limit'] * $runtime['request_timeout_seconds']) {
+            throw new RuntimeException('Upstream preparation request budget exceeds its deadline.');
+        }
+        foreach (['owner', 'next_action', 'integration_owner', 'deployment_owner', 'owning_record'] as $key) {
+            if (! is_string($preparation[$key] ?? null) || trim($preparation[$key]) === '') {
+                throw new RuntimeException('Upstream preparation owner or next action is unavailable.');
+            }
+        }
+        if (! is_array($preparation['priority_project_keys'] ?? null)
+            || array_filter($preparation['priority_project_keys'], fn ($key) => ! is_string($key) || $key === '') !== []) {
+            throw new RuntimeException('Upstream preparation priority keys are invalid.');
+        }
+
+        if (array_key_exists('metadata_network_profile', $preparation)
+            && (! is_string($preparation['metadata_network_profile'])
+                || config('offline_policy.profiles.'.$preparation['metadata_network_profile'].'.task_metadata_get.task') !== 'whiteroom_monitor_due_report')) {
+            throw new RuntimeException('Upstream preparation metadata network profile is unqualified.');
+        }
+
+        return $preparation + $runtime;
     }
 
     public function resolveOption(mixed $requested, string $name, int $default, int $maximum): int
