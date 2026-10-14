@@ -29,16 +29,16 @@ export const plosOfflineSidecarInput = z.object({
     .describe('Run on the configured remote PLOS instance. Set false for the local checkout/offline laptop.'),
   timeout_seconds: z.coerce.number().int().optional().default(900)
     .describe('Per-lane timeout for execute=true. Capped to 1200 seconds.'),
-  effort: z.enum(['minimal', 'low', 'medium', 'high']).optional().default('low')
-    .describe('Codex reasoning effort passed to both read-only lanes.'),
-  primary_profile: z.string().optional().default('plos-offline-coding')
-    .describe('Codex profile for the primary planning lane.'),
-  primary_model: z.string().optional().default('qwen3-coder:30b')
-    .describe('Model for the primary planning lane.'),
-  sidecar_profile: z.string().optional().default('plos-offline-jetson')
-    .describe('Codex profile for the independent sidecar review lane.'),
-  sidecar_model: z.string().optional().default('qwen3-coder:30b')
-    .describe('Model for the sidecar review lane.'),
+  effort: z.enum(['minimal', 'low', 'medium', 'high']).optional()
+    .describe('Optional admitted reasoning effort setting; omitted values use table registration.'),
+  primary_profile: z.string().optional()
+    .describe('Optional admitted profile override for the primary planning lane.'),
+  primary_model: z.string().optional()
+    .describe('Optional installed model override for the primary planning lane.'),
+  sidecar_profile: z.string().optional()
+    .describe('Optional admitted profile for a second review lane; supply its model too.'),
+  sidecar_model: z.string().optional()
+    .describe('Optional admitted model for a second review lane; supply its profile too.'),
 });
 
 export const plosColibriResearchInput = z.object({
@@ -123,12 +123,19 @@ export function buildOfflineSidecarCommand(input: PlosOfflineSidecarInput): stri
     '--json',
     `--prompt-b64=${promptB64}`,
     `--timeout=${timeout}`,
-    `--effort=${input.effort}`,
-    `--primary-profile=${input.primary_profile}`,
-    `--primary-model=${input.primary_model}`,
-    `--sidecar-profile=${input.sidecar_profile}`,
-    `--sidecar-model=${input.sidecar_model}`,
   ];
+
+  for (const [option, value] of [
+    ['effort', input.effort],
+    ['primary-profile', input.primary_profile],
+    ['primary-model', input.primary_model],
+    ['sidecar-profile', input.sidecar_profile],
+    ['sidecar-model', input.sidecar_model],
+  ]) {
+    if (value !== undefined) {
+      args.push(`--${option}=${value}`);
+    }
+  }
 
   args.push(input.execute ? '--execute' : '--dry-run');
 

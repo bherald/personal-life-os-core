@@ -1,5 +1,7 @@
 # Operation
 
+Offline vision uses the registered vision role when no model is supplied and retains that exact instance/model through a fresh endpoint read. MCP sidecar choices are optional and default through Laravel table policy; Colibri research needs explicit provider/role registration. Release these corrections with their matching two-tool MCP metadata, refresh the pinned CLI registry and verify source/core health. Rollback restores previous source and metadata without changing activation or model data. See [table-owned routing](table-owned-llm-routing.md).
+
 Start with [Quick start](quickstart.md), then run `setup:doctor` for the installed
 profile. Core installation, optional media dependencies and model configuration
 are separate checks.

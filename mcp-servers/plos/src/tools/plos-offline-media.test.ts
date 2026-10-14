@@ -8,6 +8,12 @@ import {
   plosMediaAnalyzeInput,
 } from './plos-offline-media.js';
 
+test('omitted vision model leaves the registered Laravel vision role authoritative', () => {
+  const input = plosMediaAnalyzeInput.parse({ path: '/tmp/fixture-image.png' });
+  assert.equal(input.model, undefined);
+  assert.doesNotMatch(buildMediaAnalyzeCommand(input), /--model=/);
+});
+
 test('media analyze command safely encodes prompt and stays dry-run by default', () => {
   const input = plosMediaAnalyzeInput.parse({
     path: '/tmp/family photo.jpg',

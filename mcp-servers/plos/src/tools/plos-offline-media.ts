@@ -9,8 +9,8 @@ export const plosMediaAnalyzeInput = z.object({
     .describe('Local path to an image available to the offline PLOS checkout.'),
   prompt: z.string().optional().default('Describe this image in detail.')
     .describe('Instruction for the installed vision model. Encoded before it is passed to Artisan.'),
-  model: z.string().optional().default('qwen3.5:9b')
-    .describe('Installed Ollama vision-capable model name.'),
+  model: z.string().optional()
+    .describe('Optional installed vision model override; omit to use the registered vision role.'),
   execute: z.coerce.boolean().optional().default(false)
     .describe('Run image analysis. Default false validates a dry-run and makes no model request.'),
 });
@@ -49,9 +49,12 @@ export function buildMediaAnalyzeCommand(input: PlosMediaAnalyzeInput): string {
     '--json',
     `--path=${input.path}`,
     `--prompt-b64=${Buffer.from(input.prompt, 'utf8').toString('base64')}`,
-    `--model=${input.model}`,
     input.execute ? '--execute' : '--dry-run',
   ];
+
+  if (input.model !== undefined) {
+    args.push(`--model=${input.model}`);
+  }
 
   return localPhpArtisan(args);
 }

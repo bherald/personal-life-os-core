@@ -8,7 +8,17 @@ import {
   buildOfflineImprovementCommand,
   buildOfflinePipelineToolsCommand,
   buildOfflineSidecarCommand,
+  plosOfflineSidecarInput,
 } from './plos-offline-codex.js';
+
+test('omitted sidecar choices preserve table-owned primary route and do not create another lane', () => {
+  const input = plosOfflineSidecarInput.parse({ prompt: 'Review the full original request.' });
+  const command = buildOfflineSidecarCommand(input);
+  assert.doesNotMatch(command, /--(?:primary|sidecar)-(?:model|profile)=|--effort=/);
+  assert.match(command, /--prompt-b64=/);
+  assert.equal(input.primary_model, undefined);
+  assert.equal(input.sidecar_model, undefined);
+});
 
 test('offline capabilities command exposes manifest and optional sidecar probes', () => {
   const normal = buildOfflineCapabilitiesCommand({

@@ -57,8 +57,8 @@ class ColibriResearchPolicyService
         'version' => 1,
         'status' => 'not_configured',
         'execution_enabled' => false,
-        'instance_id' => 'colibri_87',
-        'model_role' => 'deep_offline',
+        'instance_id' => null,
+        'model_role' => null,
         'capability_pack' => self::PUBLIC_WEB_PACK,
         'requires_internet' => true,
         'requires_searxng_endpoint' => true,
@@ -85,8 +85,8 @@ class ColibriResearchPolicyService
         'version' => 1,
         'status' => 'not_configured',
         'execution_enabled' => false,
-        'instance_id' => 'colibri_87',
-        'model_role' => 'deep_offline',
+        'instance_id' => null,
+        'model_role' => null,
         'capability_pack' => self::LOCAL_OFFLINE_PACK,
         'requires_internet' => false,
         'requires_searxng_endpoint' => false,
@@ -388,8 +388,12 @@ class ColibriResearchPolicyService
         $policy['internet_requires_public_input'] = $contract['internet_requires_public_input'];
         $policy['writes_allowed'] = false;
         $policy['fallback_allowed'] = false;
-        $policy['instance_id'] = $this->token($policy['instance_id']) ?? 'colibri_87';
-        $policy['model_role'] = $this->token($policy['model_role']) ?? 'deep_offline';
+        $policy['instance_id'] = $this->token($configured['instance_id'] ?? null);
+        $policy['model_role'] = $this->token($configured['model_role'] ?? null);
+        if ($policy['instance_id'] === null || $policy['model_role'] === null) {
+            $policy['status'] = 'missing_registered_route';
+            $policy['execution_enabled'] = false;
+        }
         $policy['capability_pack'] = $this->token($policy['capability_pack']) ?? $capabilityPack;
         $policy['requires_internet'] = $contract['requires_internet'];
         $policy['requires_searxng_endpoint'] = $contract['requires_searxng_endpoint'];

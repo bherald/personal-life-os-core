@@ -14,8 +14,6 @@ use Throwable;
 
 class OfflineMediaAnalysisService
 {
-    public const DEFAULT_MODEL = 'qwen3.5:9b';
-
     public const DEFAULT_PROMPT = 'Describe this image in detail.';
 
     public const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -27,6 +25,43 @@ class OfflineMediaAnalysisService
         'image/png',
         'image/webp',
     ];
+
+    /** @return array{model:string,instance_id:?string} */
+    public function resolveRoute(?string $override = null): array
+    {
+        if (is_string($override) && trim($override) !== '') {
+            return ['model' => $this->validatedModel($override), 'instance_id' => null];
+        }
+
+        try {
+            $instances = DB::table('llm_instances')
+                ->where('instance_type', 'ollama')
+                ->where('is_active', 1)
+                ->where('is_healthy', 1)
+                ->where('routability', 'allowed')
+                ->orderBy('priority')
+                ->orderBy('id')
+                ->get(['id', 'instance_id', 'config']);
+            $routePolicy = app(LlmRoutePolicyService::class);
+            foreach ($instances as $instance) {
+                $instanceId = trim((string) $instance->instance_id);
+                $config = json_decode((string) $instance->config, true);
+                $model = is_array($config) ? ($config['models']['vision'] ?? null) : null;
+                if ($instanceId === '' || ! is_string($model) || trim($model) === '' || ! $routePolicy->allowsRole($config, 'vision')) {
+                    continue;
+                }
+                $model = $this->validatedModel($model);
+                if (DB::table('ollama_models')->where('instance_id', $instance->id)
+                    ->where('model_name', $model)->where('is_available', 1)->exists()) {
+                    return ['model' => $model, 'instance_id' => $instanceId];
+                }
+            }
+        } catch (Throwable) {
+            throw new RuntimeException('Registered vision model inventory is unavailable.');
+        }
+
+        throw new RuntimeException('No eligible registered vision model is configured.');
+    }
 
     /**
      * Validate an image without transmitting its content.
@@ -102,10 +137,10 @@ class OfflineMediaAnalysisService
      *
      * @return array<string, bool|int|string>
      */
-    public function probe(string $model, int $timeoutSeconds = 15): array
+    public function probe(string $model, int $timeoutSeconds = 15, ?string $requiredInstanceId = null): array
     {
         $model = $this->validatedModel($model);
-        [$baseUrl, $source] = $this->endpoint($model);
+        [$baseUrl, $source] = $this->endpoint($model, $requiredInstanceId);
 
         try {
             $response = Http::connectTimeout(min(5, $timeoutSeconds))
@@ -152,12 +187,12 @@ class OfflineMediaAnalysisService
      *
      * @return array<string, mixed>
      */
-    public function analyze(string $path, string $prompt, string $model, int $timeoutSeconds = 180): array
+    public function analyze(string $path, string $prompt, string $model, int $timeoutSeconds = 180, ?string $requiredInstanceId = null): array
     {
         $image = $this->inspectImage($path);
         $prompt = $this->validatedPrompt($prompt);
         $model = $this->validatedModel($model);
-        [$baseUrl, $source] = $this->endpoint($model);
+        [$baseUrl, $source] = $this->endpoint($model, $requiredInstanceId);
 
         $resolved = realpath($path);
         $contents = $resolved === false ? false : @file_get_contents($resolved);
@@ -262,9 +297,9 @@ class OfflineMediaAnalysisService
     }
 
     /** @return array{string,string} */
-    private function endpoint(string $model): array
+    private function endpoint(string $model, ?string $requiredInstanceId = null): array
     {
-        $registered = $this->registeredEndpoint($model);
+        $registered = $this->registeredEndpoint($model, $requiredInstanceId);
         if ($registered === null) {
             throw new InvalidArgumentException('No registered local Ollama model endpoint is admitted.');
         }
@@ -292,14 +327,14 @@ class OfflineMediaAnalysisService
     }
 
     /** @return array{string,string}|null */
-    private function registeredEndpoint(string $model): ?array
+    private function registeredEndpoint(string $model, ?string $requiredInstanceId): ?array
     {
         try {
             if (! Schema::hasTable('llm_instances') || ! Schema::hasTable('ollama_models')) {
                 return null;
             }
 
-            $row = DB::table('llm_instances as instances')
+            $rows = DB::table('llm_instances as instances')
                 ->join('ollama_models as models', 'models.instance_id', '=', 'instances.id')
                 ->where('instances.instance_type', 'ollama')
                 ->where('instances.is_active', 1)
@@ -307,9 +342,21 @@ class OfflineMediaAnalysisService
                 ->where('instances.is_healthy', 1)
                 ->where('models.model_name', $model)
                 ->where('models.is_available', 1)
+                ->when($requiredInstanceId !== null, fn ($query) => $query->where('instances.instance_id', $requiredInstanceId))
                 ->orderBy('instances.priority')
                 ->orderBy('instances.id')
-                ->first(['instances.instance_id', 'instances.base_url']);
+                ->get(['instances.instance_id', 'instances.base_url', 'instances.config']);
+            $row = null;
+            $routePolicy = app(LlmRoutePolicyService::class);
+            foreach ($rows as $candidate) {
+                $config = json_decode((string) $candidate->config, true);
+                if (! is_array($config) || ! $routePolicy->allowsRole($config, 'vision')
+                    || ($requiredInstanceId !== null && ($config['models']['vision'] ?? null) !== $model)) {
+                    continue;
+                }
+                $row = $candidate;
+                break;
+            }
         } catch (Throwable) {
             return null;
         }

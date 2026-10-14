@@ -1,6 +1,6 @@
 {
   "schema": "plos.mcp_tool_contract_baseline.v1",
-  "content_sha256": "4d7366534266759333f2e5e76c505de187e528e1f8b71b071a1fdb737c1bc353",
+  "content_sha256": "21729801e24a6dc28fe5a8aef747d41424c7f059ced04129e9cb9831d241fa27",
   "tool_count": 31,
   "tools": [
     {
@@ -89,7 +89,7 @@
     },
     {
       "name": "plos_media_analyze",
-      "content_sha256": "94c4467c5d1bba5e1808101e7903c210c64be4e39722ccb9437afbac7edc6fd3"
+      "content_sha256": "107c16b3c90030b72eaf33e46103c1247d17e5c5b8022d248274c70df2b13db2"
     },
     {
       "name": "plos_offline_capabilities",
@@ -105,7 +105,7 @@
     },
     {
       "name": "plos_offline_sidecar",
-      "content_sha256": "231287b9e8286c60da2a11127660a487b38349bd9b2c8ffea5e6f0690d17daa8"
+      "content_sha256": "1178f8edeeb61f5b18ec129c33d6ecb30c72b20d9bf1ecab32a398c9c9424619"
     },
     {
       "name": "plos_query",

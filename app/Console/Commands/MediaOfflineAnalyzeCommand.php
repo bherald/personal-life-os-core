@@ -12,7 +12,7 @@ class MediaOfflineAnalyzeCommand extends Command
         {--path= : Required local JPEG, PNG, or WebP image path}
         {--prompt=Describe this image in detail. : Analysis prompt}
         {--prompt-b64= : Base64-encoded UTF-8 prompt override}
-        {--model=qwen3.5:9b : Installed Ollama vision model}
+        {--model= : Optional installed vision model override; otherwise use the registered vision role}
         {--execute : Send the image to local Ollama for inference}
         {--probe : Probe Ollama and selected-model availability without sending the image}
         {--dry-run : Validate the request without network or inference}
@@ -35,7 +35,8 @@ class MediaOfflineAnalyzeCommand extends Command
             if ($imagePath === '') {
                 throw new \InvalidArgumentException('Provide a local image with --path.');
             }
-            $model = (string) $this->option('model');
+            $route = $service->resolveRoute($this->option('model'));
+            $model = $route['model'];
             $request = $service->validateRequest($imagePath, $prompt, $model);
 
             $payload = [
@@ -49,9 +50,9 @@ class MediaOfflineAnalyzeCommand extends Command
             ];
 
             if ($mode === 'probe') {
-                $payload['probe'] = $service->probe($model, min($timeout, 60));
+                $payload['probe'] = $service->probe($model, min($timeout, 60), $route['instance_id']);
             } elseif ($mode === 'execute') {
-                $result = $service->analyze($imagePath, $prompt, $model, $timeout);
+                $result = $service->analyze($imagePath, $prompt, $model, $timeout, $route['instance_id']);
                 $payload['model'] = $result['model'];
                 $payload['analysis'] = $result['analysis'];
                 $payload['endpoint_source'] = $result['endpoint_source'];

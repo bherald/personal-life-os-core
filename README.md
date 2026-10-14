@@ -21,6 +21,11 @@ The prepared routing follow-up uses table-owned provider/model bindings and
 retires prompt-compressor integration while retaining complete original input.
 See [routing and upgrade notes](docs/table-owned-llm-routing.md).
 
+Offline vision retains its registered instance/model, MCP sidecar defaults come
+from Laravel table policy, and enabled research requires an explicit provider
+and model role. Matching MCP metadata and isolated regression checks accompany
+these route-default corrections.
+
 ## Research with sources you can inspect
 
 PLOS provides the working parts of a research process: persistent questions,

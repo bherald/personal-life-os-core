@@ -1,5 +1,7 @@
 # PLOS Architecture
 
+Offline vision selection retains both registered instance and model through execution; fresh endpoint checks enforce the same vision mapping and eligibility. MCP sidecar schemas transport optional choices to the existing Laravel policy. Colibri research refuses incomplete provider/role registration. These paths reuse existing provider/model tables and admission boundaries; see [table-owned routing](table-owned-llm-routing.md).
+
 ## Table-owned LLM routing and lossless input
 
 Runtime provider endpoints, role models and eligibility are read from `llm_instances` through the existing pool. Named route aliases, controller/canary/evaluation identities and controller transport are explicit `system_configs.routing.llm_bindings` data imported by migration without provider activation. Missing or unreadable registrations refuse inference; core PLOS can start with no Ollama provider. Environment installation values cannot recreate a retired runtime.
