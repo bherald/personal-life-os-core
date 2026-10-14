@@ -34,7 +34,7 @@ class AgentMemoryStatsCommandTest extends TestCase
             /** @param array<string,mixed> $policy */
             public function __construct(private readonly array $policy) {}
 
-            public function get(string $key, mixed $default = null): mixed
+            public function get(string $key, mixed $default = null, bool $strict = false): mixed
             {
                 return $key === EpisodicMemoryMaintenanceRuntimePolicyService::CONFIG_KEY
                     ? $this->policy

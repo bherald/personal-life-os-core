@@ -932,7 +932,7 @@ class PushoverNotifyTest extends TestCase
         {
             public function __construct(private array $policy) {}
 
-            public function get(string $key, mixed $default = null): mixed
+            public function get(string $key, mixed $default = null, bool $strict = false): mixed
             {
                 if ($key === 'notifications.pushover_notify_runtime_policy') {
                     return $this->policy;
