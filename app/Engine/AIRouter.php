@@ -76,10 +76,10 @@ class AIRouter
         $ollamaConfig = $this->loadPrimaryOllamaConfig();
         $roleModels = $ollamaConfig['models'] ?? [];
 
-        $this->ollamaUrl = $ollamaConfig['base_url'] ?? config('services.ollama.api_url', 'http://127.0.0.1:11434');
-        $this->ollamaModel = (string) ($roleModels['standard'] ?? $ollamaConfig['default_model'] ?? config('services.ollama.model') ?? '');
-        $this->embeddingModel = (string) ($ollamaConfig['embedding_model'] ?? $roleModels['embedding'] ?? config('services.ollama.embedding_model') ?? '');
-        $this->visionModel = (string) ($roleModels['vision'] ?? config('services.ollama.vision_model') ?? '');
+        $this->ollamaUrl = (string) ($ollamaConfig['base_url'] ?? '');
+        $this->ollamaModel = (string) ($roleModels['standard'] ?? $ollamaConfig['default_model'] ?? '');
+        $this->embeddingModel = (string) ($ollamaConfig['embedding_model'] ?? $roleModels['embedding'] ?? '');
+        $this->visionModel = (string) ($roleModels['vision'] ?? '');
         $this->timeout = $this->runtimePolicyInt('text_generation_timeout_seconds');
         $this->defaultMaxTokens = $this->runtimePolicyInt('default_max_tokens');
         $this->embeddingCharLimit = $this->runtimePolicyInt('embedding_char_limit');
@@ -774,6 +774,9 @@ class AIRouter
     public function isModelLoaded(string $modelName, ?string $instanceUrl = null): bool
     {
         $targetUrl = $instanceUrl ?? $this->ollamaUrl;
+        if ($targetUrl === '' || trim($modelName) === '') {
+            return false;
+        }
         try {
             $response = Http::connectTimeout(5)->timeout(5)->get("{$targetUrl}/api/ps");
             if (! $response->successful()) {
@@ -806,6 +809,9 @@ class AIRouter
     public function ensureModelLoaded(string $modelName, int $timeoutSeconds = 60, ?string $instanceUrl = null, ?PoolExecutionReceipt $receipt = null): bool
     {
         $targetUrl = $instanceUrl ?? $this->ollamaUrl;
+        if ($targetUrl === '' || trim($modelName) === '') {
+            return false;
+        }
         if ($this->controllerManaged("{$targetUrl}/api/generate")) {
             // The owning controller activates models; this helper may only observe them.
             return $this->isModelLoaded($modelName, $targetUrl);
@@ -2528,6 +2534,10 @@ class AIRouter
 
     private function assertControllerTransport(string $wire, string $endpoint, array $payload): void
     {
+        if (! in_array(parse_url($endpoint, PHP_URL_SCHEME), ['http', 'https'], true)
+            || ! is_string($payload['model'] ?? null) || trim($payload['model']) === '') {
+            throw new InferenceAdmissionException('Registered LLM endpoint and model are required.');
+        }
         unset($payload['messages'], $payload['prompt'], $payload['system'], $payload['images'], $payload['input']);
         AIService::assertInferenceTransport($wire, $endpoint, $payload);
     }

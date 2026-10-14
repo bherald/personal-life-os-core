@@ -250,46 +250,6 @@ return [
 
         /*
         |--------------------------------------------------------------------------
-        | Prompt Compressor MCP Server (External)
-        |--------------------------------------------------------------------------
-        |
-        | Repo-local context compression for agents and MCP clients. Provides
-        | deterministic extractive compression and optional local Ollama
-        | compression for large prompts, diffs, files, and handoff context.
-        |
-        | Operator-disabled because compressed prompts lost material detail.
-        | The source workspace is retained for audit history, but PLOS cannot
-        | register or enable this server through an environment override.
-        |
-        */
-        'prompt-compressor' => [
-            'enabled' => false,
-            'type' => 'external',
-            'command' => env('PROMPT_COMPRESSOR_COMMAND', 'node'),
-            'args' => [
-                env('PROMPT_COMPRESSOR_ENTRY', base_path('mcp-servers/prompt-compressor/dist/index.js')),
-            ],
-            'env' => [
-                'PROMPT_COMPRESSOR_ALLOWED_ROOTS' => env('PROMPT_COMPRESSOR_ALLOWED_ROOTS', base_path()),
-                'PROMPT_COMPRESSOR_STORE_DIR' => env('PROMPT_COMPRESSOR_STORE_DIR', storage_path('app/mcp/prompt-compressor')),
-                'PROMPT_COMPRESSOR_AUTO_OLLAMA' => env('PROMPT_COMPRESSOR_AUTO_OLLAMA', 'false'),
-                'PROMPT_COMPRESSOR_OLLAMA_HOST' => env('PROMPT_COMPRESSOR_OLLAMA_HOST', env('OLLAMA_API_URL', env('OLLAMA_HOST', 'http://127.0.0.1:11434'))),
-                'PROMPT_COMPRESSOR_OLLAMA_SECONDARY_HOSTS' => env('PROMPT_COMPRESSOR_OLLAMA_SECONDARY_HOSTS', env('OLLAMA_SECONDARY_URLS', '')),
-                'PROMPT_COMPRESSOR_ALLOW_PROTECTED_READS' => env('PROMPT_COMPRESSOR_ALLOW_PROTECTED_READS', 'false'),
-            ],
-            'tools' => 0,
-            'description' => 'Retired and source-disabled by the lossless AI prompt policy',
-            'trust_boundary' => 'plos_local',
-            'transport' => 'external_process',
-            'network_required' => 'lan_only',
-            'write_scope' => 'local_context_cache',
-            'secret_surface_risk' => 'medium',
-            'offline_profiles_allowed' => ['offline_review', 'offline_dev_assist'],
-            'hybrid_profiles_allowed' => ['hybrid_review', 'hybrid_dev_assist', 'cloud_escalation_only'],
-        ],
-
-        /*
-        |--------------------------------------------------------------------------
         | Codebase Memory MCP Server (External, Optional)
         |--------------------------------------------------------------------------
         |

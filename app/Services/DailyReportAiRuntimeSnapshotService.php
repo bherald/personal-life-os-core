@@ -43,7 +43,7 @@ class DailyReportAiRuntimeSnapshotService
                 $status = is_string($targetId) && is_array($binding)
                     && ($binding['target_id'] ?? null) === $targetId
                     && ($binding['provider_instance_id'] ?? null) === $instanceId
-                    ? $this->selectedHealthStatus($targetId) : [];
+                    ? $this->selectedHealthStatus($targetId, $binding['engine'] ?? null) : [];
                 $controller = $this->controllerSummary($status);
                 $target = $status['target_descriptor'] ?? null;
                 $runtime = $this->runtimeTargets($status)[$targetId] ?? [];
@@ -86,10 +86,10 @@ class DailyReportAiRuntimeSnapshotService
     }
 
     /** Exact read-only observation; missing descriptors remain unknown on older hosts. */
-    private function selectedHealthStatus(string $target): array
+    private function selectedHealthStatus(string $target, mixed $engine): array
     {
         // K3 has a separate ownership protocol and is not probed through this lane.
-        if ($target === 'kimi_k3_87') {
+        if ($engine === 'colibri-k3') {
             return [];
         }
         try {

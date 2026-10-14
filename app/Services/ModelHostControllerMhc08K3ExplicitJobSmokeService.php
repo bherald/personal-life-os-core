@@ -149,7 +149,7 @@ class ModelHostControllerMhc08K3ExplicitJobSmokeService
         $receipt = [
             'schema' => self::RECEIPT_SCHEMA,
             'result' => 'green',
-            'target' => 'kimi_k3_87',
+            'target' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
             'runtime_profile' => 'State',
             'runtime_revision' => $contract['runtime_revision'],
             'state_engine_sha256' => $contract['engine_sha256'],
@@ -416,7 +416,7 @@ class ModelHostControllerMhc08K3ExplicitJobSmokeService
             ? ($target['target'] ?? null) : null, $targets);
         $coexistence = ($restore['schema'] ?? null) === 'plos.model_host_controller.mhc08_coexistence_restore.v1'
             && ($restore['result'] ?? null) === 'green' && ($restore['mode'] ?? null) === 'Restored'
-            && $targetNames === ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+            && $targetNames === array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
             && collect($targets)->every(static fn (mixed $target): bool => is_array($target)
                 && ($target['task_exact'] ?? null) === true
                 && (($target['health_required'] ?? false) !== true || ($target['health_healthy'] ?? null) === true));
@@ -425,7 +425,7 @@ class ModelHostControllerMhc08K3ExplicitJobSmokeService
         $coexistenceCurrent = ($host['coexistence_current'] ?? null) === true
             && array_map(static fn (mixed $target): mixed => is_array($target)
                 ? ($target['target'] ?? null) : null, $currentTargets)
-                === ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+                === array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
             && collect($currentTargets)->every(static fn (mixed $target): bool => is_array($target)
                 && ($target['task_exact'] ?? null) === true
                 && (($target['health_required'] ?? false) !== true || ($target['health_healthy'] ?? null) === true));

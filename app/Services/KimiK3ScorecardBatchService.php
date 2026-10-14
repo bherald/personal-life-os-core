@@ -6,12 +6,6 @@ use RuntimeException;
 
 class KimiK3ScorecardBatchService
 {
-    private const EXPECTED_CANDIDATE = 'provider:kimi_k3_87/kimi-k3-colibri';
-
-    private const EXPECTED_COMPARATOR = 'ollama:qwen3:4b';
-
-    private const EXPECTED_COMPARATOR_INSTANCE = 'ollama_primary';
-
     private const EXPECTED_MAX_TOKENS = 128;
 
     private const BATCH_COUNT = 4;
@@ -24,7 +18,8 @@ class KimiK3ScorecardBatchService
     /** @return array<string,mixed> */
     public function contract(int $batch = 1): array
     {
-        $contract = config('ollama_eval.k3_05', []);
+        $contract = app(SystemConfigService::class)->llmRoutingBinding('kimi_scorecard');
+        unset($contract['comparator_model']);
         if (! is_array($contract)) {
             throw new RuntimeException('K3-05 scorecard contract is missing.');
         }
@@ -39,10 +34,10 @@ class KimiK3ScorecardBatchService
         $expected = [
             'batch_id' => "K3-05-batch-{$batch}",
             'case_ids' => $selectedBatch['case_ids'] ?? null,
-            'candidate_target' => self::EXPECTED_CANDIDATE,
-            'candidate_instance_id' => 'kimi_k3_87',
-            'comparator_target' => self::EXPECTED_COMPARATOR,
-            'comparator_instance_id' => self::EXPECTED_COMPARATOR_INSTANCE,
+            'candidate_target' => app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'candidate_target'),
+            'candidate_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'comparator_target' => app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'comparator_target'),
+            'comparator_instance_id' => app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'comparator_instance_id'),
             'max_tokens' => self::EXPECTED_MAX_TOKENS,
             'normal_routing' => false,
             'tools_enabled' => false,
@@ -77,17 +72,17 @@ class KimiK3ScorecardBatchService
         $maxTokens = (int) $contract['max_tokens'];
 
         $comparator = $this->runner->runModel(
-            self::EXPECTED_COMPARATOR,
+            app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'comparator_target'),
             $caseIds,
             null,
-            self::EXPECTED_COMPARATOR_INSTANCE,
+            app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'comparator_instance_id'),
             $maxTokens
         );
         $this->assertExactRun($comparator, false, $caseIds);
         $comparatorEvidence = $this->ledger->record($comparator);
 
         $candidate = $this->runner->runModel(
-            self::EXPECTED_CANDIDATE,
+            app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'candidate_target'),
             $caseIds,
             null,
             null,
@@ -123,8 +118,8 @@ class KimiK3ScorecardBatchService
     /** @param array<string,mixed> $run */
     private function assertExactRun(array $run, bool $candidate, array $caseIds): void
     {
-        $expectedTarget = $candidate ? self::EXPECTED_CANDIDATE : self::EXPECTED_COMPARATOR;
-        $expectedInstance = $candidate ? 'kimi_k3_87' : self::EXPECTED_COMPARATOR_INSTANCE;
+        $expectedTarget = $candidate ? app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'candidate_target') : app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'comparator_target');
+        $expectedInstance = $candidate ? app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id') : app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'comparator_instance_id');
 
         if (($run['target'] ?? null) !== $expectedTarget
             || ($run['requested_instance_id'] ?? null) !== $expectedInstance

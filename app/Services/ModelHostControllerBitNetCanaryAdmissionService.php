@@ -9,10 +9,6 @@ use RuntimeException;
 
 class ModelHostControllerBitNetCanaryAdmissionService
 {
-    private const INSTANCE_ID = 'bitnet_87';
-
-    private const MODEL = 'bitnet-b1.58-2b-4t-i2s';
-
     /** @template T @param callable():T $callback @return T */
     public function run(string $requestId, callable $callback): mixed
     {
@@ -51,7 +47,7 @@ class ModelHostControllerBitNetCanaryAdmissionService
 
         DB::transaction(function () use ($requestId, $phase, $markerKey): void {
             $row = DB::table('llm_instances')
-                ->where('instance_id', self::INSTANCE_ID)
+                ->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('bitnet_canary', 'instance_id'))
                 ->lockForUpdate()
                 ->first();
             if ($row === null) {
@@ -78,9 +74,9 @@ class ModelHostControllerBitNetCanaryAdmissionService
                 || (string) ($row->compat_status ?? '') !== 'authoritative'
                 || (int) ($row->allows_private_data ?? 0) !== 1
                 || (string) ($row->data_privacy_scope ?? '') !== 'local_private'
-                || (int) ($row->port ?? 0) !== 11435
-                || (string) parse_url((string) ($row->base_url ?? ''), PHP_URL_HOST) !== (string) config('model_host_controller.reviewed_runtime_host', '')
-                || ($config['default_model'] ?? null) !== self::MODEL
+                || (int) ($row->port ?? 0) !== (int) app(SystemConfigService::class)->llmRoutingValue('bitnet_canary', 'port')
+                || (string) parse_url((string) ($row->base_url ?? ''), PHP_URL_HOST) !== app(SystemConfigService::class)->llmRoutingValue('bitnet_canary', 'host')
+                || ($config['default_model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('bitnet_canary', 'model')
                 || (! $permanent && ($route['allowed_model_roles'] ?? null) !== ['privacy_deny_prefilter'])
                 || ($route['allow_generic_fallback'] ?? null) !== false
                 || ($route['require_model_role'] ?? null) !== true
@@ -131,7 +127,7 @@ class ModelHostControllerBitNetCanaryAdmissionService
     {
         DB::transaction(function () use ($requestId, $phase, $markerKey): void {
             $row = DB::table('llm_instances')
-                ->where('instance_id', self::INSTANCE_ID)
+                ->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('bitnet_canary', 'instance_id'))
                 ->lockForUpdate()
                 ->first();
             if ($row === null) {

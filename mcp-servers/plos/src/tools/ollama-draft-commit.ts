@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import type { ToolContext } from '../util/tool-context.js';
 import { generate } from '../ollama/client.js';
-import { selectModel } from '../ollama/model-selector.js';
+import { selectRoute } from '../ollama/model-selector.js';
 
 export const ollamaDraftCommitInput = z.object({
   diff: z.string().describe('Git diff to generate commit message for'),
@@ -9,8 +10,9 @@ export const ollamaDraftCommitInput = z.object({
 
 export type OllamaDraftCommitInput = z.infer<typeof ollamaDraftCommitInput>;
 
-export async function ollamaDraftCommit(input: OllamaDraftCommitInput): Promise<string> {
-  const model = await selectModel('code');
+export async function ollamaDraftCommit(input: OllamaDraftCommitInput, toolContext?: ToolContext): Promise<string> {
+  const route = await selectRoute('code');
+  const model = route.model;
 
   const system = `Generate a git commit message for this diff.
 Format: <type>: <short description>
@@ -24,6 +26,6 @@ Rules:
 ${input.context ? `\nContext: ${input.context}` : ''}
 Output ONLY the commit message, nothing else.`;
 
-  const result = await generate(model, input.diff, { system, temperature: 0.2, num_predict: 256 });
+  const result = await generate(route, input.diff, { signal: toolContext?.signal, system, temperature: 0.2, num_predict: 256 });
   return `[${model}]\n${result.response.trim()}`;
 }

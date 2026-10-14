@@ -1,7 +1,6 @@
-import { CONFIG } from '../config.js';
 import { mysqlQuery } from '../db/mysql.js';
 import { logger } from '../util/logger.js';
-import { discoverModels, type OllamaModel } from './client.js';
+import type { OllamaModel, OllamaRoute } from './client.js';
 
 export type ModelCapability = 'code' | 'sql' | 'general' | 'vision' | 'embedding';
 
@@ -277,7 +276,7 @@ export function pickModelFromAuthority(
   capability: ModelCapability,
   discoveredModels: OllamaModel[],
   context: ModelAuthorityContext,
-  ollamaHost: string = CONFIG.ollama.host
+  ollamaHost: string
 ): string | null {
   if (discoveredModels.length === 0) {
     return null;
@@ -321,26 +320,7 @@ export function pickModelFromAuthority(
     return rankedCandidates[0].candidate.modelName;
   }
 
-  // 3a authority: even the "no-authority" fallback must not pick a model that
-  // belongs exclusively to a blocked/stale instance. Prefer the largest discovered
-  // model that has either no authority row or an allowed row.
-  const blockedModelNames = new Set(
-    context.candidates
-      .filter((candidate) => !isAuthorityAllowed(candidate))
-      .map((candidate) => candidate.modelName)
-  );
-  const allowedCandidateNames = new Set(
-    context.candidates
-      .filter(isAuthorityAllowed)
-      .map((candidate) => candidate.modelName)
-  );
-  const authoritySafe = discoveredModels.filter((model) => {
-    if (allowedCandidateNames.has(model.name)) return true;
-    return !blockedModelNames.has(model.name);
-  });
-  const pool = authoritySafe.length > 0 ? authoritySafe : discoveredModels;
-  const sized = [...pool].sort((left, right) => right.size - left.size);
-  return sized[0]?.name ?? pool[0]?.name ?? null;
+  return null;
 }
 
 async function loadModelAuthorityContext(forceRefresh = false): Promise<ModelAuthorityContext> {
@@ -362,6 +342,7 @@ async function loadModelAuthorityContext(forceRefresh = false): Promise<ModelAut
       FROM llm_instances
       WHERE instance_type = 'ollama'
         AND is_active = 1
+        AND is_healthy = 1
         AND routability = 'allowed'
         AND (compat_status IS NULL OR compat_status <> 'stale')
       ORDER BY priority ASC, id ASC
@@ -390,6 +371,7 @@ async function loadModelAuthorityContext(forceRefresh = false): Promise<ModelAut
       JOIN llm_instances li ON li.id = om.instance_id
       WHERE li.instance_type = 'ollama'
         AND li.is_active = 1
+        AND li.is_healthy = 1
         AND li.routability = 'allowed'
         AND (li.compat_status IS NULL OR li.compat_status <> 'stale')
         AND om.is_available = 1
@@ -457,39 +439,27 @@ export function clearModelAuthorityCache(): void {
   authorityCache = null;
 }
 
-/**
- * Select best model for a given capability.
- * Uses DB-backed model authority first, intersected with models actually
- * available on the configured Ollama host.
- */
-export async function selectModel(capability: ModelCapability): Promise<string> {
-  const models = await discoverModels();
-  if (models.length === 0) throw new Error('No Ollama models available');
-
-  try {
-    const context = await loadModelAuthorityContext();
-    const selected = pickModelFromAuthority(capability, models, context, CONFIG.ollama.host);
-
-    if (selected) {
-      logger.debug('Model selected from DB authority', {
-        capability,
-        model: selected,
-        host: CONFIG.ollama.host,
-      });
-      return selected;
+/** Select a registered instance and role together; Laravel rechecks admission before dispatch. */
+export function pickRegisteredRoute(capability: ModelCapability, context: ModelAuthorityContext): OllamaRoute | null {
+  const prefs = PREFERENCES[capability];
+  for (const instance of context.instances.filter(isAuthorityAllowed)) {
+    const policy = decodeConfig(instance.config.route_policy as Record<string, unknown> | null);
+    const allowedRoles = Array.isArray(policy.allowed_model_roles) ? policy.allowed_model_roles : null;
+    for (const role of prefs.roleNames) {
+      if (allowedRoles && !allowedRoles.includes(role)) continue;
+      const model = instance.models[role];
+      if (!model || !instance.baseUrl) continue;
+      const available = context.candidates.some(candidate => candidate.instanceId === instance.instanceId
+        && candidate.modelName === model && isAuthorityAllowed(candidate));
+      if (available) return { instanceId: instance.instanceId, model, role };
     }
-  } catch (error) {
-    logger.warn('DB-backed model selection failed, falling back to local inventory ordering', {
-      capability,
-      error: (error as Error).message,
-    });
   }
+  return null;
+}
 
-  const fallback = [...models].sort((left, right) => right.size - left.size)[0]?.name ?? models[0].name;
-  logger.warn('Model selector using generic fallback', {
-    capability,
-    model: fallback,
-    host: CONFIG.ollama.host,
-  });
-  return fallback;
+export async function selectRoute(capability: ModelCapability): Promise<OllamaRoute> {
+  const context = await loadModelAuthorityContext(true);
+  const selected = pickRegisteredRoute(capability, context);
+  if (!selected) throw new Error('No registered Ollama instance and role are admitted for this capability.');
+  return selected;
 }

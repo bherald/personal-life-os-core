@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\BitLlmPrivacyGateService;
 use App\Services\ModelHostControllerInferenceService;
+use App\Services\SystemConfigService;
 use Illuminate\Console\Command;
 use RuntimeException;
 
@@ -70,7 +71,7 @@ class ModelHostControllerBitNetCommand extends Command
         $receipt = is_array($payload['controller_receipt'] ?? null) ? $payload['controller_receipt'] : [];
         $green = ($response['success'] ?? false) === true
             && in_array($response['decision'] ?? null, ['allow', 'deny'], true)
-            && ($response['provider'] ?? null) === 'bitnet_87'
+            && ($response['provider'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('bitnet_canary', 'instance_id')
             && ($receipt['result'] ?? null) === 'green';
 
         if ($this->option('json')) {

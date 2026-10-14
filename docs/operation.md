@@ -12,6 +12,20 @@ The focused-test job selects GitHub's supported Ubuntu 22.04 VM; audit and
 Compose jobs keep their existing runner. Host policy and application sandbox
 rules remain unchanged. Other Ubuntu releases require their own qualification.
 
+## Table-owned routes and runtime retirement
+
+Deploy the routing source and its registration migrations together, then
+refresh the pinned offline CLI registry. Check core health and the actual
+registered provider/model roles. Missing registration refuses inference;
+installation environment values cannot recreate a retired endpoint.
+
+Require successful completion and retrieval tests for every used role before
+removing an existing inference runtime. Preserve stored vectors and unrelated
+worker checkpoints. For embeddings, verify model identity, full input and
+retrieval behavior as well as vector shape. Restore source and exact reviewed
+route-policy preimages for rollback; compressor registrations stay disabled.
+See [the complete procedure](table-owned-llm-routing.md).
+
 ## Research and evidence
 
 Use the configured topic/mission surfaces and Review Desk (`/reviews`) for

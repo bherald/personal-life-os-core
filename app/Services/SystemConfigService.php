@@ -21,6 +21,67 @@ use Illuminate\Support\Facades\Log;
  */
 class SystemConfigService
 {
+    /** Read an explicit routing binding; missing or unreadable policy never creates a route. */
+    public function llmRoutingBinding(string $name): array
+    {
+        $bindings = $this->llmRoutingPolicy('routing', 'llm_bindings');
+        $binding = is_array($bindings) ? ($bindings[$name] ?? null) : null;
+        if (! is_array($binding) || $binding === []) {
+            throw new \RuntimeException('Required table-owned LLM binding is unavailable: '.$name);
+        }
+
+        return $binding;
+    }
+
+    public function llmRoutingValue(string $name, string $field): string|int
+    {
+        $value = data_get($this->llmRoutingBinding($name), $field);
+        if ($field === 'port'
+            ? is_int($value) && $value > 0 && $value <= 65535
+            : is_string($value) && trim($value) !== '' && strlen($value) <= 2048) {
+            return $value;
+        }
+
+        throw new \RuntimeException('Required LLM binding field is unavailable: '.$name.'.'.$field);
+    }
+
+    /** Dedicated lifecycle guards use their existing policy, including when no K3 binding exists. */
+    public function isDedicatedLlmTarget(string $target): bool
+    {
+        if ($target === '') {
+            return false;
+        }
+        $policy = $this->llmRoutingPolicy('ai', 'model_host_controller_mhc08_k3_policy') ?? [];
+        if (! is_array($policy)) {
+            throw new \RuntimeException('Dedicated LLM target policy is invalid.');
+        }
+        $registered = $policy['target']['target_id'] ?? null;
+
+        return is_string($registered) && $registered !== '' && $target === $registered;
+    }
+
+    /** Fresh reads for route authority, independent of legacy configuration cache behavior. */
+    protected function llmRoutingPolicy(string $section, string $key): ?array
+    {
+        try {
+            $row = DB::selectOne('SELECT config_value, data_type FROM system_configs WHERE section = ? AND config_key = ? LIMIT 1', [$section, $key]);
+            if ($row === null) {
+                return null;
+            }
+            if (! in_array($row->data_type, ['json', 'array'], true)) {
+                throw new \RuntimeException('LLM routing policy must be registered JSON.');
+            }
+            $value = json_decode((string) $row->config_value, true, flags: JSON_THROW_ON_ERROR);
+            if (! is_array($value)) {
+                throw new \RuntimeException('LLM routing policy must be an object.');
+            }
+
+            return $value;
+        } catch (\Throwable $error) {
+            throw new \RuntimeException('LLM routing policy lookup unavailable.', 0, $error);
+        }
+    }
+
     private const CACHE_PREFIX = 'syscfg:';
 
     private const CACHE_TTL = 300; // 5 minutes

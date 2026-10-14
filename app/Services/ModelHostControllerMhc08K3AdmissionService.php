@@ -20,8 +20,6 @@ class ModelHostControllerMhc08K3AdmissionService
 
     private const JOURNAL_SCHEMA = 'plos.model_host_controller.mhc08_k3_admission_journal.v1';
 
-    private const INSTANCE_ID = 'kimi_k3_87';
-
     private const PROFILE = 'deep_offline_kimi_k3';
 
     public function __construct(
@@ -166,7 +164,7 @@ class ModelHostControllerMhc08K3AdmissionService
                 }
                 if ((int) ($provider['id'] ?? 0) !== (int) ($snapshot['opened_provider']['id'] ?? 0)
                     || (int) ($profile['id'] ?? 0) !== (int) ($snapshot['opened_profile']['id'] ?? 0)
-                    || (string) ($provider['instance_id'] ?? '') !== self::INSTANCE_ID) {
+                    || (string) ($provider['instance_id'] ?? '') !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')) {
                     throw new RuntimeException('MHC-08 K3 cleanup found a replaced provider or profile row.');
                 }
                 $providerIsOpened = $this->openedStateUnchanged($provider, $snapshot['opened_provider']);
@@ -275,7 +273,7 @@ class ModelHostControllerMhc08K3AdmissionService
     /** @return array<string,mixed> */
     private function providerRow(bool $lock = false): array
     {
-        $query = DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID);
+        $query = DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'));
         if ($lock) {
             $query->lockForUpdate();
         }
@@ -419,8 +417,8 @@ class ModelHostControllerMhc08K3AdmissionService
         $health = parse_url((string) ($config['health_base_url'] ?? ''));
         if (! is_array($health)
             || ($health['scheme'] ?? null) !== 'http'
-            || ($health['host'] ?? null) !== (string) config('model_host_controller.reviewed_runtime_host', '')
-            || (int) ($health['port'] ?? 0) !== 8001
+            || ($health['host'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'host')
+            || (int) ($health['port'] ?? 0) !== (int) app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'port')
             || isset($health['path']) && $health['path'] !== ''
             || isset($health['query'])
             || isset($health['fragment'])) {

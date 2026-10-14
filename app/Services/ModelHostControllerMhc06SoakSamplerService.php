@@ -50,8 +50,6 @@ class ModelHostControllerMhc06SoakSamplerService
     private const CUSTODY_ROOT = 'app/private/model-host-controller/mhc06-custody';
 
     /** @var list<string> */
-    private const TARGETS = ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87'];
-
     public function __construct(
         private readonly ModelHostControllerClient $controller,
         private readonly ModelHostControllerQueueSnapshotService $queues,
@@ -149,7 +147,7 @@ class ModelHostControllerMhc06SoakSamplerService
                 continue;
             }
             $target = $receipt['controller']['target_state']['target'] ?? null;
-            if ($target !== null && (! is_string($target) || ! in_array($target, self::TARGETS, true))) {
+            if ($target !== null && (! is_string($target) || ! in_array($target, array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets']), true))) {
                 $invalid++;
 
                 continue;
@@ -608,7 +606,7 @@ class ModelHostControllerMhc06SoakSamplerService
         }
         $total = 0;
         foreach ($targetCounts as $target => $count) {
-            if (! is_string($target) || ! in_array($target, ['idle', 'qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87'], true)
+            if (! is_string($target) || ! in_array($target, ['idle', app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'), app(SystemConfigService::class)->llmRoutingValue('knowledge_graph', 'managed.target_id'), app(SystemConfigService::class)->llmRoutingValue('bitnet_canary', 'instance_id')], true)
                 || ! is_int($count) || $count <= 0) {
                 throw new RuntimeException('MHC-06 custody aggregate target counts are invalid.');
             }
@@ -761,7 +759,7 @@ class ModelHostControllerMhc06SoakSamplerService
     private function targetState(array $lifecycle, mixed $targets): array
     {
         $activeTarget = $lifecycle['active_target'] ?? null;
-        if ($activeTarget !== null && ! in_array($activeTarget, self::TARGETS, true)) {
+        if ($activeTarget !== null && ! in_array($activeTarget, array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets']), true)) {
             throw new RuntimeException('unadmitted_controller_target');
         }
         if ($activeTarget !== null && ! is_string($activeTarget)) {
@@ -807,12 +805,12 @@ class ModelHostControllerMhc06SoakSamplerService
 
     private function assertLifecycleTargets(mixed $targets, mixed $activeTarget): void
     {
-        if (! is_array($targets) || count($targets) !== count(self::TARGETS)) {
+        if (! is_array($targets) || count($targets) !== count(array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets']))) {
             throw new RuntimeException('incomplete_controller_state');
         }
         $seen = [];
         foreach ($targets as $target) {
-            if (! is_array($target) || ! in_array($target['target'] ?? null, self::TARGETS, true)) {
+            if (! is_array($target) || ! in_array($target['target'] ?? null, array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets']), true)) {
                 throw new RuntimeException('unadmitted_controller_target');
             }
             $targetId = (string) $target['target'];
@@ -822,7 +820,7 @@ class ModelHostControllerMhc06SoakSamplerService
                 || ($target['executable_exact'] ?? null) !== true) {
                 throw new RuntimeException('incomplete_controller_state');
             }
-            if (in_array($targetId, ['qwen38_87', 'ollama_qwen3_8b_87'], true)
+            if (in_array($targetId, [app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'), app(SystemConfigService::class)->llmRoutingValue('knowledge_graph', 'managed.target_id')], true)
                 && (($target['healthy'] ?? null) !== true || ($target['model_exact'] ?? null) !== true)) {
                 throw new RuntimeException('incomplete_controller_state');
             }
@@ -834,7 +832,7 @@ class ModelHostControllerMhc06SoakSamplerService
             }
             $seen[$targetId] = true;
         }
-        if (array_keys($seen) !== self::TARGETS) {
+        if (array_keys($seen) !== array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])) {
             throw new RuntimeException('incomplete_controller_state');
         }
     }

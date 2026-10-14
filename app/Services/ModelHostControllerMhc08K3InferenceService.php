@@ -95,8 +95,8 @@ class ModelHostControllerMhc08K3InferenceService
         $response = $this->requestTarget($prompt, $config, $requestId, $target);
         if (($response['success'] ?? true) !== false
             || ($response['response'] ?? null) !== null
-            || ($response['provider'] ?? null) !== 'kimi_k3_87'
-            || ($response['model'] ?? null) !== 'kimi-k3-colibri'
+            || ($response['provider'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+            || ($response['model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
             || ($response['error'] ?? null) !== 'Response cancelled by the operator before content was produced.'
             || ($response['fallback_suppressed'] ?? false) !== true
             || ($response['partial_content_preserved'] ?? true) !== false) {
@@ -170,8 +170,8 @@ class ModelHostControllerMhc08K3InferenceService
             'response' => $response,
             'execution_receipt' => [
                 'success' => true,
-                'provider' => 'kimi_k3_87',
-                'model' => 'kimi-k3-colibri',
+                'provider' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+                'model' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
                 'fallback_suppressed' => true,
                 'content_free' => true,
                 'contains_prompt_or_response_content' => false,
@@ -183,20 +183,20 @@ class ModelHostControllerMhc08K3InferenceService
     /** @param array<string,mixed> $config @param array<string,mixed> $target @return array<string,mixed> */
     private function requestTarget(string $prompt, array $config, string $requestId, array $target): array
     {
-        if (($target['target'] ?? null) !== 'kimi_k3_87'
-            || ($target['provider_instance_id'] ?? null) !== 'kimi_k3_87'
+        if (($target['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+            || ($target['provider_instance_id'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
             || ($target['provider_model_role'] ?? null) !== 'deep_offline'
-            || ($target['model'] ?? null) !== 'kimi-k3-colibri'
+            || ($target['model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
             || ($target['engine'] ?? null) !== 'colibri-k3') {
             throw new RuntimeException('MHC-08 K3 inference target contract is not exact.');
         }
 
         $response = $this->admission->run($requestId, fn (string $admissionToken): array => $this->ai->process($prompt, [
             ...$config,
-            'model' => 'provider:kimi_k3_87/kimi-k3-colibri',
-            'model_override' => 'kimi-k3-colibri',
+            'model' => app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'candidate_target'),
+            'model_override' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
             'model_role' => 'deep_offline',
-            'required_instance_id' => 'kimi_k3_87',
+            'required_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
             'use_cache' => false,
             'dedup' => false,
             '_skip_decompose' => true,
@@ -220,8 +220,8 @@ class ModelHostControllerMhc08K3InferenceService
             : [];
         $completionTokens = $telemetry['completion_tokens'] ?? null;
         if (($response['success'] ?? false) !== true
-            || ($response['provider'] ?? null) !== 'kimi_k3_87'
-            || ($response['model'] ?? null) !== 'kimi-k3-colibri'
+            || ($response['provider'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+            || ($response['model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
             || ($response['fallback_suppressed'] ?? false) !== true
             || ! is_string($response['response'] ?? null)
             || trim($response['response']) === ''

@@ -85,7 +85,7 @@ class ModelHostControllerCatalogSyncService
     /** @return array{scheme:string,host:string} */
     private function transport(): array
     {
-        $parts = parse_url((string) config('model_host_controller.url', ''));
+        $parts = parse_url((string) app(SystemConfigService::class)->llmRoutingValue('controller_transport', 'base_url'));
         if (! is_array($parts)
             || ! in_array($parts['scheme'] ?? null, ['http', 'https'], true)
             || trim((string) ($parts['host'] ?? '')) === '') {

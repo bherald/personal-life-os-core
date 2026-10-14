@@ -33,7 +33,7 @@ class ModelHostControllerClient
     {
         $policy = $this->policies->required();
         $this->assertTarget($target, $policy, false);
-        if ($target === 'kimi_k3_87') {
+        if (($policy['targets'][$target]['engine'] ?? null) === 'colibri-k3') {
             throw new RuntimeException('K3 requires its dedicated status route.');
         }
 
@@ -143,7 +143,7 @@ class ModelHostControllerClient
     {
         $policy = $this->mhc08Policy();
         if (($policy['target']['requires_explicit_target'] ?? false) !== true
-            || ($policy['target']['target_id'] ?? null) !== 'kimi_k3_87') {
+            || ($policy['target']['target_id'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')) {
             throw new RuntimeException('MHC-08 K3 target is not explicitly admitted.');
         }
 
@@ -452,7 +452,7 @@ class ModelHostControllerClient
             $this->mhc08PoliciesOrNew()->assertExplicitRole($role, $policy);
         }
         if (($policy['target']['requires_explicit_target'] ?? false) !== true
-            || ($policy['target']['target_id'] ?? null) !== 'kimi_k3_87') {
+            || ($policy['target']['target_id'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')) {
             throw new RuntimeException('MHC-08 K3 target is not explicitly admitted.');
         }
         if ($activation && ($policy['enabled'] ?? false) !== true) {
@@ -509,14 +509,15 @@ class ModelHostControllerClient
 
     private function baseUrl(): string
     {
-        $url = rtrim((string) config('model_host_controller.url', ''), '/');
+        $transport = app(SystemConfigService::class)->llmRoutingBinding('controller_transport');
+        $url = rtrim((string) ($transport['base_url'] ?? ''), '/');
         $parts = parse_url($url);
-        $allowedHosts = (array) config('model_host_controller.allowed_hosts', []);
+        $allowedHosts = is_array($transport['allowed_hosts'] ?? null) ? $transport['allowed_hosts'] : [];
         if (! is_array($parts)
             || ($parts['scheme'] ?? null) !== 'http'
             || ! in_array($parts['host'] ?? null, $allowedHosts, true)
             || ! isset($parts['port'])
-            || (int) $parts['port'] !== (int) config('model_host_controller.allowed_port', 11440)
+            || (int) $parts['port'] !== (int) ($transport['port'] ?? 0)
             || isset($parts['user'])
             || isset($parts['pass'])
             || (isset($parts['path']) && $parts['path'] !== '' && $parts['path'] !== '/')

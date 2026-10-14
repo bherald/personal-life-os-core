@@ -54,7 +54,6 @@ export const CONFIG = {
     database: envAny(['PGSQL_DATABASE', 'RAG_DB_DATABASE'], 'plos_rag'),
   },
   ollama: {
-    host: env('OLLAMA_HOST', 'http://127.0.0.1:11434'),
     discoverTimeoutMs: 10_000,   // model list fetch
     generateTimeoutMs: 60_000,   // LLM generation (most models finish in 30-40s)
   },

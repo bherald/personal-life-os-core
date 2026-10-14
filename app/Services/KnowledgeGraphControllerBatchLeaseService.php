@@ -27,6 +27,11 @@ class KnowledgeGraphControllerBatchLeaseService
             throw new RuntimeException('Knowledge-graph controller batch size must be between 1 and 3.');
         }
 
+        $binding = app(SystemConfigService::class)->llmRoutingBinding('knowledge_graph')['managed'] ?? null;
+        if (! is_array($binding) || ! is_string($binding['target_id'] ?? null) || ! is_string($binding['instance_id'] ?? null) || ! is_string($binding['model'] ?? null)) {
+            throw new RuntimeException('Managed knowledge-graph route binding is unavailable.');
+        }
+
         $leaseId = 'kg-lease-'.Str::uuid()->toString();
         $requests = [];
         $requestIndexes = [];
@@ -42,11 +47,11 @@ class KnowledgeGraphControllerBatchLeaseService
 
         $receipt = $this->selection->run(
             $requests,
-            function (array $request, array $target) use ($requestIndexes, $executor): void {
-                if (($target['target'] ?? null) !== 'ollama_qwen3_8b_87'
-                    || ($target['provider_instance_id'] ?? null) !== 'ollama_secondary'
+            function (array $request, array $target) use ($requestIndexes, $executor, $binding): void {
+                if (($target['target'] ?? null) !== $binding['target_id']
+                    || ($target['provider_instance_id'] ?? null) !== $binding['instance_id']
                     || ($target['provider_model_role'] ?? null) !== 'standard'
-                    || ($target['model'] ?? null) !== 'qwen3:8b'
+                    || ($target['model'] ?? null) !== $binding['model']
                     || ($target['engine'] ?? null) !== 'ollama') {
                     throw new RuntimeException('Knowledge-graph controller selected an inexact .87 Ollama target.');
                 }
@@ -80,8 +85,8 @@ class KnowledgeGraphControllerBatchLeaseService
 
         foreach ($receipt['results'] as $result) {
             if (($result['result'] ?? null) !== 'green'
-                || ($result['target'] ?? null) !== 'ollama_qwen3_8b_87'
-                || ($result['provider_instance_id'] ?? null) !== 'ollama_secondary'
+                || ($result['target'] ?? null) !== $binding['target_id']
+                || ($result['provider_instance_id'] ?? null) !== $binding['instance_id']
                 || ($result['batched_request_count'] ?? null) !== $batchSize
                 || ($result['release_result'] ?? null) !== 'released') {
                 throw new RuntimeException('Knowledge-graph controller batch receipt is inexact.');

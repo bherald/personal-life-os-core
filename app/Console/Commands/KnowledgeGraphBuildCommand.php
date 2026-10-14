@@ -314,7 +314,8 @@ class KnowledgeGraphBuildCommand extends Command
                         });
                         $this->newLine();
                         $this->info(sprintf(
-                            '[MHC_BATCH_LEASE:green target=ollama_qwen3_8b_87 size=%d cleanup=released]',
+                            '[MHC_BATCH_LEASE:green target=%s size=%d cleanup=released]',
+                            (string) ($receipt['results'][0]['target'] ?? ''),
                             count($receipt['results'] ?? [])
                         ));
                     } catch (\Throwable $exception) {

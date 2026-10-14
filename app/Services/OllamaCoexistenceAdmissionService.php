@@ -10,14 +10,6 @@ use RuntimeException;
 
 class OllamaCoexistenceAdmissionService
 {
-    private const INSTANCE_ID = 'ollama_secondary';
-
-    private const QWEN_INSTANCE_ID = 'qwen38_87';
-
-    private const MODEL = 'qwen3:8b';
-
-    private const ADMISSION_GROUP = 'win87_qwen_ollama';
-
     private const RECEIPT_SHA256 = '96c214a8ac2fa462c6236a4b911d07b09608b92a7f05c92ee2107c58a901505f';
 
     /** @return array<string,mixed> */
@@ -40,8 +32,8 @@ class OllamaCoexistenceAdmissionService
         return [
             'schema' => 'plos.ollama_coexistence_admission.v1',
             'phase' => (string) ($coexistence['phase'] ?? ''),
-            'instance_id' => self::INSTANCE_ID,
-            'model' => self::MODEL,
+            'instance_id' => app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'instance_id'),
+            'model' => app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model'),
             'is_active' => (bool) ($provider->is_active ?? false),
             'is_healthy' => (bool) ($provider->is_healthy ?? false),
             'routability' => (string) ($provider->routability ?? ''),
@@ -89,9 +81,9 @@ class OllamaCoexistenceAdmissionService
                 || ! $blockedStateExact
                 || ($routePolicy['operator_route_block'] ?? null) !== true
                 || ($routePolicy['operator_route_block_phase'] ?? null) !== 'K3-COEX-01'
-                || ($slotPolicy['admission_group'] ?? null) !== self::ADMISSION_GROUP
+                || ($slotPolicy['admission_group'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'admission_group')
                 || ($coexistence['mode'] ?? null) !== 'serialized'
-                || ! in_array(self::MODEL, $this->list($coexistence['allowed_models'] ?? null), true)
+                || ! in_array(app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model'), $this->list($coexistence['allowed_models'] ?? null), true)
             ) {
                 throw new RuntimeException('Ollama coexistence promotion requires the exact blocked K3-COEX-01 state.');
             }
@@ -103,8 +95,8 @@ class OllamaCoexistenceAdmissionService
                 'standard_runtime' => $roleRuntime['standard'] ?? null,
                 'max_concurrent' => isset($provider->max_concurrent) ? (int) $provider->max_concurrent : null,
             ];
-            $config['models']['standard'] = self::MODEL;
-            $config['default_model'] = self::MODEL;
+            $config['models']['standard'] = app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model');
+            $config['default_model'] = app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model');
             $config['role_runtime']['standard'] = [
                 'think' => false,
                 'max_tokens' => 128,
@@ -129,7 +121,7 @@ class OllamaCoexistenceAdmissionService
                 ...$coexistence,
                 'phase' => 'K3-COEX-04-live',
                 'mode' => 'serialized',
-                'model' => self::MODEL,
+                'model' => app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model'),
                 'comparison_receipt_sha256' => self::RECEIPT_SHA256,
                 'lifecycle_task' => 'PLOS-OllamaCoex11434',
                 'candidate_only_admission' => true,
@@ -229,7 +221,7 @@ class OllamaCoexistenceAdmissionService
 
     private function assertQwenDurable(): void
     {
-        $row = DB::table('llm_instances')->where('instance_id', self::QWEN_INSTANCE_ID)->first();
+        $row = DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'qwen_instance_id'))->first();
         if ($row === null) {
             throw new RuntimeException('Durable Qwen provider is missing.');
         }
@@ -238,7 +230,7 @@ class OllamaCoexistenceAdmissionService
             || ! (bool) ($row->is_healthy ?? false)
             || (string) ($row->routability ?? '') !== 'allowed'
             || data_get($config, 'admission.phase') !== 'K3-ALT-06-live'
-            || data_get($config, 'slot_policy.admission_group') !== self::ADMISSION_GROUP
+            || data_get($config, 'slot_policy.admission_group') !== app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'admission_group')
             || data_get($config, 'coexistence.mode') !== 'serialized'
         ) {
             throw new RuntimeException('Exact durable serialized Qwen state is required.');
@@ -249,7 +241,7 @@ class OllamaCoexistenceAdmissionService
     {
         $provider = $this->providerRow();
         $base = rtrim((string) ($provider->base_url ?? ''), '/');
-        if ($base !== rtrim((string) config('services.ollama.api_url', ''), '/')) {
+        if ($base !== app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'base_url')) {
             throw new RuntimeException('Ollama coexistence endpoint identity has drifted.');
         }
         $response = Http::connectTimeout(5)->timeout(15)->get($base.'/api/tags');
@@ -257,7 +249,7 @@ class OllamaCoexistenceAdmissionService
             throw new RuntimeException('Ollama coexistence promotion requires healthy .87 ingress.');
         }
         $models = $response->json('models');
-        if (is_array($models) && ! collect($models)->contains(fn (mixed $entry): bool => is_array($entry) && ($entry['name'] ?? null) === self::MODEL)) {
+        if (is_array($models) && ! collect($models)->contains(fn (mixed $entry): bool => is_array($entry) && ($entry['name'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model'))) {
             throw new RuntimeException('Exact qwen3:8b model is not installed on .87.');
         }
     }
@@ -284,9 +276,9 @@ class OllamaCoexistenceAdmissionService
     /** @param array<string,mixed> $config */
     private function exactProviderPolicy(array $config): bool
     {
-        return ($config['models']['standard'] ?? null) === self::MODEL
-            && ($config['default_model'] ?? null) === self::MODEL
-            && ($config['slot_policy']['admission_group'] ?? null) === self::ADMISSION_GROUP
+        return ($config['models']['standard'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model')
+            && ($config['default_model'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'model')
+            && ($config['slot_policy']['admission_group'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'admission_group')
             && ($config['route_policy']['allowed_model_roles'] ?? null) === ['standard']
             && ($config['route_policy']['require_model_role'] ?? null) === true
             && ($config['route_policy']['require_explicit_instance'] ?? null) === true
@@ -318,7 +310,7 @@ class OllamaCoexistenceAdmissionService
         if (! Schema::hasTable('llm_instances')) {
             throw new RuntimeException('llm_instances table is unavailable.');
         }
-        $query = DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID);
+        $query = DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'instance_id'));
         if ($lock) {
             $query->lockForUpdate();
         }
@@ -367,7 +359,7 @@ class OllamaCoexistenceAdmissionService
         foreach (['llm_instances_all', 'llm_instances_healthy', 'external_api_providers'] as $key) {
             Cache::forget($key);
         }
-        Cache::forget('rpm_count_'.self::INSTANCE_ID);
-        Cache::forget('rate_limit_'.self::INSTANCE_ID);
+        Cache::forget('rpm_count_'.app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'instance_id'));
+        Cache::forget('rate_limit_'.app(SystemConfigService::class)->llmRoutingValue('ollama_coexistence', 'instance_id'));
     }
 }

@@ -16,7 +16,7 @@ class PromptIntegrityPolicyTest extends TestCase
         $this->assertFalse(config('agents.enable_log_precompaction'));
         $this->assertFalse(config('recursion.auto_decompose_enabled'));
         $this->assertFalse(config('ollama_pipeline.compression_enabled'));
-        $this->assertFalse(config('mcp.servers.prompt-compressor.enabled'));
+        $this->assertNull(config('mcp.servers.prompt-compressor'));
     }
 
     public function test_contextual_compression_returns_original_text_unchanged(): void

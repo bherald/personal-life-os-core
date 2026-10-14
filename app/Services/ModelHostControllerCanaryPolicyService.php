@@ -14,31 +14,6 @@ class ModelHostControllerCanaryPolicyService
 
     public const CONFIG_KEY = 'model_host_controller_canary_policy';
 
-    /** @var array<string,array{provider_instance_id:string,model:string,engine:string,role:string,adapter:string}> */
-    private const TARGETS = [
-        'qwen38_87' => [
-            'provider_instance_id' => 'qwen38_87',
-            'model' => 'qwen3.8-27b-q4_k_m',
-            'engine' => 'llama.cpp',
-            'role' => 'deep_offline',
-            'adapter' => 'qwen',
-        ],
-        'ollama_qwen3_8b_87' => [
-            'provider_instance_id' => 'ollama_secondary',
-            'model' => 'qwen3:8b',
-            'engine' => 'ollama',
-            'role' => 'standard',
-            'adapter' => 'ollama',
-        ],
-        'bitnet_87' => [
-            'provider_instance_id' => 'bitnet_87',
-            'model' => 'bitnet-b1.58-2b-4t-i2s',
-            'engine' => 'bitnet.cpp',
-            'role' => 'privacy_deny_prefilter',
-            'adapter' => 'bitnet',
-        ],
-    ];
-
     /** @return array<string,mixed> */
     public function required(): array
     {
@@ -75,11 +50,11 @@ class ModelHostControllerCanaryPolicyService
         }
 
         $targets = $policy['targets'] ?? null;
-        if (! is_array($targets) || array_keys($targets) !== array_keys(self::TARGETS)) {
+        if (! is_array($targets) || array_keys($targets) !== array_keys($this->targetCatalog())) {
             throw new RuntimeException('MHC-05 canary target catalog is not exact.');
         }
 
-        foreach (self::TARGETS as $targetId => $expected) {
+        foreach ($this->targetCatalog() as $targetId => $expected) {
             $actual = $targets[$targetId] ?? null;
             if (! is_array($actual)) {
                 throw new RuntimeException("MHC-05 target {$targetId} is unavailable.");
@@ -111,6 +86,6 @@ class ModelHostControllerCanaryPolicyService
     /** @return array<string,array{provider_instance_id:string,model:string,engine:string,role:string,adapter:string}> */
     public function targetCatalog(): array
     {
-        return self::TARGETS;
+        return app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'];
     }
 }

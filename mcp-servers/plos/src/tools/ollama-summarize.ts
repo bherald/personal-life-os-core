@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import type { ToolContext } from '../util/tool-context.js';
 import { generate } from '../ollama/client.js';
-import { selectModel } from '../ollama/model-selector.js';
+import { selectRoute } from '../ollama/model-selector.js';
 
 export const ollamaSummarizeInput = z.object({
   text: z.string().describe('Text to summarize'),
@@ -19,16 +20,17 @@ const STYLE_PROMPTS: Record<string, string> = {
   technical: 'Provide a technical summary focusing on implementation details, errors, and actionable items.',
 };
 
-export async function ollamaSummarize(input: OllamaSummarizeInput): Promise<string> {
+export async function ollamaSummarize(input: OllamaSummarizeInput, toolContext?: ToolContext): Promise<string> {
   const { text, max_length, style, context } = input;
-  const model = await selectModel('general');
+  const route = await selectRoute('general');
+  const model = route.model;
 
   const system = `You are a precise summarizer. ${STYLE_PROMPTS[style]}
 Keep the summary under ${max_length} characters.
 ${context ? `Context: this text is a ${context}.` : ''}
 Output ONLY the summary, no preamble.`;
 
-  const result = await generate(model, text, {
+  const result = await generate(route, text, { signal: toolContext?.signal,
     system,
     temperature: 0.2,
     num_predict: Math.ceil(max_length / 3),

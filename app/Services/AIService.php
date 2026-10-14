@@ -414,11 +414,11 @@ class AIService
         $this->providerModelCapabilities = $providerModelCapabilities ?? app(ProviderModelCapabilityService::class);
         $this->openAICompatibleProgress = $openAICompatibleProgress ?? app(OpenAICompatibleProgressClient::class);
 
-        // Load models from DB-backed role maps first; env config is bootstrap-only.
+        // Runtime model selection is owned by registered table rows only.
         $dbModels = $this->loadModelsFromDb();
-        $this->defaultModel = (string) ($dbModels['standard'] ?? config('services.ollama.model') ?? '');
-        $this->visionModel = (string) ($dbModels['vision'] ?? config('services.ollama.vision_model') ?? '');
-        $this->embeddingModel = (string) ($dbModels['embedding'] ?? config('services.ollama.embedding_model') ?? '');
+        $this->defaultModel = (string) ($dbModels['standard'] ?? '');
+        $this->visionModel = (string) ($dbModels['vision'] ?? '');
+        $this->embeddingModel = (string) ($dbModels['embedding'] ?? '');
 
         // Initialize Ollama instances (legacy fallback if pool manager unavailable)
         $this->initializeOllamaInstances();
@@ -471,12 +471,12 @@ class AIService
                 $config = json_decode($row->config ?? '{}', true) ?: [];
                 $models = $config['models'] ?? [];
                 $models['default_model'] = $config['default_model'] ?? null;
-                $models['embedding'] = $config['embedding_model'] ?? null;
+                $models['embedding'] = $config['embedding_model'] ?? ($models['embedding'] ?? null);
 
                 return $models;
             }
         } catch (\Throwable $e) {
-            // DB not available during boot — fall through to config defaults
+            // Missing registry authority must not resurrect an environment model.
         }
 
         return [];
@@ -484,7 +484,7 @@ class AIService
 
     /**
      * Initialize Ollama instance pool from llm_instances DB table
-     * Falls back to config only if DB returns zero rows
+     * An empty or unavailable registry leaves the pool empty.
      */
     private function initializeOllamaInstances(): void
     {
@@ -511,22 +511,12 @@ class AIService
                 return;
             }
         } catch (Exception $e) {
-            Log::warning('AIService: Failed to load Ollama instances from DB, falling back to config', [
+            Log::warning('AIService: Ollama instance registry unavailable', [
                 'error' => $e->getMessage(),
             ]);
         }
 
-        // Last resort fallback: config-based (DB returned zero rows or query failed)
-        Log::warning('AIService: No active Ollama instances in llm_instances table, using config fallback', [
-            'fallback_url' => config('services.ollama.api_url', 'http://127.0.0.1:11434'),
-        ]);
-        $primaryUrl = config('services.ollama.api_url', 'http://127.0.0.1:11434');
-        $this->ollamaInstances[] = [
-            'id' => 'ollama_config_fallback',
-            'url' => rtrim($primaryUrl, '/'),
-            'priority' => 1,
-            'name' => 'Config Fallback',
-        ];
+        // No configured provider is a valid application state; never invent one.
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1115,7 +1105,7 @@ PROMPT;
         $requiredInstanceId = is_string($config['required_instance_id'] ?? null)
             ? trim($config['required_instance_id'])
             : '';
-        if ($requiredInstanceId === 'kimi_k3_87') {
+        if ($requiredInstanceId !== '' && app(SystemConfigService::class)->isDedicatedLlmTarget($requiredInstanceId)) {
             $admissionRequestId = is_string($config['_mhc08_admission_request_id'] ?? null)
                 ? trim($config['_mhc08_admission_request_id'])
                 : '';
@@ -3161,7 +3151,7 @@ PROMPT;
         // Embeddings use nomic-embed-text which is lightweight (~137MB VRAM) and can
         // coexist with inference models on the GPU. No busy lock needed — this enables
         // both Ollama instances to handle embeddings simultaneously during batch operations.
-        $baseInstanceId = $instance['id']; // e.g. 'ollama_primary' - for pool manager metrics
+        $baseInstanceId = $instance['id']; // Registered identity for pool manager metrics
 
         try {
             $ollamaStatus = $this->getOllamaStatus($model, $instance['url']);
@@ -5571,7 +5561,10 @@ PROMPT;
      */
     public function isOllamaBusy(?string $instanceId = null): bool
     {
-        $instanceId = $instanceId ?? 'ollama_primary';
+        $instanceId = $instanceId ?? ($this->ollamaInstances[0]['id'] ?? null);
+        if ($instanceId === null) {
+            return false;
+        }
 
         $this->poolManager ??= app(LLMPoolManagerService::class);
 
@@ -5595,6 +5588,9 @@ PROMPT;
      */
     private function acquireOllamaBusyLock(string $requestId, ?string $instanceId = null): bool
     {
+        if (! is_string($instanceId) || trim($instanceId) === '') {
+            throw new InferenceAdmissionException('Busy-lock acquisition requires the selected registered instance.');
+        }
         // GPU contention: don't acquire Ollama lock while Whisper is transcribing
         if ($this->isWhisperRunning()) {
             Log::debug('AIService: Whisper using GPU, cannot acquire Ollama lock', [
@@ -5613,8 +5609,6 @@ PROMPT;
             return false;
         }
 
-        $instanceId = $instanceId ?? 'ollama_primary';
-
         $this->poolManager ??= app(LLMPoolManagerService::class);
 
         return $this->poolManager->acquireBusyLock($instanceId, $requestId);
@@ -5628,7 +5622,9 @@ PROMPT;
      */
     private function releaseOllamaBusyLock(string $requestId, ?string $instanceId = null): void
     {
-        $instanceId = $instanceId ?? 'ollama_primary';
+        if (! is_string($instanceId) || trim($instanceId) === '') {
+            throw new InferenceAdmissionException('Busy-lock release requires the original registered instance.');
+        }
 
         $this->poolManager ??= app(LLMPoolManagerService::class);
         if (! $this->poolManager->releaseBusyLock($instanceId, $requestId)) {
@@ -5643,7 +5639,10 @@ PROMPT;
      */
     public function getOllamaBusyInfo(?string $instanceId = null): ?array
     {
-        $instanceId = $instanceId ?? 'ollama_primary';
+        $instanceId = $instanceId ?? ($this->ollamaInstances[0]['id'] ?? null);
+        if ($instanceId === null) {
+            return null;
+        }
 
         // Pool manager provides more detailed info
         if ($this->useDynamicPool && $this->poolManager) {
@@ -5878,7 +5877,7 @@ PROMPT;
             return $this->getHealthyOllamaInstancesFromPool();
         }
 
-        // Legacy fallback: use hardcoded instances
+        // Legacy callers still use the registered table inventory.
         return $this->getHealthyOllamaInstancesLegacy();
     }
 
@@ -6246,12 +6245,13 @@ PROMPT;
      */
     private function isEvaluatorValidatedKimiK3Probe(array $config): bool
     {
-        return ($config['model'] ?? null) === 'provider:kimi_k3_87/kimi-k3-colibri'
-            && ($config['model_override'] ?? null) === 'kimi-k3-colibri'
-            && ($config['required_instance_id'] ?? null) === 'kimi_k3_87'
+        return $this->isExactStructuredOutputEvalProbe($config, 'provider')
+            && app(SystemConfigService::class)->isDedicatedLlmTarget((string) ($config['required_instance_id'] ?? ''))
+            && ($config['model'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('kimi_scorecard', 'candidate_target')
+            && ($config['model_override'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
+            && ($config['required_instance_id'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
             && ($config['model_role'] ?? null) === 'deep_offline'
-            && (int) ($config['max_tokens'] ?? 0) === 128
-            && $this->isExactStructuredOutputEvalProbe($config, 'provider');
+            && (int) ($config['max_tokens'] ?? 0) === 128;
     }
 
     private function applyPreferredOllamaInstanceOrder(array $config, ?string $modelRole): array
@@ -6264,12 +6264,13 @@ PROMPT;
 
         $config['_ollama_instance_selection_explicit'] = false;
 
-        $taskType = (string) ($config['task_type'] ?? '');
-        $preferSecondary = ! in_array($modelRole, ['fast', 'vision'], true)
-            && ! in_array($taskType, ['embedding', 'vision', 'fast'], true);
-
-        if ($preferSecondary) {
-            $config['preferred_ollama_instance_ids'] = ['ollama_secondary', 'ollama_primary'];
+        $preferences = $this->runtimePolicy()['preferred_ollama_instance_ids_by_role'] ?? [];
+        $preferred = is_array($preferences) ? ($preferences[$modelRole ?? 'standard'] ?? []) : [];
+        if (is_array($preferred) && $preferred !== []) {
+            $config['preferred_ollama_instance_ids'] = array_values(array_filter(
+                $preferred,
+                static fn (mixed $id): bool => is_string($id) && trim($id) !== ''
+            ));
         }
 
         return $config;
@@ -6471,7 +6472,10 @@ PROMPT;
     public function getOllamaStatus(?string $targetModel = null, ?string $url = null): array
     {
         $targetModel = $targetModel ?? $this->defaultModel;
-        $url = $url ?? $this->ollamaInstances[0]['url'];
+        $url = $url ?? ($this->ollamaInstances[0]['url'] ?? null);
+        if (! is_string($url) || trim($url) === '') {
+            return ['available' => false, 'error' => 'No registered Ollama endpoint.', 'models_installed' => [], 'model_installed' => false, 'model_loaded' => false];
+        }
         $cacheKey = 'ollama_status_'.md5($url);
 
         // Cache status for 10 seconds

@@ -123,8 +123,8 @@ class ModelHostControllerMhc08K3CancellationQualificationService
         $active = Cache::get(self::ACTIVE_GENERATIONS_KEY, []);
         foreach (is_array($active) ? $active : [] as $generation) {
             if (is_array($generation)
-                && ($generation['provider'] ?? null) === 'kimi_k3_87'
-                && ($generation['model'] ?? null) === 'kimi-k3-colibri'
+                && ($generation['provider'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+                && ($generation['model'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
                 && in_array($generation['state'] ?? null, ['waiting_for_first_chunk', 'receiving'], true)
                 && ($generation['cancellation_run_sha256'] ?? null) === hash('sha256', $taskId)
                 && (int) ($generation['started_at_epoch'] ?? 0) >= $state['stream_not_before_epoch']) {
@@ -546,8 +546,8 @@ class ModelHostControllerMhc08K3CancellationQualificationService
         $telemetry = is_array($response['transport_telemetry'] ?? null) ? $response['transport_telemetry'] : [];
         if (($response['success'] ?? false) !== true
             || ($response['response'] ?? null) !== self::RECOVERY_OUTPUT
-            || ($response['provider'] ?? null) !== 'kimi_k3_87'
-            || ($response['model'] ?? null) !== 'kimi-k3-colibri'
+            || ($response['provider'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+            || ($response['model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
             || ($response['fallback_suppressed'] ?? false) !== true
             || ($telemetry['finish_reason'] ?? null) !== 'stop'
             || ! is_int($telemetry['completion_tokens'] ?? null)
@@ -711,10 +711,10 @@ class ModelHostControllerMhc08K3CancellationQualificationService
         sort($expectedKeys);
         sort($actualKeys);
         $expectedTarget = [
-            'target_id' => 'kimi_k3_87',
-            'provider_instance_id' => 'kimi_k3_87',
+            'target_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'provider_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
             'provider_model_role' => 'deep_offline',
-            'model' => 'kimi-k3-colibri',
+            'model' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
             'engine' => 'colibri-k3',
             'requires_explicit_target' => true,
         ];

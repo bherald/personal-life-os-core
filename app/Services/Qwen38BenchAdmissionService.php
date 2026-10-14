@@ -9,10 +9,6 @@ use RuntimeException;
 
 class Qwen38BenchAdmissionService
 {
-    private const INSTANCE_ID = 'qwen38_87';
-
-    private const MODEL = 'qwen3.8-27b-q4_k_m';
-
     private const MODEL_SHA256 = '31629f53165ab6a7dad8c9847dcfd1fdf55829dac1e6e748f4a68581b0033d34';
 
     private const RUNTIME_COMMIT = '01818e4956858fe225a6875aae88b4cbee0b319e';
@@ -26,8 +22,8 @@ class Qwen38BenchAdmissionService
 
         return [
             'schema' => 'plos.qwen38_bench_admission.v1',
-            'instance_id' => self::INSTANCE_ID,
-            'model' => self::MODEL,
+            'instance_id' => app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'),
+            'model' => app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model'),
             'is_active' => (bool) ($row->is_active ?? false),
             'is_healthy' => (bool) ($row->is_healthy ?? false),
             'routability' => (string) ($row->routability ?? ''),
@@ -82,7 +78,7 @@ class Qwen38BenchAdmissionService
                 'K3-ALT-04-live',
                 $retry ? $previousAttempt + 1 : 1
             ));
-            DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID)->update(
+            DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'))->update(
                 $this->filterColumns([
                     'is_active' => 1,
                     'is_healthy' => 1,
@@ -130,7 +126,7 @@ class Qwen38BenchAdmissionService
                 $attempt
             ));
 
-            DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID)->update(
+            DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'))->update(
                 $this->filterColumns([
                     'is_active' => 0,
                     'is_healthy' => 0,
@@ -158,7 +154,7 @@ class Qwen38BenchAdmissionService
         if (! Schema::hasTable('llm_instances')) {
             throw new RuntimeException('llm_instances table is unavailable.');
         }
-        $query = DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID);
+        $query = DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'));
         if ($lock) {
             $query->lockForUpdate();
         }
@@ -186,8 +182,8 @@ class Qwen38BenchAdmissionService
 
         return ($config['adapter'] ?? null) === 'openai_compatible'
             && ($config['transport'] ?? null) === 'openai_sse_monitored'
-            && ($config['default_model'] ?? null) === self::MODEL
-            && ($config['models']['deep_offline'] ?? null) === self::MODEL
+            && ($config['default_model'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model')
+            && ($config['models']['deep_offline'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model')
             && ($config['extra_headers']['Host'] ?? null) === '127.0.0.1'
             && ($policy['allowed_model_roles'] ?? null) === ['deep_offline']
             && ($policy['require_model_role'] ?? null) === true
@@ -198,7 +194,7 @@ class Qwen38BenchAdmissionService
             && ($structured['transport'] ?? null) === 'openai_json_schema'
             && ($structured['local_validation'] ?? null) === true
             && ($structured['fail_closed'] ?? null) === true
-            && ($structured['models'][self::MODEL] ?? null) === true
+            && ($structured['models'][app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model')] ?? null) === true
             && ($config['chat_template_kwargs']['enable_thinking'] ?? null) === false
             && (int) ($config['max_tokens'] ?? 0) === 128;
     }
@@ -239,7 +235,7 @@ class Qwen38BenchAdmissionService
         foreach (['llm_instances_all', 'llm_instances_healthy', 'external_api_providers'] as $key) {
             Cache::forget($key);
         }
-        Cache::forget('rpm_count_'.self::INSTANCE_ID);
-        Cache::forget('rate_limit_'.self::INSTANCE_ID);
+        Cache::forget('rpm_count_'.app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'));
+        Cache::forget('rate_limit_'.app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'));
     }
 }

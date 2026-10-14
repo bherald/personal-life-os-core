@@ -151,20 +151,33 @@ class KnowledgeGraphService
         // Ollama instance and/or model role instead of the default local fast combo.
         // Used by the catch-up lane (scheduled_jobs id=133) to spread KG extraction
         // across local Ollama roles so available GPUs work in parallel.
-        $preferredInstance = $options['preferred_instance'] ?? 'primary';
-        if ($managedModelHost && $preferredInstance !== 'secondary') {
-            throw new \InvalidArgumentException('Managed knowledge-graph batches require the secondary Ollama instance.');
+        $scheduledAllowedInstances = null;
+        $managedBinding = null;
+        if ($scheduledBatch) {
+            $routing = app(SystemConfigService::class)->llmRoutingBinding('knowledge_graph');
+            $preferredInstance = $options['preferred_instance'] ?? ($routing['default_alias'] ?? null);
+            $aliases = $routing['aliases'] ?? [];
+            if (! is_string($preferredInstance) || ! is_array($aliases) || ! array_key_exists($preferredInstance, $aliases)) {
+                throw new \InvalidArgumentException('Knowledge-graph instance alias is not registered.');
+            }
+            $scheduledAllowedInstances = $aliases[$preferredInstance];
+            if ($scheduledAllowedInstances !== null && (! is_array($scheduledAllowedInstances) || $scheduledAllowedInstances === [])) {
+                throw new \InvalidArgumentException('Knowledge-graph instance binding is invalid.');
+            }
+            if ($managedModelHost) {
+                $managedBinding = $routing['managed'] ?? null;
+                if (! is_array($managedBinding) || ! is_string($managedBinding['instance_id'] ?? null)
+                    || ! is_string($managedBinding['model'] ?? null)
+                    || $scheduledAllowedInstances !== [$managedBinding['instance_id']]) {
+                    throw new \InvalidArgumentException('Managed knowledge-graph batch requires its registered exact target.');
+                }
+            }
         }
         $modelRoleOverride = $options['model_role_override'] ?? null;
-        $scheduledAllowedInstances = match ($preferredInstance) {
-            'secondary' => ['ollama_secondary'],
-            'any' => null,
-            default => ['ollama_primary'],
-        };
         $scheduledModelRole = $modelRoleOverride ?: 'fast';
 
         if ($scheduledBatch && strlen($text) > self::SCHEDULED_BATCH_CHAR_LIMIT) {
-            $text = substr($text, 0, self::SCHEDULED_BATCH_CHAR_LIMIT)."\n[... truncated for scheduled batch]";
+            throw new \InvalidArgumentException('Knowledge-graph input exceeds the registered batch budget; source text was not shortened.');
         }
 
         try {
@@ -304,9 +317,9 @@ PROMPT;
             }
 
             $managedRoute = $managedModelHost ? [
-                'model' => 'qwen3:8b',
-                'model_override' => 'qwen3:8b',
-                'preferred_ollama_instance_ids' => ['ollama_secondary'],
+                'model' => $managedBinding['model'],
+                'model_override' => $managedBinding['model'],
+                'preferred_ollama_instance_ids' => [$managedBinding['instance_id']],
                 'ollama_required_no_fallback' => true,
                 'disable_cascade' => true,
                 'use_cache' => false,
@@ -327,8 +340,8 @@ PROMPT;
             ]);
 
             if ($managedModelHost && (($result['success'] ?? false) !== true
-                || ($result['provider'] ?? null) !== 'ollama_secondary'
-                || (isset($result['model']) && ($result['model'] ?? null) !== 'qwen3:8b'))) {
+                || ($result['provider'] ?? null) !== $managedBinding['instance_id']
+                || (isset($result['model']) && ($result['model'] ?? null) !== $managedBinding['model']))) {
                 return [
                     'success' => false,
                     'error' => 'Managed .87 Ollama extraction returned an inexact target response.',
@@ -433,8 +446,8 @@ RETRY_PROMPT;
                 ]);
 
                 if ($managedModelHost && (($retryResult['success'] ?? false) !== true
-                    || ($retryResult['provider'] ?? null) !== 'ollama_secondary'
-                    || (isset($retryResult['model']) && ($retryResult['model'] ?? null) !== 'qwen3:8b'))) {
+                    || ($retryResult['provider'] ?? null) !== $managedBinding['instance_id']
+                    || (isset($retryResult['model']) && ($retryResult['model'] ?? null) !== $managedBinding['model']))) {
                     return [
                         'success' => false,
                         'error' => 'Managed .87 Ollama retry returned an inexact target response.',

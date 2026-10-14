@@ -60,9 +60,9 @@ class ModelHostControllerMhc08K3CanaryBatchService
             'batch_id' => self::BATCH_ID,
             'case_ids' => array_column(self::CASES, 'case_id'),
             'roles' => ['ultra_deep', 'archival'],
-            'target' => 'kimi_k3_87',
-            'provider_instance_id' => 'kimi_k3_87',
-            'model' => 'kimi-k3-colibri',
+            'target' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'provider_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'model' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
             'engine' => 'colibri-k3',
             'max_tokens' => self::MAX_TOKENS,
             'execution_mode' => 'serial',
@@ -149,9 +149,9 @@ class ModelHostControllerMhc08K3CanaryBatchService
             'case_count' => count($cases),
             'requested_max_tokens' => self::MAX_TOKENS,
             'execution_mode' => 'serial',
-            'target' => 'kimi_k3_87',
-            'provider_instance_id' => 'kimi_k3_87',
-            'model' => 'kimi-k3-colibri',
+            'target' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'provider_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'model' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
             'engine' => 'colibri-k3',
             'runtime_profile' => $state['runtime_profile'],
             'runtime_revision' => $state['runtime_revision'],
@@ -200,8 +200,8 @@ class ModelHostControllerMhc08K3CanaryBatchService
         $completionTokens = $telemetry['completion_tokens'] ?? null;
 
         if (($response['success'] ?? false) !== true
-            || ($response['provider'] ?? null) !== 'kimi_k3_87'
-            || ($response['model'] ?? null) !== 'kimi-k3-colibri'
+            || ($response['provider'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+            || ($response['model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
             || ($response['fallback_suppressed'] ?? false) !== true
             || ! is_string($output)
             || $output !== $case['expected_output']
@@ -211,9 +211,9 @@ class ModelHostControllerMhc08K3CanaryBatchService
             || ($receipt['schema'] ?? null) !== 'plos.model_host_controller.mhc08_k3_receipt.v1'
             || ($receipt['result'] ?? null) !== 'green'
             || ($receipt['role'] ?? null) !== $case['role']
-            || ($receipt['target'] ?? null) !== 'kimi_k3_87'
-            || ($receipt['provider_instance_id'] ?? null) !== 'kimi_k3_87'
-            || ($receipt['model'] ?? null) !== 'kimi-k3-colibri'
+            || ($receipt['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+            || ($receipt['provider_instance_id'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+            || ($receipt['model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
             || ($receipt['engine'] ?? null) !== 'colibri-k3'
             || ($receipt['runtime_profile'] ?? null) !== $state['runtime_profile']
             || ($receipt['runtime_revision'] ?? null) !== $state['runtime_revision']

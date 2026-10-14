@@ -484,10 +484,10 @@ class ModelHostControllerMhc08K3LifecycleService
     private function candidatePolicy(array $policy, string $role): array
     {
         $expectedTarget = [
-            'target_id' => 'kimi_k3_87',
-            'provider_instance_id' => 'kimi_k3_87',
+            'target_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'provider_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
             'provider_model_role' => 'deep_offline',
-            'model' => 'kimi-k3-colibri',
+            'model' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
             'engine' => 'colibri-k3',
             'requires_explicit_target' => true,
         ];
@@ -606,7 +606,7 @@ class ModelHostControllerMhc08K3LifecycleService
         $restore = $status['coexistence_restore_proof'] ?? null;
         $targets = is_array($restore) ? ($restore['targets'] ?? null) : null;
         $currentTargets = $status['coexistence_current_targets'] ?? null;
-        $expectedTargets = ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87'];
+        $expectedTargets = array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets']);
         $actualTargets = is_array($targets) ? array_column($targets, 'target') : [];
         $targetsGreen = is_array($targets) && count($targets) === 3;
         foreach (is_array($targets) ? $targets : [] as $target) {

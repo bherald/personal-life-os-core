@@ -507,7 +507,7 @@ async function main() {
     await startTunnels();
   } catch (err) {
     logger.error('SSH tunnel failed — DB tools will error on use', { error: (err as Error).message });
-    // Don't exit — Ollama tools still work without DB
+    // Keep diagnostics available; inference requires registered table authority.
   }
 
   const server = new Server(

@@ -12,12 +12,6 @@ class BackendQuarantineService
 {
     public const SCHEMA = 'plos.backend_quarantine.v1';
 
-    private const PRIMARY_PROVIDER_IDS = [
-        'ollama_primary',
-        'ollama_secondary',
-        'codex_exec',
-    ];
-
     public function __construct(private readonly OfflinePolicyService $offlinePolicy) {}
 
     /**
@@ -65,8 +59,7 @@ class BackendQuarantineService
             return $this->failure('provider', $instanceId, 'provider_not_found', "Provider '{$instanceId}' was not found.");
         }
 
-        $isPrimary = in_array($instanceId, self::PRIMARY_PROVIDER_IDS, true)
-            || (string) ($row->instance_type ?? '') === 'ollama';
+        $isPrimary = in_array((string) ($row->instance_type ?? ''), ['ollama', 'codex_exec'], true);
 
         if ($isPrimary && ! $allowPrimary) {
             return [

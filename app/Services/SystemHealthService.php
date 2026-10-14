@@ -4,10 +4,10 @@ namespace App\Services;
 
 use Exception;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Facades\Redis;
 
 /**
  * System Health Service
@@ -35,15 +35,20 @@ class SystemHealthService
      * Health status constants
      */
     private const STATUS_HEALTHY = 'healthy';
+
     private const STATUS_DEGRADED = 'degraded';
+
     private const STATUS_UNHEALTHY = 'unhealthy';
+
     private const STATUS_CRITICAL = 'critical';
 
     /**
      * Health score thresholds
      */
     private const SCORE_HEALTHY = 80;      // >= 80 = healthy
+
     private const SCORE_DEGRADED = 60;     // >= 60 = degraded
+
     private const SCORE_UNHEALTHY = 40;    // >= 40 = unhealthy
     // < 40 = critical
 
@@ -86,15 +91,15 @@ class SystemHealthService
 
         try {
             // Test connection with simple query
-            $sql = "SELECT 1 as test";
+            $sql = 'SELECT 1 as test';
             $result = DB::select($sql);
 
             $responseTime = round((microtime(true) - $startTime) * 1000, 2);
 
             // Get table stats
-            $tableCountSql = "SELECT COUNT(*) as count
+            $tableCountSql = 'SELECT COUNT(*) as count
                              FROM information_schema.tables
-                             WHERE table_schema = ?";
+                             WHERE table_schema = ?';
             $tableCount = DB::select($tableCountSql, [config('database.connections.mysql.database')])[0]->count ?? 0;
 
             return [
@@ -123,13 +128,9 @@ class SystemHealthService
     {
         $instances = DB::select("SELECT instance_name, base_url, priority FROM llm_instances WHERE instance_type = 'ollama' AND is_active = 1 ORDER BY priority ASC");
 
-        // Fallback if no DB instances configured
+        // Absence is not permission to probe an unregistered environment endpoint.
         if (empty($instances)) {
-            $instances = [(object) [
-                'instance_name' => 'default',
-                'base_url' => config('services.ollama.api_url', 'http://127.0.0.1:11434'),
-                'priority' => 1,
-            ]];
+            return ['status' => 'not_configured', 'healthy' => false, 'score' => 0, 'instances' => []];
         }
 
         $results = [];
@@ -249,19 +250,19 @@ class SystemHealthService
                     $queueSize += (int) Redis::llen("queues:{$queueName}");
                 }
             } else {
-                $sql = "SELECT COUNT(*) as count FROM jobs";
+                $sql = 'SELECT COUNT(*) as count FROM jobs';
                 $queueSize = DB::select($sql)[0]->count ?? 0;
             }
 
             // Use a recent failure window so historical residue does not keep health degraded forever.
-            $failedSql = "SELECT COUNT(*) as count FROM failed_jobs WHERE failed_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)";
+            $failedSql = 'SELECT COUNT(*) as count FROM failed_jobs WHERE failed_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)';
             $failedJobs = DB::select($failedSql)[0]->count ?? 0;
 
             $score = 100;
             $status = 'running';
             $healthy = true;
 
-            if (!$isRunning) {
+            if (! $isRunning) {
                 $score = 0;
                 $status = 'stopped';
                 $healthy = false;
@@ -349,7 +350,7 @@ class SystemHealthService
     {
         try {
             // Count active workflows
-            $activeSql = "SELECT COUNT(*) as count FROM workflows WHERE active = 1";
+            $activeSql = 'SELECT COUNT(*) as count FROM workflows WHERE active = 1';
             $activeCount = DB::select($activeSql)[0]->count ?? 0;
 
             // Count running workflows
@@ -405,15 +406,15 @@ class SystemHealthService
     {
         try {
             // Errors in last hour
-            $lastHourSql = "SELECT COUNT(*) as count
+            $lastHourSql = 'SELECT COUNT(*) as count
                            FROM system_errors
-                           WHERE occurred_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)";
+                           WHERE occurred_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)';
             $lastHourCount = DB::select($lastHourSql)[0]->count ?? 0;
 
             // Errors in last day
-            $lastDaySql = "SELECT COUNT(*) as count
+            $lastDaySql = 'SELECT COUNT(*) as count
                           FROM system_errors
-                          WHERE occurred_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)";
+                          WHERE occurred_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)';
             $lastDayCount = DB::select($lastDaySql)[0]->count ?? 0;
 
             // Critical unresolved errors
@@ -456,7 +457,7 @@ class SystemHealthService
     /**
      * Calculate overall health score from individual checks
      *
-     * @param array $checks All health check results
+     * @param  array  $checks  All health check results
      * @return int Health score (0-100)
      */
     public function calculateHealthScore(array $checks): int
@@ -477,7 +478,7 @@ class SystemHealthService
     /**
      * Determine health status from score
      *
-     * @param int $score Health score (0-100)
+     * @param  int  $score  Health score (0-100)
      * @return string Health status
      */
     private function determineHealthStatus(int $score): string
@@ -500,7 +501,7 @@ class SystemHealthService
         $health = $this->checkHealth();
         $checks = $health['checks'];
 
-        $sql = "INSERT INTO system_health_snapshots (
+        $sql = 'INSERT INTO system_health_snapshots (
             health_score,
             health_status,
             services_status,
@@ -519,7 +520,7 @@ class SystemHealthService
             slow_queries_count,
             alerts_generated,
             created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())';
 
         $params = [
             $health['health_score'],
@@ -556,16 +557,16 @@ class SystemHealthService
     /**
      * Get health trend using raw SQL
      *
-     * @param string $period Time period to analyze
+     * @param  string  $period  Time period to analyze
      * @return string Trend: improving, degrading, stable, unknown
      */
     public function getHealthTrend(string $period = '24 hours'): string
     {
         try {
-            $sql = "SELECT health_score, created_at
+            $sql = 'SELECT health_score, created_at
                     FROM system_health_snapshots
                     WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
-                    ORDER BY created_at ASC";
+                    ORDER BY created_at ASC';
 
             $hours = $this->periodToHours($period);
             $snapshots = DB::select($sql, [$hours]);
@@ -585,6 +586,7 @@ class SystemHealthService
             };
         } catch (Exception $e) {
             Log::debug('SystemHealthService: health trend calculation failed', ['error' => $e->getMessage()]);
+
             return 'unknown';
         }
     }
@@ -596,7 +598,7 @@ class SystemHealthService
      */
     public function getLatestSnapshot(): ?array
     {
-        $sql = "SELECT * FROM system_health_snapshots ORDER BY created_at DESC LIMIT 1";
+        $sql = 'SELECT * FROM system_health_snapshots ORDER BY created_at DESC LIMIT 1';
         $results = DB::select($sql);
 
         if (empty($results)) {
@@ -604,6 +606,7 @@ class SystemHealthService
         }
 
         $snapshot = $results[0];
+
         return [
             'id' => $snapshot->id,
             'health_score' => $snapshot->health_score,
@@ -616,7 +619,7 @@ class SystemHealthService
     /**
      * Build services status map
      *
-     * @param array $checks Health check results
+     * @param  array  $checks  Health check results
      * @return array Services status map
      */
     private function buildServicesStatus(array $checks): array
@@ -643,7 +646,7 @@ class SystemHealthService
     /**
      * Calculate average response time from checks
      *
-     * @param array $checks Health check results
+     * @param  array  $checks  Health check results
      * @return int|null Average response time in milliseconds
      */
     private function calculateAvgResponseTime(array $checks): ?int
@@ -666,7 +669,7 @@ class SystemHealthService
     /**
      * Convert period string to hours
      *
-     * @param string $period Period like '1 hour', '24 hours'
+     * @param  string  $period  Period like '1 hour', '24 hours'
      * @return int Hours
      */
     private function periodToHours(string $period): int
@@ -685,7 +688,7 @@ class SystemHealthService
     /**
      * Get unhealthy snapshots using raw SQL
      *
-     * @param int $limit Number of results to return
+     * @param  int  $limit  Number of results to return
      * @return array Unhealthy snapshots
      */
     public function getUnhealthySnapshots(int $limit = 100): array
@@ -701,16 +704,16 @@ class SystemHealthService
     /**
      * Get snapshots by status using raw SQL
      *
-     * @param string $status Health status
-     * @param int $limit Number of results to return
+     * @param  string  $status  Health status
+     * @param  int  $limit  Number of results to return
      * @return array Snapshots with specified status
      */
     public function getSnapshotsByStatus(string $status, int $limit = 100): array
     {
-        $sql = "SELECT * FROM system_health_snapshots
+        $sql = 'SELECT * FROM system_health_snapshots
                 WHERE health_status = ?
                 ORDER BY created_at DESC
-                LIMIT ?";
+                LIMIT ?';
 
         return DB::select($sql, [$status, $limit]);
     }
@@ -718,16 +721,16 @@ class SystemHealthService
     /**
      * Get snapshots below health score threshold using raw SQL
      *
-     * @param int $threshold Health score threshold
-     * @param int $limit Number of results to return
+     * @param  int  $threshold  Health score threshold
+     * @param  int  $limit  Number of results to return
      * @return array Snapshots below threshold
      */
     public function getSnapshotsBelowScore(int $threshold, int $limit = 100): array
     {
-        $sql = "SELECT * FROM system_health_snapshots
+        $sql = 'SELECT * FROM system_health_snapshots
                 WHERE health_score < ?
                 ORDER BY created_at DESC
-                LIMIT ?";
+                LIMIT ?';
 
         return DB::select($sql, [$threshold, $limit]);
     }
@@ -735,18 +738,18 @@ class SystemHealthService
     /**
      * Get recent snapshots using raw SQL
      *
-     * @param string $period Time period (e.g., '1 hour', '24 hours')
-     * @param int $limit Number of results to return
+     * @param  string  $period  Time period (e.g., '1 hour', '24 hours')
+     * @param  int  $limit  Number of results to return
      * @return array Recent snapshots
      */
     public function getRecentSnapshots(string $period = '24 hours', int $limit = 100): array
     {
         $hours = $this->periodToHours($period);
 
-        $sql = "SELECT * FROM system_health_snapshots
+        $sql = 'SELECT * FROM system_health_snapshots
                 WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? HOUR)
                 ORDER BY created_at DESC
-                LIMIT ?";
+                LIMIT ?';
 
         return DB::select($sql, [$hours, $limit]);
     }

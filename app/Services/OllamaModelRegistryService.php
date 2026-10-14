@@ -2,10 +2,11 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\DB;
+use App\Controllers\NotificationController;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * OllamaModelRegistryService
@@ -31,6 +32,7 @@ use Illuminate\Support\Facades\Http;
 class OllamaModelRegistryService
 {
     private AIService $aiService;
+
     private ?LLMPoolManagerService $poolManager;
 
     // Known profile mappings for auto-detection
@@ -80,7 +82,7 @@ class OllamaModelRegistryService
         }
 
         // Alert if new models need vetting
-        if (!empty($results['discovered'])) {
+        if (! empty($results['discovered'])) {
             $this->alertNewModels($results['discovered']);
         }
 
@@ -90,7 +92,7 @@ class OllamaModelRegistryService
     /**
      * Sync models for a specific Ollama instance
      *
-     * @param array $instance Instance data with id, url, db_id
+     * @param  array  $instance  Instance data with id, url, db_id
      * @return array Sync results for this instance
      */
     private function syncModelsForInstance(array $instance): array
@@ -113,6 +115,7 @@ class OllamaModelRegistryService
                     'instance_id' => $instance['instance_id'],
                     'url' => $instance['url'],
                 ]);
+
                 return $results;
             }
 
@@ -132,7 +135,7 @@ class OllamaModelRegistryService
                 $profile = $this->detectProfile($modelName);
                 $capabilities = $this->detectCapabilities($modelName, $profile);
 
-                if (!$existing) {
+                if (! $existing) {
                     // New model discovered on this instance
                     DB::insert(
                         'INSERT INTO ollama_models
@@ -182,7 +185,7 @@ class OllamaModelRegistryService
             }
 
             // Mark models not seen on THIS INSTANCE as unavailable
-            if (!empty($seenModels)) {
+            if (! empty($seenModels)) {
                 $placeholders = implode(',', array_fill(0, count($seenModels), '?'));
                 $params = array_merge([$instance['db_id']], $seenModels);
                 $unavailable = DB::select(
@@ -262,15 +265,6 @@ class OllamaModelRegistryService
             }
         }
 
-        // Final fallback: use config
-        if (empty($instances)) {
-            $instances[] = [
-                'instance_id' => 'ollama_primary',
-                'url' => config('services.ollama.api_url', 'http://127.0.0.1:11434'),
-                'db_id' => 1, // Assume primary is ID 1
-            ];
-        }
-
         return $instances;
     }
 
@@ -282,7 +276,7 @@ class OllamaModelRegistryService
      *   - `[]`    → Call succeeded but host has zero models installed.
      *   - array  → Call succeeded with a populated models list.
      *
-     * @param string $url Ollama API URL
+     * @param  string  $url  Ollama API URL
      * @return array<int, array<string, mixed>>|null Models list, or null if unreachable
      */
     private function getModelsFromOllama(string $url): ?array
@@ -394,7 +388,7 @@ class OllamaModelRegistryService
     /**
      * Get vetted models for a specific profile
      *
-     * @param string|null $profile Filter by profile
+     * @param  string|null  $profile  Filter by profile
      * @return array Vetted and available models
      */
     public function getVettedModels(?string $profile = null): array
@@ -417,8 +411,8 @@ class OllamaModelRegistryService
     /**
      * Vet a model (mark as approved for production use)
      *
-     * @param string $modelName Model to vet
-     * @param array $vettingData Vetting information
+     * @param  string  $modelName  Model to vet
+     * @param  array  $vettingData  Vetting information
      * @return bool Success
      */
     public function vetModel(string $modelName, array $vettingData): bool
@@ -428,7 +422,7 @@ class OllamaModelRegistryService
             [$modelName]
         );
 
-        if (!$model) {
+        if (! $model) {
             return false;
         }
 
@@ -473,17 +467,17 @@ class OllamaModelRegistryService
     /**
      * Record model usage metrics
      *
-     * @param string $modelName Model used
-     * @param bool $success Request succeeded
-     * @param int $responseTimeMs Response time in milliseconds
-     * @param float|null $tokensPerSecond Generation speed
+     * @param  string  $modelName  Model used
+     * @param  bool  $success  Request succeeded
+     * @param  int  $responseTimeMs  Response time in milliseconds
+     * @param  float|null  $tokensPerSecond  Generation speed
      */
     public function recordUsage(string $modelName, bool $success, int $responseTimeMs, ?float $tokensPerSecond = null): void
     {
         try {
             // Update metrics with running averages
             DB::update(
-                "UPDATE ollama_models SET
+                'UPDATE ollama_models SET
                     total_requests = total_requests + 1,
                     total_failures = total_failures + ?,
                     avg_response_time_ms = COALESCE(
@@ -499,7 +493,7 @@ class OllamaModelRegistryService
                     END,
                     success_rate = ((total_requests - total_failures) * 100.0) / total_requests,
                     updated_at = NOW()
-                WHERE model_name = ?",
+                WHERE model_name = ?',
                 [
                     $success ? 0 : 1,
                     $responseTimeMs,
@@ -523,7 +517,7 @@ class OllamaModelRegistryService
      * Get best model for a task type
      * Returns vetted model if available, otherwise falls back to AIService profiles
      *
-     * @param string $taskType Task type (default, fast, creative, coding, vision, embedding)
+     * @param  string  $taskType  Task type (default, fast, creative, coding, vision, embedding)
      * @return array Model recommendation
      */
     public function getBestModelForTask(string $taskType): array
@@ -531,8 +525,9 @@ class OllamaModelRegistryService
         // Try vetted models first
         $vetted = $this->getVettedModels($taskType);
 
-        if (!empty($vetted)) {
+        if (! empty($vetted)) {
             $best = $vetted[0];
+
             return [
                 'model' => $best->model_name,
                 'source' => 'vetted_registry',
@@ -544,6 +539,7 @@ class OllamaModelRegistryService
 
         // Fallback to AIService profiles
         $model = $this->aiService->selectModel($taskType);
+
         return [
             'model' => $model,
             'source' => 'profile_default',
@@ -598,7 +594,7 @@ class OllamaModelRegistryService
         Log::info('OllamaModelRegistry: New models alert', ['models' => $models]);
 
         try {
-            $notifier = new \App\Controllers\NotificationController();
+            $notifier = new NotificationController;
             $notifier->send('pushover', [
                 'source_group' => 'ops_maintenance',
                 'title' => 'New Ollama Models',
@@ -695,6 +691,7 @@ class OllamaModelRegistryService
         // Remove quantization suffixes for display
         $name = preg_replace('/:[\w-]+$/', '', $modelName);
         $name = str_replace(['-', '_'], ' ', $name);
+
         return ucwords($name);
     }
 }

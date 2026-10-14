@@ -157,7 +157,6 @@ return [
             'bootstrap/cache',
             'mcp-server/dist',
             'mcp-servers/plos/dist',
-            'mcp-servers/prompt-compressor/dist',
             'public/build',
             'storage',
         ],

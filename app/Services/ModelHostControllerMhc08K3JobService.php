@@ -567,7 +567,7 @@ class ModelHostControllerMhc08K3JobService
             : $this->lifecycle->recoverInterrupted($payload['role'], $taskId, $taskId);
         if (($controller['schema'] ?? null) !== 'plos.model_host_controller.mhc08_k3_interrupted_recovery.v1'
             || ($controller['role'] ?? null) !== $payload['role']
-            || ($controller['target'] ?? null) !== 'kimi_k3_87'
+            || ($controller['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
             || ($controller['request_id'] ?? null) !== $taskId
             || ($controller['owner_request_id'] ?? null) !== $taskId.'-owner'
             || ($controller['lease_id'] ?? null) !== $taskId

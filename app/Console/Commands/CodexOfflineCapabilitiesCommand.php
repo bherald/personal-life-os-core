@@ -9,6 +9,7 @@ use App\Services\WhisperRuntimeService;
 use App\Support\SpreadsheetSafeCsv;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 
 class CodexOfflineCapabilitiesCommand extends Command
 {
@@ -646,8 +647,22 @@ class CodexOfflineCapabilitiesCommand extends Command
      */
     private function embeddingCapability(): array
     {
-        $model = trim((string) config('services.ollama.embedding_model', ''));
-        $url = trim((string) config('services.ollama.api_url', ''));
+        $model = '';
+        $url = '';
+        try {
+            $instances = DB::select("SELECT base_url, config FROM llm_instances WHERE instance_type = 'ollama' AND is_active = 1 ORDER BY priority ASC, id ASC");
+            foreach ($instances as $instance) {
+                $settings = json_decode((string) ($instance->config ?? '{}'), true);
+                $candidate = trim((string) ($settings['models']['embedding'] ?? $settings['embedding_model'] ?? ''));
+                if ($candidate !== '') {
+                    $model = $candidate;
+                    $url = trim((string) ($instance->base_url ?? ''));
+                    break;
+                }
+            }
+        } catch (\Throwable) {
+            // Registry absence must not be represented as configured environment inference.
+        }
 
         return [
             'status' => $model !== '' ? 'configured' : 'not_configured',

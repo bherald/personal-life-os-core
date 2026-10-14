@@ -35,7 +35,7 @@ class ModelHostControllerMhc08K3HostCleanQualificationService
             && ($restore['result'] ?? null) === 'green'
             && ($restore['mode'] ?? null) === 'Restored'
             && array_map(static fn (array $target): mixed => $target['target'] ?? null, $targets)
-                === ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+                === array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
             && collect($targets)->every(static fn (mixed $target): bool => is_array($target)
                 && ($target['task_exact'] ?? null) === true
                 && (($target['health_required'] ?? false) !== true || ($target['health_healthy'] ?? null) === true));
@@ -44,7 +44,7 @@ class ModelHostControllerMhc08K3HostCleanQualificationService
         $coexistenceCurrent = ($status['coexistence_current'] ?? null) === true
             && array_map(static fn (mixed $target): mixed => is_array($target)
                 ? ($target['target'] ?? null) : null, $currentTargets)
-                === ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+                === array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
             && collect($currentTargets)->every(static fn (mixed $target): bool => is_array($target)
                 && ($target['task_exact'] ?? null) === true
                 && (($target['health_required'] ?? false) !== true || ($target['health_healthy'] ?? null) === true));
@@ -85,7 +85,7 @@ class ModelHostControllerMhc08K3HostCleanQualificationService
             'schema' => self::RECEIPT_SCHEMA,
             'result' => 'green',
             'host_id' => '.87',
-            'target' => 'kimi_k3_87',
+            'target' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
             'runtime_profile' => 'State',
             'runtime_revision' => $contract['runtime_revision'],
             'state_engine_sha256' => $contract['engine_sha256'],
@@ -172,7 +172,7 @@ class ModelHostControllerMhc08K3HostCleanQualificationService
         }
         if (($receipt['schema'] ?? null) !== 'plos.model_host_controller.mhc08_k3_state_qualification.v1'
             || ($receipt['result'] ?? null) !== 'green' || ($receipt['controls_passed'] ?? null) !== true
-            || ($receipt['host_id'] ?? null) !== '.87' || ($receipt['target'] ?? null) !== 'kimi_k3_87'
+            || ($receipt['host_id'] ?? null) !== '.87' || ($receipt['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
             || ($receipt['runtime_profile'] ?? null) !== 'State'
             || ($receipt['runtime_revision'] ?? null) !== $contract['runtime_revision']
             || ($receipt['state_engine_sha256'] ?? null) !== $contract['engine_sha256']
@@ -186,7 +186,7 @@ class ModelHostControllerMhc08K3HostCleanQualificationService
             || ($receipt['state_restored_exactly'] ?? null) !== true
             || ($receipt['stable_task_rollback_reinstall_passed'] ?? null) !== true
             || ($receipt['resource_guards_green'] ?? null) !== true
-            || ($receipt['coexistence_targets'] ?? null) !== ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+            || ($receipt['coexistence_targets'] ?? null) !== array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
             || ($receipt['coexistence_restored'] ?? null) !== true
             || (int) ($receipt['process_count'] ?? -1) !== 0
             || (int) ($receipt['listener_count'] ?? -1) !== 0

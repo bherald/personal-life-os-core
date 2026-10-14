@@ -17,6 +17,10 @@ Laravel 12 · Vue · MySQL/MariaDB · PostgreSQL + pgvector · Redis · Docker �
 operator-configured local AI. Application code is MIT licensed; third-party
 components and demo assets retain their [separate terms](THIRD_PARTY.md).
 
+The prepared routing follow-up uses table-owned provider/model bindings and
+retires prompt-compressor integration while retaining complete original input.
+See [routing and upgrade notes](docs/table-owned-llm-routing.md).
+
 ## Research with sources you can inspect
 
 PLOS provides the working parts of a research process: persistent questions,

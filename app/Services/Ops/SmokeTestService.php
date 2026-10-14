@@ -482,7 +482,6 @@ class SmokeTestService
         $required = [
             'agents.max_loop_iterations',
             'agents.context_max_tokens',
-            'services.ollama.api_url',
             'services.tika.url',
             'file_types.image',
             'file_types.document',

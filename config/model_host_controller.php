@@ -1,7 +1,7 @@
 <?php
 
 return [
-    // Transport only. Activation and routing remain table-owned. A public
+    // Installation inputs only; runtime transport is table-owned. A public
     // install has no reviewed controller host or credential by default.
     'url' => env('PLOS_MODEL_HOST_CONTROLLER_URL', ''),
     'token_file' => env('PLOS_MODEL_HOST_CONTROLLER_TOKEN_FILE', ''),

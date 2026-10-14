@@ -8,7 +8,10 @@ use RuntimeException;
 
 class ModelHostControllerPolicyService
 {
-    public function __construct(private readonly ?Closure $localPolicy = null) {}
+    public function __construct(
+        private readonly ?Closure $localPolicy = null,
+        private readonly ?Closure $localHostIdentity = null,
+    ) {}
 
     public const CONFIG_SECTION = 'ai';
 
@@ -123,7 +126,10 @@ class ModelHostControllerPolicyService
         }
 
         $hostId = trim((string) ($policy['host_id'] ?? ''));
-        if ($hostId !== (string) config('model_host_controller.expected_host_id', '.87')) {
+        $expectedHostId = $this->localHostIdentity !== null
+            ? ($this->localHostIdentity)()
+            : app(SystemConfigService::class)->llmRoutingValue('controller_transport', 'expected_host_id');
+        if ($hostId === '' || $hostId !== $expectedHostId) {
             throw new RuntimeException('Model-host controller policy has the wrong host identity.');
         }
         if (($policy['execution_mode'] ?? null) !== 'serial') {

@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Services\ModelHardwareAdmissionService;
 use App\Services\OfflineCodingRouteService;
+use App\Services\SystemConfigService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
@@ -69,16 +70,18 @@ class CodexOfflineSidecarCommand extends Command
         if (($primaryRoute['execution_allowed'] ?? false) !== true) {
             return $this->failWithPayload('Primary offline coding route is blocked: '.($primaryRoute['reason'] ?? 'unknown'));
         }
-        if ($execute && $sidecarProfile === 'plos-offline-jetson') {
+        if ($execute && $sidecarProfile !== '') {
             try {
-                $instance = DB::table('llm_instances')->where('instance_id', 'ollama_jetson')->first();
+                $bindings = app(SystemConfigService::class)->llmRoutingBinding('offline_sidecar');
+                $instanceId = $bindings['profiles'][$sidecarProfile] ?? null;
+                $instance = is_string($instanceId) ? DB::table('llm_instances')->where('instance_id', $instanceId)->first() : null;
                 $assessment = $instance ? $admission->assess($instance, $sidecarModel, 'coding') : null;
             } catch (Throwable) {
                 $assessment = null;
             }
             if (! (bool) ($assessment['route_allowed'] ?? false)) {
                 return $this->failWithPayload(
-                    'Jetson sidecar execution is blocked by model hardware admission: '.($assessment['decision'] ?? 'instance unavailable')
+                    'Sidecar execution is blocked by registered model hardware admission: '.($assessment['decision'] ?? 'instance unavailable')
                 );
             }
         }

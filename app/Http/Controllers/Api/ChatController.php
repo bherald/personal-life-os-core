@@ -1054,7 +1054,10 @@ class ChatController extends Controller
                     // Do NOT route through AIService — that would apply content filtering
                     // and provider selection that defeats the purpose of uncensored mode.
                     $instances = $aiService->getHealthyOllamaInstances();
-                    $ollamaUrl = ! empty($instances) ? $instances[0]['url'] : config('services.ollama.api_url', 'http://127.0.0.1:11434');
+                    $ollamaUrl = $instances[0]['url'] ?? null;
+                    if (! is_string($ollamaUrl) || trim($ollamaUrl) === '') {
+                        throw new \RuntimeException('No registered Ollama chat endpoint is admitted.');
+                    }
 
                     $chatRuntime = app(ChatRuntimePolicyService::class)->required()['direct_ollama_stream'];
                     $resolvedChatModel = $chatModel ?? $this->resolveUncensoredModel() ?? $this->resolveDefaultOllamaModel();
@@ -1974,7 +1977,7 @@ class ChatController extends Controller
             // Fall through
         }
 
-        return config('services.ollama.model');
+        return null;
     }
 
     private function resolveChatProfile(string $mode, bool $allowOverride = false): array
@@ -2398,13 +2401,13 @@ class ChatController extends Controller
 
                 return $config['models']['standard']
                     ?? $config['default_model']
-                    ?? config('services.ollama.model');
+                    ?? null;
             }
         } catch (\Throwable $e) {
             // Fall through
         }
 
-        return config('services.ollama.model');
+        return null;
     }
 
     /**

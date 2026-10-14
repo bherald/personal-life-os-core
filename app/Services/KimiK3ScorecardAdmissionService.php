@@ -9,8 +9,6 @@ use RuntimeException;
 
 class KimiK3ScorecardAdmissionService
 {
-    private const INSTANCE_ID = 'kimi_k3_87';
-
     private const PROFILE = 'deep_offline_kimi_k3';
 
     private const RUNTIME = 'dev-33302b8-kimi-k3-mmap-prefix-v162-cancelacct-cpu';
@@ -30,7 +28,7 @@ class KimiK3ScorecardAdmissionService
 
         return [
             'schema' => 'plos.kimi_k3_scorecard_admission.v1',
-            'instance_id' => self::INSTANCE_ID,
+            'instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
             'is_active' => (bool) ($row->is_active ?? false),
             'is_healthy' => (bool) ($row->is_healthy ?? false),
             'routability' => (string) ($row->routability ?? ''),
@@ -95,7 +93,7 @@ class KimiK3ScorecardAdmissionService
                 $this->admissionPayload('scorecard_batch', "K3-05-batch-{$batch}", $batch),
                 ['attempt' => $retry ? $previousAttempt + 1 : 1]
             );
-            DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID)->update(
+            DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'))->update(
                 $this->filterColumns([
                     'is_active' => 1,
                     'is_healthy' => 1,
@@ -142,7 +140,7 @@ class KimiK3ScorecardAdmissionService
                 $batch
             ));
 
-            DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID)->update(
+            DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'))->update(
                 $this->filterColumns([
                     'is_active' => 0,
                     'is_healthy' => 0,
@@ -182,7 +180,7 @@ class KimiK3ScorecardAdmissionService
             throw new RuntimeException('llm_instances table is unavailable.');
         }
 
-        $query = DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID);
+        $query = DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'));
         if ($lock) {
             $query->lockForUpdate();
         }
@@ -209,8 +207,8 @@ class KimiK3ScorecardAdmissionService
 
         return ($config['adapter'] ?? null) === 'openai_compatible'
             && ($config['transport'] ?? null) === 'openai_sse_monitored'
-            && ($config['default_model'] ?? null) === 'kimi-k3-colibri'
-            && ($config['models']['deep_offline'] ?? null) === 'kimi-k3-colibri'
+            && ($config['default_model'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
+            && ($config['models']['deep_offline'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
             && ($config['extra_headers']['Host'] ?? null) === '127.0.0.1'
             && ($policy['allowed_model_roles'] ?? null) === ['deep_offline']
             && ($policy['require_model_role'] ?? null) === true

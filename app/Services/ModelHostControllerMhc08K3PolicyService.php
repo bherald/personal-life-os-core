@@ -91,10 +91,10 @@ class ModelHostControllerMhc08K3PolicyService
 
         $target = $policy['target'] ?? null;
         $expectedTarget = [
-            'target_id' => 'kimi_k3_87',
-            'provider_instance_id' => 'kimi_k3_87',
+            'target_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'provider_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
             'provider_model_role' => 'deep_offline',
-            'model' => 'kimi-k3-colibri',
+            'model' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
             'engine' => 'colibri-k3',
             'requires_explicit_target' => true,
         ];

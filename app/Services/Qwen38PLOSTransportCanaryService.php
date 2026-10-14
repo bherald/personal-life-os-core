@@ -6,10 +6,6 @@ use RuntimeException;
 
 class Qwen38PLOSTransportCanaryService
 {
-    private const TARGET = 'provider:qwen38_87/qwen3.8-27b-q4_k_m';
-
-    private const INSTANCE_ID = 'qwen38_87';
-
     private const MAX_TOKENS = 128;
 
     private const CASE_IDS = [
@@ -39,8 +35,8 @@ class Qwen38PLOSTransportCanaryService
         $contract = [
             'batch_id' => 'K3-ALT-05-batch-1',
             'case_ids' => self::CASE_IDS,
-            'candidate_target' => self::TARGET,
-            'candidate_instance_id' => self::INSTANCE_ID,
+            'candidate_target' => app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'target_ref'),
+            'candidate_instance_id' => app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'),
             'max_tokens' => self::MAX_TOKENS,
             'minimum_average_score_ratio' => 0.55,
             'minimum_strict_passes' => 1,
@@ -80,7 +76,7 @@ class Qwen38PLOSTransportCanaryService
             throw new RuntimeException('Qwen3.8 PLOS canary requires exact temporary admission.');
         }
 
-        $run = $this->runner->runModel(self::TARGET, self::CASE_IDS, null, null, self::MAX_TOKENS);
+        $run = $this->runner->runModel(app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'target_ref'), self::CASE_IDS, null, null, self::MAX_TOKENS);
         $evidence = $this->ledger->record($run);
         $this->assertExactRun($run, $evidence);
         $average = (float) ($run['average_score_ratio'] ?? 0.0);
@@ -113,8 +109,8 @@ class Qwen38PLOSTransportCanaryService
      */
     private function assertExactRun(array $run, array $evidence): void
     {
-        if (($run['target'] ?? null) !== self::TARGET
-            || ($run['requested_instance_id'] ?? null) !== self::INSTANCE_ID
+        if (($run['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'target_ref')
+            || ($run['requested_instance_id'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id')
             || (int) ($run['requested_max_tokens'] ?? 0) !== self::MAX_TOKENS
             || (int) ($run['total_cases'] ?? 0) !== count(self::CASE_IDS)
         ) {

@@ -34,6 +34,16 @@ final class CliSystemConfigService extends SystemConfigService
         return $value;
     }
 
+    protected function llmRoutingPolicy(string $section, string $key): ?array
+    {
+        $value = $this->get($section.'.'.$key, null, true);
+        if ($value !== null && ! is_array($value)) {
+            throw new RuntimeException('Pinned CLI routing policy must be an object.');
+        }
+
+        return $value;
+    }
+
     public function set(string $key, mixed $value, ?string $dataType = null): void
     {
         throw new RuntimeException('Shared services cannot change CLI policy. Use the explicit CLI setting command.');

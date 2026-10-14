@@ -264,32 +264,11 @@ class OfflineMediaAnalysisService
     /** @return array{string,string} */
     private function endpoint(string $model): array
     {
-        $source = 'default';
-        $url = '';
-        foreach (['OFFLINE_DEV_LOCAL_OLLAMA_URL', 'PLOS_MEDIA_OLLAMA_URL'] as $name) {
-            $value = getenv($name);
-            if (is_string($value) && trim($value) !== '') {
-                $source = $name;
-                $url = trim($value);
-                break;
-            }
+        $registered = $this->registeredEndpoint($model);
+        if ($registered === null) {
+            throw new InvalidArgumentException('No registered local Ollama model endpoint is admitted.');
         }
-        if ($url === '') {
-            $registered = $this->registeredEndpoint($model);
-            if ($registered !== null) {
-                [$url, $source] = $registered;
-            }
-        }
-        if ($url === '') {
-            $value = getenv('OLLAMA_API_URL');
-            if (is_string($value) && trim($value) !== '') {
-                $source = 'OLLAMA_API_URL';
-                $url = trim($value);
-            }
-        }
-        if ($url === '') {
-            $url = 'http://127.0.0.1:11434';
-        }
+        [$url, $source] = $registered;
 
         $parts = parse_url($url);
         if (! is_array($parts)
@@ -299,14 +278,14 @@ class OfflineMediaAnalysisService
             || isset($parts['pass'])
             || isset($parts['query'])
             || isset($parts['fragment'])) {
-            throw new InvalidArgumentException('Local Ollama environment URL is invalid.');
+            throw new InvalidArgumentException('Registered Ollama URL is invalid.');
         }
 
         $path = rtrim((string) ($parts['path'] ?? ''), '/');
         if ($path === '/v1') {
             $url = substr(rtrim($url, '/'), 0, -3);
         } elseif ($path !== '') {
-            throw new InvalidArgumentException('Local Ollama environment URL must not contain an API path.');
+            throw new InvalidArgumentException('Registered Ollama URL must not contain an API path.');
         }
 
         return [rtrim($url, '/'), $source];

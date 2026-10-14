@@ -39,7 +39,7 @@ final class CliHostLifecycle
         $policy = $this->connection->policy();
         $spec = $policy['targets'][$target] ?? null;
         if (! $policy['enabled'] || ! is_array($spec) || ! $spec['activation_allowed']
-            || ! in_array($spec['state'], ['production', 'staged'], true) || $target === 'kimi_k3_87') {
+            || ! in_array($spec['state'], ['production', 'staged'], true) || ($spec['engine'] ?? null) === 'colibri-k3') {
             throw new RuntimeException('This target is not admitted to the generic controller lifecycle. Dedicated K3 gates remain required.');
         }
         if ($spec['requires_operator_override'] && ! $override) {
@@ -331,8 +331,8 @@ final class CliHostLifecycle
         // Heartbeat and release need fresh custody for this owned target.
         // Keep the legacy path for removed/dedicated targets, chosen before I/O;
         // a refused selected read is never retried with a global scan.
-        $target = $lease['target'] !== 'kimi_k3_87'
-            && isset($this->connection->policy()['targets'][$lease['target']]) ? $lease['target'] : null;
+        $spec = $this->connection->policy()['targets'][$lease['target']] ?? null;
+        $target = is_array($spec) && ($spec['engine'] ?? null) !== 'colibri-k3' ? $lease['target'] : null;
         $controller = $this->connection->status($target)['controller'];
         if ($target !== null && ($controller['k3_lease_active'] ?? null) !== false) {
             throw new RuntimeException('Selected controller custody is incomplete or occupied.');

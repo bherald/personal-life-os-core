@@ -36,8 +36,6 @@ class ModelHostControllerMhc08K3PromotionService
 
     private const ADMISSION_JOURNAL = 'model_host_controller_mhc08_k3_admission_journal';
 
-    private const INSTANCE_ID = 'kimi_k3_87';
-
     private const PROFILE = 'deep_offline_kimi_k3';
 
     private const CANARY_SCHEMA = 'plos.model_host_controller.mhc08_k3_canary_batch.v1';
@@ -728,14 +726,14 @@ class ModelHostControllerMhc08K3PromotionService
             || ($restore['result'] ?? null) !== 'green' || ($restore['mode'] ?? null) !== 'Restored'
             || array_map(static fn (mixed $target): mixed => is_array($target)
                 ? ($target['target'] ?? null) : null, $targets)
-                !== ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+                !== array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
             || ! collect($targets)->every(static fn (mixed $target): bool => is_array($target)
                 && ($target['task_exact'] ?? null) === true
                 && (($target['health_required'] ?? false) !== true || ($target['health_healthy'] ?? null) === true))
             || ($host['coexistence_current'] ?? null) !== true
             || array_map(static fn (mixed $target): mixed => is_array($target)
                 ? ($target['target'] ?? null) : null, $currentTargets)
-                !== ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+                !== array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
             || ! collect($currentTargets)->every(static fn (mixed $target): bool => is_array($target)
                 && ($target['task_exact'] ?? null) === true
                 && (($target['health_required'] ?? false) !== true || ($target['health_healthy'] ?? null) === true))) {
@@ -755,7 +753,7 @@ class ModelHostControllerMhc08K3PromotionService
     /** @return array<string,mixed> */
     private function provider(bool $lock = false): array
     {
-        $query = DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID);
+        $query = DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'));
         if ($lock) {
             $query->lockForUpdate();
         }
@@ -819,18 +817,18 @@ class ModelHostControllerMhc08K3PromotionService
         $admission = is_array($config['admission'] ?? null) ? $config['admission'] : [];
         $route = is_array($config['route_policy'] ?? null) ? $config['route_policy'] : [];
         $url = parse_url((string) ($provider['base_url'] ?? ''));
-        if (($provider['instance_id'] ?? null) !== self::INSTANCE_ID
+        if (($provider['instance_id'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
             || ($provider['instance_type'] ?? null) !== 'local_llm'
             || ($provider['gpu_target'] ?? null) !== 'none'
-            || ($provider['host_affinity'] ?? null) !== 'win87'
+            || ($provider['host_affinity'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'host_affinity')
             || ($provider['compat_backend'] ?? null) !== 'openai_compat_sse'
             || ($provider['compat_runtime_family'] ?? null) !== 'colibri-k3-47a749d'
             || ($provider['compat_status'] ?? null) !== 'provisional'
-            || ! is_array($url) || ($url['scheme'] ?? null) !== 'http' || ($url['host'] ?? null) !== (string) config('model_host_controller.reviewed_runtime_host', '')
-            || (int) ($url['port'] ?? 0) !== 8001 || ($url['path'] ?? null) !== '/v1'
-            || isset($url['query']) || isset($url['fragment']) || (int) ($provider['port'] ?? 0) !== 8001
+            || ! is_array($url) || ($url['scheme'] ?? null) !== 'http' || ($url['host'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'host')
+            || (int) ($url['port'] ?? 0) !== (int) app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'port') || ($url['path'] ?? null) !== '/v1'
+            || isset($url['query']) || isset($url['fragment']) || (int) ($provider['port'] ?? 0) !== (int) app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'port')
             || $this->jsonList($provider['capabilities'] ?? null) !== ['text', 'chat', 'streaming', 'local_llm', 'deep_offline']
-            || $this->jsonList($provider['supported_models'] ?? null) !== ['kimi-k3-colibri']
+            || $this->jsonList($provider['supported_models'] ?? null) !== [app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')]
             || (int) ($provider['context_length'] ?? 0) !== 4096
             || (int) ($provider['max_concurrent'] ?? 0) !== 1 || (int) ($provider['rate_limit_rpm'] ?? 0) !== 1
             || (int) ($provider['is_active'] ?? 1) !== 0
@@ -857,8 +855,8 @@ class ModelHostControllerMhc08K3PromotionService
             || ($admission['baseline'] ?? null) !== 'cpu_no_fallback'
             || ($admission['normal_routing'] ?? null) !== false
             || ($admission['tools_enabled'] ?? null) !== false || ($admission['fallback_enabled'] ?? null) !== false
-            || ($config['default_model'] ?? null) !== 'kimi-k3-colibri'
-            || (($config['models']['deep_offline'] ?? null) !== 'kimi-k3-colibri')
+            || ($config['default_model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
+            || (($config['models']['deep_offline'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'))
             || ($config['extra_headers']['Host'] ?? null) !== '127.0.0.1'
             || ($route['allowed_model_roles'] ?? null) !== ['deep_offline']
             || ($route['require_model_role'] ?? null) !== true
@@ -888,7 +886,7 @@ class ModelHostControllerMhc08K3PromotionService
         $health = parse_url((string) ($config['health_base_url'] ?? ''));
 
         return is_array($health) && ($health['scheme'] ?? null) === 'http'
-            && ($health['host'] ?? null) === (string) config('model_host_controller.reviewed_runtime_host', '') && (int) ($health['port'] ?? 0) === 8001
+            && ($health['host'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'host') && (int) ($health['port'] ?? 0) === (int) app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'port')
             && (! isset($health['path']) || $health['path'] === '')
             && ! isset($health['query']) && ! isset($health['fragment'])
             && ($config['health_path'] ?? null) === '/health';
@@ -1023,9 +1021,9 @@ class ModelHostControllerMhc08K3PromotionService
                 || ($receipt['case_ids'] ?? null) !== $expectedCases
                 || (int) ($receipt['case_count'] ?? 0) !== 5
                 || (int) ($receipt['requested_max_tokens'] ?? 0) !== 128
-                || ($receipt['target'] ?? null) !== 'kimi_k3_87'
-                || ($receipt['provider_instance_id'] ?? null) !== 'kimi_k3_87'
-                || ($receipt['model'] ?? null) !== 'kimi-k3-colibri'
+                || ($receipt['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+                || ($receipt['provider_instance_id'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
+                || ($receipt['model'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model')
                 || ($receipt['engine'] ?? null) !== 'colibri-k3'
                 || ($receipt['runtime_profile'] ?? null) !== $contract['runtime_profile']
                 || ($receipt['runtime_revision'] ?? null) !== $contract['runtime_revision']
@@ -1158,7 +1156,7 @@ class ModelHostControllerMhc08K3PromotionService
                 || ($qualification['result'] ?? null) !== 'green'
                 || ($qualification['controls_passed'] ?? null) !== true
                 || ($qualification['host_id'] ?? null) !== '.87'
-                || ($qualification['target'] ?? null) !== 'kimi_k3_87'
+                || ($qualification['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
                 || ($qualification['runtime_profile'] ?? null) !== $contract['runtime_profile']
                 || ($qualification['runtime_revision'] ?? null) !== $contract['runtime_revision']
                 || ($qualification['state_engine_sha256'] ?? null) !== $contract['engine_sha256']
@@ -1172,7 +1170,7 @@ class ModelHostControllerMhc08K3PromotionService
                 || ($qualification['state_restored_exactly'] ?? null) !== true
                 || ($qualification['stable_task_rollback_reinstall_passed'] ?? null) !== true
                 || ($qualification['resource_guards_green'] ?? null) !== true
-                || ($qualification['coexistence_targets'] ?? null) !== ['qwen38_87', 'ollama_qwen3_8b_87', 'bitnet_87']
+                || ($qualification['coexistence_targets'] ?? null) !== array_keys(app(SystemConfigService::class)->llmRoutingBinding('controller_canary')['targets'])
                 || ($qualification['coexistence_restored'] ?? null) !== true
                 || (int) ($qualification['process_count'] ?? -1) !== 0
                 || (int) ($qualification['listener_count'] ?? -1) !== 0
@@ -1198,7 +1196,7 @@ class ModelHostControllerMhc08K3PromotionService
                 throw new RuntimeException('MHC-08 host-clean predecessor evidence is not exact and green.');
             }
             if (($receipt['host_id'] ?? null) !== '.87'
-                || ($receipt['target'] ?? null) !== 'kimi_k3_87'
+                || ($receipt['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
                 || ($receipt['runtime_profile'] ?? null) !== $contract['runtime_profile']
                 || ($receipt['runtime_revision'] ?? null) !== $contract['runtime_revision']
                 || ($receipt['state_engine_sha256'] ?? null) !== $contract['engine_sha256']
@@ -1244,7 +1242,7 @@ class ModelHostControllerMhc08K3PromotionService
             ];
             $cases = $receipt['cases'] ?? null;
             if (array_keys($receipt) !== $expectedKeys
-                || ($receipt['target'] ?? null) !== 'kimi_k3_87'
+                || ($receipt['target'] ?? null) !== app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id')
                 || ($receipt['runtime_profile'] ?? null) !== $contract['runtime_profile']
                 || ($receipt['runtime_revision'] ?? null) !== $contract['runtime_revision']
                 || ($receipt['state_engine_sha256'] ?? null) !== $contract['engine_sha256']
@@ -1501,9 +1499,9 @@ class ModelHostControllerMhc08K3PromotionService
         return array_merge([
             'schema' => self::RECEIPT_SCHEMA,
             'result' => $result,
-            'target_id' => self::INSTANCE_ID,
-            'provider_instance_id' => self::INSTANCE_ID,
-            'model' => 'kimi-k3-colibri',
+            'target_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'provider_instance_id' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'instance_id'),
+            'model' => app(SystemConfigService::class)->llmRoutingValue('mhc08_k3', 'model'),
             'engine' => 'colibri-k3',
             'content_free' => true,
             'contains_prompt_or_response_content' => false,

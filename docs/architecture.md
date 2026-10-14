@@ -1,5 +1,12 @@
 # PLOS Architecture
 
+## Table-owned LLM routing and lossless input
+
+Runtime provider endpoints, role models and eligibility are read from `llm_instances` through the existing pool. Named route aliases, controller/canary/evaluation identities and controller transport are explicit `system_configs.routing.llm_bindings` data imported by migration without provider activation. Missing or unreadable registrations refuse inference; core PLOS can start with no Ollama provider. Environment installation values cannot recreate a retired runtime.
+
+MCP helper requests retain their selected instance, model and role through Laravel AI admission with local-only and no-fallback constraints. Controller and custody checks still apply. Prompt-compressor code and launch definitions are retired; contextual-compression compatibility calls preserve the complete source and all batch chunks. An oversized scheduled knowledge-graph request is refused instead of shortened.
+
+
 PLOS is a Laravel application with a Vue interface, scheduled work, guarded
 agents/tools, retrieval services and optional local or external AI providers.
 This map describes source boundaries. It does not report a particular

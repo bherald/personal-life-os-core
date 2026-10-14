@@ -18,6 +18,9 @@ final class CliMcpServerDefinitions
         $rows = [];
         ksort($servers);
         foreach ($servers as $name => $server) {
+            if ($name === 'prompt-compressor') {
+                continue;
+            }
             if (! is_array($server)) {
                 throw new InvalidArgumentException('MCP source configuration must contain server objects.');
             }
@@ -108,6 +111,9 @@ final class CliMcpServerDefinitions
         $this->validate($rows);
         $servers = [];
         foreach ($rows as $row) {
+            if ($row['server_name'] === 'prompt-compressor') {
+                continue;
+            }
             $servers[$row['server_name']] = array_merge(CliSettingValue::decode($row['definition'], 'json'),
                 ['enabled' => in_array($row['enabled'], [true, 1, '1'], true), 'definition_source' => $row['source'] ?? 'database']);
         }

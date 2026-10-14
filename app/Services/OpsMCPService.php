@@ -1053,7 +1053,10 @@ class OpsMCPService
 
         // Check Ollama API (optional - may be off to save power)
         try {
-            $ollamaUrl = DB::selectOne("SELECT base_url FROM llm_instances WHERE instance_type = 'ollama' AND is_active = 1 ORDER BY priority ASC LIMIT 1")?->base_url ?? config('services.ollama.api_url', 'http://127.0.0.1:11434');
+            $ollamaUrl = DB::selectOne("SELECT base_url FROM llm_instances WHERE instance_type = 'ollama' AND is_active = 1 ORDER BY priority ASC LIMIT 1")?->base_url;
+            if (! is_string($ollamaUrl) || trim($ollamaUrl) === '') {
+                throw new \RuntimeException('No registered Ollama endpoint.');
+            }
             $ch = curl_init(rtrim($ollamaUrl, '/').'/api/tags');
             curl_setopt_array($ch, [
                 CURLOPT_RETURNTRANSFER => true,

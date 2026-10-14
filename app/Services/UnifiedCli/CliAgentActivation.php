@@ -31,12 +31,15 @@ final class CliAgentActivation
             return ['allowed' => true, 'selection_committed' => false];
         }
         $target = $proof['contract']['controller_target'] ?? null;
-        if (! is_string($target) || $target === '' || $target === 'kimi_k3_87') {
+        if (! is_string($target) || $target === '') {
             throw new RuntimeException('Selected runtime has no automatic controller target; dedicated K3 gates remain required.');
         }
         $connection = ($this->controller)($session);
         if (! $connection instanceof CliModelHostStatus) {
             throw new RuntimeException('Selected controller binding is unavailable.');
+        }
+        if (($connection->policy()['targets'][$target]['engine'] ?? null) === 'colibri-k3') {
+            throw new RuntimeException('Dedicated K3 gates remain required.');
         }
         $lease = $this->store->session($session['id'])['host_lease'] ?? null;
         if ($lease !== null && ! in_array($lease['phase'] ?? null, ['owned', 'released', 'not_started'], true)) {

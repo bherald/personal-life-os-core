@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import type { ToolContext } from '../util/tool-context.js';
 import { generate } from '../ollama/client.js';
-import { selectModel } from '../ollama/model-selector.js';
+import { selectRoute } from '../ollama/model-selector.js';
 import type { ModelCapability } from '../ollama/model-selector.js';
 
 export const ollamaDraftInput = z.object({
@@ -28,14 +29,15 @@ const TYPE_SYSTEM_PROMPTS: Record<string, string> = {
   general: 'Output only the requested content.',
 };
 
-export async function ollamaDraft(input: OllamaDraftInput): Promise<string> {
+export async function ollamaDraft(input: OllamaDraftInput, toolContext?: ToolContext): Promise<string> {
   const { prompt, type, system, temperature, max_tokens } = input;
   const capability = TYPE_TO_CAPABILITY[type] ?? 'general';
-  const model = await selectModel(capability);
+  const route = await selectRoute(capability);
+  const model = route.model;
 
   const systemPrompt = system ?? TYPE_SYSTEM_PROMPTS[type] ?? TYPE_SYSTEM_PROMPTS.general;
 
-  const result = await generate(model, prompt, {
+  const result = await generate(route, prompt, { signal: toolContext?.signal,
     system: systemPrompt,
     temperature,
     num_predict: max_tokens,

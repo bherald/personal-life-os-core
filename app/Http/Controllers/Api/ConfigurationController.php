@@ -518,7 +518,7 @@ class ConfigurationController extends Controller
                 [
                     'section' => 'integrations',
                     'config_key' => 'ollama_base_url',
-                    'config_value' => config('services.ollama.api_url', 'http://127.0.0.1:11434'),
+                    'config_value' => DB::selectOne("SELECT base_url FROM llm_instances WHERE instance_type = 'ollama' AND is_active = 1 ORDER BY priority ASC, id ASC LIMIT 1")?->base_url ?? '',
                     'data_type' => 'string',
                     'description' => 'Ollama API base URL',
                 ],
@@ -722,13 +722,13 @@ class ConfigurationController extends Controller
             if ($instance) {
                 $config = json_decode($instance->config ?? '{}', true);
                 if (is_array($config)) {
-                    return (string) ($config['models']['standard'] ?? $config['default_model'] ?? config('services.ollama.model') ?? '');
+                    return (string) ($config['models']['standard'] ?? $config['default_model'] ?? '');
                 }
             }
         } catch (Exception $e) {
             // Fall through to config bootstrap below.
         }
 
-        return (string) (config('services.ollama.model') ?? '');
+        return '';
     }
 }

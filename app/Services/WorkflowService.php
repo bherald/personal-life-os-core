@@ -597,11 +597,11 @@ PHP;
         }
 
         // AI services check (Ollama)
-        $ollamaUrl = (string) config('services.ollama.api_url', 'http://127.0.0.1:11434');
         try {
             $ollamaInstance = DB::selectOne("SELECT base_url FROM llm_instances WHERE instance_type = 'ollama' AND is_active = 1 ORDER BY priority ASC LIMIT 1");
-            if (isset($ollamaInstance->base_url) && is_string($ollamaInstance->base_url) && trim($ollamaInstance->base_url) !== '') {
-                $ollamaUrl = $ollamaInstance->base_url;
+            $ollamaUrl = trim((string) ($ollamaInstance->base_url ?? ''));
+            if ($ollamaUrl === '') {
+                throw new \RuntimeException('No registered Ollama endpoint.');
             }
             $response = Http::connectTimeout(5)->timeout(5)->get(rtrim($ollamaUrl, '/').'/api/tags');
             $aiStatus = $response->successful() ? 'healthy' : 'unreachable';

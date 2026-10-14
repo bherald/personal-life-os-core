@@ -78,7 +78,7 @@ return [
     ],
 
     'ollama' => [
-        'api_url' => env('OLLAMA_API_URL', 'http://127.0.0.1:11434'),
+        'api_url' => env('OLLAMA_API_URL'), // Setup import only; runtime routes use llm_instances.
         'model' => env('OLLAMA_MODEL'),
         'embedding_model' => env('OLLAMA_EMBEDDING_MODEL'),
         'vision_model' => env('OLLAMA_VISION_MODEL'),

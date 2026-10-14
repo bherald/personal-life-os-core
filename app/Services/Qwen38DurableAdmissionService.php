@@ -10,10 +10,6 @@ use RuntimeException;
 
 class Qwen38DurableAdmissionService
 {
-    private const INSTANCE_ID = 'qwen38_87';
-
-    private const MODEL = 'qwen3.8-27b-q4_k_m';
-
     private const PROFILE = 'deep_offline_qwen38';
 
     private const ATTEMPT = 8;
@@ -47,9 +43,9 @@ class Qwen38DurableAdmissionService
 
         return [
             'schema' => 'plos.qwen38_durable_admission.v1',
-            'instance_id' => self::INSTANCE_ID,
+            'instance_id' => app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'),
             'profile' => self::PROFILE,
-            'model' => self::MODEL,
+            'model' => app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model'),
             'is_active' => (bool) ($provider->is_active ?? false),
             'is_healthy' => (bool) ($provider->is_healthy ?? false),
             'routability' => (string) ($provider->routability ?? ''),
@@ -229,8 +225,8 @@ class Qwen38DurableAdmissionService
     {
         return ($config['adapter'] ?? null) === 'openai_compatible'
             && ($config['transport'] ?? null) === 'openai_sse_monitored'
-            && ($config['default_model'] ?? null) === self::MODEL
-            && ($config['models']['deep_offline'] ?? null) === self::MODEL
+            && ($config['default_model'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model')
+            && ($config['models']['deep_offline'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model')
             && ($config['extra_headers']['Host'] ?? null) === '127.0.0.1'
             && ($config['route_policy']['allowed_model_roles'] ?? null) === ['deep_offline']
             && ($config['route_policy']['require_model_role'] ?? null) === true
@@ -246,7 +242,7 @@ class Qwen38DurableAdmissionService
     /** @param array<string,mixed> $metadata */
     private function exactProfilePolicy(array $metadata): bool
     {
-        return ($metadata['instance_id'] ?? null) === self::INSTANCE_ID
+        return ($metadata['instance_id'] ?? null) === app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id')
             && ($metadata['required_provider'] ?? null) === true
             && ($metadata['route'] ?? null) === 'required_local_provider_no_fallback'
             && ($metadata['tools_enabled'] ?? null) === false
@@ -294,7 +290,7 @@ class Qwen38DurableAdmissionService
         if (! Schema::hasTable('llm_instances')) {
             throw new RuntimeException('llm_instances table is unavailable.');
         }
-        $query = DB::table('llm_instances')->where('instance_id', self::INSTANCE_ID);
+        $query = DB::table('llm_instances')->where('instance_id', app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'));
         if ($lock) {
             $query->lockForUpdate();
         }
@@ -320,7 +316,7 @@ class Qwen38DurableAdmissionService
         if (! Schema::hasTable('ollama_models')) {
             throw new RuntimeException('ollama_models table is unavailable.');
         }
-        $query = DB::table('ollama_models')->where('instance_id', $instanceId)->where('model_name', self::MODEL);
+        $query = DB::table('ollama_models')->where('instance_id', $instanceId)->where('model_name', app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'model'));
         if ($lock) {
             $query->lockForUpdate();
         }
@@ -347,7 +343,7 @@ class Qwen38DurableAdmissionService
         foreach (['llm_instances_all', 'llm_instances_healthy', 'external_api_providers', 'llm_model_profiles', 'ollama_available_models', 'ollama_vetted_models'] as $key) {
             Cache::forget($key);
         }
-        Cache::forget('rpm_count_'.self::INSTANCE_ID);
-        Cache::forget('rate_limit_'.self::INSTANCE_ID);
+        Cache::forget('rpm_count_'.app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'));
+        Cache::forget('rate_limit_'.app(SystemConfigService::class)->llmRoutingValue('qwen_bench', 'instance_id'));
     }
 }

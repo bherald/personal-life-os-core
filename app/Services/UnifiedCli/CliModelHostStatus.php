@@ -33,7 +33,8 @@ final class CliModelHostStatus
 
     public function policy(): array
     {
-        return (new ModelHostControllerPolicyService(fn () => (new CliSystemConfigService($this->store, $this->sessionId))->get('ai.model_host_controller_policy', [])))->required();
+        return (new ModelHostControllerPolicyService(fn () => (new CliSystemConfigService($this->store, $this->sessionId))->get('ai.model_host_controller_policy', []),
+            fn () => (new CliSystemConfigService($this->store, $this->sessionId))->llmRoutingValue('controller_transport', 'expected_host_id')))->required();
     }
 
     /** Use the existing table policy from the pinned offline registry, without enabling selection. */
@@ -77,7 +78,8 @@ final class CliModelHostStatus
     /** Mutations require a caller that verifies a durable, exact local intent. */
     public function client(?Closure $beforeMutation = null): ModelHostControllerClient
     {
-        return new ModelHostControllerClient(new ModelHostControllerPolicyService($this->policy(...)),
+        return new ModelHostControllerClient(new ModelHostControllerPolicyService($this->policy(...),
+            fn () => (new CliSystemConfigService($this->store, $this->sessionId))->llmRoutingValue('controller_transport', 'expected_host_id')),
             requestTransport: function ($method, $path, $payload, $policy, $timeoutSeconds = null) use ($beforeMutation): array {
                 $read = ($method === 'get' && $path === '/v1/status' && $payload === [])
                     || ($method === 'post' && $path === '/v1/target/status' && array_keys($payload) === ['target']);

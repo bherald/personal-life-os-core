@@ -22,6 +22,17 @@ name, description, schema, or annotation drift. The audit never reads arbitrary
 MCP client configuration, starts third-party MCP servers, uses the network, or
 uploads tool metadata.
 
+## Table-owned inference
+
+Ollama helpers select an eligible registered instance, installed role model and
+role together from PLOS tables. They send the complete original input through
+the existing Laravel AI service, preserving exact-provider, local-only,
+no-fallback and controller/custody admission. Environment host settings and
+largest-model inventory fallbacks cannot create a route. Missing registrations
+or an incomplete/mismatched response fail without a second route attempt.
+Code descriptions preserve the complete file instead of cutting its tail.
+Prompt-compressor launch definitions and package code are retired.
+
 ## Tools
 
 - `plos_schema` reads `docs/schema-reference.md` or live table metadata.
