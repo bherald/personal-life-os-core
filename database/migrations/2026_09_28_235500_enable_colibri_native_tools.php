@@ -14,6 +14,11 @@ return new class extends Migration
         if (! app()->environment('production')) {
             return;
         }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/colibri-glm-tools.87.json',
+        ])) {
+            return;
+        }
         $d = json_decode(file_get_contents(base_path('config/local-engine-candidates/colibri-glm-tools.87.json')), true, flags: JSON_THROW_ON_ERROR);
         DB::transaction(function () use ($d): void {
             $provider = DB::table('llm_instances')->where('instance_id', $d['instance_id'])->lockForUpdate()->first();

@@ -15,6 +15,11 @@ return new class extends Migration
         if (! app()->environment('production')) {
             return;
         }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/ollama-qwen-trials.87.json',
+        ])) {
+            return;
+        }
         $definition = json_decode(file_get_contents(base_path('config/local-engine-candidates/ollama-qwen-trials.87.json')),
             true, flags: JSON_THROW_ON_ERROR);
         if (($definition['schema'] ?? null) !== 'plos.ollama_qwen_trials.v1' || count($definition['candidates'] ?? []) !== 2) {

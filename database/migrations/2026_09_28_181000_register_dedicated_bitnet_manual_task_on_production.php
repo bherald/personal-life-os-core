@@ -14,6 +14,11 @@ return new class extends Migration
         if (! app()->environment('production')) {
             return;
         }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/bitnet-manual.87.json',
+        ])) {
+            return;
+        }
         $definition = json_decode(file_get_contents(base_path('config/local-engine-candidates/bitnet-manual.87.json')), true, flags: JSON_THROW_ON_ERROR);
         $registration = $definition['task_registration'] ?? [];
         if (($registration['schema'] ?? null) !== 'plos.bitnet.dedicated_manual_task.v1'

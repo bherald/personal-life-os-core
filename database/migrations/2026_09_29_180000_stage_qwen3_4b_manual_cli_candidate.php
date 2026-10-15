@@ -17,6 +17,11 @@ return new class extends Migration
         if (! app()->environment('production')) {
             return;
         }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/ollama-qwen3-4b-manual.87.json',
+        ])) {
+            return;
+        }
         $candidate = json_decode(file_get_contents(base_path('config/local-engine-candidates/ollama-qwen3-4b-manual.87.json')),
             true, flags: JSON_THROW_ON_ERROR);
         if (($candidate['schema'] ?? null) !== 'plos.ollama_qwen3_manual_candidate.v1'

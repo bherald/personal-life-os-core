@@ -110,10 +110,10 @@ class ModelHostControllerClient
             'request_id' => $this->requestId($requestId),
             'lease_id' => $this->leaseId($leaseId),
             'execute' => true,
-        ], $policy, isset($policy['targets'][$target]['verification_timeout_seconds'])
-            ? max((int) config('model_host_controller.mutation_timeout_seconds'),
-                $policy['targets'][$target]['verification_timeout_seconds'] + $policy['targets'][$target]['startup_timeout_seconds']
-                + (int) config('model_host_controller.request_timeout_seconds')) : null);
+        ], $policy, max((int) config('model_host_controller.mutation_timeout_seconds'),
+            ($policy['targets'][$target]['verification_timeout_seconds'] ?? 0)
+            + $policy['targets'][$target]['startup_timeout_seconds']
+            + (int) config('model_host_controller.request_timeout_seconds')));
     }
 
     /** @return array<string,mixed> */

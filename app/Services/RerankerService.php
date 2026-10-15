@@ -42,6 +42,10 @@ class RerankerService
      */
     public function rerank(string $query, array $results, string $mode = 'fast'): array
     {
+        if ($mode === 'cross_encoder') {
+            return $this->dedicatedRerank($query, $results);
+        }
+
         if (count($results) < self::MIN_DOCS_FOR_RERANK) {
             return $results;
         }
@@ -50,6 +54,37 @@ class RerankerService
             'ai' => $this->aiRerank($query, $results),
             default => $this->fastRerank($query, $results),
         };
+    }
+
+    /** Explicit dedicated mode retains every source byte; unavailable admission preserves input order. */
+    private function dedicatedRerank(string $query, array $results): array
+    {
+        $documents = [];
+        foreach (array_values($results) as $index => $result) {
+            $document = $result['document'] ?? null;
+            $content = is_object($document) ? ($document->content ?? null) : null;
+            if (! is_string($content) || trim($content) === '') {
+                return $results;
+            }
+            $documents[] = ['id' => (string) $index, 'text' => $content];
+        }
+        if ($documents === []) {
+            return $results;
+        }
+        $ranking = app(RerankerSidecarService::class)->rerankControlled($query, $documents);
+        if (($ranking['status'] ?? null) !== 'pass') {
+            return $results;
+        }
+        $scores = array_column($ranking['results'], 'score', 'id');
+        $ranked = array_values($results);
+        foreach ($ranked as $index => &$result) {
+            $result['rerank_score'] = $scores[(string) $index];
+            $result['rerank_method'] = 'cross_encoder';
+        }
+        unset($result);
+        usort($ranked, fn ($left, $right) => $right['rerank_score'] <=> $left['rerank_score']);
+
+        return $ranked;
     }
 
     /**

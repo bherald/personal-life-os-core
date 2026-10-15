@@ -12,6 +12,11 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/bitnet-manual.87.json',
+        ])) {
+            return;
+        }
         // PROD owns these decisions. DEV configuration is copied only by the operator.
         if (! app()->environment('production')) {
             return;

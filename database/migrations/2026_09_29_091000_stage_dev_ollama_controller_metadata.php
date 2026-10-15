@@ -16,6 +16,11 @@ return new class extends Migration
         if (! app()->environment('local')) {
             return;
         }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/ollama-modalities.87.json',
+        ])) {
+            return;
+        }
         $definition = json_decode(file_get_contents(base_path('config/local-engine-candidates/ollama-modalities.87.json')),
             true, flags: JSON_THROW_ON_ERROR);
         if (($definition['schema'] ?? null) !== 'plos.ollama_controller_modalities.v1'

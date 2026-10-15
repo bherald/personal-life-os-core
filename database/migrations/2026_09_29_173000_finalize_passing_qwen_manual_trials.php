@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\ModelHostControllerPolicyService;
 use App\Services\ModelHostControllerResourcePolicyService as Resources;
 use App\Services\ModelHostControllerSelectionJournal as Journal;
 use App\Services\ModelHostControllerWaitService;
@@ -13,6 +14,12 @@ return new class extends Migration
     public function up(): void
     {
         if (! app()->environment('production')) {
+            return;
+        }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/ollama-qwen-trial-results.87.json',
+            'config/local-engine-candidates/ollama-qwen-trials.87.json',
+        ])) {
             return;
         }
         $definition = json_decode(file_get_contents(base_path('config/local-engine-candidates/ollama-qwen-trials.87.json')),

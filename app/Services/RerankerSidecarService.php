@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Process;
@@ -14,6 +16,81 @@ class RerankerSidecarService
     private const LAUNCHER_SCRIPT = 'scripts/reranker/start-server.sh';
 
     public function __construct(private readonly RerankerSidecarRuntimePolicyService $runtimePolicy) {}
+
+    /** Exact table selection and existing native controller custody; no automatic fallback or replay. */
+    public function rerankControlled(string $query, array $documents): array
+    {
+        $policy = $this->runtimePolicy->controllerPolicy();
+        if ($policy === null) {
+            return ['status' => 'controller_not_admitted', 'results' => []];
+        }
+        $provider = DB::table('llm_instances')->where('instance_id', $policy['instance_id'])->first();
+        if ($provider === null || ! $provider->is_active || $provider->routability !== 'allowed'
+            || ($provider->compat_runtime_family ?? null) !== 'transformers') {
+            throw new InferenceAdmissionException('Selected dedicated reranker is not admitted.');
+        }
+        $config = json_decode($provider->config, true, flags: JSON_THROW_ON_ERROR);
+        $entry = $config['controller_workloads']['rerank'][$policy['model']] ?? null;
+        $contract = $entry['contract'] ?? null;
+        if (! is_array($contract) || ! is_int($contract['timeout_seconds'] ?? null)
+            || $contract['timeout_seconds'] < 1 || $contract['timeout_seconds'] > 1800
+            || preg_match('/^[a-f0-9]{64}$/D', $contract['runtime_receipt_sha256'] ?? '') !== 1) {
+            throw new InferenceAdmissionException('Dedicated reranker native contract is incomplete.');
+        }
+        $payload = ['model' => $policy['model'], 'query' => $query,
+            'instruction' => $contract['instruction'] ?? null, 'documents' => $documents];
+        ModelHostControllerTransportSupervisor::assertWorkloadPayload('rerank', $payload, $contract);
+        $body = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $endpoint = rtrim($provider->base_url, '/').'/rerank';
+        $token = $provider->api_key ?? '';
+        if ($token === '' && is_string($provider->api_key_env ?? null)) {
+            $token = getenv($provider->api_key_env) ?: ($_ENV[$provider->api_key_env] ?? $_SERVER[$provider->api_key_env] ?? '');
+        }
+        if (! is_string($token) || strlen($token) < 32 || preg_match('/[\x00-\x20\x7f]/', $token)) {
+            throw new InferenceAdmissionException('Dedicated reranker credential binding is unavailable.');
+        }
+
+        return app(ModelHostControllerTransportSupervisor::class)->run('rerank', $endpoint, $payload,
+            function () use ($endpoint, $payload, $body, $token, $contract, $policy, $provider): array {
+                AIService::assertInferenceTransport('rerank', $endpoint, ModelHostControllerTransportSupervisor::settings($payload, ['Host' => $contract['backend_http_host']]));
+                $response = AIService::maintainInferenceHttp(Http::withToken($token)->withHeaders(['Host' => $contract['backend_http_host']])->acceptJson()
+                    ->connectTimeout(5)->timeout($contract['timeout_seconds'])->withBody($body, 'application/json'))->post($endpoint);
+                if (! $response->successful()) {
+                    throw new InferenceAdmissionException('Dedicated reranker did not return a verified terminal ranking.');
+                }
+                $value = $response->json();
+                if (! is_array($value) || ($value['status'] ?? null) !== 'pass'
+                    || ($value['request_sha256'] ?? null) !== hash('sha256', $body)
+                    || ($value['model'] ?? null) !== $payload['model'] || ($value['revision'] ?? null) !== $contract['revision']
+                    || ($value['device'] ?? null) !== 'cpu' || ($value['scoring'] ?? null) !== 'yes_no_softmax'
+                    || ($value['complete_input'] ?? null) !== true
+                    || ($value['controller_receipt_sha256'] ?? null) !== $contract['runtime_receipt_sha256']) {
+                    throw new InferenceAdmissionException('Dedicated reranker response identity changed.');
+                }
+                $remaining = array_fill_keys(array_column($payload['documents'], 'id'), true);
+                $scores = $value['scores'] ?? null;
+                if (! is_array($scores) || ! array_is_list($scores)) {
+                    throw new InferenceAdmissionException('Dedicated reranker scores are not verified.');
+                }
+                foreach ($scores as $score) {
+                    $id = $score['id'] ?? null;
+                    $number = $score['score'] ?? null;
+                    if (! is_string($id) || ! isset($remaining[$id]) || (! is_int($number) && ! is_float($number))
+                        || ! is_finite((float) $number) || $number < 0 || $number > 1) {
+                        throw new InferenceAdmissionException('Dedicated reranker has incomplete or invalid scores.');
+                    }
+                    unset($remaining[$id]);
+                }
+                if ($remaining !== []) {
+                    throw new InferenceAdmissionException('Dedicated reranker did not cover every original document.');
+                }
+
+                return ['status' => 'pass', 'results' => $scores, 'model' => $payload['model'], 'revision' => $contract['revision'],
+                    'instance_id' => $policy['instance_id'], 'engine' => $provider->compat_runtime_family,
+                    'request_sha256' => hash('sha256', $body), 'runtime_receipt_sha256' => $contract['runtime_receipt_sha256'],
+                    'complete_input' => true, 'scoring' => 'yes_no_softmax'];
+            });
+    }
 
     public function available(): bool
     {
@@ -166,8 +243,8 @@ class RerankerSidecarService
         $normalized = [];
         foreach ($documents as $document) {
             $id = trim((string) ($document['id'] ?? ''));
-            $text = trim((string) ($document['text'] ?? $document['content'] ?? ''));
-            if ($id === '' || $text === '') {
+            $text = $document['text'] ?? $document['content'] ?? null;
+            if ($id === '' || ! is_string($text) || trim($text) === '') {
                 continue;
             }
             $normalized[] = ['id' => $id, 'text' => $text];

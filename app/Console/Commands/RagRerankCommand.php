@@ -2,7 +2,9 @@
 
 namespace App\Console\Commands;
 
+use App\Exceptions\AI\InferenceAdmissionException;
 use App\Services\OfflineRerankService;
+use App\Services\RerankerSidecarService;
 use Illuminate\Console\Command;
 
 class RagRerankCommand extends Command
@@ -14,6 +16,7 @@ class RagRerankCommand extends Command
         {--documents-json-b64= : Base64-encoded JSON document array}
         {--limit=10 : Number of ranked results to return}
         {--use-embeddings : Blend lexical ranking with PLOS AIService embeddings}
+        {--cross-encoder : Use the exact admitted native CPU reranker; no lexical or chat fallback}
         {--no-embeddings : Force lexical-only ranking}
         {--example : Run a built-in lexical smoke example}
         {--json : Emit machine-readable JSON}';
@@ -31,6 +34,10 @@ class RagRerankCommand extends Command
                 'read_only' => true,
                 'error' => $input['error'],
             ], self::FAILURE);
+        }
+
+        if ((bool) $this->option('cross-encoder')) {
+            return $this->controlledRerank($input);
         }
 
         $limit = max(1, min((int) $this->option('limit'), 50));
@@ -85,14 +92,17 @@ class RagRerankCommand extends Command
             ];
         }
 
-        $query = trim((string) ($this->option('query') ?: ''));
+        $query = (string) ($this->option('query') ?: '');
+        if (! $this->option('cross-encoder')) {
+            $query = trim($query);
+        }
         $queryB64 = trim((string) ($this->option('query-b64') ?: ''));
         if ($queryB64 !== '') {
             $decoded = base64_decode($queryB64, true);
             if ($decoded === false) {
                 return ['query' => '', 'documents' => [], 'error' => '--query-b64 is not valid base64.'];
             }
-            $query = trim($decoded);
+            $query = $this->option('cross-encoder') ? $decoded : trim($decoded);
         }
 
         $json = trim((string) ($this->option('documents-json') ?: ''));
@@ -105,7 +115,7 @@ class RagRerankCommand extends Command
             $json = $decoded;
         }
 
-        if ($query === '') {
+        if (trim($query) === '') {
             return ['query' => '', 'documents' => [], 'error' => 'A query is required.'];
         }
 
@@ -124,6 +134,41 @@ class RagRerankCommand extends Command
         }
 
         return ['query' => $query, 'documents' => $documents, 'error' => null];
+    }
+
+    private function controlledRerank(array $input): int
+    {
+        $documents = [];
+        foreach ($input['documents'] as $index => $document) {
+            $text = is_string($document) ? $document : ($document['text'] ?? $document['content'] ?? null);
+            $id = is_array($document) ? ($document['id'] ?? 'doc_'.($index + 1)) : 'doc_'.($index + 1);
+            if (! is_string($text) || ! is_string($id)) {
+                return $this->finish(['schema' => 'plos_rag_rerank.v1', 'status' => 'invalid_input',
+                    'mode' => 'cross_encoder', 'read_only' => true, 'results' => []], self::FAILURE);
+            }
+            $documents[] = ['id' => $id, 'text' => $text];
+        }
+        try {
+            $result = app(RerankerSidecarService::class)->rerankControlled($input['query'], $documents);
+        } catch (InferenceAdmissionException) {
+            return $this->finish(['schema' => 'plos_rag_rerank.v1', 'status' => 'held', 'mode' => 'cross_encoder',
+                'read_only' => true, 'results' => [], 'error' => 'Native admission or outcome requires reconciliation; no replay.'], self::FAILURE);
+        }
+        $scores = $result['results'] ?? [];
+        usort($scores, fn ($left, $right) => $right['score'] <=> $left['score']);
+        $scores = array_slice($scores, 0, max(1, min((int) $this->option('limit'), 50)));
+        foreach ($scores as $index => &$row) {
+            $row['rank'] = $index + 1;
+        }
+        unset($row);
+
+        return $this->finish(['schema' => 'plos_rag_rerank.v1', 'status' => $result['status'], 'mode' => 'cross_encoder',
+            'read_only' => true, 'query_sha256' => hash('sha256', $input['query']),
+            'document_count' => count($documents), 'results' => $scores,
+            'model' => $result['model'] ?? null, 'revision' => $result['revision'] ?? null,
+            'instance_id' => $result['instance_id'] ?? null, 'engine' => $result['engine'] ?? null,
+            'request_sha256' => $result['request_sha256'] ?? null, 'runtime_receipt_sha256' => $result['runtime_receipt_sha256'] ?? null,
+            'complete_input' => $result['complete_input'] ?? false], $result['status'] === 'pass' ? self::SUCCESS : self::FAILURE);
     }
 
     /**

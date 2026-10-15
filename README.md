@@ -159,3 +159,16 @@ and proof-bound fresh scheduled checkpoints are documented in [framework upgrade
 
 The current admission correction uses native per-request knowledge-graph checks,
 refuses over-budget source text intact and respects disabled scheduled jobs.
+
+
+Registered retrieval now supports an explicitly selected embedding role and an
+opt-in, lossless CPU cross-encoder path through existing controller admission.
+Native task logon identity is table-owned (Interactive or S4U) while other task
+guards remain strict. Public registrations stay disabled/unconfigured; host
+packets, weights, credentials and native activation remain operator-owned. See
+[framework boundaries](docs/framework-upgrade-boundaries.md) for setup, verification
+and rollback limits.
+
+Cold reranker startup failures retain verified cleanup receipts without replay.
+Activation transport includes table-owned startup and verification time; stopped
+reranker fencing requires registered adapter identity and exact empty ownership.

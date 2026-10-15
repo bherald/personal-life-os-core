@@ -177,3 +177,21 @@ Managed knowledge-graph groups now retain native per-request admission without
 an outer model permit. Oversized input is refused intact, and genealogy managers
 wait for disabled registered jobs before scheduler handoff. Preserve document
 stamps and uncertain receipts during rollback; see [the upgrade boundaries](framework-upgrade-boundaries.md).
+
+
+Retrieval and native identity follow the existing services and tables. Explicit
+embedding roles retain their selected provider/model and vector fingerprint.
+Dedicated CPU reranking uses full query/document pairs and refuses oversized
+inputs before scoring; controller supervision admits exact workload and transport
+settings, including the backend loopback Host binding. Optional Colibri logon
+metadata projects into the native task guard and capacity identity. Generic
+public registrations stay disabled; operator packet applicability prevents
+installation from inventing host adoption. Media RAG reports bounded diagnostics
+and accepts existing publication receipts. Existing admission, custody, no-replay
+and rollback boundaries remain authoritative. [Scope and verification](framework-upgrade-boundaries.md).
+
+Reranker readiness failure uses the existing qualified adapter cleanup and typed
+activation receipt. Uncertain cleanup remains held. Activation HTTP budgets cover
+startup, optional verification and request overhead. A missing busy reading is
+accepted only for a registered, exactly qualified disabled reranker with no owned
+process or listener; other adapter and generation guards remain unchanged.

@@ -743,6 +743,17 @@ class OfflineAiPipelineInventoryService
                 'audit_command' => 'php artisan rag:chunking-provenance-audit --json --compact',
                 'changes_chunking_embedding_routing_or_retrieval' => false,
             ],
+            'registered_cpu_reranking' => [
+                'command' => 'php artisan rag:rerank --cross-encoder --query-b64=... --documents-json-b64=... --json',
+                'selection_source' => 'system_configs.rag.reranker_controller_policy',
+                'service' => 'App\\Services\\RerankerSidecarService::rerankControlled',
+                'registration' => 'database/migrations/2026_10_14_210000_register_guarded_reranker_selection.php',
+                'engine' => 'Exact table-registered transformers CPU backend and authenticated_reranker native Windows controller adapter.',
+                'admission' => 'Staged catalog is disabled until exact artifact/runtime/task/source identities and resource profile are qualified.',
+                'input' => 'Complete query/document pairs; byte and tokenizer budgets refuse before scoring; no truncation.',
+                'outcome' => 'Exact request/model/revision/runtime receipt and complete finite yes/no-softmax scores; UNKNOWN holds without replay.',
+                'embedding_boundary' => 'Existing indexes, default embedding role and model-space fingerprints are unchanged.',
+            ],
             'rag_embedding_space_evaluation' => [
                 'schema' => 'plos.rag_rerank_eval.v3',
                 'command' => 'php artisan rag:rerank-eval --use-embeddings --json --compact --require-promotion-ready',

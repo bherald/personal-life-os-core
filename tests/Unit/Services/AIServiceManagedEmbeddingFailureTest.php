@@ -9,6 +9,7 @@ use App\Exceptions\ModelHostControllerUnavailableException;
 use App\Services\AIService;
 use App\Services\CircuitBreaker;
 use App\Services\LlmCircuitBreakerPolicyService;
+use App\Services\LLMPoolManagerService;
 use App\Services\SystemConfigService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -324,6 +325,70 @@ class AIServiceManagedEmbeddingFailureTest extends TestCase
             'external raw' => [true, false, false], 'external wrapped' => [true, true, false],
             'Ollama dispatched controller' => [false, false, true], 'Ollama wrapped dispatched controller' => [false, true, true],
             'external dispatched controller' => [true, false, true], 'external wrapped dispatched controller' => [true, true, true]];
+    }
+
+    public function test_exact_trial_embedding_retains_table_role_full_input_and_new_dimensions(): void
+    {
+        $source = "  Original José\r\nCritical tail  ";
+        $vector = array_fill(0, 1024, 0.5);
+        $router = Mockery::mock(AIRouter::class);
+        $router->shouldReceive('generateEmbedding')->once()->with($source, 'http://fixture-trial', null,
+            Mockery::type('int'), 'fixture-trial-model', true)->andReturn($vector);
+        $router->shouldNotReceive('generateExternalEmbedding');
+        $service = $this->trialService($router, 2048);
+        $result = AIService::withWorkflowModelRole(null, fn () => $service->generateEmbedding($source),
+            resolveEmbeddingModel: fn () => $this->trialOptions());
+        $this->assertTrue($result['success'], json_encode($result));
+        $this->assertSame($vector, $result['embedding']);
+        $this->assertSame('fixture-trial-model', $result['model']);
+        $this->assertSame('trial-fixture', $result['instance_id']);
+        $this->assertFalse($result['chunked']);
+    }
+
+    public function test_exact_trial_embedding_missing_registered_context_refuses_send(): void
+    {
+        $router = Mockery::mock(AIRouter::class);
+        $router->shouldNotReceive('generateEmbedding', 'generateExternalEmbedding');
+        $result = $this->trialService($router, null)->generateEmbedding('original', $this->trialOptions());
+        $this->assertFalse($result['success']);
+        $this->assertTrue($result['fallback_suppressed']);
+    }
+
+    public function test_alternate_embedding_role_without_exact_binding_refuses_send(): void
+    {
+        $router = Mockery::mock(AIRouter::class);
+        $router->shouldNotReceive('generateEmbedding', 'generateExternalEmbedding');
+        $service = $this->service($router, providerSelection: false);
+        $result = $service->generateEmbedding('original', ['model_role' => 'embedding_trial']);
+        $this->assertFalse($result['success']);
+        $this->assertTrue($result['fallback_suppressed']);
+    }
+
+    private function trialOptions(): array
+    {
+        return ['model_role' => 'embedding_trial', 'required_instance_id' => 'trial-fixture',
+            'ollama_required_no_fallback' => true, 'model_override' => 'fixture-trial-model',
+            'preferred_ollama_instance_ids' => ['trial-fixture'], 'preserve_embedding_input' => true];
+    }
+
+    private function trialService(AIRouter $router, ?int $context): AIService
+    {
+        $service = $this->service($router, providerSelection: false);
+        $pool = Mockery::mock(LLMPoolManagerService::class);
+        $pool->shouldReceive('selectInstance')->once()->with(Mockery::on(fn ($selection) => $selection['role'] === 'embedding_trial' && $selection['capabilities'] === ['embedding']
+            && $selection['model_capability_groups'] === [['embedding']]
+            && $selection['model'] === 'fixture-trial-model'
+            && $selection['prefer_instance'] === 'trial-fixture'
+            && $selection['explicit_instance_selection'] === true))->andReturn(['instance' => (object) [
+                'instance_type' => 'ollama', 'instance_id' => 'trial-fixture', 'base_url' => 'http://fixture-trial',
+                'priority' => 2, 'embedding_context_length' => $context,
+            ]]);
+        $pool->shouldReceive('recordSuccess')->andReturnNull();
+        foreach (['useDynamicPool' => true, 'poolManager' => $pool] as $name => $value) {
+            (new ReflectionProperty(AIService::class, $name))->setValue($service, $value);
+        }
+
+        return $service;
     }
 
     private function service(AIRouter $router, ?array $instances = null, bool $providerSelection = true): AIService

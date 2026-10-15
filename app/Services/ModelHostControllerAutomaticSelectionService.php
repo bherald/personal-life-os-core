@@ -710,6 +710,16 @@ class ModelHostControllerAutomaticSelectionService
             && ($observed['owned_process_count'] ?? null) === 1 && ($observed['loopback_listener_count'] ?? null) === 1
             && ($observed['model_loaded_exact'] ?? null) === false && ($observed['residency_verified'] ?? null) === true
             && ($observed['foreign_loaded_count'] ?? null) === 0;
+        $stoppedReranker = false;
+        if ($disabled && array_key_exists('busy', $observed) && $observed['busy'] === null) {
+            // The stopped endpoint cannot report busy. Scope this exception to the
+            // current table-owned adapter and its freshly verified runtime files.
+            $policy = app(SystemConfigService::class)->get(
+                ModelHostControllerPolicyService::CONFIG_SECTION.'.'.ModelHostControllerPolicyService::CONFIG_KEY, [], true);
+            $stoppedReranker = is_array($policy) && ($policy['host_id'] ?? null) === ($status['host_id'] ?? null)
+                && ($policy['targets'][$target]['lifecycle_adapter']['adapter_type'] ?? null) === 'authenticated_reranker'
+                && ($observed['runtime_files_exact'] ?? null) === true;
+        }
         if (($status['schema'] ?? null) !== 'plos.model_host_controller.target_status.v1'
             || ($status['target'] ?? null) !== $target || ($status['contains_prompt_or_response_content'] ?? null) !== false
             || ($status['k3_lease_active'] ?? null) !== false || ($status['mutation_available'] ?? null) !== false
@@ -718,7 +728,8 @@ class ModelHostControllerAutomaticSelectionService
             || ! array_key_exists('lease_id_sha256', $lease) || $lease['lease_id_sha256'] !== null
             || ($observed['target'] ?? null) !== $target || ($observed['task_exact'] ?? null) !== true
             || ($observed['control_exact'] ?? null) !== true || ($observed['executable_exact'] ?? null) !== true
-            || (! $disabled && ! $unloaded) || (array_key_exists('busy', $observed) && $observed['busy'] !== false)
+            || (! $disabled && ! $unloaded)
+            || (array_key_exists('busy', $observed) && $observed['busy'] !== false && ! $stoppedReranker)
             || ! is_int($lease['generation'] ?? null) || $lease['generation'] < 0
             || ! is_string($lease['state_generation_sha256'] ?? null)
             || ! preg_match('/\A[a-f0-9]{64}\z/', $lease['state_generation_sha256'])) {

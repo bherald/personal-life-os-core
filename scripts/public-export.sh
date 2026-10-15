@@ -235,6 +235,27 @@ includes=(
     scripts/install-tika.sh
     scripts/nlp_extract.py
     scripts/audit-licenses.sh
+    scripts/plos-model-host-controller-lifecycle.ps1
+    scripts/plos-cli/reranker-controller-adapter.ps1
+    scripts/plos-cli/image-controller-adapter.ps1
+    scripts/plos-cli/glm-controller-adapter.ps1
+    scripts/plos-cli/glm-controller-adapter-contract-test.ps1
+    scripts/plos-cli/test-reranker-startup-cleanup.ps1
+    scripts/plos-cli/test-controller-technical-fence.ps1
+    scripts/reranker/qwen_reranker_server.py
+    scripts/reranker/qwen_reranker_server_test.py
+    scripts/reranker/qwen_reranker_controller_contract.py
+    scripts/reranker/qwen_reranker_controller_contract_test.py
+    scripts/reranker/start-server.sh
+    tests/Unit/Services/RerankerControlledRetrievalTest.php
+    tests/Unit/Services/RerankerControlledTransportTest.php
+    tests/Unit/Services/GuardedRerankerSelectionRegistrationTest.php
+    tests/Unit/Services/OperatorAdoptionPacketApplicabilityTest.php
+    tests/Unit/Services/ColibriTaskLogonContractTest.php
+    tests/Unit/Services/ColibriTaskLogonRegistrationTest.php
+    tests/Unit/Services/ControllerWorkloadPayloadTest.php
+    tests/Feature/Console/RagRerankCommandTest.php
+    tests/Unit/Services/RerankerSidecarServiceTest.php
     scripts/public-export.sh
     scripts/plos-compute-execution-supervisor.py
     scripts/public-smoke.sh
@@ -292,6 +313,10 @@ includes=(
     tests/Unit/Services/KnowledgeGraphManagedBatchServiceTest.php
     tests/Unit/Services/KnowledgeGraphServiceTest.php
     tests/Support/UsesLlmRoutingBindings.php
+    tests/Unit/Services/ModelHostControllerActivationBudgetTest.php
+    tests/Feature/Services/ModelHostControllerStoppedRerankerFenceTest.php
+    tests/Unit/Services/FileCategorizationRAGFailureDiagnosticTest.php
+    tests/Unit/Services/FileCategorizationRAGPublicationReturnTest.php
     tests/Fixtures
     tests/Support/PreservesSchemaTables.php
     tests/Support/ScenarioHarness

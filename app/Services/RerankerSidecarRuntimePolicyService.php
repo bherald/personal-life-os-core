@@ -12,6 +12,23 @@ class RerankerSidecarRuntimePolicyService
 
     public function __construct(private readonly SystemConfigService $systemConfig) {}
 
+    /** Opt-in dedicated retrieval; a catalog entry alone does not grant model execution. */
+    public function controllerPolicy(): ?array
+    {
+        $policy = $this->systemConfig->get('rag.reranker_controller_policy', null, strict: true);
+        if ($policy === null || (is_array($policy) && ($policy['enabled'] ?? false) === false)) {
+            return null;
+        }
+        if (! is_array($policy) || ($policy['schema'] ?? null) !== 'plos.reranker_controller_policy.v1'
+            || ($policy['enabled'] ?? null) !== true
+            || ! is_string($policy['instance_id'] ?? null) || $policy['instance_id'] === ''
+            || ! is_string($policy['model'] ?? null) || $policy['model'] === '') {
+            throw new RuntimeException('Dedicated reranker selection is not table-qualified.');
+        }
+
+        return $policy;
+    }
+
     /**
      * @return array{
      *   health:array{connect_timeout_seconds:int,request_timeout_seconds:int},

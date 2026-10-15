@@ -11,6 +11,11 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/installed-candidates.87.json',
+        ])) {
+            return;
+        }
         DB::transaction(function (): void {
             $policyRow = DB::table('system_configs')->where('section', 'ai')->where('config_key', 'model_host_controller_policy')->lockForUpdate()->first();
             $resourceRow = DB::table('system_configs')->where('section', 'ai')->where('config_key', 'model_host_controller_resource_policy')->lockForUpdate()->first();

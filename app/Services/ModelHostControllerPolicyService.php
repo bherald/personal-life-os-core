@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Closure;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use RuntimeException;
 
 class ModelHostControllerPolicyService
@@ -16,6 +17,66 @@ class ModelHostControllerPolicyService
     public const CONFIG_SECTION = 'ai';
 
     public const CONFIG_KEY = 'model_host_controller_policy';
+
+    /** Public exports omit operator-owned host packets; absence never authorizes adoption. */
+    public function operatorPacketsApplicable(array $paths): bool
+    {
+        $declared = config('model_host_controller.operator_adoption_packet_paths', []);
+        if (! is_array($declared) || ! array_is_list($declared)) {
+            throw new RuntimeException('Operator packet declaration must be a path list.');
+        }
+        // Keep declarations in the existing table-owned policy/bindings, rather than
+        // infer an adoption decision from an unrelated active host or model.
+        foreach (['system_configs' => 'config_value', 'llm_instances' => 'config', 'llm_model_profiles' => 'metadata'] as $table => $column) {
+            if (! Schema::hasTable($table)) {
+                continue;
+            }
+            $query = DB::table($table);
+            if ($table === 'system_configs') {
+                $query->where('section', self::CONFIG_SECTION)->where('config_key', self::CONFIG_KEY);
+            }
+            foreach ($query->pluck($column) as $value) {
+                if ($value === null || $value === '') {
+                    continue;
+                }
+                $decoded = json_decode((string) $value, true, flags: JSON_THROW_ON_ERROR);
+                if (! is_array($decoded)) {
+                    continue;
+                }
+                $collect = function (array $node) use (&$collect, &$declared): void {
+                    if (array_key_exists('operator_adoption_packet_paths', $node)) {
+                        $references = $node['operator_adoption_packet_paths'];
+                        if (! is_array($references) || ! array_is_list($references)) {
+                            throw new RuntimeException('Operator binding packet declaration must be a path list.');
+                        }
+                        array_push($declared, ...$references);
+                    }
+                    foreach ($node as $child) {
+                        if (is_array($child)) {
+                            $collect($child);
+                        }
+                    }
+                };
+                $collect($decoded);
+            }
+        }
+        foreach ([...$paths, ...$declared] as $path) {
+            if (! is_string($path) || preg_match('~\Aconfig/local-engine-candidates/[a-zA-Z0-9_.-]+\.json\z~', $path) !== 1) {
+                throw new RuntimeException('Operator packet path is invalid.');
+            }
+        }
+        $present = array_filter($paths, fn (string $path): bool => is_file(base_path($path)));
+        if ($present === [] && array_intersect($paths, $declared) === []) {
+            return false;
+        }
+        foreach ($paths as $path) {
+            if (! is_file(base_path($path)) || ! is_readable(base_path($path))) {
+                throw new RuntimeException('Configured operator adoption requires every reviewed packet; missing '.$path);
+            }
+        }
+
+        return true;
+    }
 
     /** @return array<string,mixed> */
     public function required(): array
@@ -73,7 +134,7 @@ class ModelHostControllerPolicyService
     private function lifecycleAdapter(mixed $value): array
     {
         $fields = ['adapter_type', 'control_roots', 'required_process_arguments', 'resource_mode'];
-        if (is_array($value) && ($value['adapter_type'] ?? null) === 'authenticated_image') {
+        if (is_array($value) && in_array($value['adapter_type'] ?? null, ['authenticated_image', 'authenticated_reranker'], true)) {
             $fields = array_merge($fields, ['interpreter_path', 'interpreter_sha256']);
         }
         if (is_array($value) && ($value['adapter_type'] ?? null) === 'colibri_gateway' && array_key_exists('native_tools_enabled', $value)) {
@@ -82,14 +143,20 @@ class ModelHostControllerPolicyService
             }
             $fields[] = 'native_tools_enabled';
         }
+        if (is_array($value) && ($value['adapter_type'] ?? null) === 'colibri_gateway' && array_key_exists('task_logon_type', $value)) {
+            if (! in_array($value['task_logon_type'], ['Interactive', 'S4U'], true)) {
+                throw new RuntimeException('Colibri task logon binding is invalid.');
+            }
+            $fields[] = 'task_logon_type';
+        }
         if (! is_array($value)
             || count($value) !== count($fields)
             || array_diff(array_keys($value), $fields) !== []
-            || ! in_array($value['adapter_type'] ?? null, ['pinned_llama', 'ollama_coex', 'scheduled_llama', 'scheduled_process_group', 'colibri_gateway', 'authenticated_image'], true)
+            || ! in_array($value['adapter_type'] ?? null, ['pinned_llama', 'ollama_coex', 'scheduled_llama', 'scheduled_process_group', 'colibri_gateway', 'authenticated_image', 'authenticated_reranker'], true)
             || ! in_array($value['resource_mode'] ?? null, ['full', 'runtime_managed', 'ram_commit_c'], true)) {
             throw new RuntimeException('Lifecycle adapter registration is missing or invalid.');
         }
-        if ($value['adapter_type'] === 'authenticated_image'
+        if (in_array($value['adapter_type'], ['authenticated_image', 'authenticated_reranker'], true)
             && (! is_string($value['interpreter_path'] ?? null)
                 || preg_match('/\A[A-Za-z]:\\\\[^\r\n]+\z/', $value['interpreter_path']) !== 1
                 || preg_match('/\A[a-f0-9]{64}\z/', $value['interpreter_sha256'] ?? '') !== 1)) {

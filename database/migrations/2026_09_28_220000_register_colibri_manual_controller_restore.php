@@ -14,6 +14,11 @@ return new class extends Migration
         if (! app()->environment('production')) {
             return;
         }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/colibri-glm-manual.87.json',
+        ])) {
+            return;
+        }
         $definition = json_decode(file_get_contents(base_path('config/local-engine-candidates/colibri-glm-manual.87.json')), true, flags: JSON_THROW_ON_ERROR);
         if (($definition['registration_ready'] ?? null) !== true || ($definition['measured_qualification'] ?? null) !== false
             || ($definition['live_qualification'] ?? null) !== 'pending') {

@@ -14,6 +14,11 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/ollama-qwen-trials.87.json',
+        ])) {
+            return;
+        }
         // PROD owns choices. DEV receives them through the operator's manual sync.
         if (! app()->environment('production')) {
             return;

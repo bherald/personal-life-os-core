@@ -138,3 +138,24 @@ Managed knowledge-graph groups now retain native per-request admission without
 an outer model permit. Oversized input is refused intact, and genealogy managers
 wait for disabled registered jobs before scheduler handoff. Preserve document
 stamps and uncertain receipts during rollback; see [the upgrade boundaries](framework-upgrade-boundaries.md).
+
+
+Manual retrieval and native task updates — October14: choose explicit registered
+provider/model/role bindings and preserve complete inputs. Alternate embeddings
+must remain in their declared vector space; do not reindex existing spaces from
+this update. Cross-encoder reranking is opt-in and requires a qualified native
+controller workload, authenticated ingress and its exact loopback backend Host.
+Host-adoption packets are operator-owned: absent/unrequested packets skip adoption;
+a required missing packet refuses before writes. Colibri task identity requires
+the declared Interactive/S4U type plus exact principal, executable, arguments,
+working directory, Highest run level and zero triggers. Apply native delivery only
+under existing custody/rollback controls and prove exact physical cleanup. Restore
+source and reviewed policy/native preimages on rollback; never replay UNKNOWN
+work or release another owner. [Boundaries](framework-upgrade-boundaries.md).
+
+On cold reranker startup failure, retain the typed cleanup receipt and original
+request identity. Do not retry an unknown activation or stop unproved ownership.
+Use matching controller source pins and table/native startup budgets, including
+HTTP overhead. Exact stopped-reranker fencing preserves UNKNOWN and no replay.
+Rollback restores matching source and reviewed native/policy preimages without
+clearing journals, altering vector spaces or activating unconfigured models.

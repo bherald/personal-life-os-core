@@ -4,12 +4,12 @@
     {
       "rule": "Real secret assignments with non-placeholder values",
       "path": "app/Services/OfflineAiPipelineInventoryService.php",
-      "file_sha256": "d6c41a2d876d5fd9e540bc62d980652cfb57c4fa0224a8f049e651dcb689d6c3",
+      "file_sha256": "085dccc16de7629cc41a3b642aa75fb8133ebf90e592f7b3d659219444669ad3",
       "line": 228,
       "line_sha256": "e25fb293f03d4dd65d831e3fdd092d072554b28a07feb9418fcf4361a3955aaf",
       "reason": "Inventory descriptor states an explicit clear action; it contains no credential value.",
       "reviewer": "public-audit-preparation",
-      "reviewed_at": "2026-10-12T23:51:03.735919+00:00"
+      "reviewed_at": "2026-10-14T21:46:57.821212+00:00"
     },
     {
       "rule": "Private keys, certificates, or encrypted key material",

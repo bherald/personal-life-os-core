@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Services\Files\PhotoReviewEvidenceService;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -371,7 +372,7 @@ class FileCategorizationRAGService
                 null,
                 null,
                 ['source_identity_upsert' => true, ...$options],
-                function (callable $publish) use ($registry, $publicationProof, $file, $fieldReview): object {
+                function (callable $publish) use ($registry, $publicationProof, $file, $fieldReview): object|bool {
                     return $registry->publishCurrentSourceProjection($publicationProof, $publish, function () use ($file, $fieldReview): void {
                         if ($fieldReview['present'] && ! $this->photoReviewSnapshotCurrent($file, $fieldReview)) {
                             throw new \RuntimeException('photo_field_review_changed_before_publication');
@@ -408,7 +409,7 @@ class FileCategorizationRAGService
             }
             Log::error('FileCategorizationRAG: Failed to index file', [
                 'asset_uuid' => $assetUuid,
-                'error' => $e->getMessage(),
+                ...$this->indexFailureDiagnostic($e),
                 'photo_review_reconciliation_required' => $reconciliationRequired,
             ]);
 
@@ -1501,11 +1502,26 @@ class FileCategorizationRAGService
         } catch (\Exception $e) {
             Log::error('FileCategorizationRAG: Failed to index genealogy media', [
                 'media_id' => $genealogyMediaId,
-                'error' => $e->getMessage(),
+                ...$this->indexFailureDiagnostic($e),
             ]);
 
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    /** Existing log processor removes exception messages/traces; database fields are primitive-only. */
+    private function indexFailureDiagnostic(\Throwable $error): array
+    {
+        $info = $error instanceof QueryException ? ($error->errorInfo ?? []) : [];
+
+        return [
+            'failure_reason' => $error instanceof QueryException ? 'media_rag_database_query_failed' : 'media_rag_index_failed',
+            'exception' => $error,
+            'database_diagnostic' => FileRegistryImageAuditService::sanitizeDatabaseError([
+                'sqlstate' => $info[0] ?? null,
+                'driver_code' => $info[1] ?? null,
+            ]),
+        ];
     }
 
     /**

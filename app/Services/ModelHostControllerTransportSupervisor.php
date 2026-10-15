@@ -21,6 +21,9 @@ class ModelHostControllerTransportSupervisor
 
     public function run(string $wire, string $endpoint, array $payload, callable $operation, array $context = []): mixed
     {
+        if ($wire === 'rerank' && $this->resources->managedProvider($endpoint) === null) {
+            throw new InferenceAdmissionException('Dedicated reranking always requires a registered native controller endpoint.');
+        }
         if (AIService::hasManagedInferenceContract() || ! $this->requiresSupervision($endpoint)) {
             return $operation();
         }
@@ -97,7 +100,8 @@ class ModelHostControllerTransportSupervisor
         $validator = function (string $actualWire, string $actualEndpoint, array $settings) use (&$scope, $wire, $endpoint, $payload): void {
             if ($actualWire !== $wire || $actualEndpoint !== $endpoint
                 || ModelHostControllerResourcePolicyService::requestContractIdentity($settings)
-                    !== ModelHostControllerResourcePolicyService::requestContractIdentity(self::settings($payload))) {
+                    !== ModelHostControllerResourcePolicyService::requestContractIdentity(self::settings($payload,
+                        $wire === 'rerank' ? ['Host' => $scope['request']['request_contract']['backend_http_host']] : []))) {
                 throw new InferenceAdmissionException('Supervised HTTP request changed after admission.');
             }
             $this->selection->dispatchExact($scope);
@@ -167,7 +171,7 @@ class ModelHostControllerTransportSupervisor
             throw new InferenceAdmissionException('Exact model is not uniquely admitted on this managed endpoint.');
         }
         $target = reset($matches);
-        if (in_array($wire, ['ollama_embeddings', 'openai_embeddings', 'image_generation'], true)) {
+        if (in_array($wire, ['ollama_embeddings', 'openai_embeddings', 'image_generation', 'rerank'], true)) {
             return $this->prepareWorkload($wire, $payload, $provider, $config, $target, $context);
         }
         $roles = array_values(array_intersect($target['roles'] ?? [], $config['route_policy']['allowed_model_roles'] ?? []));
@@ -232,7 +236,9 @@ class ModelHostControllerTransportSupervisor
         $entry = $config['controller_workloads'][$wire][$payload['model']] ?? null;
         $contract = $entry['contract'] ?? null;
         $role = $entry['role'] ?? null;
-        $capability = $wire === 'image_generation' ? 'image_generation' : 'embedding';
+        $capability = match ($wire) {
+            'image_generation' => 'image_generation', 'rerank' => 'reranking', default => 'embedding'
+        };
         $definition = DB::table('ollama_models')->where('instance_id', $provider->id)
             ->where('model_name', $payload['model'])->where('is_available', 1)->first(['capabilities']);
         $capabilities = json_decode($definition->capabilities ?? '[]', true) ?? [];
@@ -244,7 +250,8 @@ class ModelHostControllerTransportSupervisor
             || ($contract['model'] ?? null) !== $payload['model']
             || ($contract['wire_api'] ?? null) !== $wire
             || ($contract['controller_target'] ?? null) !== $target['target_id']
-            || ($contract['controller_host_id'] ?? null) !== $target['controller_host_id']) {
+            || ($contract['controller_host_id'] ?? null) !== $target['controller_host_id']
+            || ($wire === 'rerank' && ($contract['native_port'] ?? null) !== ($target['port'] ?? null))) {
             throw new InferenceAdmissionException('Workload has no exact admitted capability and resource contract.');
         }
         if ($capability === 'embedding' && (! is_int($contract['dimensions'] ?? null) || $contract['dimensions'] < 1)) {
@@ -265,6 +272,11 @@ class ModelHostControllerTransportSupervisor
     {
         if (($payload['model'] ?? null) !== ($contract['model'] ?? null) || ($contract['wire_api'] ?? null) !== $wire) {
             throw new InferenceAdmissionException('Workload model or transport differs from its admitted contract.');
+        }
+        if ($wire === 'rerank') {
+            self::assertRerankPayload($payload, $contract);
+
+            return;
         }
         $maximumBytes = $contract['maximum_input_bytes'] ?? null;
         $input = $wire === 'image_generation' ? ($payload['prompt'] ?? null) : ($payload['input'] ?? null);
@@ -313,6 +325,42 @@ class ModelHostControllerTransportSupervisor
         }
         if (isset($payload['seed']) && (! is_int($payload['seed']) || $payload['seed'] < 0 || $payload['seed'] > 4294967295)) {
             throw new InferenceAdmissionException('Image seed is invalid.');
+        }
+    }
+
+    private static function assertRerankPayload(array $payload, array $contract): void
+    {
+        $maximum = $contract['maximum_input_bytes'] ?? null;
+        $documents = $payload['documents'] ?? null;
+        $limit = $contract['maximum_documents'] ?? null;
+        if (array_diff(array_keys($payload), ['model', 'query', 'instruction', 'documents']) !== []
+            || ! is_int($maximum) || $maximum < 1 || $maximum > 262144
+            || ! is_int($limit) || $limit < 1 || $limit > 50
+            || ! is_array($documents) || ! array_is_list($documents) || $documents === [] || count($documents) > $limit
+            || ! is_string($payload['query'] ?? null) || trim($payload['query']) === ''
+            || ! mb_check_encoding($payload['query'], 'UTF-8')
+            || ! is_string($payload['instruction'] ?? null) || trim($payload['instruction']) === ''
+            || ($payload['instruction'] ?? null) !== ($contract['instruction'] ?? null)
+            || ! is_string($contract['revision'] ?? null) || preg_match('/^[a-f0-9]{40}$/D', $contract['revision']) !== 1
+            || ($contract['scoring'] ?? null) !== 'yes_no_softmax' || ($contract['device'] ?? null) !== 'cpu'
+            || ($contract['complete_input'] ?? null) !== true
+            || ! is_int($contract['native_port'] ?? null) || $contract['native_port'] < 1024 || $contract['native_port'] > 65535
+            || ! in_array($contract['backend_http_host'] ?? null,
+                ['127.0.0.1:'.$contract['native_port'], 'localhost:'.$contract['native_port']], true)) {
+            throw new InferenceAdmissionException('Rerank input or scoring differs from its exact registered contract.');
+        }
+        $ids = [];
+        foreach ($documents as $document) {
+            if (! is_array($document) || array_diff(array_keys($document), ['id', 'text']) !== []
+                || ! is_string($document['id'] ?? null) || $document['id'] === '' || isset($ids[$document['id']])
+                || strlen($document['id']) > 120 || ! is_string($document['text'] ?? null)
+                || trim($document['text']) === '' || ! mb_check_encoding($document['text'], 'UTF-8')) {
+                throw new InferenceAdmissionException('Rerank requires complete, unique original documents.');
+            }
+            $ids[$document['id']] = true;
+        }
+        if (strlen(json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)) > $maximum) {
+            throw new InferenceAdmissionException('Rerank exceeds its admitted input bytes; source was not shortened.');
         }
     }
 
@@ -414,10 +462,17 @@ class ModelHostControllerTransportSupervisor
         }
     }
 
-    public static function settings(array $payload): array
+    public static function settings(array $payload, array $headers = []): array
     {
+        if (array_key_exists('documents', $payload)) {
+            $payload['rerank_input_sha256'] = hash('sha256', json_encode(
+                ['query' => $payload['query'] ?? null, 'instruction' => $payload['instruction'] ?? null,
+                    'documents' => $payload['documents']], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+            ));
+            unset($payload['query'], $payload['instruction'], $payload['documents']);
+        }
         unset($payload['messages'], $payload['prompt'], $payload['system'], $payload['images'], $payload['input'], $payload['negative_prompt']);
 
-        return $payload;
+        return $headers === [] ? $payload : $payload + ['http_headers' => $headers];
     }
 }

@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\ModelHostControllerPolicyService;
 use App\Services\ModelHostControllerResourcePolicyService as Resources;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\Cache;
@@ -10,6 +11,11 @@ return new class extends Migration
     public function up(): void
     {
         if (! app()->environment('production')) {
+            return;
+        }
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/colibri-glm-startup.87.json',
+        ])) {
             return;
         }
         $correction = json_decode(file_get_contents(base_path('config/local-engine-candidates/colibri-glm-startup.87.json')), true, flags: JSON_THROW_ON_ERROR);

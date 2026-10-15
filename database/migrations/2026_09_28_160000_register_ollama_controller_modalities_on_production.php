@@ -12,6 +12,11 @@ return new class extends Migration
 {
     public function up(): void
     {
+        if (! (new ModelHostControllerPolicyService)->operatorPacketsApplicable([
+            'config/local-engine-candidates/ollama-modalities.87.json',
+        ])) {
+            return;
+        }
         // PROD is authoritative; the operator explicitly owns DEV configuration sync.
         if (! app()->environment('production')) {
             return;

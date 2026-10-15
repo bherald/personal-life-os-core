@@ -402,7 +402,16 @@ class ModelHostControllerResourcePolicyService
             }
             $parts[] = 'native_tools_enabled:'.($target['native_tools_enabled'] ? 'true' : 'false');
         }
-        if (($target['adapter_type'] ?? null) === 'authenticated_image') {
+        if (($target['adapter_type'] ?? null) === 'colibri_gateway' && array_key_exists('task_logon_type', $target)) {
+            if (! in_array($target['task_logon_type'], ['Interactive', 'S4U'], true)) {
+                throw new RuntimeException('Colibri task logon binding is invalid.');
+            }
+            // Explicit legacy Interactive retains its prior capacity identity.
+            if ($target['task_logon_type'] !== 'Interactive') {
+                $parts[] = 'task_logon_type:'.$target['task_logon_type'];
+            }
+        }
+        if (in_array($target['adapter_type'] ?? null, ['authenticated_image', 'authenticated_reranker'], true)) {
             foreach (['interpreter_path', 'interpreter_sha256'] as $field) {
                 $value = $target[$field] ?? null;
                 if (! is_string($value) || $value === '' || preg_match('/[\r\n]/', $value)) {

@@ -2154,10 +2154,17 @@ PROMPT;
                 'error' => $error->getMessage(), 'duration_ms' => 0, 'fallback_suppressed' => true];
         }
         $options = $this->normalizePrivacyRoutingConfig(array_replace($options, $callerConstraints));
-        $options['model_role'] = 'embedding';
         $exactSelection = ! empty($options['required_instance_id']) || ! empty($options['ollama_required_no_fallback']);
+        $role = $options['model_role'] ?? 'embedding';
+        if (! is_string($role) || ! preg_match('/^[a-z][a-z0-9_]{0,63}$/D', $role)
+            || ($role !== 'embedding' && ! $exactSelection)) {
+            return ['success' => false, 'embedding' => null, 'provider' => null,
+                'error' => 'An alternate embedding role requires an exact table-bound selection.',
+                'duration_ms' => 0, 'fallback_suppressed' => true];
+        }
+        $options['model_role'] = $role;
         if ($exactSelection || ! empty($options['preferred_ollama_instance_ids']) || ! empty($options['allowed_ollama_instance_ids'])) {
-            $options = $this->applyPreferredOllamaInstanceOrder($options, 'embedding');
+            $options = $this->applyPreferredOllamaInstanceOrder($options, $role);
         }
         if ($exactSelection) {
             $options['exact_embedding_model'] = $options['model_override'] ?? $options['model'] ?? null;
@@ -5971,10 +5978,11 @@ PROMPT;
         array $modelCapabilityGroups = [],
         ?string $requiredModel = null
     ): ?array {
+        $embeddingRequest = $role === 'embedding' || $modelCapabilityGroups === [['embedding']];
         $capabilities = ['text'];
         if ($role === 'vision') {
             $capabilities = ['vision'];
-        } elseif ($role === 'embedding') {
+        } elseif ($embeddingRequest) {
             $capabilities = ['embedding'];
         }
 
@@ -5994,11 +6002,18 @@ PROMPT;
                 if ($selected !== null && ($selected['instance']->instance_type ?? '') === 'ollama') {
                     $instance = $selected['instance'];
 
+                    $context = $instance->embedding_context_length ?? null;
+                    if ($embeddingRequest
+                        && ((! is_int($context) && (! is_string($context) || ! preg_match('/^[1-9][0-9]*$/D', $context)))
+                            || filter_var($context, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) === false)) {
+                        return null;
+                    }
+
                     return [
                         'id' => $instance->instance_id,
                         'url' => $instance->base_url,
                         'priority' => (int) $instance->priority,
-                    ];
+                    ] + ($embeddingRequest ? ['embedding_context_length' => (int) $context] : []);
                 }
 
                 return null;
@@ -6492,7 +6507,7 @@ PROMPT;
         $requiredId = (string) ($options['required_instance_id'] ?? '');
         $requiredOllama = ! empty($options['ollama_required_no_fallback']);
         if ($requiredOllama) {
-            $instance = $this->selectOllamaInstanceForRole('embedding', $options, [['embedding']], $options['exact_embedding_model']);
+            $instance = $this->selectOllamaInstanceForRole($options['model_role'] ?? 'embedding', $options, [['embedding']], $options['exact_embedding_model']);
 
             return $instance === null ? [] : [$instance + ['instance_type' => 'ollama']];
         }
