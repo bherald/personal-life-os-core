@@ -1,5 +1,7 @@
 # PLOS — Personal Life Operating System
 
+Public smoke, hosted CI and the generated export manifest list the same focused tests, including prompt counting, complete-source output and workflow model-role coverage.
+
 A local-first research and automation workbench. PLOS brings documents, web
 sources, AI-assisted analysis, workflows and human review into one system on
 hardware you control.
