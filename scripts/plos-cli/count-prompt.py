@@ -43,7 +43,8 @@ def count_prompt(request):
         raise ValueError('Explicit thinking selection is required for exact counting.')
     assets = request.get('assets', {})
     legacy_assets = {'renderer', 'tokenizer', 'family_registry', 'v4_dsml'}
-    if set(assets) not in (legacy_assets, legacy_assets | {'v41_dsml'}):
+    if set(assets) not in (legacy_assets, legacy_assets | {'v41_dsml'},
+                          legacy_assets | {'v41_dsml', 'image_engine'}):
         raise ValueError('Complete selected runtime assets are required.')
     # Verify every dependency before any runtime source executes. Execute the
     # verified bytes, rather than reopening source files after verification.
@@ -62,6 +63,12 @@ def count_prompt(request):
         module_from_bytes('v41_dsml', verified['v41_dsml'])
     else:
         sys.modules['v41_dsml'] = None
+    # Current gateways import this even for text. It must come from its own
+    # verified pin, never an ambient Python installation or runtime directory.
+    if 'image_engine' in verified:
+        module_from_bytes('image_engine', verified['image_engine'])
+    else:
+        sys.modules['image_engine'] = None
     renderer = module_from_bytes('plos_selected_renderer', verified['renderer'])
     if renderer.ARCH != 'glm':
         raise ValueError('Selected renderer architecture differs from GLM.')

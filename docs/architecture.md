@@ -195,3 +195,30 @@ activation receipt. Uncertain cleanup remains held. Activation HTTP budgets cove
 startup, optional verification and request overhead. A missing busy reading is
 accepted only for a registered, exactly qualified disabled reranker with no owned
 process or listener; other adapter and generation guards remain unchanged.
+
+### Exact current-gateway prompt dependencies
+
+The existing prompt-counter worker accepts the current gateway's optional
+`image_engine` dependency alongside V4.1. Hash validation precedes executing
+selected source; absent dependencies cannot come from ambient Python modules.
+The worker selects managed lossless rendering so whitespace matches the gateway.
+This extends an existing binding contract without adding a routing abstraction.
+[Verification and deployment](public-release-readiness.md#exact-prompt-dependencies--october-15-2026).
+
+### Independent observations during owned loading
+
+The existing Ollama snapshot records tags and residency independently. A timeout
+can preserve exact owned in-flight custody without converting unknown health
+into a successful observation. Prior activation and pre-dispatch evidence,
+reserved residency, exact runtime/process/listener identity and loaded-capacity
+reserves remain mandatory. Ordinary activation receives no timeout exception.
+[Behavior and controls](public-release-readiness.md#owned-loading-heartbeats--october-15-2026).
+
+### Ordinary YouTube model-role selection
+
+The key-point node forwards its optional configured role and allowed/preferred
+instance arrays through AIService. Existing tables resolve the model; existing
+pool policy admits an explicit-only provider only when its configured selection
+matches. Explicit CLI role/model choices keep precedence over node defaults.
+Absent configuration retains default behavior. Output budgets and complete-source
+custody remain enforced. [Behavior and checks](public-release-readiness.md#ordinary-youtube-node-roles--october-15-2026).

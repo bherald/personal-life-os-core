@@ -350,10 +350,22 @@ Transcript:
 {$wrappedTranscript}
 PROMPT;
 
-        $result = $aiService->process($prompt, [
+        $request = [
             'max_tokens' => $this->configuredPositiveInt('ai_max_tokens') ?? $this->runtimePolicyInt('ai_max_tokens'),
             'temperature' => $this->configuredFloat('ai_temperature') ?? $this->runtimePolicyFloat('ai_temperature'),
-        ]);
+        ];
+        $role = $this->getConfigValue('model_role');
+        if (is_string($role) && trim($role) !== '') {
+            $request['model_role'] = trim($role);
+        }
+        foreach (['allowed_ollama_instance_ids', 'preferred_ollama_instance_ids'] as $key) {
+            $instances = $this->getConfigValue($key);
+            if (is_array($instances)) {
+                $request[$key] = $instances;
+            }
+        }
+        // AIService retains an explicit CLI workflow scope over this node default.
+        $result = $aiService->process($prompt, $request);
 
         if (! ($result['success'] ?? false)) {
             throw new InferenceAdmissionException('AI processing failed', controllerFailure: is_array($result['controller_failure'] ?? null) ? $result['controller_failure'] : []);

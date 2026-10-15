@@ -159,3 +159,31 @@ Use matching controller source pins and table/native startup budgets, including
 HTTP overhead. Exact stopped-reranker fencing preserves UNKNOWN and no replay.
 Rollback restores matching source and reviewed native/policy preimages without
 clearing journals, altering vector spaces or activating unconfigured models.
+
+### Current Colibri prompt-counter assets
+
+When selecting a current gateway, bind its optional `image_engine_sha256` with
+its V4.1 dependency through the existing exact tokenizer contract. Change runtime
+and tokenizer bindings together; retain the prior binding and runtime for
+rollback. Unpinned or changed module bytes are refused before rendering.
+[Checks and scope](public-release-readiness.md#exact-prompt-dependencies--october-15-2026).
+
+### Owned loading metadata timeouts
+
+A timed-out Ollama metadata probe remains unknown. An existing exact owned
+in-flight dispatch may renew only with its successful activation, pre-dispatch
+heartbeat, pinned process/listener and capacity proof. Retain explicit refusals
+and foreign residency observations. Deploy the lifecycle/controller pin chain
+together after current physical work closes; retain the prior checkpoint for
+rollback and never replay an unknown request automatically.
+[Model-free checks](public-release-readiness.md#owned-loading-heartbeats--october-15-2026).
+
+### Configured YouTube key-point roles
+
+Use existing registered node role and allowed/preferred instance settings for
+a task requiring a particular admitted provider. Deploy generic forwarding
+first, then apply installation-owned configuration while preserving operator
+choices. Keep explicit-only provider policy intact. Directly constructed
+unconfigured nodes retain default selection; explicit CLI workflow choices
+still win. Verify normal source-preserving note delivery. Keep exact prior
+source/settings for rollback. [Focused checks](public-release-readiness.md#ordinary-youtube-node-roles--october-15-2026).

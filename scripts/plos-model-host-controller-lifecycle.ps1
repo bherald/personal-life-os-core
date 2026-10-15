@@ -516,16 +516,26 @@ function Get-PLOSOllamaSnapshot {
     $snapshot = @{task=(Get-ScheduledTask -TaskName ([string]$Spec.task_name) -ErrorAction SilentlyContinue)
         listeners=@(Get-NetTCPConnection -State Listen -LocalPort ([int]$Spec.port) -ErrorAction SilentlyContinue)
         owned=@(Get-PLOSOwnedProcesses -Id 'shared_ollama' -Spec $Spec)
-        control_exact=$false;executable_exact=$false;api_verified=$false;tags=@();loaded=@()}
+        control_exact=$false;executable_exact=$false;api_verified=$false;tags=@();loaded=@()
+        tags_verified=$false;loaded_verified=$false;metadata_timed_out=$false;metadata_rejected=$false}
     try { $snapshot.control_exact = (Get-PLOSSha256 -Path ([string]$Spec.control_path)) -ceq [string]$Spec.control_sha256 } catch {}
     try { $snapshot.executable_exact = (Get-PLOSSha256 -Path ([string]$Spec.executable_path)) -ceq [string]$Spec.executable_sha256 } catch {}
-    try {
-        $tags = Invoke-RestMethod -Uri "http://127.0.0.1:$([int]$Spec.port)/api/tags" -TimeoutSec 5
-        $loaded = Invoke-RestMethod -Uri "http://127.0.0.1:$([int]$Spec.port)/api/ps" -TimeoutSec 5
-        if ($null -eq $tags.PSObject.Properties['models'] -or $null -eq $loaded.PSObject.Properties['models'] -or
-            $tags.models -isnot [array] -or $loaded.models -isnot [array]) { throw 'Ollama metadata shape is unverified.' }
-        $snapshot.tags=@($tags.models);$snapshot.loaded=@($loaded.models);$snapshot.api_verified=$true
-    } catch {}
+    # A busy tags request must not erase an independently observed foreign model.
+    foreach ($probe in @(@{path='tags';field='tags';verified='tags_verified'},@{path='ps';field='loaded';verified='loaded_verified'})) {
+        try {
+            $response = Invoke-RestMethod -Uri "http://127.0.0.1:$([int]$Spec.port)/api/$($probe.path)" -TimeoutSec 5
+            if ($null -eq $response.PSObject.Properties['models'] -or $response.models -isnot [array]) {
+                throw 'Ollama metadata shape is unverified.'
+            }
+            $snapshot[$probe.field]=@($response.models);$snapshot[$probe.verified]=$true
+        } catch {
+            if ($_.Exception -is [Net.WebException] -and $_.Exception.Status -eq [Net.WebExceptionStatus]::Timeout) {
+                $snapshot.metadata_timed_out=$true
+            } else { $snapshot.metadata_rejected=$true }
+        }
+    }
+    $snapshot.metadata_timed_out=[bool]($snapshot.metadata_timed_out -and -not $snapshot.metadata_rejected)
+    $snapshot.api_verified=[bool]($snapshot.tags_verified -and $snapshot.loaded_verified)
     if ($null -ne $script:ollamaStatusSnapshots) { $script:ollamaStatusSnapshots[$key]=$snapshot }
     return $snapshot
 }
@@ -538,23 +548,28 @@ function Get-PLOSHealthStatus {
     $modelLoadedExact = $false
     $residencyVerified = $false
     $foreignLoadedCount = $null
+    $modelIdentityObserved = $false
+    $residencyObserved = $false
+    $metadataTimedOut = $false
     try {
         if ($Spec.adapter_type -ceq 'ollama_coex') {
             $snapshot = if ($null -ne $Observation) { $Observation } else { Get-PLOSOllamaSnapshot -Spec $Spec }
-            if (-not $snapshot.api_verified) { throw 'Ollama model residency is unverified.' }
+            $modelIdentityObserved=[bool]$snapshot.tags_verified
+            $residencyObserved=[bool]$snapshot.loaded_verified
+            $metadataTimedOut=[bool]$snapshot.metadata_timed_out
             $exactTag = @($snapshot.tags | Where-Object {
                 [string]$_.name -ceq [string]$Spec.model_api_id -and
                 ('digest:' + [string]$_.digest) -ceq [string]$Spec.model_identity
             })
-            $modelExact = [bool]($exactTag.Count -eq 1)
+            $modelExact = [bool]($modelIdentityObserved -and $exactTag.Count -eq 1)
             $loaded = @($snapshot.loaded)
             $exactLoaded = @($loaded | Where-Object {
                 [string]$_.name -ceq [string]$Spec.model_api_id -and
                 ('digest:' + [string]$_.digest) -ceq [string]$Spec.model_identity
             })
-            $foreignLoadedCount = $loaded.Count - $exactLoaded.Count
-            $residencyVerified = [bool]($foreignLoadedCount -eq 0 -and $exactLoaded.Count -le 1)
-            $healthy = $true
+            $foreignLoadedCount = if ($residencyObserved) { $loaded.Count - $exactLoaded.Count } else { $null }
+            $residencyVerified = [bool]($residencyObserved -and $foreignLoadedCount -eq 0 -and $exactLoaded.Count -le 1)
+            $healthy = [bool]$snapshot.api_verified
             $modelLoadedExact = [bool]($modelExact -and $exactLoaded.Count -eq 1 -and $residencyVerified)
             $fullyGpuResident = [bool]($loaded.Count -eq 1 -and $exactLoaded.Count -eq 1 -and
                 [int64]$exactLoaded[0].size -gt 0 -and [int64]$exactLoaded[0].size_vram -eq [int64]$exactLoaded[0].size)
@@ -567,7 +582,8 @@ function Get-PLOSHealthStatus {
             $modelLoadedExact = [bool]($healthy -and $modelExact)
         }
     } catch {}
-    [ordered]@{ healthy = $healthy; model_exact = $modelExact; model_loaded_exact = $modelLoadedExact; fully_gpu_resident = $fullyGpuResident; residency_verified = $residencyVerified; foreign_loaded_count = $foreignLoadedCount }
+    [ordered]@{ healthy = $healthy; model_exact = $modelExact; model_loaded_exact = $modelLoadedExact; fully_gpu_resident = $fullyGpuResident; residency_verified = $residencyVerified; foreign_loaded_count = $foreignLoadedCount
+        model_identity_observed=$modelIdentityObserved;residency_observed=$residencyObserved;api_metadata_timed_out=$metadataTimedOut }
 }
 
 function Get-PLOSTargetStatus {
@@ -653,6 +669,11 @@ function Get-PLOSTargetStatus {
         fully_gpu_resident = $health.fully_gpu_resident
         residency_verified = $health.residency_verified
         foreign_loaded_count = $health.foreign_loaded_count
+        model_identity_observed = $health.model_identity_observed
+        residency_observed = $health.residency_observed
+        api_metadata_timed_out = $health.api_metadata_timed_out
+        listener_owner_exact = [bool]($owned.Count -eq 1 -and $loopback.Count -eq 1 -and
+            [int]$loopback[0].OwningProcess -eq [int]$owned[0].ProcessId)
         running_exact = $runningExact
     }
 }
@@ -1347,22 +1368,50 @@ function Assert-PLOSOwnedDispatch {
         (Test-PLOSDispatchBindingEqual $_.response.resource_assessment.request_binding $Binding)
     })
     if ($renewed.Count -eq 0) { throw 'Owned dispatch requires a prior admitted pre-dispatch heartbeat.' }
-    foreach ($field in @('running_exact','healthy','task_exact','control_exact','executable_exact','residency_verified')) {
+    foreach ($field in @('task_exact','control_exact','executable_exact')) {
         if ((Get-PLOSCapacityValue $Status $field) -isnot [bool] -or -not (Get-PLOSCapacityValue $Status $field)) {
             throw 'Owned dispatch runtime identity is unproven.'
         }
     }
-    foreach ($field in @('owned_process_count','loopback_listener_count','foreign_loaded_count')) {
+    $timedOut=(Get-PLOSCapacityValue $Status 'api_metadata_timed_out') -is [bool] -and
+        (Get-PLOSCapacityValue $Status 'api_metadata_timed_out')
+    $ownedLoading=$false
+    if ($timedOut) {
+        $identityObserved=Get-PLOSCapacityValue $Status 'model_identity_observed'
+        $residencyObserved=Get-PLOSCapacityValue $Status 'residency_observed'
+        $listenerOwned=Get-PLOSCapacityValue $Status 'listener_owner_exact'
+        if ($identityObserved -isnot [bool] -or $residencyObserved -isnot [bool] -or
+            $listenerOwned -isnot [bool] -or -not $listenerOwned -or
+            ($identityObserved -and ($Status.model_exact -isnot [bool] -or -not $Status.model_exact)) -or
+            ($residencyObserved -and ($Status.residency_verified -isnot [bool] -or -not $Status.residency_verified -or
+                ($Status.foreign_loaded_count -isnot [int] -and $Status.foreign_loaded_count -isnot [long]) -or $Status.foreign_loaded_count -ne 0)) -or
+            (-not $residencyObserved -and ($null -ne $Status.foreign_loaded_count -or
+                $Status.residency_verified -cne $false -or $Status.model_loaded_exact -cne $false))) {
+            throw 'Owned dispatch timeout observation is inconsistent.'
+        }
+        $residencyOwned=Get-PLOSCapacityValue $State.lease 'model_residency_owned'
+        if ($residencyOwned -isnot [bool] -or -not $residencyOwned) { throw 'Owned loading reservation is unproven.' }
+        $ownedLoading=$true
+    } else {
+        foreach ($field in @('running_exact','healthy','residency_verified')) {
+            if ((Get-PLOSCapacityValue $Status $field) -isnot [bool] -or -not (Get-PLOSCapacityValue $Status $field)) {
+                throw 'Owned dispatch runtime identity is unproven.'
+            }
+        }
+    }
+    foreach ($field in @('owned_process_count','loopback_listener_count')) {
         $value = Get-PLOSCapacityValue $Status $field
         if ($value -isnot [int] -and $value -isnot [long]) { throw 'Owned dispatch runtime counts are unproven.' }
     }
     if ($Status.model_loaded_exact -isnot [bool]) { throw 'Owned dispatch residency is unknown.' }
     $residencyOwned = Get-PLOSCapacityValue $State.lease 'model_residency_owned'
     if ($Status.owned_process_count -ne 1 -or $Status.loopback_listener_count -ne 1 -or
-        $Status.foreign_loaded_count -ne 0 -or
+        (-not $ownedLoading -and ($Status.foreign_loaded_count -isnot [int] -and $Status.foreign_loaded_count -isnot [long])) -or
+        ($null -ne $Status.foreign_loaded_count -and $Status.foreign_loaded_count -ne 0) -or
         (-not $Status.model_loaded_exact -and ($residencyOwned -isnot [bool] -or -not $residencyOwned))) {
         throw 'Owned dispatch model residency is unproven.'
     }
+    return $ownedLoading
 }
 
 function Invoke-PLOSHeartbeat {
@@ -1402,8 +1451,9 @@ function Invoke-PLOSHeartbeat {
     $loaded = Test-PLOSModelLoaded $Manifest $targetStatus
     $script:heartbeatDiagnosticStage = 'capacity_projection'
     $admission = Get-PLOSAdmission $Manifest $targetId $spec $resources $loaded ([long]$state.lease.pagefile_baseline_mib)
+    $ownedLoading=$false
     if ($null -ne $dispatch) {
-        Assert-PLOSOwnedDispatch $dispatch $state $spec $targetStatus (Get-PLOSCapacityValue $admission 'request_binding')
+        $ownedLoading=Assert-PLOSOwnedDispatch $dispatch $state $spec $targetStatus (Get-PLOSCapacityValue $admission 'request_binding')
         if (-not $loaded) {
             # Admission already reserved loading capacity. Do not reserve it twice
             # while the owned request allocates it but /api/ps is still empty.
@@ -1411,7 +1461,7 @@ function Invoke-PLOSHeartbeat {
         }
     }
     $script:heartbeatDiagnosticStage = 'gate'
-    if (-not $targetStatus.running_exact -or -not $admission.eligible) {
+    if ((-not $targetStatus.running_exact -and -not $ownedLoading) -or -not $admission.eligible) {
         Stop-PLOSLifecycleGate -Id $targetId -Status $targetStatus -Resources $resources -Guards $Manifest.resource_guards -RequiredRam ([int64]$spec.ready_minimum_free_physical_bytes) -RequireRunning $true -PagefileBaseline ([int64]$state.lease.pagefile_baseline_mib) -Assessment $admission -Spec $spec
     }
     $now = [DateTimeOffset]::UtcNow

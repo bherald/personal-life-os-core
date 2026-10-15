@@ -60,8 +60,10 @@ final class CliPromptCounter
         }
         $assets = [];
         $names = ['renderer', 'tokenizer', 'family_registry', 'v4_dsml'];
-        if (array_key_exists('v41_dsml_sha256', $contract)) {
-            $names[] = 'v41_dsml';
+        foreach (['v41_dsml', 'image_engine'] as $dependency) {
+            if (array_key_exists($dependency.'_sha256', $contract)) {
+                $names[] = $dependency;
+            }
         }
         foreach ($names as $name) {
             $hash = $contract[$name.'_sha256'] ?? null;
@@ -84,6 +86,8 @@ final class CliPromptCounter
         $environment['PYTHONDONTWRITEBYTECODE'] = '1';
         $environment['PYTHONNOUSERSITE'] = '1';
         $environment['TOKENIZERS_PARALLELISM'] = 'false';
+        // Match the managed gateway's lossless renderer mode during counting.
+        $environment['PLOS_CLI_RUNTIME_IDENTITY'] = '1';
         if ($this->pythonLibraryPath !== null) {
             $environment['PYTHONPATH'] = $this->pythonLibraryPath;
         }

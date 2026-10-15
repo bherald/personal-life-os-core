@@ -152,3 +152,96 @@ a full Docker upgrade or configured model/controller/connector qualification.
 The guarded framework update preserves complete processing input, exact vision
 bindings and compatible embedding retrieval. Disabled upstream worker registration
 and proof-bound fresh scheduled checkpoints are documented in [framework upgrade boundaries](framework-upgrade-boundaries.md).
+
+## Exact prompt dependencies — October 15, 2026
+
+A current Colibri gateway imports its image module even for text requests.
+The prompt counter previously admitted only the older four- and five-asset
+contracts, so a selected current gateway could fail before counting a prompt.
+
+The existing tokenizer binding now accepts an optional `image_engine_sha256`
+with its V4.1 dependency. The worker verifies every selected asset before it
+executes source and blocks unpinned modules from ambient Python paths. Counting
+selects the same managed lossless renderer mode, preserving original whitespace.
+Older supported contracts remain valid. This change does not activate a model,
+change routing, or add a capability.
+
+Ten focused process-boundary tests passed with 47 assertions and isolated
+SQLite. They cover pinned source, missing or changed dependencies, ambient
+imports, original whitespace and legacy contracts. A separate synthetic prompt
+count used the real selected tokenizer; it was not model inference or a speed
+benchmark.
+
+Deploy the application and selected runtime/tokenizer binding as one coordinated
+change. Keep the prior runtime and binding values for rollback, and use the
+normal controller completion and cleanup path before extending a model's role.
+
+## Owned loading heartbeats — October 15, 2026
+
+A busy Ollama metadata probe could time out while a previously admitted cold
+request still owned its process, listener and inference connection. The combined
+snapshot discarded the independent residency observation, and the heartbeat
+then rejected the owned request as an identity failure.
+
+Tags and residency are now observed separately. A timeout remains an unknown
+observation. Only an exact owned in-flight dispatch with successful activation,
+prior pre-dispatch heartbeat, reserved residency and pinned task, executable,
+process and listener may continue through that timeout. Explicit metadata
+refusals, malformed responses, foreign models and identity drift remain denied.
+Existing loaded-capacity reserves still apply. No model route, timeout increase,
+prompt transformation or second custody mechanism is introduced.
+
+Eighty-six public owned-dispatch controls and twelve snapshot/status controls passed in
+native Windows PowerShell with model, HTTP, OS and persistent effects mocked.
+They cover partial and total timeouts, retained foreign observations, mismatched
+identities, missing admission proof and capacity
+shortages. These controls make no model inference or performance claim. The
+public checks import function definitions only and do not run the native action
+dispatcher. Native verification replayed the exact public functions and test
+bodies in memory; file-loading headers were syntax checked. Hosted Windows CI
+runs the complete exported scripts. The separate private HTTP controller is not included; its five
+release-route controls are optional and excluded from the public count.
+
+Run the exported checks with Windows PowerShell:
+
+```powershell
+& .\scripts\plos-cli\test-controller-owned-dispatch.ps1 -LifecyclePath .\scripts\plos-model-host-controller-lifecycle.ps1
+& .\scripts\plos-cli\test-controller-ollama-metadata.ps1 -LifecyclePath .\scripts\plos-model-host-controller-lifecycle.ps1
+```
+
+Deploy the lifecycle/controller/service pin chain together after the current
+request physically finishes. Preserve prior installed bytes and original
+outcomes; use the normal registered recovery path for unknown custody and never
+automatically replay the original request. A normal model completion and cleanup
+remain separate production acceptance. Roll back the exact native checkpoint
+and bounded application source together.
+
+## Ordinary YouTube node roles — October 15, 2026
+
+An ordinary key-point node passed its output budget and temperature to AIService
+but omitted its configured model role. Explicit-only providers also require
+configured allowed/preferred instance choices. A manual CLI selection supplied
+those choices, concealing the missing forwarding during ordinary execution.
+
+The node now forwards an optional nonblank `model_role` and configured
+`allowed_ollama_instance_ids` / `preferred_ollama_instance_ids` arrays through
+AIService. Existing tables map the role to a model, and the existing pool still
+enforces the provider's explicit-instance policy. Without configuration,
+selection is unchanged. Explicit CLI role/model choices override node defaults,
+even when the node's default provider is unavailable. Complete originals,
+output budgets and normal source-preserving delivery remain unchanged.
+
+Twenty-eight focused tests passed with 158 assertions against the exact public
+candidate using synthetic inputs and per-test SQLite. Controls reproduce the
+missing forwarding and exercise the actual preference normalizer and explicit
+instance policy, role-only refusal, unchanged defaults, full CLI precedence and
+restoration, complete originals and output contracts. These checks make no model
+quality or hardware performance claim.
+
+Deploy the generic source first, then bind an appropriate existing registered
+node role and instance preferences through installation-owned configuration.
+Preserve an existing operator choice. This public batch contains no private
+binding, model, host, runtime recipe or activation, and does not relax explicit
+provider selection. Use normal configured node processing and canonical delivery
+read-back; restore prior source and exact prior settings on rollback. An unknown
+request never authorizes automatic replay.

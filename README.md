@@ -172,3 +172,14 @@ and rollback limits.
 Cold reranker startup failures retain verified cleanup receipts without replay.
 Activation transport includes table-owned startup and verification time; stopped
 reranker fencing requires registered adapter identity and exact empty ownership.
+
+The October 15 prompt-counter update supports the current Colibri text gateway's pinned image dependency and preserves the selected lossless rendering mode. [Behavior, checks and rollback](docs/public-release-readiness.md#exact-prompt-dependencies--october-15-2026).
+
+Controller heartbeats now retain an exact owned loading request when a metadata
+probe times out, while preserving independent model-residency observations and
+existing identity/capacity guards. [Scope and checks](docs/public-release-readiness.md#owned-loading-heartbeats--october-15-2026).
+
+Ordinary YouTube key-point nodes forward configured roles and allowed/preferred
+instance choices through existing table routing and explicit-provider policy.
+Explicit CLI workflow selections retain precedence.
+[Behavior, checks and rollback](docs/public-release-readiness.md#ordinary-youtube-node-roles--october-15-2026).
