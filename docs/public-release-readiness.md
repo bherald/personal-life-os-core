@@ -1,5 +1,36 @@
 # Public release readiness
 
+## Framework source publication — 2026-10-15
+
+The reviewed 64-file framework update is published at `d9d8df57`.
+
+**Root cause:** Exact embedding choices could drift to defaults; dedicated
+reranking and native task/startup handling needed complete controller bindings.
+
+**Behavior changed:** Preserve table-selected embedding roles and vector identity,
+admit complete-input CPU reranking explicitly, bind its loopback transport, and
+validate declared native task identities. Failed startup cleanup retains uncertain
+outcomes and prevents replay; transport waits cover configured startup budgets.
+
+**Verification:** Thirteen focused PHP controls passed with 96 assertions, and
+48 native mock checks passed without model calls. Hosted Public Readiness run `38707276610`
+passed its privacy/provenance audit, Compose validation, setup doctors, builds and
+focused tests. Signed-out immutable reads matched all 64 reviewed file hashes.
+These checks do not qualify an operator's models or hardware.
+
+The initial Repository Governance run `38707276615`
+failed because the published commit message omitted its four required literal
+headings. This follow-up records that release information with the original
+history intact and uses the required commit-body sections. Its own hosted checks
+must pass separately.
+
+**Deployment/rollback:** This is a public source update. Operators retain control
+of model activation and matching table/native projections. Back up configuration
+and data; restore reviewed source, policy and native preimages together if needed.
+Preserve journals, existing vector spaces and unresolved outcomes without replay.
+
+## Earlier release evidence
+
 v2.1 was published on October 12, 2026. The release tag remains at `d17e803`.
 Hosted CI passed for the code and test snapshot at `1df63ea1` on October 13.
 Public Readiness run `38392686470` and Repository Governance run `38392686582`
